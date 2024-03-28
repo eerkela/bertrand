@@ -86,16 +86,39 @@ namespace py = bertrand::py;
 using namespace py::literals;
 
 
+
+void f(std::initializer_list<std::optional<ssize_t>> vals) {
+    py::print(vals.size());
+}
+
+
 template <bertrand::StaticStr str>
 void func() {
+    using bertrand::StaticStr;
+
     // constexpr bertrand::StaticStr s = bertrand::static_str::lstrip<str>;
     // py::print(s);
     // py::print(s.size());
 
-    constexpr auto splits = bertrand::static_str::rsplit<str, ", ">;
-    py::print(std::get<2>(splits));
-    py::print(std::get<2>(splits).size());
-    py::print(std::tuple_size<decltype(splits)>::value);
+
+    constexpr bool b = str > "abc";
+    py::print(b);
+
+
+    // constexpr char c = str[-10];
+    // std::cout << "'" << str[{std::nullopt, std::nullopt, -2}] << "'\n";
+    // std::cout << "'" << str[{2, 0}] << "'\n";
+
+    // constexpr StaticStr s = str + ", jkl";
+    // py::print(s);
+    // py::print(str + ", jkl");
+
+
+
+    // constexpr auto splits = bertrand::static_str::rsplit<str, ", ", 1>;
+    // py::print(std::get<1>(splits));
+    // py::print(std::get<1>(splits).size());
+    // py::print(std::tuple_size<decltype(splits)>::value);
 }
 
 

@@ -3,14 +3,18 @@
 
 #include <array>
 #include <cstddef>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <utility>
 
 
+// TODO: iterators could probably be standardized and made safer than raw pointers.
 
 
 namespace bertrand {
@@ -85,6 +89,20 @@ class StaticStr {
 
     };
 
+    static constexpr ssize_t normalize_index(ssize_t i) {
+        ssize_t n = i + N * (i < 0);
+        if (n < 0 || static_cast<size_t>(n) >= N) {
+            // NOTE: throwing an error is incorrect for compile-time contexts, but it
+            // results in a similar error message to an typical static assertion.  A
+            // more correct implementation would handle these separately, but doing
+            // this in a constexpr context is tricky business.
+            throw std::out_of_range(
+                std::string("index out of bounds: ") + std::to_string(i)
+            );
+        }
+        return n;
+    }
+
 public:
     char buffer[N + 1] = {};  // +1 for null terminator
 
@@ -118,95 +136,87 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
+    const char* begin() const {
+        return buffer;
+    }
+
+    const char* end() const {
+        return buffer + N;
+    }
+
+    ReverseIterator rbegin() const {
+        return {buffer + N - 1, N - 1};
+    }
+
+    ReverseIterator rend() const {
+        return {nullptr, -1};
+    }
+
     consteval size_t size() const {
         return N;
     }
 
-    constexpr const char* begin() const {
-        return buffer;
-    }
-
-    constexpr const char* end() const {
-        return buffer + N;
-    }
-
-    constexpr ReverseIterator rbegin() const {
-        return {buffer + N - 1, N - 1};
-    }
-
-    constexpr ReverseIterator rend() const {
-        return {nullptr, -1};
-    }
-
-    // TODO: support slice syntax for compile-time strings
-
-    constexpr char operator[](size_t i) const {
-        return buffer[i];
-    }
-
     template <size_t M>
     consteval bool operator<(const StaticStr<M>& other) const {
-        auto it1 = begin();
-        auto end1 = end();
-        auto it2 = other.begin();
-        auto end2 = other.end();
-
-        while (it1 != end1 && it2 != end2) {
-            auto x = *it1;
-            auto y = *it2;
+        size_t i = 0;
+        while (i < N && i < other.size()) {
+            const char x = buffer[i];
+            const char y = other.buffer[i];
             if (x < y) {
                 return true;
             } else if (y < x) {
                 return false;
             }
-            ++it1;
-            ++it2;
+            ++i;
         }
+        return i == N && i != other.size();
+    }
 
-        return (it1 == end1) && (it2 != end2);
+    template <size_t M>
+    consteval bool operator<(const char(&other)[M]) const {
+        return *this < StaticStr<M - 1>(other);
     }
 
     template <size_t M>
     consteval bool operator<=(const StaticStr<M>& other) const {
-        auto it1 = begin();
-        auto end1 = end();
-        auto it2 = other.begin();
-        auto end2 = other.end();
-
-        while (it1 != end1 && it2 != end2) {
-            auto x = *it1;
-            auto y = *it2;
+        size_t i = 0;
+        while (i < N && i < other.size()) {
+            const char x = buffer[i];
+            const char y = other.buffer[i];
             if (x < y) {
                 return true;
             } else if (y < x) {
                 return false;
             }
-            ++it1;
-            ++it2;
+            ++i;
         }
+        return i == N;
+    }
 
-        return it1 == end1;
+    template <size_t M>
+    consteval bool operator<=(const char(&other)[M]) const {
+        return *this <= StaticStr<M - 1>(other);
     }
 
     template <size_t M>
     consteval bool operator==(const StaticStr<M>& other) const {
         if constexpr (N != M) {
             return false;
-        }
-
-        auto it1 = begin();
-        auto end1 = end();
-        auto it2 = other.begin();
-
-        while (it1 != end1) {
-            if (*it1 != *it2) {
-                return false;
+        } else {
+            size_t i = 0;
+            while (i < N) {
+                if (buffer[i] != other.buffer[i]) {
+                    return false;
+                }
+                ++i;
             }
-            ++it1;
-            ++it2;
+            return true;
         }
+    }
 
-        return true;
+    template <size_t M>
+    consteval bool operator==(const char(&other)[M]) const {
+        return *this == StaticStr<M - 1>(other);
     }
 
     template <size_t M>
@@ -215,47 +225,50 @@ public:
     }
 
     template <size_t M>
-    consteval bool operator>=(const StaticStr<M>& other) const {
-        auto it1 = begin();
-        auto end1 = end();
-        auto it2 = other.begin();
-        auto end2 = other.end();
+    consteval bool operator!=(const char(&other)[M]) const {
+        return !operator==(other);
+    }
 
-        while (it1 != end1 && it2 != end2) {
-            auto x = *it1;
-            auto y = *it2;
+    template <size_t M>
+    consteval bool operator>=(const StaticStr<M>& other) const {
+        size_t i = 0;
+        while (i < N && i < other.size()) {
+            const char x = buffer[i];
+            const char y = other.buffer[i];
             if (x > y) {
                 return true;
             } else if (y > x) {
                 return false;
             }
-            ++it1;
-            ++it2;
+            ++i;
         }
+        return i == N;
+    }
 
-        return it2 == end2;
+    template <size_t M>
+    consteval bool operator>=(const char(&other)[M]) const {
+        return *this >= StaticStr<M - 1>(other);
     }
 
     template <size_t M>
     consteval bool operator>(const StaticStr<M>& other) const {
-        auto it1 = begin();
-        auto end1 = end();
-        auto it2 = other.begin();
-        auto end2 = other.end();
-
-        while (it1 != end1 && it2 != end2) {
-            auto x = *it1;
-            auto y = *it2;
+        size_t i = 0;
+        while (i < N && i < other.size()) {
+            const char x = buffer[i];
+            const char y = other.buffer[i];
             if (x > y) {
                 return true;
             } else if (y > x) {
                 return false;
             }
-            ++it1;
-            ++it2;
+            ++i;
         }
+        return i != N && i == other.size();
+    }
 
-        return it1 != end1 && it2 == end2;
+    template <size_t M>
+    consteval bool operator>(const char(&other)[M]) const {
+        return *this > StaticStr<M - 1>(other);
     }
 
     template <size_t M>
@@ -268,21 +281,70 @@ public:
     }
 
     template <size_t M>
-    consteval StaticStr<N + M - 1> operator+(const char(&arr)[M]) const {
-        return *this + StaticStr<M - 1>(arr);
+    consteval StaticStr<N + M - 1> operator+(const char(&other)[M]) const {
+        return *this + StaticStr<M - 1>(other);
     }
 
     template <size_t M>
     consteval friend StaticStr<N + M - 1> operator+(
-        const char(&arr)[M],
+        const char(&other)[M],
         const StaticStr<N>& self
     ) {
-        return StaticStr<M - 1>(arr) + self;
+        return StaticStr<M - 1>(other) + self;
     }
 
-    // NOTE: C++20 does not allow the repetition operator to be overloaded at compile
-    // time, so we have to use a template method instead.  This might be fixed in
-    // a future standard, but for now, it's the best we can do.
+    // NOTE: Due to language limitations, the [] and * operators are confined to
+    // runtime.  There are pure compile-time versions in the static_str:: namespace
+    // that use templates to get around this.  Perhaps in a future standard, these can
+    // be unified, but for now, it's the best we can do.
+
+    const char operator[](ssize_t i) const {
+        return buffer[normalize_index(i)];
+    }
+
+    std::string operator[](std::initializer_list<std::optional<ssize_t>> slice) const {
+        if (slice.size() > 3) {
+            throw std::runtime_error(
+                "Slices must be of the form {start[, stop[, step]]}"
+            );
+        }
+
+        // fill in missing indices
+        std::array<std::optional<ssize_t>, 3> indices
+            {std::nullopt, std::nullopt, std::nullopt};
+        size_t i = 0;
+        for (auto&& idx : slice) {
+            indices[i++] = idx;
+        }
+
+        // normalize step
+        ssize_t step = indices[2].value_or(1);
+        if (step == 0) {
+            throw std::runtime_error("Slices must have non-zero step size");
+        }
+
+        // normalize start/stop based on sign of step and populate result
+        std::optional<ssize_t> istart = indices[0];
+        std::optional<ssize_t> istop = indices[1];
+        if (step > 0) {
+            ssize_t start = istart.has_value() ? normalize_index(istart.value()) : 0;
+            ssize_t stop = istop.has_value() ? normalize_index(istop.value()) : N;
+            std::string result((stop - start) * (stop > start) / step, '\0');
+            for (ssize_t i = start, j = 0; i < stop; i += step) {
+                result[j++] = buffer[i];
+            }
+            return result;
+        } else {
+            ssize_t start = istart.has_value() ? normalize_index(istart.value()) : N - 1;
+            ssize_t stop = istop.has_value() ? normalize_index(istop.value()) : -1;
+            ssize_t delta = (stop - start) * (stop < start);  // needed for floor
+            std::string result(delta / step + (delta % step != 0), '\0');
+            for (ssize_t i = start, j = 0; i > stop; i += step) {
+                result[j++] = buffer[i];
+            }
+            return result;
+        }
+    }
 
     template <typename T = void>
     consteval void operator*(size_t reps) const {
@@ -290,7 +352,7 @@ public:
             !std::is_void_v<T>,
             "Due to limitations in the C++ language, the `*` operator cannot be "
             "supported for compile-time string manipulation.  Use "
-            "`static_str::repeat<str, N>` instead, which has identical semantics."
+            "`static_str::repeat<str, reps>` instead, which has identical semantics."
         );
     }
 
@@ -300,7 +362,7 @@ public:
             !std::is_void_v<T>,
             "Due to limitations in the C++ language, the `*` operator cannot be "
             "supported for compile-time string manipulation.  Use "
-            "`static_str::repeat<str, N>` instead, which has identical semantics."
+            "`static_str::repeat<str, reps>` instead, which has identical semantics."
         );
     }
 
@@ -399,6 +461,17 @@ namespace static_str {
             return islower(c) ? c + LOWER_TO_UPPER : c;
         }
 
+        /* Helper to normalize a (possibly negative) index with Python-style
+        wraparound. */
+        template <ssize_t i, size_t n>
+        constexpr ssize_t normalize_index() {
+            constexpr ssize_t result = i + n * (i < 0);
+            static_assert(
+                result >= 0 && result < n, "string index out of bounds"
+            );
+            return result;
+        }
+
         /* Helper for getting the first non-stripped index from the beginning of a
         string. */
         template <StaticStr str, StaticStr chars>
@@ -457,19 +530,21 @@ namespace static_str {
         template <StaticStr str, StaticStr sep, size_t n>
         constexpr std::array<size_t, n> backward_strides() {
             std::array<size_t, n> result;
-            size_t prev = str.size() - 1;
-            for (size_t i = prev, j = 0; j < n - 1;) {
+            size_t prev = str.size();
+            for (size_t i = prev - 1, j = 0; j < n - 1; --i) {
                 if (std::equal(sep.buffer, sep.buffer + sep.size(), str.buffer + i)) {
-                    result[j++] = prev - i;
-                    i -= sep.size();
+                    result[j++] = prev - (i + sep.size());
                     prev = i;
-                } else {
-                    --i;
                 }
             }
             result[n - 1] = prev;
             return result;
         }
+
+        /* Helper for getting the length of each component in a splitlines()
+        operation. */
+        // TODO: splitlines is complicated
+
 
         /* Helper function to extract split components from a string at compile
         time. */
@@ -487,6 +562,7 @@ namespace static_str {
                         strides[Ns],
                         std::get<Ns>(result).buffer
                     ),
+                    std::get<Ns>(result).buffer[strides[Ns]] = '\0',
                     offset += strides[Ns] + sep.size()
                 ),
                 ...
@@ -502,7 +578,7 @@ namespace static_str {
                 backward_strides<str, sep, sizeof...(Ns)>();
 
             std::tuple<StaticStr<std::get<Ns>(strides)>...> result;
-            size_t offset = str.size();  // TODO: is this correct?
+            size_t offset = str.size();
             (
                 (
                     offset -= strides[Ns],
@@ -511,6 +587,7 @@ namespace static_str {
                         strides[Ns],
                         std::get<Ns>(result).buffer
                     ),
+                    std::get<Ns>(result).buffer[strides[Ns]] = '\0',
                     offset -= sep.size()
                 ),
                 ...
@@ -1150,11 +1227,18 @@ namespace static_str {
     }();
 
 
-    // TODO: rsplit, splitlines,
+    // TODO: splitlines,
 
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
+
+    /* Replacement for `StaticStr[i]` that allows it to be evaluated statically at
+    compile time. */
+    template <StaticStr self, ssize_t i>
+    constexpr char get = [] {
+        return self.buffer[detail::normalize_index<i, self.size()>()];
+    }();
 
     /* Functional alternative to `StaticStr + StaticStr`. */
     template <StaticStr lhs, StaticStr rhs>
@@ -1162,7 +1246,7 @@ namespace static_str {
         return lhs + rhs;
     }();
 
-    /* Replacement for `StaticStr * reps` that allows it to be evaluated entirely at
+    /* Replacement for `StaticStr * reps` that allows it to be evaluated statically at
     compile time. */
     template <StaticStr self, size_t reps>
     constexpr auto repeat = [] {
