@@ -87,38 +87,27 @@ using namespace py::literals;
 
 
 
-void f(std::initializer_list<std::optional<ssize_t>> vals) {
-    py::print(vals.size());
-}
+template <bertrand::StaticStr str>
+struct Foo {
+    static constexpr bool value = false;
+};
+
+
+template <>
+struct Foo<"abc"> {
+    static constexpr bool value = true;
+};
+
 
 
 template <bertrand::StaticStr str>
 void func() {
     using bertrand::StaticStr;
 
-    // constexpr bertrand::StaticStr s = bertrand::static_str::lstrip<str>;
-    // py::print(s);
-    // py::print(s.size());
+    // constexpr size_t hash = str.hash();
 
-
-    constexpr bool b = str > "abc";
-    py::print(b);
-
-
-    // constexpr char c = str[-10];
-    // std::cout << "'" << str[{std::nullopt, std::nullopt, -2}] << "'\n";
-    // std::cout << "'" << str[{2, 0}] << "'\n";
-
-    // constexpr StaticStr s = str + ", jkl";
-    // py::print(s);
-    // py::print(str + ", jkl");
-
-
-
-    // constexpr auto splits = bertrand::static_str::rsplit<str, ", ", 1>;
-    // py::print(std::get<1>(splits));
-    // py::print(std::get<1>(splits).size());
-    // py::print(std::tuple_size<decltype(splits)>::value);
+    volatile size_t hash = bertrand::static_str::hash<str>;
+    // py::print(hash(str));
 }
 
 
@@ -127,7 +116,11 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    func<"abc, def, ghi">();
+    for (size_t i = 0; i < 1000000; ++i) {
+        func<"abcdefghi">();
+    }
+
+    // func<"abcdefghi">();
 
 
     // py::Function foo = R"(

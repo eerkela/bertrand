@@ -32,28 +32,34 @@
 #include "bertrand/static_str.h"  // for compile-time string manipulation
 
 
+// TODO: lift all of this up to `python.h`, and then just include the other headers
+// immediately afterwards.  This allows us to omit all includes from the other headers,
+// and just encode those via the import order in `python.h`.  The include guards ensure
+// that this is safe, and all includes have to go through the top-level `python.h`.
+
+
 
 /* NOTES ON PERFORMANCE:
  * In general, bertrand should be as fast or faster than the equivalent Python code,
- * owing to the use of static typing, compilation, and optimized CPython API calls.  
+ * owing to the use of static typing, comp time, and optimized CPython API calls.  
  * There are a few things to keep in mind, however:
  *
- *  1.  A null pointer check followed by a type check is implicitly incurred whenever a
- *      generic py::Object is narrowed to a more specific type, such as py::Int or
- *      py::List.  This is necessary to ensure type safety, and is optimized for
- *      built-in types, but can become a pessimization if done frequently, especially
- *      in tight loops.  If you find yourself doing this, consider either converting to
- *      strict types earlier in the code (which eliminates runtime overhead and allows
- *      the compiler to enforce these checks at compile time) or keeping all object
- *      interactions fully generic to prevent thrashing.  Generally, the only cases
- *      where this can be a problem are when accessing a named attribute via `attr()`,
- *      calling a Python function via `()`, indexing into a generic container using
- *      `[]`, or iterating over such a container in a range-based loop, all of which
- *      return py::Object instances by default.  Note that all of these can be made
- *      type-safe by writing an additional wrapper class that specializes the
- *      `py::impl::__call__`, `py::impl::__getitem__`, and `py::impl::__iter__` control
- *      structs, eliminating the runtime check and promoting it to compile time.  See
- *      point #2 below for a less intrusive, unsafe workaround.
+ *  1.  A null pointer check followed by an isinstance() check is implicitly incurred
+ *      whenever a generic py::Object is narrowed to a more specific type, such as
+ *      py::Int or py::List.  This is necessary to ensure type safety, and is optimized
+ *      for built-in types, but can become a pessimization if done frequently,
+ *      especially in tight loops.  If you find yourself doing this, consider either
+ *      converting to strict types earlier in the code (which eliminates runtime
+ *      overhead and allows the compiler to enforce these checks at compile time) or
+ *      keeping all object interactions fully generic to prevent thrashing.  Generally,
+ *      the only cases where this can be a problem are when accessing a named attribute
+ *      via `attr()`, calling a generic Python function using `()`, indexing into an
+ *      untyped container with `[]`, or iterating over such a container in a range-based
+ *      loop, all of which return py::Object instances by default.  Note that all of
+ *      these can be made type-safe by using a typed container or writing a custom
+ *      wrapper class that specializes the `py::impl::__call__`,
+ *      `py::impl::__getitem__`, and `py::impl::__iter__` control structs.  Doing so
+ *      eliminates the runtime check and promotes it to compile time.
  *  2.  For cases where the exact type of a generic object is known in advance, it is
  *      possible to bypass the runtime check by using `py::reinterpret_borrow<T>(obj)`
  *      or `py::reinterpret_steal<T>(obj.release())`.  These functions are not type
@@ -62,26 +68,37 @@
  *      with custom types, as in most cases a method's return type and reference count
  *      will be known ahead of time, making the runtime check redundant.  In most other
  *      cases, it is not recommended to use these functions, as they can lead to subtle
- *      bugs and crashes if the assumptions they make are incorrect.
- *  3.  There is a penalty for copying data across the Python/C++ boundary.  This is
- *      generally quite small (even for lists and other container types), but it can
- *      add up if done frequently.  If you find yourself repeatedly copying large
- *      amounts of data between Python and C++, you should reconsider your design or
- *      use the buffer protocol to avoid the copy.  An easy way to do this is to use
- *      NumPy arrays, which can be accessed directly from C++ without copying.
+ *      bugs and crashes if the assumptions they prove to be false.  Implementers
+ *      seeking to write their own types should refer to the built-in types for
+ *      examples of how to do this correctly.
+ *  3.  There is a small penalty for copying data across the Python/C++ boundary.  This
+ *      is generally tolerable (even for lists and other container types), but it can
+ *      add up if done frequently.  If you find yourself repeatedly transferring large
+ *      amounts of data between Python and C++, you should either reconsider your
+ *      design to keep more of your operations within one language or another, or use
+ *      the buffer protocol to eliminate the copy.  An easy way to do this is to use
+ *      NumPy arrays, which can be accessed directly as C++ arrays without any copies.
  *  4.  Python (at least for now) does not play well with multithreaded code, and
- *      neither does bertrand.  If you need to use Python objects in a multithreaded
- *      context, consider offloading the work to C++ and passing the results back to
- *      Python. This unlocks full native parallelism, with SIMD, OpenMP, and other
- *      tools at your disposal.  If you must use Python, first read the GIL chapter in
- *      the Python C API documentation, and then consider using the
+ *      subsequently, neither does bertrand.  If you need to use Python objects in a
+ *      multithreaded context, consider offloading the work to C++ and passing the
+ *      results back to Python. This unlocks full native parallelism, with SIMD,
+ *      OpenMP, and other tools at your disposal.  If you must use Python, first read
+ *      the GIL chapter in the Python C API documentation, and then consider using the
  *      `py::gil_scoped_release` guard to release the GIL within a specific context,
- *      and automatically reacquire it using RAII before returning to Python.
- *  5.  Lastly, Bertrand makes it possible to store arbitrary Python objects with
+ *      and automatically reacquire it using RAII before returning to Python.  This
+ *      should only be attempted if you are 100% sure that your Python code is
+ *      thread-safe and does not interfere with the GIL in any way.  If there is any
+ *      doubt whatsoever, do not do this.
+ *  5.  Additionally, Bertrand makes it possible to store arbitrary Python objects with
  *      static duration using the py::Static<> wrapper, which can reduce net
- *      allocations and improve performance.  This is especially true for named methods
- *      in `attr()` lookups, or global objects like modules and scripts, which can be
- *      cached and reused across the lifetime of the program.
+ *      allocations and further improve performance.  This is especially true for
+ *      global objects like imported modules and compiled scripts, which can be cached
+ *      and reused for the lifetime of the program.
+ *  6.  Lastly, Bertrand supports an optimized syntax for accessing named attributes
+ *      of Python objects, which utilized C++20 templates to encode the attribute name
+ *      as a compile-time parameter.  This eliminates the temporary string object that
+ *      is typically used to access attributes in Python, which avoids a heap
+ *      allocation and improves latency when interacting with Python.
  *
  * Even without these optimizations, bertrand should be quite competitive with native
  * Python code, and should trade blows with it in most cases.  If you find a case where
@@ -3627,13 +3644,13 @@ namespace impl {
         /* Compare two iterators for ordering. */
         template <typename T = Iterator> requires (random_access)
         inline bool operator<(const Iterator& other) const {
-            return !!policy || (*this - other) < 0;
+            return !!policy && (*this - other) < 0;
         }
 
         /* Compare two iterators for ordering. */
         template <typename T = Iterator> requires (random_access)
         inline bool operator<=(const Iterator& other) const {
-            return !!policy || (*this - other) <= 0;
+            return !!policy && (*this - other) <= 0;
         }
 
         /* Compare two iterators for ordering. */

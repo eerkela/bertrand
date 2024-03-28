@@ -1,5 +1,5 @@
-#ifndef BERTRAND_COMPILE_TIME_STRING_H
-#define BERTRAND_COMPILE_TIME_STRING_H
+#ifndef BERTRAND_STATIC_STRING_H
+#define BERTRAND_STATIC_STRING_H
 
 #include <array>
 #include <cstddef>
@@ -12,9 +12,6 @@
 #include <string_view>
 #include <tuple>
 #include <utility>
-
-
-// TODO: iterators could probably be standardized and made safer than raw pointers.
 
 
 namespace bertrand {
@@ -32,26 +29,28 @@ class StaticStr {
     template <size_t M>
     friend class StaticStr;
 
-    struct ReverseIterator {
+    struct Iterator {
         const char* ptr;
         ssize_t index;
 
     public:
-        using iterator_category = std::input_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = const char;
-        using pointer = value_type*;
-        using reference = value_type&;
+        using iterator_category             = std::random_access_iterator_tag;
+        using difference_type               = std::ptrdiff_t;
+        using value_type                    = const char;
+        using pointer                       = value_type*;
+        using reference                     = value_type&;
 
-        ReverseIterator(const char* ptr, ssize_t index) : ptr(ptr), index(index) {}
-        ReverseIterator(const ReverseIterator& other) : ptr(other.ptr), index(other.index) {}
-        ReverseIterator(ReverseIterator&& other) : ptr(other.ptr), index(other.index) {}
-        ReverseIterator& operator=(const ReverseIterator& other) {
+        Iterator(const char* ptr, ssize_t index) : ptr(ptr), index(index) {}
+        Iterator(const Iterator& other) : ptr(other.ptr), index(other.index) {}
+        Iterator(Iterator&& other) : ptr(other.ptr), index(other.index) {}
+
+        Iterator& operator=(const Iterator& other) {
             ptr = other.ptr;
             index = other.index;
             return *this;
         }
-        ReverseIterator& operator=(ReverseIterator&& other) {
+
+        Iterator& operator=(Iterator&& other) {
             ptr = other.ptr;
             index = other.index;
             return *this;
@@ -59,13 +58,34 @@ class StaticStr {
 
         value_type operator*() const {
             if (ptr == nullptr) {
-                throw std::out_of_range("Cannot dereference end iterator");
+                throw std::out_of_range("attempt to dereference a null iterator");
             }
             return *ptr;
         }
 
-        ReverseIterator& operator++() {
-            if (--index >= 0) {
+        pointer operator->() const {
+            return &(**this);
+        }
+
+        Iterator& operator++() {
+            ++index;
+            if (index >= 0 && index < N) {
+                ++ptr;
+            } else {
+                ptr = nullptr;
+            }
+            return *this;
+        }
+
+        Iterator operator++(int) {
+            Iterator copy = *this;
+            ++(*this);
+            return copy;
+        }
+
+        Iterator& operator--() {
+            --index;
+            if (index >= 0 && index < N) {
                 --ptr;
             } else {
                 ptr = nullptr;
@@ -73,23 +93,128 @@ class StaticStr {
             return *this;
         }
 
-        ReverseIterator operator++(int) {
-            ReverseIterator copy = *this;
-            ++(*this);
+        Iterator operator--(int) {
+            Iterator copy = *this;
+            --(*this);
             return copy;
         }
 
-        bool operator==(const ReverseIterator& other) const {
+        Iterator& operator+=(difference_type n) {
+            index += n;
+            if (index >= 0 && index < N) {
+                ptr += n;
+            } else {
+                ptr = nullptr;
+            }
+            return *this;
+        }
+
+        Iterator operator+(difference_type n) const {
+            Iterator copy = *this;
+            copy += n;
+            return copy;
+        }
+
+        Iterator& operator-=(difference_type n) {
+            index -= n;
+            if (index >= 0 && index < N) {
+                ptr -= n;
+            } else {
+                ptr = nullptr;
+            }
+            return *this;
+        }
+
+        Iterator operator-(difference_type n) const {
+            Iterator copy = *this;
+            copy -= n;
+            return copy;
+        }
+
+        difference_type operator-(const Iterator& other) const {
+            return index - other.index;
+        }
+
+        value_type operator[](difference_type n) const {
+            return *(*this + n);
+        }
+
+        bool operator<(const Iterator& other) const {
+            return ptr != nullptr && (*this - other) < 0;
+        }
+
+        bool operator<=(const Iterator& other) const {
+            return ptr != nullptr && (*this - other) <= 0;
+        }
+
+        bool operator==(const Iterator& other) const {
             return ptr == other.ptr;
         }
 
-        bool operator!=(const ReverseIterator& other) const {
+        bool operator!=(const Iterator& other) const {
             return ptr != other.ptr;
+        }
+
+        bool operator>=(const Iterator& other) const {
+            return ptr == nullptr || (*this - other) >= 0;
+        }
+
+        bool operator>(const Iterator& other) const {
+            return ptr == nullptr || (*this - other) > 0;
         }
 
     };
 
-    static constexpr ssize_t normalize_index(ssize_t i) {
+    struct ReverseIterator : public Iterator {
+        using Iterator::Iterator;
+
+        ReverseIterator& operator++() {
+            Iterator::operator--();
+            return *this;
+        }
+
+        ReverseIterator operator++(int) {
+            ReverseIterator copy = *this;
+            Iterator::operator--();
+            return copy;
+        }
+
+        ReverseIterator& operator--() {
+            Iterator::operator++();
+            return *this;
+        }
+
+        ReverseIterator operator--(int) {
+            ReverseIterator copy = *this;
+            Iterator::operator++();
+            return copy;
+        }
+
+        ReverseIterator& operator+=(typename Iterator::difference_type n) {
+            Iterator::operator-=(n);
+            return *this;
+        }
+
+        ReverseIterator operator+(typename Iterator::difference_type n) const {
+            ReverseIterator copy = *this;
+            copy -= n;
+            return copy;
+        }
+
+        ReverseIterator& operator-=(typename Iterator::difference_type n) {
+            Iterator::operator+=(n);
+            return *this;
+        }
+
+        ReverseIterator operator-(typename Iterator::difference_type n) const {
+            ReverseIterator copy = *this;
+            Iterator::operator+=(n);
+            return copy;
+        }
+
+    };
+
+    static ssize_t normalize_index(ssize_t i) {
         ssize_t n = i + N * (i < 0);
         if (n < 0 || static_cast<size_t>(n) >= N) {
             // NOTE: throwing an error is incorrect for compile-time contexts, but it
@@ -136,12 +261,26 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    const char* begin() const {
-        return buffer;
+    // NOTE: hash is computed entirely at compile time
+
+    consteval size_t hash() const {
+        size_t result = 0xcbf29ce484222325;  // typical 64-bit FNV basis
+        for (size_t i = 0; i < N; ++i) {
+            result = (result * 0x00000100000001b3) ^ buffer[i];  // 64-bit FNV prime
+        }
+        return result;
     }
 
-    const char* end() const {
-        return buffer + N;
+    consteval size_t size() const {
+        return N;
+    }
+
+    Iterator begin() const {
+        return {buffer, 0};
+    }
+
+    Iterator end() const {
+        return {nullptr, N};
     }
 
     ReverseIterator rbegin() const {
@@ -150,10 +289,6 @@ public:
 
     ReverseIterator rend() const {
         return {nullptr, -1};
-    }
-
-    consteval size_t size() const {
-        return N;
     }
 
     template <size_t M>
@@ -320,23 +455,23 @@ public:
         // normalize step
         ssize_t step = indices[2].value_or(1);
         if (step == 0) {
-            throw std::runtime_error("Slices must have non-zero step size");
+            throw std::runtime_error("slice step cannot be zero");
         }
 
         // normalize start/stop based on sign of step and populate result
         std::optional<ssize_t> istart = indices[0];
         std::optional<ssize_t> istop = indices[1];
         if (step > 0) {
-            ssize_t start = istart.has_value() ? normalize_index(istart.value()) : 0;
-            ssize_t stop = istop.has_value() ? normalize_index(istop.value()) : N;
+            ssize_t start = !istart.has_value() ? 0 : normalize_index(istart.value());
+            ssize_t stop = !istop.has_value() ? N : normalize_index(istop.value());
             std::string result((stop - start) * (stop > start) / step, '\0');
             for (ssize_t i = start, j = 0; i < stop; i += step) {
                 result[j++] = buffer[i];
             }
             return result;
         } else {
-            ssize_t start = istart.has_value() ? normalize_index(istart.value()) : N - 1;
-            ssize_t stop = istop.has_value() ? normalize_index(istop.value()) : -1;
+            ssize_t start = !istart.has_value() ? N - 1 : normalize_index(istart.value());
+            ssize_t stop = !istop.has_value() ? -1 : normalize_index(istop.value());
             ssize_t delta = (stop - start) * (stop < start);  // needed for floor
             std::string result(delta / step + (delta % step != 0), '\0');
             for (ssize_t i = start, j = 0; i > stop; i += step) {
@@ -346,24 +481,29 @@ public:
         }
     }
 
-    template <typename T = void>
-    consteval void operator*(size_t reps) const {
-        static_assert(
-            !std::is_void_v<T>,
-            "Due to limitations in the C++ language, the `*` operator cannot be "
-            "supported for compile-time string manipulation.  Use "
-            "`static_str::repeat<str, reps>` instead, which has identical semantics."
-        );
+    std::string operator*(size_t reps) const {
+        if (reps <= 0) {
+            return {};
+        } else {
+            std::string result(N * reps, '\0');
+            for (size_t i = 0; i < reps; ++i) {
+                std::copy_n(buffer, N, result.data() + (N * i));
+            }
+            return result;
+        }
     }
 
     template <typename T = void>
-    consteval friend void operator*(size_t reps, const StaticStr<N>& self) {
-        static_assert(
-            !std::is_void_v<T>,
-            "Due to limitations in the C++ language, the `*` operator cannot be "
-            "supported for compile-time string manipulation.  Use "
-            "`static_str::repeat<str, reps>` instead, which has identical semantics."
-        );
+    friend std::string operator*(size_t reps, const StaticStr<N>& self) {
+        if (reps <= 0) {
+            return {};
+        } else {
+            std::string result(N * reps, '\0');
+            for (size_t i = 0; i < reps; ++i) {
+                std::copy_n(self.buffer, N, result.data() + (N * i));
+            }
+            return result;
+        }
     }
 
 };
@@ -380,6 +520,8 @@ avoid issues with template deduction and `'this' is not a constant expression`
 errors.  These seem to be running up against some hard limitations in C++. */
 namespace static_str {
 
+    /* A compile-time expression to signify that a particular substring is not present
+    during `find<>`, `index<>`, etc. */
     constexpr size_t not_found = std::numeric_limits<size_t>::max();
 
     namespace detail {
@@ -453,6 +595,22 @@ namespace static_str {
             }
         }
 
+        constexpr bool islinebreak(char c) {
+            switch (c) {
+                case '\n':
+                case '\r':
+                case '\v':
+                case '\f':
+                case '\x1c':
+                case '\x1d':
+                case '\x1e':
+                case '\x85':
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         constexpr char tolower(char c) {
             return isupper(c) ? c + UPPER_TO_LOWER : c;
         }
@@ -466,9 +624,7 @@ namespace static_str {
         template <ssize_t i, size_t n>
         constexpr ssize_t normalize_index() {
             constexpr ssize_t result = i + n * (i < 0);
-            static_assert(
-                result >= 0 && result < n, "string index out of bounds"
-            );
+            static_assert(result >= 0 && result < n, "string index out of bounds");
             return result;
         }
 
@@ -541,10 +697,60 @@ namespace static_str {
             return result;
         }
 
-        /* Helper for getting the length of each component in a splitlines()
-        operation. */
-        // TODO: splitlines is complicated
+        /* Helper for getting the total number of lines in a string. */
+        template <StaticStr str>
+        constexpr size_t line_count() {
+            if constexpr (str.size() == 0) {
+                return 0;
+            } else {
+                size_t total = 1;
+                for (size_t i = 0; i < str.size(); ++i) {
+                    char c = str.buffer[i];
+                    if (c == '\r') {
+                        ++total;
+                        if (str.buffer[i + 1] == '\n') {
+                            ++i;  // skip newline character
+                        }
+                    } else if (detail::islinebreak(c)) {
+                        ++total;
+                    }
+                }
+                return total;
+            }
+        }
 
+        /* Helper for getting the length of each line in a splitlines() operation. */
+        template <StaticStr str, bool keepends, size_t n>
+        constexpr std::array<size_t, n> line_strides() {
+            std::array<size_t, n> result;
+            size_t prev = 0;
+            for (size_t i = prev, j = 0; j < n - 1;) {
+                char c = str.buffer[i];
+                if (c == '\r' && str.buffer[i + 1] == '\n') {
+                    if constexpr (keepends) {
+                        i += 2;
+                        result[j++] = i - prev;
+                    } else {
+                        result[j++] = i - prev;
+                        i += 2;
+                    }
+                    prev = i;
+                } else if (detail::islinebreak(c)) {
+                    if constexpr (keepends) {
+                        ++i;
+                        result[j++] = i - prev;
+                    } else {
+                        result[j++] = i - prev;
+                        ++i;
+                    }
+                    prev = i;
+                } else {
+                    ++i;
+                }
+            }
+            result[n - 1] = str.size() - prev;
+            return result;
+        }
 
         /* Helper function to extract split components from a string at compile
         time. */
@@ -593,6 +799,44 @@ namespace static_str {
                 ...
             );
             return result;
+        }
+
+        /* Helper function to extract split components from a string at compile
+        time. */
+        template <StaticStr str, bool keepends, size_t... Ns>
+        constexpr auto line_split(std::index_sequence<Ns...>) {
+            constexpr std::array<size_t, sizeof...(Ns)> strides =
+                line_strides<str, keepends, sizeof...(Ns)>();
+
+            std::tuple<StaticStr<std::get<Ns>(strides)>...> result;
+            size_t offset = 0;
+            (
+                (
+                    std::copy_n(
+                        str.buffer + offset,
+                        strides[Ns],
+                        std::get<Ns>(result).buffer
+                    ),
+                    std::get<Ns>(result).buffer[strides[Ns]] = '\0',
+                    offset += strides[Ns],
+                    offset += (
+                        str.buffer[strides[Ns]] == '\r' &&
+                        str.buffer[strides[Ns] + 1] == '\n'
+                    ) ? 2 : 1
+                ),
+                ...
+            );
+            return result;
+        }
+
+        /* Helper function to extract only certain components from a string at compile
+        time. */
+        template <size_t... Ns, size_t... Is>
+        constexpr auto extract_from_tuple(
+            std::tuple<StaticStr<Ns>...> tuple,
+            std::index_sequence<Is...>
+        ) {
+            return std::make_tuple(std::get<Is>(tuple)...);
         }
 
     };
@@ -648,7 +892,7 @@ namespace static_str {
             "bounds of the string"
         );
         if constexpr ((stop - start) < sub.size()) {
-            return not_found;
+            return 0;
         } else {
             size_t count = 0;
             for (size_t i = start; i < stop - sub.size(); ++i) {
@@ -1028,6 +1272,7 @@ namespace static_str {
     compile time. */
     template <StaticStr self, StaticStr sep, size_t maxsplit = not_found>
     constexpr auto rsplit = [] {
+        static_assert(sep.size() > 0, "empty separator");
         constexpr size_t freq = count<self, sep>;
         if constexpr (freq == 0) {
             return std::make_tuple(self);
@@ -1061,6 +1306,7 @@ namespace static_str {
     compile time. */
     template <StaticStr self, StaticStr sep, size_t maxsplit = not_found>
     constexpr auto split = [] {
+        static_assert(sep.size() > 0, "empty separator");
         constexpr size_t freq = count<self, sep>;
         if constexpr (freq == 0) {
             return std::make_tuple(self);
@@ -1072,7 +1318,27 @@ namespace static_str {
         }
     }();
 
-    // TODO: splitlines
+    /* Equivalent to Python `str.splitlines([keepends])`, but evaluated statically at
+    compile time. */
+    template <StaticStr self, bool keepends = false>
+    constexpr auto splitlines = [] {
+        constexpr size_t n = detail::line_count<self>();
+        if constexpr (n == 0) {
+            return std::make_tuple();
+        } else {
+            constexpr auto result = detail::line_split<self, keepends>(
+                std::make_index_sequence<n>{}
+            );
+            if constexpr (std::get<n - 1>(result).size() == 0) {  // strip empty line
+                return detail::extract_from_tuple(
+                    result,
+                    std::make_index_sequence<n - 1>{}
+                );
+            } else {
+                return result;
+            }
+        }
+    }();
 
     /* Equivalent to Python `str.startswith(prefix)`, but evaluated statically at
     compile time. */
@@ -1186,12 +1452,6 @@ namespace static_str {
         }
     }();
 
-    /* Equivalent to Python `sub in str`, but evaluated statically at compile time. */
-    template <StaticStr self, StaticStr sub>
-    constexpr bool contains = [] {
-        return find<self, sub> != not_found;
-    }();
-
     /* Equivalent to Python `str.removeprefix()`, but evaluated statically at compile
     time. */
     template <StaticStr self, StaticStr prefix>
@@ -1226,12 +1486,19 @@ namespace static_str {
         }
     }();
 
-
-    // TODO: splitlines,
-
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
+
+    /* A compile time expression to replace `std::nullopt` from `StaticStr[{...}]`
+    syntax.  This is necessary because `std::optional` is not constexpr-compliant. */
+    constexpr ssize_t nullopt = std::numeric_limits<ssize_t>::min();
+
+    /* Equivalent to `hash(str)`, but evaluated statically at compile time. */
+    template <StaticStr self>
+    constexpr size_t hash = [] {
+        return self.hash();  // no changes
+    }();
 
     /* Replacement for `StaticStr[i]` that allows it to be evaluated statically at
     compile time. */
@@ -1240,10 +1507,87 @@ namespace static_str {
         return self.buffer[detail::normalize_index<i, self.size()>()];
     }();
 
-    /* Functional alternative to `StaticStr + StaticStr`. */
+    /* Replacement for `StaticStr[{...}]` that allows it to be evaluated statically at
+    compile time. */
+    template <
+        StaticStr self,
+        ssize_t start = nullopt,
+        ssize_t stop = nullopt,
+        ssize_t step = 1
+    >
+    constexpr auto slice = [] {
+        static_assert(stop != 0, "slice step cannot be zero");
+        constexpr ssize_t n = self.size();
+        if constexpr (step > 0) {
+            constexpr ssize_t nstart = start == nullopt ? 0 : detail::normalize_index<start, n>();
+            constexpr ssize_t nstop = stop == nullopt ? n : detail::normalize_index<stop, n>();
+            constexpr ssize_t length = (nstop - nstart) * (nstop > nstart) / step;
+            StaticStr<length> result;
+            for (ssize_t i = nstart, j = 0; i < nstop; i += step) {
+                result.buffer[j++] = self.buffer[i];
+            }
+            result.buffer[length] = '\0';
+            return result;
+        } else {
+            constexpr ssize_t nstart = start == nullopt ? n - 1 : detail::normalize_index<start, n>();
+            constexpr ssize_t nstop = stop == nullopt ? -1 : detail::normalize_index<stop, n>();
+            constexpr ssize_t delta = (nstop - nstart) * (nstop > nstart);
+            constexpr ssize_t length = delta / step + (delta % step != 0);
+            StaticStr<length> result;
+            for (ssize_t i = nstart, j = 0; i > nstop; i += step) {
+                result.buffer[j++] = self.buffer[i];
+            }
+            result.buffer[length] = '\0';
+            return result;
+        }
+    }();
+
+    /* Equivalent to Python `sub in str`, but evaluated statically at compile time. */
+    template <StaticStr self, StaticStr sub>
+    constexpr bool contains = [] {
+        return find<self, sub> != not_found;
+    }();
+
+    /* Equivalent to Python `str < str`, but evaluated statically at compile time. */
+    template <StaticStr lhs, StaticStr rhs>
+    constexpr bool lt = [] {
+        return lhs < rhs;  // no changes
+    }();
+
+    /* Equivalent to Python `str <= str`, but evaluated statically at compile time. */
+    template <StaticStr lhs, StaticStr rhs>
+    constexpr bool le = [] {
+        return lhs <= rhs;  // no changes
+    }();
+
+    /* Equivalent to Python `str == str`, but evaluated statically at compile time. */
+    template <StaticStr lhs, StaticStr rhs>
+    constexpr bool eq = [] {
+        return lhs == rhs;  // no changes
+    }();
+
+    /* Equivalent to Python `str != str`, but evaluated statically at compile time. */
+    template <StaticStr lhs, StaticStr rhs>
+    constexpr bool ne = [] {
+        return lhs != rhs;  // no changes
+    }();
+
+    /* Equivalent to Python `str >= str`, but evaluated statically at compile time. */
+    template <StaticStr lhs, StaticStr rhs>
+    constexpr bool ge = [] {
+        return lhs >= rhs;  // no changes
+    }();
+
+    /* Equivalent to Python `str > str`, but evaluated statically at compile time. */
+    template <StaticStr lhs, StaticStr rhs>
+    constexpr bool gt = [] {
+        return lhs > rhs;  // no changes
+    }();
+
+    /* Equivalent to Python `str + str`, but evaluated statically at compile time. */
     template <StaticStr lhs, StaticStr rhs>
     constexpr auto concat = [] {
-        return lhs + rhs;
+        return lhs + rhs;  // no changes
     }();
 
     /* Replacement for `StaticStr * reps` that allows it to be evaluated statically at
@@ -1260,7 +1604,7 @@ namespace static_str {
                 std::copy_n(
                     self.buffer,
                     self.size(),
-                    result.buffer + i * self.size()
+                    result.buffer + self.size() * i
                 );
             }
             result.buffer[self.size() * reps] = '\0';
@@ -1276,19 +1620,12 @@ namespace std {
 
     template <size_t N>
     struct hash<bertrand::StaticStr<N>> {
-        static constexpr size_t FNV_basis = 0xcbf29ce484222325;  // typical 64-bit basis
-        static constexpr size_t FNV_prime = 0x00000100000001B3;  // typical 64-bit prime
-
-        constexpr size_t operator()(const bertrand::StaticStr<N>& str) const {
-            size_t result = FNV_basis;
-            for (size_t i = 0; i < N; ++i) {
-                result = (result * FNV_prime) ^ str.buffer[i];
-            }
-            return result;
+        consteval size_t operator()(const bertrand::StaticStr<N>& str) const {
+            return str.hash();
         }
     };
 
 }
 
 
-#endif  // BERTRAND_COMPILE_TIME_STRING_H
+#endif  // BERTRAND_STATIC_STRING_H

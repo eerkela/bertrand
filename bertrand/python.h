@@ -3,6 +3,12 @@
 #define BERTRAND_PYTHON_INCLUDED
 #define PYBIND11_DETAILED_ERROR_MESSAGES
 
+// TODO: move the contents of python/common.h here.
+
+
+// TODO: define dependency-less global functions
+
+
 #include "python/common.h"
 
 #include "python/bool.h"
@@ -20,6 +26,15 @@
 // #include "python/datetime.h"
 #include "python/math.h"
 #include "python/type.h"
+
+
+// Fill in forward declarations here
+
+
+// Define global functions with dependencies
+
+
+// Define type casters
 
 
 namespace bertrand {
