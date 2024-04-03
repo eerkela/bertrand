@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <chrono>
+#include <fstream>
 #include <initializer_list>
 #include <iterator>
 #include <optional>
@@ -29,16 +30,6 @@
 #include <pybind11/stl_bind.h>
 
 #include "bertrand/static_str.h"
-
-
-// TODO: import should use same compile-time template names as attr()
-
-
-// TODO: lift all of this up to `python.h`, and then just include the other headers
-// immediately afterwards.  This allows us to omit all includes from the other headers,
-// and just encode those via the import order in `python.h`.  The include guards ensure
-// that this is safe, and all includes have to go through the top-level `python.h`.
-
 
 
 /* NOTES ON PERFORMANCE:
@@ -96,11 +87,6 @@
  *      allocations and further improve performance.  This is especially true for
  *      global objects like imported modules and compiled scripts, which can be cached
  *      and reused for the lifetime of the program.
- *  6.  Lastly, Bertrand supports an optimized syntax for accessing named attributes
- *      of Python objects, which utilized C++20 templates to encode the attribute name
- *      as a compile-time parameter.  This eliminates the temporary string object that
- *      is typically used to access attributes in Python, which avoids a heap
- *      allocation and improves latency when interacting with Python.
  *
  * Even without these optimizations, bertrand should be quite competitive with native
  * Python code, and should trade blows with it in most cases.  If you find a case where
@@ -111,11 +97,6 @@
 
 namespace bertrand {
 namespace py {
-
-
-// TODO: replace proxy dereference operator with explicit .unwrap() method.  This
-// avoids confusion with the unpacking operator, which must return a detail::args_proxy
-// type (enforced by static assertion).
 
 
 /////////////////////////////////////////
@@ -139,7 +120,6 @@ using pybind11::reinterpret_borrow;
 using pybind11::reinterpret_steal;
 using pybind11::implicitly_convertible;
 using pybind11::args_are_all_keyword_or_ds;
-using pybind11::make_tuple;  // TODO: unnecessary
 using pybind11::make_iterator;  // TODO: roll into Iterator() constructor
 using pybind11::make_key_iterator;  // offer as static Iterator::keys() method
 using pybind11::make_value_iterator;  // same as above for Iterator::values()
@@ -152,7 +132,6 @@ using pybind11::scoped_interpreter;
 // PYBIND11_OVERRIDE_NAME
 // PYBIND11_OVERRIDE_PURE_NAME
 using pybind11::get_override;
-using pybind11::cpp_function;  // TODO: unnecessary, use py::Function() instead
 using pybind11::scoped_ostream_redirect;
 using pybind11::scoped_estream_redirect;
 using pybind11::add_ostream_redirect;
@@ -1059,19 +1038,9 @@ namespace impl {
 
     // TODO: require lvalue references for in-place operator Return types.
 
-
-    // TODO: unwrap proxies in call operator?
-    // -> call operator is really tricky to get right, especially if I want to support
-    // the unpacking operator as well.
-
     // TODO: reverse operators still might be a bit wonky.  Currently, I'm just
     // disabling them if the other operand is a subclass of Object.  This might not be
     // totally accurate, but it seems to work for now.
-
-    // TODO: proxies are still sort of broken when used in operator overloads.  For
-    // instance:
-    // py::List list = {1, 2, 3, 4};
-    // py::print(2 < list[3]);  // causes a runtime error due to uninitialized accessor
 
     #define BERTRAND_OBJECT_OPERATORS(cls)                                              \
         template <typename... Args> requires (impl::__call__<cls, Args...>::enable)     \
@@ -1095,7 +1064,7 @@ namespace impl {
                                                                                         \
         template <typename Key> requires (impl::proxy_like<Key>)                        \
         inline auto operator[](const Key& key) const {                                  \
-            return (*this)[*key];                                                       \
+            return (*this)[key.value()];                                                \
         }                                                                               \
                                                                                         \
         template <typename T = cls> requires (impl::__getitem__<T, Slice>::enable)      \
@@ -1175,7 +1144,7 @@ namespace impl {
                                                                                         \
         template <typename T> requires (impl::proxy_like<T>)                            \
         inline bool contains(const T& key) const {                                      \
-            return this->contains(*key);                                                \
+            return this->contains(key.value());                                         \
         }                                                                               \
                                                                                         \
         template <typename T = cls> requires (impl::__len__<T>::enable)                 \
@@ -1471,7 +1440,7 @@ namespace impl {
                                                                                         \
         template <typename T> requires (impl::proxy_like<T>)                            \
         inline cls& operator+=(const T& value) {                                        \
-            *this += *value;                                                            \
+            *this += value.value();                                                     \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1516,7 +1485,7 @@ namespace impl {
                                                                                         \
         template <typename T> requires (impl::proxy_like<T>)                            \
         inline cls& operator-=(const T& value) {                                        \
-            *this -= *value;                                                            \
+            *this -= value.value();                                                     \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1561,7 +1530,7 @@ namespace impl {
                                                                                         \
         template <typename T> requires (impl::proxy_like<T>)                            \
         inline cls& operator*=(const T& value) {                                        \
-            *this *= *value;                                                            \
+            *this *= value.value();                                                     \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1609,7 +1578,7 @@ namespace impl {
                                                                                         \
         template <typename T> requires (impl::proxy_like<T>)                            \
         inline cls& operator/=(const T& value) {                                        \
-            *this /= *value;                                                            \
+            *this /= value.value();                                                     \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1654,7 +1623,7 @@ namespace impl {
                                                                                         \
         template <typename T> requires (impl::proxy_like<T>)                            \
         inline cls& operator%=(const T& value) {                                        \
-            *this %= *value;                                                            \
+            *this %= value.value();                                                     \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1703,7 +1672,7 @@ namespace impl {
                                                                                         \
         template <typename T> requires (impl::proxy_like<T>)                            \
         inline cls& operator<<=(const T& value) {                                       \
-            *this <<= *value;                                                           \
+            *this <<= value.value();                                                    \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1752,7 +1721,7 @@ namespace impl {
                                                                                         \
         template <typename T> requires (impl::proxy_like<T>)                            \
         inline cls& operator>>=(const T& value) {                                       \
-            *this >>= *value;                                                           \
+            *this >>= value.value();                                                    \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1797,7 +1766,7 @@ namespace impl {
                                                                                         \
         template <typename T> requires (impl::proxy_like<T>)                            \
         inline cls& operator&=(const T& value) {                                        \
-            *this &= *value;                                                            \
+            *this &= value.value();                                                     \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1842,7 +1811,7 @@ namespace impl {
                                                                                         \
         template <typename T> requires (impl::proxy_like<T>)                            \
         inline cls& operator|=(const T& value) {                                        \
-            *this |= *value;                                                            \
+            *this |= value.value();                                                     \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -1887,7 +1856,7 @@ namespace impl {
                                                                                         \
         template <typename T> requires (impl::proxy_like<T>)                            \
         inline cls& operator^=(const T& value) {                                        \
-            *this ^= *value;                                                            \
+            *this ^= value.value();                                                     \
             return *this;                                                               \
         }                                                                               \
                                                                                         \
@@ -2134,7 +2103,7 @@ namespace impl {
     }
 
     template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
-    class ItemProxy;
+    class Item;
     template <typename Obj>
     class AttrProxy;
     template <typename Policy>
@@ -2326,9 +2295,6 @@ public:
      * be done in 2 lines of code, including support for C++20 concepts.
      */
 
-    template <typename Key> requires (impl::str_like<Key>)
-    inline impl::AttrProxy<Object> attr(Key&& key) const;
-
     template <StaticStr key>
     inline impl::AttrProxy<Object> attr() const;
 
@@ -2365,13 +2331,13 @@ protected:
 
     template <typename Return, typename T, typename Key>
     inline static auto operator_getitem(const T& obj, Key&& key)
-        -> impl::ItemProxy<T, std::decay_t<Key>>;
+        -> impl::Item<T, std::decay_t<Key>>;
 
     template <typename Return, typename T>
     inline static auto operator_getitem(
         const T& obj,
         std::initializer_list<impl::SliceInitializer> slice
-    ) -> impl::ItemProxy<T, Slice>;
+    ) -> impl::Item<T, Slice>;
 
     template <typename Return, typename T>
     inline static auto operator_begin(const T& obj)
@@ -2508,7 +2474,6 @@ protected:
         return result;
     }
 
-    // TODO: maybe __ne__ can be inferred from __eq__ or vice versa?
     template <typename Return, typename L, typename R>
     inline static bool operator_ne(const L& lhs, const R& rhs) {
         int result = PyObject_RichCompareBool(
@@ -2836,8 +2801,8 @@ namespace impl {
 
     private:
 
-        Wrapped& deref() { return *static_cast<Derived&>(*this); }
-        const Wrapped& deref() const { return *static_cast<const Derived&>(*this); }
+        Wrapped& deref() { return static_cast<Derived&>(*this).value(); }
+        const Wrapped& deref() const { return static_cast<const Derived&>(*this).value(); }
 
     public:
 
@@ -2939,7 +2904,11 @@ namespace impl {
         ////    DEREFERENCE    ////
         ///////////////////////////
 
-        inline Wrapped& operator*() {
+        inline bool has_value() const {
+            return initialized;
+        }
+
+        inline Wrapped& value() {
             if (!initialized) {
                 throw ValueError(
                     "attempt to dereference an uninitialized accessor.  Either the "
@@ -2949,7 +2918,7 @@ namespace impl {
             return reinterpret_cast<Wrapped&>(buffer);
         }
 
-        inline const Wrapped& operator*() const {
+        inline const Wrapped& value() const {
             if (!initialized) {
                 throw ValueError(
                     "attempt to dereference an uninitialized accessor.  Either the "
@@ -2962,6 +2931,10 @@ namespace impl {
         ////////////////////////////////////
         ////    FORWARDING INTERFACE    ////
         ////////////////////////////////////
+
+        inline auto operator*() {
+            return *deref();
+        }
 
         // all attributes of wrapped type are forwarded using the arrow operator.  Just
         // replace all instances of `.` with `->`
@@ -3027,7 +3000,7 @@ namespace impl {
             }                                                                           \
             template <typename T>                                                       \
             inline friend auto operator op(const T& value, const Proxy& self) {         \
-                return value op *self;                                                  \
+                return value op self.deref();                                           \
             }                                                                           \
 
         #define INPLACE_OPERATOR(op)                                                    \
@@ -3078,7 +3051,7 @@ namespace impl {
         }
         template <typename T> requires (!std::is_base_of_v<std::ostream, T>)
         inline friend auto operator<<(const T& value, const Proxy& self) {
-            return value << *self;
+            return value << self.deref();
         }
 
         inline friend std::ostream& operator<<(std::ostream& os, const Proxy& self) {
@@ -3092,7 +3065,7 @@ namespace impl {
         }
         template <typename T> requires (!std::is_base_of_v<std::istream, T>)
         inline friend auto operator>>(const T& value, const Proxy& self) {
-            return value >> *self;
+            return value >> self.deref();
         }
 
         inline friend std::istream& operator>>(std::istream& os, const Proxy& self) {
@@ -3108,9 +3081,10 @@ namespace impl {
     // compile-time names, and getattr() is only used for attributes whose names may be
     // determined at runtime.
     // -> There still has to be a distinction between runtime names and compile-time
-    // ones.  Perhaps Attr vs TypedAttr?  Maybe I can unify them but reserve the empty
-    // string for dynamic attributes?  It might just be safer though to add a static
-    // assertion against this.
+    // ones.  Perhaps Attr<Obj, name> vs GenericAttr<Obj>?  Maybe I can unify them but
+    // reserve the empty string for dynamic attributes?  Separating them allows me to
+    // explicitly disallow empty strings in the compile-time version, which is a good
+    // thing.
 
     /* A subclass of Proxy that replaces the result of pybind11's `.attr()` method.
     This does not (and can not) enforce any strict typing rules, but it brings the
@@ -3198,11 +3172,11 @@ namespace impl {
          * conversions to py::Object.  This allows us to write code like this:
          *
          *      py::Object obj = ...;
-         *      py::Int i = obj.attr("some_int");  // runtime type check
+         *      py::Int i = obj.attr<"some_int">();  // runtime type check
          *
          * But not like this:
          *
-         *      py::Str s = obj.attr("some_int");  // runtime error, some_int is not a string
+         *      py::Str s = obj.attr<"some_int">();  // runtime error, some_int is not a string
          *
          * Unfortunately, it is not possible to promote these errors to compile time,
          * since Python attributes are inherently dynamic and can't be known in
@@ -3211,17 +3185,17 @@ namespace impl {
          * done, then the only way to avoid extra runtime overhead is to use
          * reinterpret_steal to bypass the type check, which can be dangerous.
          *
-         *      py::Int i = reinterpret_steal<py::Int>(obj.attr("some_int").release());
+         *      py::Int i = reinterpret_steal<py::Int>(obj.attr<"some_int">().release());
          */
 
-        inline Obj& operator*() {
+        inline Obj& value() {
             if (!Base::initialized) {
                 get_attr();
             }
             return reinterpret_cast<Obj&>(Base::buffer);
         }
 
-        inline const Obj& operator*() const {
+        inline const Obj& value() const {
             if (!Base::initialized) {
                 get_attr();
             }
@@ -3234,7 +3208,7 @@ namespace impl {
          * intuitive in mixed Python/C++ code.
          *
          *      py::Object obj = ...;
-         *      obj.attr("some_int") = 5;  // valid: translates to Python.
+         *      obj.attr<"some_int">() = 5;  // valid: translates to Python.
          */
 
         template <typename T> requires (!proxy_like<std::decay_t<T>>)
@@ -3253,7 +3227,7 @@ namespace impl {
 
         template <typename T> requires (proxy_like<std::decay_t<T>>)
         inline AttrProxy& operator=(T&& value) {
-            operator=(*value);
+            operator=(value.value());
             return *this;
         }
 
@@ -3262,7 +3236,7 @@ namespace impl {
          * `.del()` method that behaves the same way.
          *
          *      py::Object obj = ...;
-         *      obj.attr("some_int").del();  // Equivalent to Python `del obj.some_int`
+         *      obj.attr<"some_int">().del();  // Equivalent to Python `del obj.some_int`
          */
 
         inline void del() {
@@ -3391,8 +3365,8 @@ namespace impl {
     to selectively enable/disable these operations for particular types, and to assign
     a corresponding return type to which the proxy can be converted. */
     template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
-    class ItemProxy :
-        public Proxy<typename __getitem__<Obj, Key>::Return, ItemProxy<Obj, Key>>
+    class Item :
+        public Proxy<typename __getitem__<Obj, Key>::Return, Item<Obj, Key>>
     {
     public:
         using Wrapped = typename __getitem__<Obj, Key>::Return;
@@ -3404,17 +3378,15 @@ namespace impl {
         );
 
     private:
-        using Base = Proxy<Wrapped, ItemProxy>;
+        using Base = Proxy<Wrapped, Item>;
         ItemPolicy<Obj, Key> policy;
 
     public:
 
         template <typename... Args>
-        explicit ItemProxy(Args&&... args) : policy(std::forward<Args>(args)...) {}
-        ItemProxy(const ItemProxy& other) : Base(other), policy(other.policy) {}
-        ItemProxy(ItemProxy&& other) :
-            Base(std::move(other)), policy(std::move(other.policy))
-        {}
+        explicit Item(Args&&... args) : policy(std::forward<Args>(args)...) {}
+        Item(const Item& other) : Base(other), policy(other.policy) {}
+        Item(Item&& other) : Base(std::move(other)), policy(std::move(other.policy)) {}
 
         /* pybind11's item accessors only perform the lookup when the accessor is
          * converted to a value, which we can hook to provide strong type safety.  In
@@ -3436,7 +3408,7 @@ namespace impl {
          *      py::Int item = list[{1, 3}];  // compile error, List is not convertible to Int
          */
 
-        inline Wrapped& operator*() {
+        inline Wrapped& value() {
             if (!Base::initialized) {
                 new (Base::buffer) Wrapped(reinterpret_steal<Wrapped>(policy.get()));
                 Base::initialized = true;
@@ -3444,7 +3416,7 @@ namespace impl {
             return reinterpret_cast<Wrapped&>(Base::buffer);
         }
 
-        inline const Wrapped& operator*() const {
+        inline const Wrapped& value() const {
             if (!Base::initialized) {
                 new (Base::buffer) Wrapped(reinterpret_steal<Wrapped>(policy.get()));
                 Base::initialized = true;
@@ -3471,7 +3443,7 @@ namespace impl {
          */
 
         template <typename T> requires (__setitem__<Obj, Key, T>::enable && !proxy_like<T>)
-        inline ItemProxy& operator=(T&& value) {
+        inline Item& operator=(T&& value) {
             static_assert(
                 std::is_void_v<typename __setitem__<Obj, Key, T>::Return>,
                 "index assignment operator must return void.  Check your "
@@ -3485,8 +3457,8 @@ namespace impl {
         }
 
         template <typename T> requires (proxy_like<T>)
-        inline ItemProxy& operator=(T&& value) {
-            operator=(*value);
+        inline Item& operator=(T&& value) {
+            operator=(value.value());
             return *this;
         }
 
@@ -4636,7 +4608,9 @@ public:
             std::forward<Func>(f),
             pybind11::name(name_),
             pybind11::scope(*this),
-            pybind11::sibling(getattr(*this, name_, None)),
+            pybind11::sibling(
+                pybind11::getattr(*this, name_, None)
+            ),
             extra...
         );
         // NB: allow overwriting here because cpp_function sets up a chain with the
@@ -4661,7 +4635,7 @@ public:
         if (doc && pybind11::options::show_user_defined_docstrings()) {
             result.template attr<"__doc__">() = pybind11::str(doc);
         }
-        attr(name) = result;
+        pybind11::setattr(*this, name, result);
         return result;
     }
 
@@ -4688,30 +4662,12 @@ public:
         PyModule_AddObjectRef(ptr(), name, obj.ptr());
     }
 
-    // TODO: is create_extension_module() necessary?  It might be called by internal
-    // pybind11 code, but I'm not sure.
-
-    /* Equivalent to pybind11::module_::create_extension_module() */
-    static Module create_extension_module(
-        const char* name,
-        const char* doc,
-        PyModuleDef* def
-    ) {
-        return Module(name, doc, def);
-    }
-
 };
 
 
 ////////////////////////////////////
 ////    FORWARD DECLARATIONS    ////
 ////////////////////////////////////
-
-
-template <typename Key> requires (impl::str_like<Key>)
-inline impl::AttrProxy<Object> Object::attr(Key&& key) const {
-    return impl::AttrProxy<Object>(*this, std::forward<Key>(key));
-}
 
 
 template <bertrand::StaticStr key>
@@ -4723,9 +4679,9 @@ inline impl::AttrProxy<Object> Object::attr() const {
 
 template <typename Return, typename T, typename Key>
 inline auto Object::operator_getitem(const T& obj, Key&& key)
-    -> impl::ItemProxy<T, std::decay_t<Key>>
+    -> impl::Item<T, std::decay_t<Key>>
 {
-    return impl::ItemProxy<T, std::decay_t<Key>>(obj, std::forward<Key>(key));
+    return impl::Item<T, std::decay_t<Key>>(obj, std::forward<Key>(key));
 }
 
 
@@ -4733,7 +4689,7 @@ template <typename Return, typename T>
 inline auto Object::operator_getitem(
     const T& obj,
     std::initializer_list<impl::SliceInitializer> slice
-) -> impl::ItemProxy<T, Slice>
+) -> impl::Item<T, Slice>
 {
     if (slice.size() > 3) {
         throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
@@ -4743,14 +4699,9 @@ inline auto Object::operator_getitem(
     for (const impl::SliceInitializer& item : slice) {
         params[i++] = item.first;
     }
-    return impl::ItemProxy<T, Slice>(
-        obj,
-        Slice(params[0], params[1], params[2])
-    );
+    return impl::Item<T, Slice>(obj, Slice(params[0], params[1], params[2]));
 }
 
-
-// TODO: figure out a way to make this play nice with the new iterator type
 
 template <typename Return, typename T>
 inline auto Object::operator_begin(const T& obj)
@@ -4844,49 +4795,6 @@ inline Module import() {
 }
 
 
-// TODO: iter() is more complicated after making iterators type-safe by default.  This
-// should always return a py::Iterator specialized to the type of the input, but doing
-// this is difficult because we need to know the dereference type at compile time.
-
-// TODO: iter() should also be lifted to python.h, along with len(), right?
-
-
-// /* Equivalent to Python `iter(obj)` except that it can also accept C++ containers and
-// generate Python iterators over them.  Note that C++ types as rvalues are not allowed,
-// and will trigger a compiler error. */
-// template <impl::is_iterable T>
-// inline Iterator iter(T&& obj) {
-//     if constexpr (impl::pybind11_iterable<std::decay_t<T>>) {
-//         return pybind11::iter(obj);
-//     } else {
-//         static_assert(
-//             !std::is_rvalue_reference_v<decltype(obj)>,
-//             "passing an rvalue to py::iter() is unsafe"
-//         );
-//         return pybind11::make_iterator(obj.begin(), obj.end());
-//     }
-// }
-
-
-/* Equivalent to Python `len(obj)`, but also accepts C++ types implementing a .size()
-method.  Returns nullopt if the size could not be determined.  Use `.size()` directly
-if you'd prefer a compile error instead. */
-template <typename T>
-inline std::optional<size_t> len(const T& obj) {
-    try {
-        if constexpr (impl::has_size<T>) {
-            return obj.size();  // prefers custom overloads of .size()
-        } else if constexpr (impl::python_like<T>) {
-            return pybind11::len(obj);  // fallback to Python __len__
-        } else {
-            return std::nullopt;
-        }
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-
-
 /* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
 represent C++ types using std::to_string or the stream insertion operator (<<).  If all
 else fails, falls back to typeid(obj).name(). */
@@ -4933,7 +4841,7 @@ struct type_caster<T> {
 
     /* Convert a C++ Proxy into its wrapped object. */
     inline static handle cast(const T& src, return_value_policy policy, handle parent) {
-        return *src;
+        return src.value();
     }
 
 };
@@ -4973,12 +4881,6 @@ namespace std {
 };
 
 
-// TODO: eliminate py::Buffer and implement MemoryView in memoryview.h
-
-// BERTRAND_STD_HASH(bertrand::py::Buffer)
-// BERTRAND_STD_HASH(bertrand::py::MemoryView)
-
-
 #define BERTRAND_STD_EQUAL_TO(cls)                                                      \
 namespace std {                                                                         \
     template <>                                                                         \
@@ -4993,8 +4895,6 @@ namespace std {                                                                 
 BERTRAND_STD_EQUAL_TO(bertrand::py::Handle)
 BERTRAND_STD_EQUAL_TO(bertrand::py::WeakRef)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Capsule)
-// BERTRAND_STD_EQUAL_TO(bertrand::py::Buffer)
-// BERTRAND_STD_EQUAL_TO(bertrand::py::MemoryView)
 
 
 #undef BERTRAND_STD_EQUAL_TO

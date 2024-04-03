@@ -1,3 +1,4 @@
+#include <istream>
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -40,19 +41,20 @@ enabling seamless embedding of Python as a scripting language within C++.
 
 This class is extremely powerful, and is best explained by example:
 
-    static const py::Code script(R"(
-        import numpy as np
-        print(np.arange(10))
-    )");
+    // in source.py
+    import numpy as np
+    print(np.arange(10))
 
+    // in main.cpp
+    static const py::Code script("source.py");
     script();  // prints [0 1 2 3 4 5 6 7 8 9]
 
 .. note::
 
-    Note that the script in this example is stored with static duration, which means
-    that it will only be compiled once and then cached for the duration of the program.
-    Bertrand will automatically free it when the program exits, without interfering
-    with the Python interpreter.
+    Note that the script in this example is stored in a separate file, which can
+    contain arbitrary Python source code.  The file is read and compiled into an
+    interactive code object with static storage duration, which is cached for the
+    duration of the program.
 
 This creates an embedded Python script that can be executed like a normal function.
 Here, the script is stateless, and can be executed without context.  Most of the time,
@@ -66,7 +68,10 @@ namespace.  For instance:
 .. note::
 
     Note the user-defined `_python` literal used to create the script.  This is
-    equivalent to calling the `Code` constructor, but is more convenient and readable.
+    equivalent to calling the `Code` constructor on a separate file, but allows the
+    script to be written directly within the C++ source code.  The same effect can be
+    achieved via the `Code::compile()` helper method if the `py::literals` namespace is
+    not available. 
 
 If we try to execute this script without a context, we'll get a ``NameError`` just
 like normal Python:
@@ -172,8 +177,12 @@ which are compiled once and then cached for repeated use.
 class Code : public Object {
     using Base = Object;
 
+    inline PyCodeObject* self() const {
+        return reinterpret_cast<PyCodeObject*>(this->ptr());
+    }
+
     template <typename T>
-    static PyObject* compile(const T& text) {
+    static PyObject* build(const T& text) {
         std::string line;
         std::string parsed;
         std::istringstream stream(text);
@@ -217,8 +226,21 @@ class Code : public Object {
         return result;
     }
 
-    inline PyCodeObject* self() const {
-        return reinterpret_cast<PyCodeObject*>(this->ptr());
+    static PyObject* load(const char* path) {
+        std::ifstream file(path);
+        if (!file.is_open()) {
+            throw FileNotFoundError(std::string("'") + path + "'");
+        }
+        std::istreambuf_iterator<char> begin(file), end;
+        PyObject* result = Py_CompileString(
+            std::string(begin, end).c_str(),
+            path,
+            Py_file_input
+        );
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return result;
     }
 
 public:
@@ -241,14 +263,29 @@ public:
     template <typename T> requires (check<T>() && impl::python_like<T>)
     Code(T&& other) : Base(std::forward<T>(other)) {}
 
-    /* Parse and compile a source string into a Python code object. */
-    explicit Code(const char* source) : Base(compile(source), stolen_t{}) {}
+    /* Compile a Python source file into an interactive code object. */
+    explicit Code(const char* path) : Base(load(path), stolen_t{}) {}
+
+    /* Compile a Python source file into an interactive code object. */
+    explicit Code(const std::string& path) : Code(path.c_str()) {}
+
+    /* Compile a Python source file into an interactive code object. */
+    explicit Code(const std::string_view& path) : Code(path.data()) {}
 
     /* Parse and compile a source string into a Python code object. */
-    explicit Code(const std::string& source) : Base(compile(source), stolen_t{}) {}
+    static Code compile(const char* source) {
+        return reinterpret_steal<Code>(build(source));
+    }
 
     /* Parse and compile a source string into a Python code object. */
-    explicit Code(const std::string_view& source) : Code(source.data()) {}
+    static Code compile(const std::string& source) {
+        return reinterpret_steal<Code>(build(source));
+    }
+
+    /* Parse and compile a source string into a Python code object. */
+    static Code compile(const std::string_view& path) {
+        return compile(std::string{path.data(), path.size()});
+    }
 
     /* Destructor allows Code objects to be stored with static duration. */
     ~Code() noexcept {
@@ -257,9 +294,9 @@ public:
         }
     }
 
-    ////////////////////////////////
-    ////    PyCode_* METHODS    ////
-    ////////////////////////////////
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
 
     /* Execute the code object without context. */
     inline Dict operator()() const {

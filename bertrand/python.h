@@ -31,7 +31,7 @@ namespace literals {
     using namespace pybind11::literals;
 
     inline Code operator ""_python(const char* source, size_t size) {
-        return Code(std::string_view(source, size));
+        return Code::compile(std::string_view(source, size));
     }
 
 }
@@ -219,8 +219,8 @@ inline Bytes Code::bytecode() const {
 // not implemented
 // enumerate() - use a standard loop index
 // filter() - use std::ranges or std::algorithms instead
-// help() - not applicable to C++ code
-// input() - may be implemented in the future.  Use std::cin for now
+// help() - not applicable
+// input() - Use std::cin for now.  May be implemented in the future.
 // map() - use std::ranges or std::algorithms instead
 // next() - use C++ iterators directly
 // open() - planned for a future release along with pathlib support
@@ -252,21 +252,8 @@ inline Bytes Code::bytecode() const {
 // type()           -> py::Type
 
 
-// Python-only (no C++ support)
-using pybind11::delattr;
-using pybind11::eval;  // TODO: superceded by py::Code
-using pybind11::eval_file;  // just make py::Code::exec() instead
-using pybind11::exec;
-using pybind11::getattr;
-using pybind11::globals;
-using pybind11::hasattr;
-using pybind11::isinstance;
-using pybind11::len_hint;
-using pybind11::setattr;
-
-
 /* Get Python's builtin namespace as a dictionary.  This doesn't exist in normal
-Python, but makes it much more convenient to interact with generic Python code from
+Python, but makes it much more convenient to interact with the standard library from
 C++. */
 inline Dict builtins() {
     PyObject* result = PyEval_GetBuiltins();
@@ -277,11 +264,31 @@ inline Dict builtins() {
 }
 
 
-// /* Equivalent to Python `aiter(obj)`. */
-// inline Object aiter(const Handle& obj) {
-//     static const Str s_aiter = "aiter";
-//     return builtins()[s_aiter](obj);
-// }
+/* Equivalent to Python `globals()`. */
+inline Dict globals() {
+    PyObject* result = PyEval_GetGlobals();
+    if (result == nullptr) {
+        throw RuntimeError("cannot get globals - no frame is currently executing");
+    }
+    return reinterpret_borrow<Dict>(result);
+}
+
+
+/* Equivalent to Python `locals()`. */
+inline Dict locals() {
+    PyObject* result = PyEval_GetLocals();
+    if (result == nullptr) {
+        throw RuntimeError("cannot get locals - no frame is currently executing");
+    }
+    return reinterpret_borrow<Dict>(result);
+}
+
+
+/* Equivalent to Python `aiter(obj)`.  Only works on asynchronous Python iterators. */
+inline Object aiter(const Object& obj) {
+    static const Str s_aiter = "aiter";
+    return builtins()[s_aiter](obj);
+}
 
 
 /* Equivalent to Python `all(obj)`, except that it also works on iterable C++
@@ -294,19 +301,20 @@ inline bool all(const T& obj) {
 }
 
 
-// /* Equivalent to Python `anext(obj)`. */
-// inline Object anext(const Handle& obj) {
-//     static const Str s_anext = "anext";
-//     return builtins()[s_anext](obj);
-// }
+/* Equivalent to Python `anext(obj)`.  Only works on asynchronous Python iterators. */
+inline Object anext(const Object& obj) {
+    static const Str s_anext = "anext";
+    return builtins()[s_anext](obj);
+}
 
 
-// /* Equivalent to Python `anext(obj, default)`. */
-// template <typename T>
-// inline Object anext(const Handle& obj, const T& default_value) {
-//     static const Str s_anext = "anext";
-//     return builtins()[s_anext](obj, default_value);
-// }
+/* Equivalent to Python `anext(obj, default)`.  Only works on asynchronous Python
+iterators. */
+template <typename T>
+inline Object anext(const Object& obj, const T& default_value) {
+    static const Str s_anext = "anext";
+    return builtins()[s_anext](obj, default_value);
+}
 
 
 /* Equivalent to Python `any(obj)`, except that it also works on iterable C++
@@ -421,6 +429,14 @@ inline Str chr(const Handle& obj) {
 }
 
 
+/* Equivalent to Python `delattr(obj, name)`. */
+inline void delattr(const Object& obj, const Str& name) {
+    if (PyObject_DelAttr(obj.ptr(), name.ptr()) < 0) {
+        throw error_already_set();
+    }
+}
+
+
 /* Equivalent to Python `dir()` with no arguments.  Returns a list of names in the
 current local scope. */
 inline List dir() {
@@ -442,6 +458,76 @@ inline List dir(const Handle& obj) {
         throw error_already_set();
     }
     return reinterpret_steal<List>(result);
+}
+
+
+/* Equivalent to Python `eval()` with a string expression. */
+inline Object eval(const Str& expr) {
+    return pybind11::eval(expr, globals(), locals());
+}
+
+
+/* Equivalent to Python `eval()` with a string expression and global variables. */
+inline Object eval(const Str& source, Dict& globals) {
+    return pybind11::eval(source, globals, locals());
+}
+
+
+/* Equivalent to Python `eval()` with a string expression and global/local variables. */
+inline Object eval(const Str& source, Dict& globals, Dict& locals) {
+    return pybind11::eval(source, globals, locals);
+}
+
+
+/* Equivalent to Python `exec()` with a string expression. */
+inline void exec(const Str& source) {
+    pybind11::exec(source, globals(), locals());
+}
+
+
+/* Equivalent to Python `exec()` with a string expression and global variables. */
+inline void exec(const Str& source, Dict& globals) {
+    pybind11::exec(source, globals, locals());
+}
+
+
+/* Equivalent to Python `exec()` with a string expression and global/local variables. */
+inline void exec(const Str& source, Dict& globals, Dict& locals) {
+    pybind11::exec(source, globals, locals);
+}
+
+
+/* Equivalent to Python `exec()` with a precompiled code object. */
+inline void exec(const Code& code) {
+    pybind11::exec(code, globals(), locals());
+}
+
+
+/* Equivalent to Python `getattr(obj, name)` with a dynamic attribute name. */
+inline Object getattr(const Handle& obj, const Str& name) {
+    PyObject* result = PyObject_GetAttr(obj.ptr(), name.ptr());
+    if (result == nullptr) {
+        throw error_already_set();
+    }
+    return reinterpret_steal<Object>(result);
+}
+
+
+/* Equivalent to Python `getattr(obj, name, default)` with a dynamic attribute name and
+default value. */
+inline Object getattr(const Handle& obj, const Str& name, const Object& default_value) {
+    PyObject* result = PyObject_GetAttr(obj.ptr(), name.ptr());
+    if (result == nullptr) {
+        PyErr_Clear();
+        return default_value;
+    }
+    return reinterpret_steal<Object>(result);
+}
+
+
+/* Equivalent to Python `hasattr(obj, name)`. */
+inline bool hasattr(const Handle& obj, const Str& name) {
+    return PyObject_HasAttr(obj.ptr(), name.ptr());
 }
 
 
@@ -485,10 +571,13 @@ inline const void* id(const T& obj) {
 }
 
 
-/* Equivalent to Python `issubclass(derived, base)`. */
+/* Equivalent to Python `isinstance(derived, base)`. */
 template <typename T>
-inline bool issubclass(const Type& derived, const T& base) {
-    int result = PyObject_IsSubclass(derived.ptr(), detail::object_or_cast(base).ptr());
+inline bool isinstance(const Handle& derived, const Type& base) {
+    int result = PyObject_IsInstance(
+        derived.ptr(),
+        detail::object_or_cast(base).ptr()
+    );
     if (result == -1) {
         throw error_already_set();
     }
@@ -496,13 +585,88 @@ inline bool issubclass(const Type& derived, const T& base) {
 }
 
 
-/* Equivalent to Python `locals()`. */
-inline Dict locals() {
-    PyObject* result = PyEval_GetLocals();
-    if (result == nullptr) {
+/* Equivalent to Python `isinstance(derived, base)`, but base is provided as a template
+parameter. */
+template <impl::python_like T>
+inline bool isinstance(const Handle& derived) {
+    static_assert(!std::is_same_v<T, Handle>, "isinstance<py::Handle>() is not allowed");
+    return T::check_(derived);
+}
+
+
+/* Equivalent to Python `issubclass(derived, base)`. */
+template <typename T>
+inline bool issubclass(const Type& derived, const T& base) {
+    int result = PyObject_IsSubclass(
+        derived.ptr(),
+        detail::object_or_cast(base).ptr()
+    );
+    if (result == -1) {
         throw error_already_set();
     }
-    return reinterpret_borrow<Dict>(result);
+    return result;
+}
+
+
+/* Equivalent to Python `issubclass(derived, base)`, but base is provided as a template
+parameter. */
+template <impl::python_like T>
+inline bool issubclass(const Type& derived) {
+    static_assert(!std::is_same_v<T, Handle>, "issubclass<py::Handle>() is not allowed");
+    static_assert(
+        std::is_base_of_v<Object, T>,
+        "issubclass<T>() requires T to be a subclass of py::Object.  pybind11 types "
+        "do not directly track their associated Python types, so this function is not "
+        "supported for them."
+    );
+    int result = PyObject_IsSubclass(derived.ptr(), T::type.ptr());
+    if (result == -1) {
+        throw error_already_set();
+    }
+    return result;
+}
+
+
+// TODO: iter() is more complicated after making iterators type-safe by default.  This
+// should always return a py::Iterator specialized to the type of the input, but doing
+// this is difficult because we need to know the dereference type at compile time.
+
+// TODO: iter() should also be lifted to python.h, along with len(), right?
+
+
+// /* Equivalent to Python `iter(obj)` except that it can also accept C++ containers and
+// generate Python iterators over them.  Note that C++ types as rvalues are not allowed,
+// and will trigger a compiler error. */
+// template <impl::is_iterable T>
+// inline Iterator iter(T&& obj) {
+//     if constexpr (impl::pybind11_iterable<std::decay_t<T>>) {
+//         return pybind11::iter(obj);
+//     } else {
+//         static_assert(
+//             !std::is_rvalue_reference_v<decltype(obj)>,
+//             "passing an rvalue to py::iter() is unsafe"
+//         );
+//         return pybind11::make_iterator(obj.begin(), obj.end());
+//     }
+// }
+
+
+/* Equivalent to Python `len(obj)`, but also accepts C++ types implementing a .size()
+method.  Returns nullopt if the size could not be determined.  Use `.size()` directly
+if you'd prefer a compile error instead. */
+template <typename T>
+inline std::optional<size_t> len(const T& obj) {
+    try {
+        if constexpr (impl::has_size<T>) {
+            return obj.size();  // prefers custom overloads of .size()
+        } else if constexpr (impl::python_like<T>) {
+            return pybind11::len(obj);  // fallback to Python __len__
+        } else {
+            return std::nullopt;
+        }
+    } catch (...) {
+        return std::nullopt;
+    }
 }
 
 
@@ -587,6 +751,18 @@ inline Int ord(const Handle& obj) {
 // }
 
 
+/* Equivalent to Python `setattr(obj, name, value)`. */
+inline void setattr(const Handle& obj, const Str& name, const Object& value) {
+    if (PyObject_SetAttr(obj.ptr(), name.ptr(), value.ptr()) < 0) {
+        throw error_already_set();
+    }
+}
+
+
+// TODO: sorted() for C++ types.  Still returns a List, but has to reimplement logic
+// for key and reverse arguments.
+
+
 /* Equivalent to Python `sorted(obj)`. */
 inline List sorted(const Handle& obj) {
     static const Str s_sorted = "sorted";
@@ -619,16 +795,11 @@ inline Dict vars() {
 }
 
 
-// TODO: attr<> doesn't work for Handles
-
 /* Equivalent to Python `vars(object)`. */
-inline Dict vars(const Handle& object) {
-    static const Str s_vars = "vars";
-    return object.attr(s_vars);
+inline Dict vars(const Object& object) {
+    static const Str lookup = "__dict__";
+    return reinterpret_steal<Dict>(getattr(object, lookup).release());
 }
-
-
-// TODO: sorted() for C++ types
 
 
 }  // namespace py

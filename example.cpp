@@ -109,23 +109,11 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    // static const py::Code script = R"(
-    //     print("hello, world!")
-    // )"_python;
-
-    // script();
-
-    // py::Tuple args = {py::List{1, 2, 3}, np.attr<"dtype">()("float16")};
-
-    // py::print(array(*args));
 
 
-
-    py::List list = {1, 2, 3};
-    py::Tuple tuple = {"a", "b", "c"};
-
-    list.attr<"append">()(tuple[1]);
-    py::print(*tuple);
+    py::List list = {1, 2, 3, 4};
+    py::print(2 < py::Str("abc"));  // TODO: this is allowed for some reason
+    // py::print(py::Str("abc") < 2);
 
 
 
