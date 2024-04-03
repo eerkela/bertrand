@@ -7,12 +7,18 @@
 
 
 // void hello() {
-//     py::print(R"(
-//         def foo(func):
-//             return func("World")  # calling a C++ function from Python
-//     )"_python()["foo"]([](const std::string& x) {  // calling a Python function from C++
-//         return "Hello, " + x + "!";
-//     }));
+//     py::Function python = R"(
+//         def func(s):
+//             return s + ", "
+//     )"_python()["func"];
+
+//     py::Str str = python("Hello");
+
+//     auto cpp = [](std::string s) -> std::string {
+//         return s + "World!";
+//     };
+
+//     py::print(cpp(str));
 // }
 
 
@@ -20,9 +26,10 @@
 //     py::Str py_str = "This is a type-safe Python string ";
 //     std::string cpp_str = py_str.replace("Python", "C++");
 
-//     py_str = [](std::string str) -> std::string {
+//     auto cpp_func = [](std::string str) -> std::string {
 //         return str += "that can be passed to and from C++ functions\n\t";
-//     }(cpp_str);
+//     };
+//     py_str = cpp_func(py_str);
 
 //     py_str = R"(
 //         import numpy as np
@@ -31,9 +38,9 @@
 //     )"_python({{"string", py_str}})["string"];
 
 //     py_str += "with native performance, ";
-//     py::print(py::import("timeit")->attr("timeit")([&] {
-//         static const py::Static<py::Str> lookup("C++");
-//         py_str.contains(*lookup);
+//     py::print(py::import<"timeit">().attr<"timeit">()([&] {
+//         static const py::Str lookup("C++");
+//         py_str.contains(lookup);
 //     }));
 
 //     py::Str temp = std::move(py_str += "automatic reference counting,\n\t");
@@ -88,27 +95,13 @@ using namespace py::literals;
 
 
 template <bertrand::StaticStr str>
-struct Foo {
-    static constexpr bool value = false;
-};
-
-
-template <>
-struct Foo<"abc"> {
-    static constexpr bool value = true;
-};
-
-
-
-template <bertrand::StaticStr str>
 void func() {
-    using bertrand::StaticStr;
-
-    // constexpr size_t hash = str.hash();
-
-    volatile size_t hash = bertrand::static_str::hash<str>;
-    // py::print(hash(str));
+    py::print(str);
 }
+
+
+static const py::Module np = py::import<"numpy">();
+static const py::Function array = np.attr<"array">();
 
 
 void run() {
@@ -116,11 +109,30 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    for (size_t i = 0; i < 1000000; ++i) {
-        func<"abcdefghi">();
-    }
+    // static const py::Code script = R"(
+    //     print("hello, world!")
+    // )"_python;
 
-    // func<"abcdefghi">();
+    // script();
+
+    // py::Tuple args = {py::List{1, 2, 3}, np.attr<"dtype">()("float16")};
+
+    // py::print(array(*args));
+
+
+
+    py::List list = {1, 2, 3};
+    py::Tuple tuple = {"a", "b", "c"};
+
+    list.attr<"append">()(tuple[1]);
+    py::print(*tuple);
+
+
+
+
+
+
+
 
 
     // py::Function foo = R"(
@@ -129,6 +141,8 @@ void run() {
     // )"_python()["foo"];
 
     // py::print(foo.defaults());
+
+
 
 
     // std::vector<int> vec = {1, 2, 3, 4, 5};

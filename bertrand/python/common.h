@@ -28,8 +28,10 @@
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
 
+#include "bertrand/static_str.h"
 
-#include "bertrand/static_str.h"  // for compile-time string manipulation
+
+// TODO: import should use same compile-time template names as attr()
 
 
 // TODO: lift all of this up to `python.h`, and then just include the other headers
@@ -404,521 +406,516 @@ namespace impl {
         return std::forward<U>(value);
     }
 
-    namespace concepts {
+    namespace categories {
 
-        namespace categories {
-
-            struct Base {
-                static constexpr bool boollike = false;
-                static constexpr bool intlike = false;
-                static constexpr bool floatlike = false;
-                static constexpr bool complexlike = false;
-                static constexpr bool strlike = false;
-                static constexpr bool timedeltalike = false;
-                static constexpr bool timezonelike = false;
-                static constexpr bool datelike = false;
-                static constexpr bool timelike = false;
-                static constexpr bool datetimelike = false;
-                static constexpr bool tuplelike = false;
-                static constexpr bool listlike = false;
-                static constexpr bool setlike = false;
-                static constexpr bool dictlike = false;
-            };
-
-            template <typename T>
-            class Traits : public Base {};
-
-            template <typename T>
-            struct Traits<std::complex<T>> : public Base {
-                static constexpr bool complexlike = true;
-            };
-
-            template <typename... Args>
-            struct Traits<std::chrono::duration<Args...>> : public Base {
-                static constexpr bool timedeltalike = true;
-            };
-
-            template <typename... Args>
-            struct Traits<std::chrono::time_point<Args...>> : public Base {
-                static constexpr bool timelike = true;
-            };
-
-            // TODO: std::time_t?
-
-            template <typename... Args>
-            struct Traits<std::pair<Args...>> : public Base {
-                static constexpr bool tuplelike = true;
-            };
-
-            template <typename... Args>
-            struct Traits<std::tuple<Args...>> : public Base {
-                static constexpr bool tuplelike = true;
-            };
-
-            template <typename T, size_t N>
-            struct Traits<std::array<T, N>> : public Base {
-                static constexpr bool listlike = true;
-            };
-
-            template <typename... Args>
-            struct Traits<std::vector<Args...>> : public Base {
-                static constexpr bool listlike = true;
-            };
-
-            template <typename... Args>
-            struct Traits<std::deque<Args...>> : public Base {
-                static constexpr bool listlike = true;
-            };
-
-            template <typename... Args>
-            struct Traits<std::list<Args...>> : public Base {
-                static constexpr bool listlike = true;
-            };
-
-            template <typename... Args>
-            struct Traits<std::forward_list<Args...>> : public Base {
-                static constexpr bool listlike = true;
-            };
-
-            template <typename... Args>
-            struct Traits<std::set<Args...>> : public Base {
-                static constexpr bool setlike = true;
-            };
-
-            template <typename... Args>
-            struct Traits<std::unordered_set<Args...>> : public Base {
-                static constexpr bool setlike = true;
-            };
-
-            template <typename... Args>
-            struct Traits<std::map<Args...>> : public Base {
-                static constexpr bool dictlike = true;
-            };
-
-            template <typename... Args>
-            struct Traits<std::unordered_map<Args...>> : public Base {
-                static constexpr bool dictlike = true;
-            };
-
-        }
-
-        template <typename T>
-        concept python_like = detail::is_pyobject<std::remove_cvref_t<T>>::value;
-
-        template <typename T>
-        concept proxy_like = std::is_base_of_v<ProxyTag, std::remove_cvref_t<T>>;
-
-        template <typename T>
-        concept accessor_like = requires(const T& t) {
-            { []<typename Policy>(const detail::accessor<Policy>){}(t) } -> std::same_as<void>;
+        struct Base {
+            static constexpr bool boollike = false;
+            static constexpr bool intlike = false;
+            static constexpr bool floatlike = false;
+            static constexpr bool complexlike = false;
+            static constexpr bool strlike = false;
+            static constexpr bool timedeltalike = false;
+            static constexpr bool timezonelike = false;
+            static constexpr bool datelike = false;
+            static constexpr bool timelike = false;
+            static constexpr bool datetimelike = false;
+            static constexpr bool tuplelike = false;
+            static constexpr bool listlike = false;
+            static constexpr bool setlike = false;
+            static constexpr bool dictlike = false;
         };
 
         template <typename T>
-        concept sequence_like = requires(const T& t) {
-            { std::begin(t) } -> std::input_or_output_iterator;
-            { std::end(t) } -> std::input_or_output_iterator;
-            { t.size() } -> std::convertible_to<size_t>;
-            { t[0] };
+        class Traits : public Base {};
+
+        template <typename T>
+        struct Traits<std::complex<T>> : public Base {
+            static constexpr bool complexlike = true;
         };
 
-        template <typename T>
-        concept iterator_like = requires(T it, T end) {
-            { *it } -> std::convertible_to<typename T::value_type>;
-            { ++it } -> std::same_as<T&>;
-            { it++ } -> std::same_as<T>;
-            { it == end } -> std::convertible_to<bool>;
-            { it != end } -> std::convertible_to<bool>;
+        template <typename... Args>
+        struct Traits<std::chrono::duration<Args...>> : public Base {
+            static constexpr bool timedeltalike = true;
         };
 
-        template <typename T>
-        concept none_like = (
-            std::is_same_v<std::nullptr_t, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<py::NoneType, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::none, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept slice_like = (
-            std::is_base_of_v<Slice, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::slice, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept module_like = (
-            std::is_base_of_v<py::Module, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::module, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept bool_like = (
-            std::is_same_v<bool, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<py::Bool, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::bool_, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept int_like = (
-            (
-                std::is_integral_v<std::remove_cvref_t<T>> &&
-                !std::is_same_v<bool, std::remove_cvref_t<T>>
-            ) ||
-            std::is_base_of_v<Int, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::int_, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept float_like = (
-            std::is_floating_point_v<std::remove_cvref_t<T>> ||
-            std::is_base_of_v<Float, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::float_, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept complex_like = requires(const T& t) {
-            { t.real() } -> std::convertible_to<double>;
-            { t.imag() } -> std::convertible_to<double>;
+        template <typename... Args>
+        struct Traits<std::chrono::time_point<Args...>> : public Base {
+            static constexpr bool timelike = true;
         };
 
-        template <typename T>
-        concept string_literal = requires(const T& t) {
-            { []<size_t N>(const char(&)[N]){}(t) } -> std::same_as<void>;
+        // TODO: std::time_t?
+
+        template <typename... Args>
+        struct Traits<std::pair<Args...>> : public Base {
+            static constexpr bool tuplelike = true;
         };
 
-        template <typename T>
-        concept str_like = (
-            string_literal<std::remove_cvref_t<T>> ||
-            std::is_same_v<const char*, std::remove_cvref_t<T>> ||
-            std::is_same_v<std::string, std::remove_cvref_t<T>> ||
-            std::is_same_v<std::string_view, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<Str, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::str, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept bytes_like = (
-            string_literal<std::remove_cvref_t<T>> ||
-            std::is_same_v<void*, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<Bytes, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::bytes, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept bytearray_like = (
-            string_literal<std::remove_cvref_t<T>> ||
-            std::is_same_v<std::remove_cvref_t<T>, void*> ||
-            std::is_base_of_v<ByteArray, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::bytearray, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept timedelta_like = (
-            categories::Traits<std::remove_cvref_t<T>>::timedeltalike ||
-            std::is_base_of_v<Timedelta, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept timezone_like = (
-            categories::Traits<std::remove_cvref_t<T>>::timezonelike ||
-            std::is_base_of_v<Timezone, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept date_like = (
-            categories::Traits<std::remove_cvref_t<T>>::datelike ||
-            std::is_base_of_v<Date, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept time_like = (
-            categories::Traits<std::remove_cvref_t<T>>::timelike ||
-            std::is_base_of_v<Time, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept datetime_like = (
-            categories::Traits<std::remove_cvref_t<T>>::datetimelike ||
-            std::is_base_of_v<Datetime, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept range_like = (
-            std::is_base_of_v<Range, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept tuple_like = (
-            categories::Traits<std::remove_cvref_t<T>>::tuplelike ||
-            std::is_base_of_v<Tuple, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::tuple, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept list_like = (
-            categories::Traits<std::remove_cvref_t<T>>::listlike ||
-            std::is_base_of_v<List, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::list, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept set_like = (
-            categories::Traits<std::remove_cvref_t<T>>::setlike ||
-            std::is_base_of_v<Set, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::set, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept frozenset_like = (
-            categories::Traits<std::remove_cvref_t<T>>::setlike ||
-            std::is_base_of_v<FrozenSet, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::frozenset, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept anyset_like = set_like<T> || frozenset_like<T>;
-
-        template <typename T>
-        concept dict_like = (
-            categories::Traits<std::remove_cvref_t<T>>::dictlike ||
-            std::is_base_of_v<Dict, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::dict, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept mappingproxy_like = (
-            categories::Traits<std::remove_cvref_t<T>>::dictlike ||
-            std::is_base_of_v<MappingProxy, std::remove_cvref_t<T>>
-        );
-
-        template <typename T>
-        concept anydict_like = dict_like<T> || mappingproxy_like<T>;
-
-        template <typename T>
-        concept type_like = (
-            std::is_base_of_v<Type, std::remove_cvref_t<T>> ||
-            std::is_base_of_v<pybind11::type, std::remove_cvref_t<T>>
-        );
-
-        template <typename From, typename To>
-        concept explicitly_convertible_to = requires(const From& from) {
-            static_cast<To>(from);
+        template <typename... Args>
+        struct Traits<std::tuple<Args...>> : public Base {
+            static constexpr bool tuplelike = true;
         };
 
-        template <typename From, typename To>
-        concept has_conversion_operator = requires(const From& from) {
-            from.operator To();
+        template <typename T, size_t N>
+        struct Traits<std::array<T, N>> : public Base {
+            static constexpr bool listlike = true;
         };
 
-        template <typename T>
-        concept has_size = requires(const T& t) {
-            { t.size() } -> std::convertible_to<size_t>;
+        template <typename... Args>
+        struct Traits<std::vector<Args...>> : public Base {
+            static constexpr bool listlike = true;
         };
 
-        template <typename T>
-        concept has_empty = requires(const T& t) {
-            { t.empty() } -> std::convertible_to<bool>;
+        template <typename... Args>
+        struct Traits<std::deque<Args...>> : public Base {
+            static constexpr bool listlike = true;
         };
 
-        template <typename T>
-        concept has_reserve = requires(T& t, size_t n) {
-            { t.reserve(n) } -> std::same_as<void>;
+        template <typename... Args>
+        struct Traits<std::list<Args...>> : public Base {
+            static constexpr bool listlike = true;
         };
 
-        // NOTE: decay is necessary to treat `const char[N]` like `const char*`
-        template <typename T>
-        concept is_hashable = requires(T&& t) {
-            { std::hash<std::decay_t<T>>{}(std::forward<T>(t)) } -> std::convertible_to<size_t>;
+        template <typename... Args>
+        struct Traits<std::forward_list<Args...>> : public Base {
+            static constexpr bool listlike = true;
         };
 
-        template <typename T>
-        concept is_iterable = requires(const T& t) {
-            { std::begin(t) } -> std::input_or_output_iterator;
-            { std::end(t) } -> std::input_or_output_iterator;
+        template <typename... Args>
+        struct Traits<std::set<Args...>> : public Base {
+            static constexpr bool setlike = true;
         };
 
-        template <typename T>
-        concept reverse_iterable = requires(const T& t) {
-            { std::rbegin(t) } -> std::input_or_output_iterator;
-            { std::rend(t) } -> std::input_or_output_iterator;
+        template <typename... Args>
+        struct Traits<std::unordered_set<Args...>> : public Base {
+            static constexpr bool setlike = true;
         };
 
-        template <typename T>
-        concept has_to_string = requires(const T& t) {
-            { std::to_string(t) } -> std::convertible_to<std::string>;
+        template <typename... Args>
+        struct Traits<std::map<Args...>> : public Base {
+            static constexpr bool dictlike = true;
         };
 
-        template <typename T>
-        concept has_stream_insertion = requires(std::ostream& os, const T& t) {
-            { os << t } -> std::convertible_to<std::ostream&>;
-        };
-
-        template <typename T>
-        concept pybind11_iterable = requires(const T& t) {
-            { pybind11::iter(t) } -> std::convertible_to<pybind11::iterator>;
-        };
-
-        /* SFINAE condition is used to recognize callable C++ types without regard to their
-        argument signatures. */
-        template <typename T>
-        concept is_callable_any = 
-            std::is_function_v<std::remove_pointer_t<std::decay_t<T>>> ||
-            std::is_member_function_pointer_v<std::decay_t<T>> ||
-            requires { &std::decay_t<T>::operator(); };
-
-        /* Base class for CallTraits tags, which contain SFINAE information about a
-        callable Python/C++ object, as returned by `py::callable()`. */
-        template <typename Func>
-        class CallTraitsBase {
-        protected:
-            const Func& func;
-
-        public:
-            constexpr CallTraitsBase(const Func& func) : func(func) {}
-
-            friend std::ostream& operator<<(std::ostream& os, const CallTraitsBase& traits) {
-                if (traits) {
-                    os << "True";
-                } else {
-                    os << "False";
-                }
-                return os;
-            }
-
-        };
-
-        /* Return tag for `py::callable()` when one or more template parameters are
-        supplied, representing hypothetical arguments to the function. */
-        template <typename Func, typename... Args>
-        struct CallTraits : public CallTraitsBase<Func> {
-            struct NoReturn {};
-
-        private:
-            using Base = CallTraitsBase<Func>;
-
-            /* SFINAE struct gets return type if Func is callable with the given arguments.
-            Otherwise defaults to NoReturn. */
-            template <typename T, typename = void>
-            struct GetReturn { using type = NoReturn; };
-            template <typename T>
-            struct GetReturn<
-                T, std::void_t<decltype(std::declval<T>()(std::declval<Args>()...))>
-            > {
-                using type = decltype(std::declval<T>()(std::declval<Args>()...));
-            };
-
-        public:
-            using Base::Base;
-
-            /* Get the return type of the function with the given arguments.  Defaults to
-            NoReturn if the function is not callable with those arguments. */
-            using Return = typename GetReturn<Func>::type;
-
-            /* Implicitly convert the tag to a constexpr bool. */
-            template <typename T = Func> requires (!python_like<T>)
-            inline constexpr operator bool() const {
-                return std::is_invocable_v<Func, Args...>;
-            }
-
-            /* Implicitly convert to a runtime boolean by directly inspecting a Python code
-            object.  Note that the introspection is very lightweight and basic.  It first
-            checks `std::is_invocable<Func, Args...>` to see if all arguments can be
-            converted to Python objects, and then confirms that their number matches those
-            of the underlying code object.  This includes accounting for default values and
-            missing keyword-only arguments, while enforcing a C++-style calling convention.
-            Note that this check does not account for variadic arguments, which are not
-            represented in the code object itself. */
-            template <typename T = Func> requires (python_like<T>)
-            operator bool() const {
-                if constexpr(std::is_same_v<Return, NoReturn>) {
-                    return false;
-                } else {
-                    static constexpr Py_ssize_t expected = sizeof...(Args);
-
-                    // check Python object is callable
-                    if (!PyCallable_Check(this->func.ptr())) {
-                        return false;
-                    }
-
-                    // Get code object associated with callable (borrowed ref)
-                    PyCodeObject* code = (PyCodeObject*) PyFunction_GetCode(this->func.ptr());
-                    if (code == nullptr) {
-                        return false;
-                    }
-
-                    // get number of positional/positional-only arguments from code object
-                    Py_ssize_t n_args = code->co_argcount;
-                    if (expected > n_args) {
-                        return false;  // too many arguments
-                    }
-
-                    // get number of positional defaults from function object (borrowed ref)
-                    PyObject* defaults = PyFunction_GetDefaults(this->func.ptr());
-                    Py_ssize_t n_defaults = 0;
-                    if (defaults != nullptr) {
-                        n_defaults = PyTuple_Size(defaults);
-                    }
-                    if (expected < (n_args - n_defaults)) {
-                        return false;  // too few arguments
-                    }
-
-                    // check for presence of unfilled keyword-only arguments
-                    if (code->co_kwonlyargcount > 0) {
-                        PyObject* kwdefaults = PyObject_GetAttrString(
-                            this->func.ptr(),
-                            "__kwdefaults__"
-                        );
-                        if (kwdefaults == nullptr) {
-                            PyErr_Clear();
-                            return false;
-                        }
-                        Py_ssize_t n_kwdefaults = 0;
-                        if (kwdefaults != Py_None) {
-                            n_kwdefaults = PyDict_Size(kwdefaults);
-                        }
-                        Py_DECREF(kwdefaults);
-                        if (n_kwdefaults < code->co_kwonlyargcount) {
-                            return false;
-                        }
-                    }
-
-                    // NOTE: we cannot account for variadic arguments, which are not
-                    // represented in the code object.  This is a limitation of the Python
-                    // C API
-
-                    return true;
-                }
-            }
-
-        };
-
-        /* Template specialization for wildcard callable matching.  Note that for technical
-        reasons, it is easier to swap the meaning of the void parameter in this case, so
-        that the behavior of each class is self-consistent. */
-        template <typename Func>
-        class CallTraits<Func, void> : public CallTraitsBase<Func> {
-            using Base = CallTraitsBase<Func>;
-
-        public:
-            using Base::Base;
-
-            // NOTE: Return type is not well-defined for wildcard matching.  Attempting to
-            // access it will result in a compile error.
-
-            /* Implicitly convert the tag to a constexpr bool. */
-            template <typename T = Func> requires (!python_like<T>)
-            inline constexpr operator bool() const {
-                return is_callable_any<Func>;
-            }
-
-            /* Implicitly convert the tag to a runtime bool. */
-            template <typename T = Func> requires (python_like<T>)
-            inline operator bool() const {
-                return PyCallable_Check(this->func.ptr());
-            }
-
+        template <typename... Args>
+        struct Traits<std::unordered_map<Args...>> : public Base {
+            static constexpr bool dictlike = true;
         };
 
     }
-    using namespace concepts;
+
+    template <typename T>
+    concept python_like = detail::is_pyobject<std::remove_cvref_t<T>>::value;
+
+    template <typename T>
+    concept proxy_like = std::is_base_of_v<ProxyTag, std::remove_cvref_t<T>>;
+
+    template <typename T>
+    concept accessor_like = requires(const T& t) {
+        { []<typename Policy>(const detail::accessor<Policy>){}(t) } -> std::same_as<void>;
+    };
+
+    template <typename T>
+    concept sequence_like = requires(const T& t) {
+        { std::begin(t) } -> std::input_or_output_iterator;
+        { std::end(t) } -> std::input_or_output_iterator;
+        { t.size() } -> std::convertible_to<size_t>;
+        { t[0] };
+    };
+
+    template <typename T>
+    concept iterator_like = requires(T it, T end) {
+        { *it } -> std::convertible_to<typename T::value_type>;
+        { ++it } -> std::same_as<T&>;
+        { it++ } -> std::same_as<T>;
+        { it == end } -> std::convertible_to<bool>;
+        { it != end } -> std::convertible_to<bool>;
+    };
+
+    template <typename T>
+    concept none_like = (
+        std::is_same_v<std::nullptr_t, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<py::NoneType, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::none, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept slice_like = (
+        std::is_base_of_v<Slice, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::slice, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept module_like = (
+        std::is_base_of_v<py::Module, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::module, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept bool_like = (
+        std::is_same_v<bool, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<py::Bool, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::bool_, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept int_like = (
+        std::is_base_of_v<Int, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::int_, std::remove_cvref_t<T>> ||
+        (
+            std::is_integral_v<std::remove_cvref_t<T>> &&
+            !std::is_same_v<bool, std::remove_cvref_t<T>>
+        )
+    );
+
+    template <typename T>
+    concept float_like = (
+        std::is_floating_point_v<std::remove_cvref_t<T>> ||
+        std::is_base_of_v<Float, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::float_, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept complex_like = requires(const T& t) {
+        { t.real() } -> std::convertible_to<double>;
+        { t.imag() } -> std::convertible_to<double>;
+    };
+
+    template <typename T>
+    concept string_literal = requires(const T& t) {
+        { []<size_t N>(const char(&)[N]){}(t) } -> std::same_as<void>;
+    };
+
+    template <typename T>
+    concept str_like = (
+        string_literal<std::remove_cvref_t<T>> ||
+        std::is_same_v<const char*, std::remove_cvref_t<T>> ||
+        std::is_same_v<std::string, std::remove_cvref_t<T>> ||
+        std::is_same_v<std::string_view, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<Str, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::str, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept bytes_like = (
+        string_literal<std::remove_cvref_t<T>> ||
+        std::is_same_v<void*, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<Bytes, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::bytes, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept bytearray_like = (
+        string_literal<std::remove_cvref_t<T>> ||
+        std::is_same_v<std::remove_cvref_t<T>, void*> ||
+        std::is_base_of_v<ByteArray, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::bytearray, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept timedelta_like = (
+        categories::Traits<std::remove_cvref_t<T>>::timedeltalike ||
+        std::is_base_of_v<Timedelta, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept timezone_like = (
+        categories::Traits<std::remove_cvref_t<T>>::timezonelike ||
+        std::is_base_of_v<Timezone, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept date_like = (
+        categories::Traits<std::remove_cvref_t<T>>::datelike ||
+        std::is_base_of_v<Date, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept time_like = (
+        categories::Traits<std::remove_cvref_t<T>>::timelike ||
+        std::is_base_of_v<Time, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept datetime_like = (
+        categories::Traits<std::remove_cvref_t<T>>::datetimelike ||
+        std::is_base_of_v<Datetime, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept range_like = (
+        std::is_base_of_v<Range, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept tuple_like = (
+        categories::Traits<std::remove_cvref_t<T>>::tuplelike ||
+        std::is_base_of_v<Tuple, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::tuple, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept list_like = (
+        categories::Traits<std::remove_cvref_t<T>>::listlike ||
+        std::is_base_of_v<List, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::list, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept set_like = (
+        categories::Traits<std::remove_cvref_t<T>>::setlike ||
+        std::is_base_of_v<Set, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::set, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept frozenset_like = (
+        categories::Traits<std::remove_cvref_t<T>>::setlike ||
+        std::is_base_of_v<FrozenSet, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::frozenset, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept anyset_like = set_like<T> || frozenset_like<T>;
+
+    template <typename T>
+    concept dict_like = (
+        categories::Traits<std::remove_cvref_t<T>>::dictlike ||
+        std::is_base_of_v<Dict, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::dict, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept mappingproxy_like = (
+        categories::Traits<std::remove_cvref_t<T>>::dictlike ||
+        std::is_base_of_v<MappingProxy, std::remove_cvref_t<T>>
+    );
+
+    template <typename T>
+    concept anydict_like = dict_like<T> || mappingproxy_like<T>;
+
+    template <typename T>
+    concept type_like = (
+        std::is_base_of_v<Type, std::remove_cvref_t<T>> ||
+        std::is_base_of_v<pybind11::type, std::remove_cvref_t<T>>
+    );
+
+    template <typename From, typename To>
+    concept explicitly_convertible_to = requires(const From& from) {
+        static_cast<To>(from);
+    };
+
+    template <typename From, typename To>
+    concept has_conversion_operator = requires(const From& from) {
+        from.operator To();
+    };
+
+    template <typename T>
+    concept has_size = requires(const T& t) {
+        { t.size() } -> std::convertible_to<size_t>;
+    };
+
+    template <typename T>
+    concept has_empty = requires(const T& t) {
+        { t.empty() } -> std::convertible_to<bool>;
+    };
+
+    template <typename T>
+    concept has_reserve = requires(T& t, size_t n) {
+        { t.reserve(n) } -> std::same_as<void>;
+    };
+
+    // NOTE: decay is necessary to treat `const char[N]` like `const char*`
+    template <typename T>
+    concept is_hashable = requires(T&& t) {
+        { std::hash<std::decay_t<T>>{}(std::forward<T>(t)) } -> std::convertible_to<size_t>;
+    };
+
+    template <typename T>
+    concept is_iterable = requires(const T& t) {
+        { std::begin(t) } -> std::input_or_output_iterator;
+        { std::end(t) } -> std::input_or_output_iterator;
+    };
+
+    template <typename T>
+    concept reverse_iterable = requires(const T& t) {
+        { std::rbegin(t) } -> std::input_or_output_iterator;
+        { std::rend(t) } -> std::input_or_output_iterator;
+    };
+
+    template <typename T>
+    concept has_to_string = requires(const T& t) {
+        { std::to_string(t) } -> std::convertible_to<std::string>;
+    };
+
+    template <typename T>
+    concept has_stream_insertion = requires(std::ostream& os, const T& t) {
+        { os << t } -> std::convertible_to<std::ostream&>;
+    };
+
+    template <typename T>
+    concept pybind11_iterable = requires(const T& t) {
+        { pybind11::iter(t) } -> std::convertible_to<pybind11::iterator>;
+    };
+
+    /* SFINAE condition is used to recognize callable C++ types without regard to their
+    argument signatures. */
+    template <typename T>
+    concept is_callable_any = 
+        std::is_function_v<std::remove_pointer_t<std::decay_t<T>>> ||
+        std::is_member_function_pointer_v<std::decay_t<T>> ||
+        requires { &std::decay_t<T>::operator(); };
+
+    /* Base class for CallTraits tags, which contain SFINAE information about a
+    callable Python/C++ object, as returned by `py::callable()`. */
+    template <typename Func>
+    class CallTraitsBase {
+    protected:
+        const Func& func;
+
+    public:
+        constexpr CallTraitsBase(const Func& func) : func(func) {}
+
+        friend std::ostream& operator<<(std::ostream& os, const CallTraitsBase& traits) {
+            if (traits) {
+                os << "True";
+            } else {
+                os << "False";
+            }
+            return os;
+        }
+
+    };
+
+    /* Return tag for `py::callable()` when one or more template parameters are
+    supplied, representing hypothetical arguments to the function. */
+    template <typename Func, typename... Args>
+    struct CallTraits : public CallTraitsBase<Func> {
+        struct NoReturn {};
+
+    private:
+        using Base = CallTraitsBase<Func>;
+
+        /* SFINAE struct gets return type if Func is callable with the given arguments.
+        Otherwise defaults to NoReturn. */
+        template <typename T, typename = void>
+        struct GetReturn { using type = NoReturn; };
+        template <typename T>
+        struct GetReturn<
+            T, std::void_t<decltype(std::declval<T>()(std::declval<Args>()...))>
+        > {
+            using type = decltype(std::declval<T>()(std::declval<Args>()...));
+        };
+
+    public:
+        using Base::Base;
+
+        /* Get the return type of the function with the given arguments.  Defaults to
+        NoReturn if the function is not callable with those arguments. */
+        using Return = typename GetReturn<Func>::type;
+
+        /* Implicitly convert the tag to a constexpr bool. */
+        template <typename T = Func> requires (!python_like<T>)
+        inline constexpr operator bool() const {
+            return std::is_invocable_v<Func, Args...>;
+        }
+
+        /* Implicitly convert to a runtime boolean by directly inspecting a Python code
+        object.  Note that the introspection is very lightweight and basic.  It first
+        checks `std::is_invocable<Func, Args...>` to see if all arguments can be
+        converted to Python objects, and then confirms that their number matches those
+        of the underlying code object.  This includes accounting for default values and
+        missing keyword-only arguments, while enforcing a C++-style calling convention.
+        Note that this check does not account for variadic arguments, which are not
+        represented in the code object itself. */
+        template <typename T = Func> requires (python_like<T>)
+        operator bool() const {
+            if constexpr(std::is_same_v<Return, NoReturn>) {
+                return false;
+            } else {
+                static constexpr Py_ssize_t expected = sizeof...(Args);
+
+                // check Python object is callable
+                if (!PyCallable_Check(this->func.ptr())) {
+                    return false;
+                }
+
+                // Get code object associated with callable (borrowed ref)
+                PyCodeObject* code = (PyCodeObject*) PyFunction_GetCode(this->func.ptr());
+                if (code == nullptr) {
+                    return false;
+                }
+
+                // get number of positional/positional-only arguments from code object
+                Py_ssize_t n_args = code->co_argcount;
+                if (expected > n_args) {
+                    return false;  // too many arguments
+                }
+
+                // get number of positional defaults from function object (borrowed ref)
+                PyObject* defaults = PyFunction_GetDefaults(this->func.ptr());
+                Py_ssize_t n_defaults = 0;
+                if (defaults != nullptr) {
+                    n_defaults = PyTuple_Size(defaults);
+                }
+                if (expected < (n_args - n_defaults)) {
+                    return false;  // too few arguments
+                }
+
+                // check for presence of unfilled keyword-only arguments
+                if (code->co_kwonlyargcount > 0) {
+                    PyObject* kwdefaults = PyObject_GetAttrString(
+                        this->func.ptr(),
+                        "__kwdefaults__"
+                    );
+                    if (kwdefaults == nullptr) {
+                        PyErr_Clear();
+                        return false;
+                    }
+                    Py_ssize_t n_kwdefaults = 0;
+                    if (kwdefaults != Py_None) {
+                        n_kwdefaults = PyDict_Size(kwdefaults);
+                    }
+                    Py_DECREF(kwdefaults);
+                    if (n_kwdefaults < code->co_kwonlyargcount) {
+                        return false;
+                    }
+                }
+
+                // NOTE: we cannot account for variadic arguments, which are not
+                // represented in the code object.  This is a limitation of the Python
+                // C API
+
+                return true;
+            }
+        }
+
+    };
+
+    /* Template specialization for wildcard callable matching.  Note that for technical
+    reasons, it is easier to swap the meaning of the void parameter in this case, so
+    that the behavior of each class is self-consistent. */
+    template <typename Func>
+    class CallTraits<Func, void> : public CallTraitsBase<Func> {
+        using Base = CallTraitsBase<Func>;
+
+    public:
+        using Base::Base;
+
+        // NOTE: Return type is not well-defined for wildcard matching.  Attempting to
+        // access it will result in a compile error.
+
+        /* Implicitly convert the tag to a constexpr bool. */
+        template <typename T = Func> requires (!python_like<T>)
+        inline constexpr operator bool() const {
+            return is_callable_any<Func>;
+        }
+
+        /* Implicitly convert the tag to a runtime bool. */
+        template <typename T = Func> requires (python_like<T>)
+        inline operator bool() const {
+            return PyCallable_Check(this->func.ptr());
+        }
+
+    };
 
     /////////////////////////
     ////    OPERATORS    ////
@@ -978,6 +975,12 @@ namespace impl {
     struct __setitem__ { static constexpr bool enable = false; };
     template <typename T, typename Key>
     struct __delitem__ { static constexpr bool enable = false; };
+    template <typename T, StaticStr name>
+    struct __getattr__ { static constexpr bool enable = false; };
+    template <typename T, StaticStr name>
+    struct __setattr__ { static constexpr bool enable = false; };
+    template <typename T, StaticStr name>
+    struct __delattr__ { static constexpr bool enable = false; };
     template <typename T>
     struct __pos__ { static constexpr bool enable = false; };
     template <typename T>
@@ -1995,6 +1998,12 @@ namespace impl {
     struct __setitem__<Object, Key, Value>                  : Returns<void> {};
     template <typename Key>
     struct __delitem__<Object, Key>                         : Returns<void> {};
+    template <StaticStr name>
+    struct __getattr__<Object, name>                        : Returns<Object> {};
+    template <StaticStr name>
+    struct __setattr__<Object, name>                        : Returns<void> {};
+    template <StaticStr name>
+    struct __delattr__<Object, name>                        : Returns<void> {};
     template <>
     struct __pos__<Object>                                  : Returns<Object> {};
     template <>
@@ -2093,6 +2102,21 @@ namespace impl {
     struct __ior__<Object, T>                               : Returns<Object> {};
     template <typename T>
     struct __ixor__<Object, T>                              : Returns<Object> {};
+
+    template <>
+    struct __hash__<Handle>                                     : Returns<size_t> {};
+    template <>
+    struct __hash__<Capsule>                                    : Returns<size_t> {};
+    template <>
+    struct __hash__<WeakRef>                                    : Returns<size_t> {};
+    template <>
+    struct __hash__<NoneType>                                   : Returns<size_t> {};
+    template <>
+    struct __hash__<NotImplementedType>                         : Returns<size_t> {};
+    template <>
+    struct __hash__<EllipsisType>                               : Returns<size_t> {};
+    template <>
+    struct __hash__<Module>                                     : Returns<size_t> {};
 
     /* Standardized error message for type narrowing via pybind11 accessors or the
     generic Object wrapper. */
@@ -2305,7 +2329,7 @@ public:
     template <typename Key> requires (impl::str_like<Key>)
     inline impl::AttrProxy<Object> attr(Key&& key) const;
 
-    template <bertrand::StaticStr key>
+    template <StaticStr key>
     inline impl::AttrProxy<Object> attr() const;
 
     BERTRAND_OBJECT_OPERATORS(Object)
@@ -2329,7 +2353,15 @@ private:
 protected:
 
     template <typename Return, typename T, typename... Args>
-    inline static Return operator_call(const T& obj, Args&&... args);
+    inline static Return operator_call(const T& obj, Args&&... args) {
+        if constexpr (std::is_void_v<Return>) {
+            obj.operator_call_impl(std::forward<Args>(args)...);
+        } else {
+            return reinterpret_steal<Return>(
+                obj.operator_call_impl(std::forward<Args>(args)...).release()
+            );
+        }
+    }
 
     template <typename Return, typename T, typename Key>
     inline static auto operator_getitem(const T& obj, Key&& key)
@@ -3070,8 +3102,15 @@ namespace impl {
 
     };
 
-    // TODO: add a template restriction for readonly/settable/deletable attributes
-    // Maybe this uses a similar policy approach to the others.
+    // TODO: add an attribute name for strong typing.
+    // NOTE: there has to be a generic and a templated version of this to account for
+    // runtime vs compile-time attribute naming.  Maybe .attr() is only used for
+    // compile-time names, and getattr() is only used for attributes whose names may be
+    // determined at runtime.
+    // -> There still has to be a distinction between runtime names and compile-time
+    // ones.  Perhaps Attr vs TypedAttr?  Maybe I can unify them but reserve the empty
+    // string for dynamic attributes?  It might just be safer though to add a static
+    // assertion against this.
 
     /* A subclass of Proxy that replaces the result of pybind11's `.attr()` method.
     This does not (and can not) enforce any strict typing rules, but it brings the
@@ -4051,159 +4090,6 @@ namespace impl {
 
     // TODO: KeyIter, ValueIter, ItemIter using PyDict_Next
 
-    /* Mixin holding operator overloads for types implementing the sequence protocol,
-    which makes them both concatenatable and repeatable. */
-    template <typename Derived>
-    class SequenceOps {
-
-        inline Derived& self() { return static_cast<Derived&>(*this); }
-        inline const Derived& self() const { return static_cast<const Derived&>(*this); }
-
-    public:
-        /* Equivalent to Python `sequence.count(value)`, but also takes optional
-        start/stop indices similar to `sequence.index()`. */
-        template <typename T>
-        inline Py_ssize_t count(
-            const T& value,
-            Py_ssize_t start = 0,
-            Py_ssize_t stop = -1
-        ) const {
-            if (start != 0 || stop != -1) {
-                PyObject* slice = PySequence_GetSlice(self().ptr(), start, stop);
-                if (slice == nullptr) {
-                    throw error_already_set();
-                }
-                Py_ssize_t result = PySequence_Count(
-                    slice,
-                    detail::object_or_cast(value).ptr()
-                );
-                Py_DECREF(slice);
-                if (result == -1 && PyErr_Occurred()) {
-                    throw error_already_set();
-                }
-                return result;
-            } else {
-                Py_ssize_t result = PySequence_Count(
-                    self().ptr(),
-                    detail::object_or_cast(value).ptr()
-                );
-                if (result == -1 && PyErr_Occurred()) {
-                    throw error_already_set();
-                }
-                return result;
-            }
-        }
-
-        /* Equivalent to Python `s.index(value[, start[, stop]])`. */
-        template <typename T>
-        inline Py_ssize_t index(
-            const T& value,
-            Py_ssize_t start = 0,
-            Py_ssize_t stop = -1
-        ) const {
-            if (start != 0 || stop != -1) {
-                PyObject* slice = PySequence_GetSlice(self().ptr(), start, stop);
-                if (slice == nullptr) {
-                    throw error_already_set();
-                }
-                Py_ssize_t result = PySequence_Index(
-                    slice,
-                    detail::object_or_cast(value).ptr()
-                );
-                Py_DECREF(slice);
-                if (result == -1 && PyErr_Occurred()) {
-                    throw error_already_set();
-                }
-                return result;
-            } else {
-                Py_ssize_t result = PySequence_Index(
-                    self().ptr(),
-                    detail::object_or_cast(value).ptr()
-                );
-                if (result == -1 && PyErr_Occurred()) {
-                    throw error_already_set();
-                }
-                return result;
-            }
-        }
-
-    protected:
-
-        template <typename Return, typename L, typename R>
-        inline static auto operator_add(const L& lhs, const R& rhs) {
-            PyObject* result = PySequence_Concat(
-                detail::object_or_cast(lhs).ptr(),
-                detail::object_or_cast(rhs).ptr()
-            );
-            if (result == nullptr) {
-                throw error_already_set();
-            }
-            return reinterpret_steal<Return>(result);
-        }
-
-        template <typename Return, typename L, typename R>
-        inline static void operator_iadd(L& lhs, const R& rhs) {
-            PyObject* result = PySequence_InPlaceConcat(
-                lhs.ptr(),
-                detail::object_or_cast(rhs).ptr()
-            );
-            if (result == nullptr) {
-                throw error_already_set();
-            } else if (result == lhs.ptr()) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<L>(result);
-            }
-        }
-
-        template <typename Return, typename L>
-        inline static auto operator_mul(const L& lhs, Py_ssize_t repetitions) {
-            PyObject* result = PySequence_Repeat(
-                detail::object_or_cast(lhs).ptr(),
-                repetitions
-            );
-            if (result == nullptr) {
-                throw error_already_set();
-            }
-            return reinterpret_steal<Return>(result);
-        }
-
-        template <typename Return, typename L>
-        inline static void operator_imul(L& lhs, Py_ssize_t repetitions) {
-            PyObject* result = PySequence_InPlaceRepeat(
-                lhs.ptr(),
-                repetitions
-            );
-            if (result == nullptr) {
-                throw error_already_set();
-            } else if (result == lhs.ptr()) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<L>(result);
-            }
-        }
-
-    };
-
-    template <>
-    struct __hash__<Handle>                                     : Returns<size_t> {};
-    template <>
-    struct __hash__<Capsule>                                    : Returns<size_t> {};
-    template <>
-    struct __hash__<WeakRef>                                    : Returns<size_t> {};
-
-    template <>
-    struct __hash__<NoneType>                                   : Returns<size_t> {};
-
-    template <>
-    struct __hash__<NotImplementedType>                         : Returns<size_t> {};
-
-    template <>
-    struct __hash__<EllipsisType>                               : Returns<size_t> {};
-
-    template <>
-    struct __hash__<Module>                                     : Returns<size_t> {};
-
 }  // namespace impl
 
 
@@ -4386,6 +4272,140 @@ namespace impl {
 
     template <typename T>
     constexpr bool is_initializer = std::is_base_of_v<Initializer, T>;
+
+    /* Mixin holding operator overloads for types implementing the sequence protocol,
+    which makes them both concatenatable and repeatable. */
+    template <typename Derived>
+    class SequenceOps {
+
+        inline Derived& self() { return static_cast<Derived&>(*this); }
+        inline const Derived& self() const { return static_cast<const Derived&>(*this); }
+
+    public:
+        /* Equivalent to Python `sequence.count(value)`, but also takes optional
+        start/stop indices similar to `sequence.index()`. */
+        template <typename T>
+        inline Py_ssize_t count(
+            const T& value,
+            Py_ssize_t start = 0,
+            Py_ssize_t stop = -1
+        ) const {
+            if (start != 0 || stop != -1) {
+                PyObject* slice = PySequence_GetSlice(self().ptr(), start, stop);
+                if (slice == nullptr) {
+                    throw error_already_set();
+                }
+                Py_ssize_t result = PySequence_Count(
+                    slice,
+                    detail::object_or_cast(value).ptr()
+                );
+                Py_DECREF(slice);
+                if (result == -1 && PyErr_Occurred()) {
+                    throw error_already_set();
+                }
+                return result;
+            } else {
+                Py_ssize_t result = PySequence_Count(
+                    self().ptr(),
+                    detail::object_or_cast(value).ptr()
+                );
+                if (result == -1 && PyErr_Occurred()) {
+                    throw error_already_set();
+                }
+                return result;
+            }
+        }
+
+        /* Equivalent to Python `s.index(value[, start[, stop]])`. */
+        template <typename T>
+        inline Py_ssize_t index(
+            const T& value,
+            Py_ssize_t start = 0,
+            Py_ssize_t stop = -1
+        ) const {
+            if (start != 0 || stop != -1) {
+                PyObject* slice = PySequence_GetSlice(self().ptr(), start, stop);
+                if (slice == nullptr) {
+                    throw error_already_set();
+                }
+                Py_ssize_t result = PySequence_Index(
+                    slice,
+                    detail::object_or_cast(value).ptr()
+                );
+                Py_DECREF(slice);
+                if (result == -1 && PyErr_Occurred()) {
+                    throw error_already_set();
+                }
+                return result;
+            } else {
+                Py_ssize_t result = PySequence_Index(
+                    self().ptr(),
+                    detail::object_or_cast(value).ptr()
+                );
+                if (result == -1 && PyErr_Occurred()) {
+                    throw error_already_set();
+                }
+                return result;
+            }
+        }
+
+    protected:
+
+        template <typename Return, typename L, typename R>
+        inline static auto operator_add(const L& lhs, const R& rhs) {
+            PyObject* result = PySequence_Concat(
+                detail::object_or_cast(lhs).ptr(),
+                detail::object_or_cast(rhs).ptr()
+            );
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+
+        template <typename Return, typename L, typename R>
+        inline static void operator_iadd(L& lhs, const R& rhs) {
+            PyObject* result = PySequence_InPlaceConcat(
+                lhs.ptr(),
+                detail::object_or_cast(rhs).ptr()
+            );
+            if (result == nullptr) {
+                throw error_already_set();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+
+        template <typename Return, typename L>
+        inline static auto operator_mul(const L& lhs, Py_ssize_t repetitions) {
+            PyObject* result = PySequence_Repeat(
+                detail::object_or_cast(lhs).ptr(),
+                repetitions
+            );
+            if (result == nullptr) {
+                throw error_already_set();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+
+        template <typename Return, typename L>
+        inline static void operator_imul(L& lhs, Py_ssize_t repetitions) {
+            PyObject* result = PySequence_InPlaceRepeat(
+                lhs.ptr(),
+                repetitions
+            );
+            if (result == nullptr) {
+                throw error_already_set();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+
+    };
 
     template <>
     struct __lt__<Slice, Object> : Returns<bool> {};
@@ -4598,6 +4618,13 @@ public:
         }
     }
 
+    /* Destructor allows Code objects to be stored with static duration. */
+    ~Module() {
+        if (!Py_IsInitialized()) {
+            m_ptr = nullptr;  // avoid calling XDECREF if Python is shutting down
+        }
+    }
+
     //////////////////////////////////
     ////    PYBIND11 INTERFACE    ////
     //////////////////////////////////
@@ -4775,6 +4802,9 @@ inline auto impl::Proxy<Obj, Wrapped>::operator[](
 ////////////////////////////////
 
 
+using pybind11::print;
+
+
 /* Equivalent to Python `abs(obj)` for any object that specializes the __abs__ control
 struct. */
 template <typename T> requires (impl::python_like<T> && impl::__abs__<T>::enable)
@@ -4802,17 +4832,15 @@ inline auto abs(const T& value) {
 }
 
 
-/* Equivalent to Python `import module` */
-inline Static<Module> import(const char* name) {
-    // if (Py_IsInitialized()) {
-        PyObject *obj = PyImport_ImportModule(name);
-        if (obj == nullptr) {
-            throw error_already_set();
-        }
-        return Static<Module>(reinterpret_steal<Module>(obj));
-    // } else {
-    //     return Static<Module>::alloc();  // return an empty wrapper
-    // }
+/* Equivalent to Python `import module`.  Only recognizes absolute imports. */
+template <StaticStr name>
+inline Module import() {
+    static const pybind11::str lookup = static_cast<const char*>(name);
+    PyObject *obj = PyImport_Import(lookup.ptr());
+    if (obj == nullptr) {
+        throw error_already_set();
+    }
+    return reinterpret_steal<Module>(obj);
 }
 
 
@@ -4884,6 +4912,34 @@ inline std::string repr(const T& obj) {
 
 }  // namespace py
 }  // namespace bertrand
+
+
+////////////////////////////
+////    TYPE CASTERS    ////
+////////////////////////////
+
+
+namespace pybind11 {
+namespace detail {
+
+template <bertrand::py::impl::proxy_like T>
+struct type_caster<T> {
+    PYBIND11_TYPE_CASTER(T, const_name("proxy"));
+
+    /* Convert Python object to a C++ Proxy. */
+    inline bool load(handle src, bool convert) {
+        return false;
+    }
+
+    /* Convert a C++ Proxy into its wrapped object. */
+    inline static handle cast(const T& src, return_value_policy policy, handle parent) {
+        return *src;
+    }
+
+};
+
+}  // namespace detail
+}  // namespace pybind11
 
 
 //////////////////////////////

@@ -31,7 +31,7 @@ namespace py {
 
 namespace impl {
 
-    static const Static<Module> re = py::import("re");
+    static const Static<Module> re = py::import<"re">();
     static const Static<Type> PyRegexPattern_Type = re->attr("Pattern");
 
 }

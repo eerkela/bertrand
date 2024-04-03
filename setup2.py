@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import subprocess
 import sys
+from typing import Any
 
 from setuptools import setup
 from bertrand import BuildExt, Extension
@@ -87,8 +88,16 @@ class build_ext(BuildExt):
         self.library_dirs.append(str(cwd / "build/lib"))
         self.libraries.append("gtest")
 
-    def run(self) -> None:
-        """Build third-party libraries from source before installing any extensions."""
+    def run(self, *args: Any, **kwargs: Any) -> None:
+        """Build third-party libraries from source before installing any extensions.
+        
+        Parameters
+        ----------
+        *args : Any
+            Arbitrary positional arguments passed to the superclass.
+        **kwargs : Any
+            Arbitrary keyword arguments passed to the superclass.
+        """
         try: # check for cmake
             subprocess.check_call(
                 ["cmake", "--version"],
@@ -105,7 +114,7 @@ class build_ext(BuildExt):
         self.install_gtest(cwd)
 
         # compile Python extensions
-        super().run()
+        super().run(*args, **kwargs)
 
         # save compiler flags to test directory so that we can use the same
         # configuration when building tests

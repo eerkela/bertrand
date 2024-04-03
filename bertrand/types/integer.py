@@ -7,7 +7,7 @@ import pandas as pd
 from .base import REGISTRY, Type
 
 
-class Int(Type):
+class Int(Type, metaclass=TypeMeta):
     """Abstract integer type."""
 
     aliases = {"int", "integer"}

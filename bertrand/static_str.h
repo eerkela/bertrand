@@ -18,11 +18,10 @@ namespace bertrand {
 
 
 /* C++20 expands support for non-type template parameters, including compile-time
-strings.  This helper class allows arbitrary string literals to be encoded directly
-as template parameters, and for them to be manipulated entirely at compile-time using
-the familiar Python string interface.  Note that for now, this only works for simple
-ASCII strings, but it could theoretically be extended to handle Unicode in the
-future. */
+strings.  This helper class allows ASCII string literals to be encoded directly as
+template parameters, and for them to be manipulated entirely at compile-time using
+the familiar Python string interface.  Furthermore, templates can be specialized based
+on these strings, allowing for full compile-time flexibility based on their values. */
 template <size_t N>
 class StaticStr {
 
@@ -517,7 +516,7 @@ StaticStr(const char(&arr)[N]) -> StaticStr<N-1>;
 
 /* Compile-time string manipulations must be defined as free functions in order to
 avoid issues with template deduction and `'this' is not a constant expression`
-errors.  These seem to be running up against some hard limitations in C++. */
+errors.  Any other approach runs up against some hard limitations in current C++. */
 namespace static_str {
 
     /* A compile-time expression to signify that a particular substring is not present

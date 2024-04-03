@@ -27,6 +27,8 @@ template <>
 struct __reversed__<Tuple>                                      : Returns<Object> {};
 template <typename T>
 struct __contains__<Tuple, T>                                   : Returns<bool> {};
+template <>
+struct __getitem__<Tuple, Object>                               : Returns<Object> {};
 template <int_like T>
 struct __getitem__<Tuple, T>                                    : Returns<Object> {};
 template <>

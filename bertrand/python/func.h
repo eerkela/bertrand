@@ -1,5 +1,3 @@
-#include "pybind11/pytypes.h"
-#include "pytypedefs.h"
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -42,7 +40,7 @@ enabling seamless embedding of Python as a scripting language within C++.
 
 This class is extremely powerful, and is best explained by example:
 
-    static const py::Static<py::Code> script(R"(
+    static const py::Code script(R"(
         import numpy as np
         print(np.arange(10))
     )");
@@ -56,12 +54,12 @@ This class is extremely powerful, and is best explained by example:
     Bertrand will automatically free it when the program exits, without interfering
     with the Python interpreter.
 
-This creates an embedded Python script that can be executed as a normal function.
+This creates an embedded Python script that can be executed like a normal function.
 Here, the script is stateless, and can be executed without context.  Most of the time,
 this won't be the case, and data will need to be passed into the script to populate its
 namespace.  For instance:
 
-    static const py::Static<py::Code> script = R"(
+    static const py::Code script = R"(
         print("Hello, " + name + "!")  # name is not defined in this context
     )"_python;
 
@@ -78,7 +76,7 @@ like normal Python:
 We can solve this by building a context dictionary and passing it into the script as
 its global namespace.
 
-    script({{"name", "world"}});  // prints Hello, world!
+    script({{"name", "World"}});  // prints Hello, World!
 
 This uses the ordinary py::Dict constructors, which can take arbitrary C++ objects and
 pass them seamlessly to Python.  If we want to do the opposite and extract data from
@@ -93,7 +91,7 @@ containing the context after execution.  For instance:
 
     py::print(context);  // prints {"x": 1, "y": 2, "z": 3}
 
-Combining these features allows us to create a two-way data pipeline marrying C++ and
+Combining these features allows us to create a two-way data pipeline between C++ and
 Python:
 
     py::Int z = R"(
@@ -115,12 +113,12 @@ possible to pass a mutable reference to an external dictionary, which will be up
 in-place as the script executes.  This allows multiple scripts to be chained using a
 shared context, without ever leaving the Python interpreter.  For instance:
 
-    static const py::Static<py::Code> script1 = R"(
+    static const py::Code script1 = R"(
         x = 1
         y = 2
     )"_python;
 
-    static const py::Static<py::Code> script2 = R"(
+    static const py::Code script2 = R"(
         z = x + y
         del x, y
     )"_python;
@@ -161,7 +159,7 @@ bytecode, and should not suffer any significant performance penalties beyond cop
 data into or out of the context.  This is especially true for static code objects,
 which are compiled once and then cached for repeated use.
 
-    static const py::Static<py::Code> script = R"(
+    static const py::Code script = R"(
         print(x)
     )"_python;
 
@@ -251,6 +249,13 @@ public:
 
     /* Parse and compile a source string into a Python code object. */
     explicit Code(const std::string_view& source) : Code(source.data()) {}
+
+    /* Destructor allows Code objects to be stored with static duration. */
+    ~Code() noexcept {
+        if (!Py_IsInitialized()) {
+            m_ptr = nullptr;  // avoid calling XDECREF if Python is shutting down
+        }
+    }
 
     ////////////////////////////////
     ////    PyCode_* METHODS    ////
@@ -529,13 +534,17 @@ lambda or function pointer, and enables extra introspection via the C API. */
 class Function : public Object {
     using Base = Object;
 
+    inline static bool check_function(PyObject* obj) {
+        return PyFunction_Check(obj) || PyCFunction_Check(obj) || PyMethod_Check(obj);
+    }
+
 public:
     static Type type;
 
     template <typename T>
     static constexpr bool check() { return impl::is_callable_any<T>; }
 
-    BERTRAND_OBJECT_COMMON(Base, Function, PyFunction_Check)
+    BERTRAND_OBJECT_COMMON(Base, Function, check_function)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -996,6 +1005,29 @@ public:
 
 }  // namespace py
 }  // namespace bertrand
+
+
+namespace pybind11 {
+namespace detail {
+
+template <bertrand::py::impl::is_callable_any T>
+struct type_caster<T> {
+    PYBIND11_TYPE_CASTER(T, _("callable"));
+
+    /* Convert a Python object into a C++ callable. */
+    inline bool load(handle src, bool convert) {
+        return false;
+    }
+
+    /* Convert a C++ callable into a Python object. */
+    inline static handle cast(const T& src, return_value_policy policy, handle parent) {
+        return bertrand::py::Function(src).release();
+    }
+
+};
+
+}  // namespace detail
+}  // namespace pybind11
 
 
 #endif  // BERTRAND_PYTHON_FUNC_H

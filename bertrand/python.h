@@ -3,12 +3,6 @@
 #define BERTRAND_PYTHON_INCLUDED
 #define PYBIND11_DETAILED_ERROR_MESSAGES
 
-// TODO: move the contents of python/common.h here.
-
-
-// TODO: define dependency-less global functions
-
-
 #include "python/common.h"
 
 #include "python/bool.h"
@@ -26,15 +20,6 @@
 // #include "python/datetime.h"
 #include "python/math.h"
 #include "python/type.h"
-
-
-// Fill in forward declarations here
-
-
-// Define global functions with dependencies
-
-
-// Define type casters
 
 
 namespace bertrand {
@@ -167,32 +152,6 @@ inline Type::Type(const Str& name, const Tuple& bases, const Dict& dict) {
     );
     if (m_ptr == nullptr) {
         throw error_already_set();
-    }
-}
-
-
-namespace impl {
-
-    template <typename T>
-    auto interpret_arg(T&& arg) {
-        if constexpr (is_callable_any<std::decay_t<T>>) {
-            return Function(std::forward<T>(arg));
-        } else {
-            return std::forward<T>(arg);
-        }
-    }
-
-}
-
-
-template <typename Return, typename T, typename... Args>
-inline Return Object::operator_call(const T& obj, Args&&... args) {
-    if constexpr (std::is_void_v<Return>) {
-        obj.operator_call_impl(impl::interpret_arg(std::forward<Args>(args))...);
-    } else {
-        return reinterpret_steal<Return>(obj.operator_call_impl(
-            impl::interpret_arg(std::forward<Args>(args))...
-        ).release());
     }
 }
 
@@ -596,34 +555,6 @@ inline Int ord(const Handle& obj) {
     }
 
     return PyUnicode_READ_CHAR(ptr, 0);
-}
-
-
-namespace impl {
-
-    template <typename T>
-    inline Str print_impl(T&& arg) {
-        if constexpr (impl::proxy_like<std::decay_t<T>>) {
-            return Str(*arg);
-        } else {
-            return Str(std::forward<T>(arg));
-        }
-    }
-
-}
-
-
-// TODO: py::print() does not respect unpacking operator like pybind11::print does.
-// -> only way to get around this is to reimplement print() from scratch.  The same
-// might be true of the call operator as well.  Unpacking operator is generally
-// difficult to replicate consistently in C++.
-
-
-/* Equivalent to Python `print(args...)`, except that it can take arbitrary C++ objects
-using the py::Str constructor. */
-template <typename... Args>
-inline void print(const Args&... args) {
-    pybind11::print(impl::print_impl(args)...);
 }
 
 

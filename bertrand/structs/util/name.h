@@ -4,7 +4,13 @@
 #include <array>  // std::array
 #include <cstdint>  // uint32_t
 #include <string_view>  // std::string_view
-#include "string.h"  // String<>
+#include <bertrand/static_str.h>
+
+
+
+// TODO: this file is superceded by nameof, which automatically handles demangling.
+// It might also be unnecessary, as using pybind11 can totally eliminate these.
+
 
 
 /* Custom PyObjects require a dotted name to be used from Python.  Unfortunately,
@@ -185,7 +191,7 @@ private:
     static constexpr std::string_view hash_str{hash_array.data(), hash_array.size()};
 
     /* Concatenate name and hash. */
-    static constexpr std::string_view concatenated = String<>::join<name, hash_str>;
+    static constexpr std::string_view concatenated = String<>::join<name, hash_str>; // TODO: update for static_str
 
     /* Sanitize output, converting invalid characters into underscores. */
     static constexpr std::array<char, concatenated.size() + 1> sanitized = [] {
