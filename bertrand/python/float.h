@@ -166,10 +166,7 @@ class Float : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::float_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Float, PyFloat_Check)
+    BERTRAND_OBJECT_COMMON(Base, Float, impl::float_like, PyFloat_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

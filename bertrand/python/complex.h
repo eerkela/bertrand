@@ -127,10 +127,7 @@ class Complex : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::complex_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Complex, PyComplex_Check)
+    BERTRAND_OBJECT_COMMON(Base, Complex, impl::complex_like, PyComplex_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

@@ -287,10 +287,7 @@ class Bool : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::bool_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Bool, PyBool_Check)
+    BERTRAND_OBJECT_COMMON(Base, Bool, impl::bool_like, PyBool_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

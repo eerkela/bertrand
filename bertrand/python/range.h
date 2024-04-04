@@ -40,7 +40,7 @@ level. */
 class Range : public Object {
     using Base = Object;
 
-    inline static bool range_check(PyObject* obj) {
+    inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyRange_Type);
         if (result == -1) {
             throw error_already_set();
@@ -51,10 +51,7 @@ class Range : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::range_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Range, range_check)
+    BERTRAND_OBJECT_COMMON(Base, Range, impl::range_like, runtime_check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

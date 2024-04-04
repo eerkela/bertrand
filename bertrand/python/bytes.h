@@ -416,10 +416,7 @@ class Bytes : public impl::IBytes<Bytes>, public impl::SequenceOps<Bytes> {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::bytes_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Bytes, PyBytes_Check)
+    BERTRAND_OBJECT_COMMON(Base, Bytes, impl::bytes_like, PyBytes_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -549,10 +546,7 @@ class ByteArray : public impl::IBytes<ByteArray>, public impl::SequenceOps<ByteA
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::bytearray_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, ByteArray, PyByteArray_Check)
+    BERTRAND_OBJECT_COMMON(Base, ByteArray, impl::bytearray_like, PyByteArray_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

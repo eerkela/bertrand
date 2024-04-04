@@ -137,10 +137,7 @@ class Str : public Object, public impl::SequenceOps<Str> {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::str_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Str, PyUnicode_Check)
+    BERTRAND_OBJECT_COMMON(Base, Str, impl::str_like, PyUnicode_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

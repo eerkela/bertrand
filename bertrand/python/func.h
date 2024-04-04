@@ -177,6 +177,9 @@ which are compiled once and then cached for repeated use.
 class Code : public Object {
     using Base = Object;
 
+    template <typename T>
+    static constexpr bool comptime_check = std::is_base_of_v<Code, T>;
+
     inline PyCodeObject* self() const {
         return reinterpret_cast<PyCodeObject*>(this->ptr());
     }
@@ -246,10 +249,7 @@ class Code : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return std::is_base_of_v<Code, T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Code, PyCode_Check)
+    BERTRAND_OBJECT_COMMON(Base, Code, comptime_check, PyCode_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -426,6 +426,9 @@ can be used to introspect its current state. */
 class Frame : public Object {
     using Base = Object;
 
+    template <typename T>
+    static constexpr bool comptime_check = std::is_base_of_v<Frame, T>;
+
     inline PyFrameObject* self() const {
         return reinterpret_cast<PyFrameObject*>(this->ptr());
     }
@@ -433,10 +436,7 @@ class Frame : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return std::is_base_of_v<Frame, T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Frame, PyFrame_Check)
+    BERTRAND_OBJECT_COMMON(Base, Frame, comptime_check, PyFrame_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -571,17 +571,14 @@ lambda or function pointer, and enables extra introspection via the C API. */
 class Function : public Object {
     using Base = Object;
 
-    inline static bool check_function(PyObject* obj) {
+    inline static bool runtime_check(PyObject* obj) {
         return PyFunction_Check(obj) || PyCFunction_Check(obj) || PyMethod_Check(obj);
     }
 
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::is_callable_any<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Function, check_function)
+    BERTRAND_OBJECT_COMMON(Base, Function, impl::is_callable_any, runtime_check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -852,13 +849,13 @@ level. */
 class Method : public Object {
     using Base = Object;
 
+    template <typename T>
+    static constexpr bool comptime_check = std::is_base_of_v<Method, T>;
+
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return std::is_base_of_v<Method, T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Method, PyInstanceMethod_Check)
+    BERTRAND_OBJECT_COMMON(Base, Method, comptime_check, PyInstanceMethod_Check)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Method() = delete;
@@ -891,7 +888,10 @@ level. */
 class ClassMethod : public Object {
     using Base = Object;
 
-    inline static bool check_classmethod(PyObject* obj) {
+    template <typename T>
+    static constexpr bool comptime_check = std::is_base_of_v<ClassMethod, T>;
+
+    inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(
             obj,
             reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type)
@@ -905,10 +905,7 @@ class ClassMethod : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return std::is_base_of_v<ClassMethod, T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, ClassMethod, check_classmethod)
+    BERTRAND_OBJECT_COMMON(Base, ClassMethod, comptime_check, runtime_check)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     ClassMethod() = delete;
@@ -937,7 +934,10 @@ C++ lambda or function pointer, and enables extra introspection via the C API. *
 class StaticMethod : public Object {
     using Base = Object;
 
-    static bool check_staticmethod(PyObject* obj) {
+    template <typename T>
+    static constexpr bool comptime_check = std::is_base_of_v<StaticMethod, T>;
+
+    static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(
             obj,
             reinterpret_cast<PyObject*>(&PyStaticMethod_Type)
@@ -951,10 +951,7 @@ class StaticMethod : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return std::is_base_of_v<StaticMethod, T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, StaticMethod, check_staticmethod)
+    BERTRAND_OBJECT_COMMON(Base, StaticMethod, comptime_check, runtime_check)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     StaticMethod() = delete;
@@ -983,7 +980,10 @@ Python level. */
 class Property : public Object {
     using Base = Object;
 
-    inline static bool check_property(PyObject* obj) {
+    template <typename T>
+    static constexpr bool comptime_check = std::is_base_of_v<Property, T>;
+
+    inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, impl::PyProperty->ptr());
         if (result == -1) {
             throw error_already_set();
@@ -994,10 +994,7 @@ class Property : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return std::is_base_of_v<Property, T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Property, check_property)
+    BERTRAND_OBJECT_COMMON(Base, Property, comptime_check, runtime_check)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Property() = delete;

@@ -377,10 +377,7 @@ class Int : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::int_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Int, PyLong_Check)
+    BERTRAND_OBJECT_COMMON(Base, Int, impl::int_like, PyLong_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

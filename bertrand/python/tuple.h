@@ -104,10 +104,7 @@ class Tuple : public Object, public impl::SequenceOps<Tuple> {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::tuple_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Tuple, PyTuple_Check)
+    BERTRAND_OBJECT_COMMON(Base, Tuple, impl::tuple_like, PyTuple_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

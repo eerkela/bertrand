@@ -114,7 +114,12 @@ void run() {
     // py::List list = {1, 2, 3, 4};
     // py::print(2 < py::Str("abc"));
     // py::print(py::Str("abc") < 2);
-    py::Str x = "abc";
+
+
+
+    py::print(py::Int::check(py::Object(1)));
+
+
 
 
 

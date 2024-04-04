@@ -136,7 +136,10 @@ object. */
 class KeysView : public Object {
     using Base = Object;
 
-    inline static bool keys_check(PyObject* obj) {
+    template <typename T>
+    static constexpr bool comptime_check = std::is_base_of_v<KeysView, T>; 
+
+    inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictKeys_Type);
         if (result == -1) {
             throw error_already_set();
@@ -147,10 +150,7 @@ class KeysView : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return std::is_base_of_v<KeysView, T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, KeysView, keys_check)
+    BERTRAND_OBJECT_COMMON(Base, KeysView, comptime_check, runtime_check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -224,7 +224,10 @@ object. */
 class ValuesView : public Object {
     using Base = Object;
 
-    inline static bool values_check(PyObject* obj) {
+    template <typename T>
+    static constexpr bool comptime_check = std::is_base_of_v<ValuesView, T>; 
+
+    inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictValues_Type);
         if (result == -1) {
             throw error_already_set();
@@ -235,10 +238,7 @@ class ValuesView : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return std::is_base_of_v<ValuesView, T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, ValuesView, values_check)
+    BERTRAND_OBJECT_COMMON(Base, ValuesView, comptime_check, runtime_check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -269,7 +269,10 @@ object. */
 class ItemsView : public Object {
     using Base = Object;
 
-    inline static bool items_check(PyObject* obj) {
+    template <typename T>
+    static constexpr bool comptime_check = std::is_base_of_v<ItemsView, T>; 
+
+    inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictItems_Type);
         if (result == -1) {
             throw error_already_set();
@@ -280,10 +283,7 @@ class ItemsView : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return std::is_base_of_v<ItemsView, T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, ItemsView, items_check)
+    BERTRAND_OBJECT_COMMON(Base, ItemsView, comptime_check, runtime_check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -325,10 +325,7 @@ class Dict : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::dict_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Dict, PyDict_Check);
+    BERTRAND_OBJECT_COMMON(Base, Dict, impl::dict_like, PyDict_Check);
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -779,7 +776,7 @@ dictionary or other mapping. */
 class MappingProxy : public Object {
     using Base = Object;
 
-    inline static bool mappingproxy_check(PyObject* obj) {
+    inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictProxy_Type);
         if (result == -1) {
             throw error_already_set();
@@ -790,10 +787,7 @@ class MappingProxy : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::mappingproxy_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, MappingProxy, mappingproxy_check)
+    BERTRAND_OBJECT_COMMON(Base, MappingProxy, impl::mappingproxy_like, runtime_check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

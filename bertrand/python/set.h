@@ -466,10 +466,7 @@ class FrozenSet : public impl::ISet<FrozenSet> {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::frozenset_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, FrozenSet, PyFrozenSet_Check)
+    BERTRAND_OBJECT_COMMON(Base, FrozenSet, impl::frozenset_like, PyFrozenSet_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -622,10 +619,7 @@ class Set : public impl::ISet<Set> {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::set_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Set, PySet_Check);
+    BERTRAND_OBJECT_COMMON(Base, Set, impl::set_like, PySet_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

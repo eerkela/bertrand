@@ -1494,22 +1494,31 @@ public:
 
     /* Convert a pybind11 accessor into a generic Object. */
     template <typename Policy>
-    Object(const detail::accessor<Policy> &a) : Base(pybind11::object(a)) {}
+    Object(const detail::accessor<Policy> &a) {
+        pybind11::object obj(a);
+        if (check(obj)) {
+            m_ptr = obj.release().ptr();
+        } else {
+            throw impl::noconvert<Object>(obj.ptr());
+        }
+    }
 
-    /* Convert any non-callable C++ value into a generic python object. */
-    template <typename T> requires (!impl::python_like<T> && !impl::is_callable_any<T>)
+    /* Convert any C++ value into a generic python object. */
+    template <typename T> requires (!impl::python_like<T>)
     Object(const T& value) : Base(pybind11::cast(value).release(), stolen_t{}) {}
 
-    /* Convert any callable C++ value into a generic python object. */
-    template <typename T> requires (!impl::python_like<T> && impl::is_callable_any<T>)
-    Object(const T& value);  // defined in python.h
-
-    using Base::operator=;  // inherit copy/move assignment
-
-    /* Assign any C++ value to the object wrapper. */
-    template <typename T> requires (!impl::python_like<T>)
+    /* Trigger implicit conversions to this type via the assignment operator. */
+    template <typename T> requires (std::is_convertible_v<T, Object>)
     Object& operator=(T&& value) {
-        Base::operator=(Object(std::forward<T>(value)));
+        if constexpr (std::is_same_v<Object, std::decay_t<T>>) {
+            if (this != &value) {
+                Base::operator=(std::forward<T>(value));
+            }
+        } else if constexpr (impl::has_conversion_operator<std::decay_t<T>, Object>) {
+            Base::operator=(value.operator Object());
+        } else {
+            Base::operator=(Object(std::forward<T>(value)));
+        }
         return *this;
     }
 
@@ -2614,17 +2623,21 @@ namespace impl {
         py::List list = {1, 2, 3, 4, 5};
         list = {5, 4, 3, 2, 1};
     */
-    #define BERTRAND_OBJECT_COMMON(parent, cls, check_func)                             \
-        /* Overload check() for runtime Python values using check_func. */              \
-        template <typename T> requires (impl::python_like<T>)                           \
-        static constexpr bool check(const T& obj) {                                     \
-            return obj.ptr() != nullptr && check_func(obj.ptr());                       \
+    #define BERTRAND_OBJECT_COMMON(parent, cls, comptime_check, runtime_check)          \
+        /* Implement check() for compile-time C++ types. */                             \
+        template <typename T>                                                           \
+        static consteval bool check() { return comptime_check<T>; }                     \
+                                                                                        \
+        /* Implement check() for runtime C++ values. */                                 \
+        template <typename T> requires (!impl::python_like<T>)                          \
+        static consteval bool check(const T&) {                                         \
+            return check<T>();                                                          \
         }                                                                               \
                                                                                         \
-        /* Overload check() for runtime C++ values using template metaprogramming. */   \
-        template <typename T> requires (!impl::python_like<T>)                          \
-        static constexpr bool check(const T&) {                                         \
-            return check<T>();                                                          \
+        /* Implement check() for runtime Python values. */                              \
+        template <typename T> requires (impl::python_like<T>)                           \
+        static bool check(const T& obj) {                                               \
+            return obj.ptr() != nullptr && runtime_check(obj.ptr());                    \
         }                                                                               \
                                                                                         \
         /* pybind11 expects check_ internally, but the idea is the same. */             \
@@ -2641,7 +2654,7 @@ namespace impl {
         template <typename Policy>                                                      \
         cls(const detail::accessor<Policy>& a) {                                        \
             pybind11::object obj(a);                                                    \
-            if (obj.ptr() != nullptr && check_func(obj.ptr())) {                        \
+            if (check(obj)) {                                                           \
                 m_ptr = obj.release().ptr();                                            \
             } else {                                                                    \
                 throw impl::noconvert<cls>(obj.ptr());                                  \
@@ -4087,10 +4100,7 @@ class NoneType : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::none_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, NoneType, Py_IsNone)
+    BERTRAND_OBJECT_COMMON(Base, NoneType, impl::none_like, Py_IsNone)
 
     /* Default constructor.  Initializes to Python's global None singleton. */
     NoneType() : Base(Py_None, borrowed_t{}) {}
@@ -4106,7 +4116,10 @@ public:
 class NotImplementedType : public Object {
     using Base = Object;
 
-    inline static int check_not_implemented(PyObject* obj) {
+    template <typename T>
+    static constexpr bool comptime_check = std::is_base_of_v<NotImplementedType, T>;
+
+    inline static int runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(
             obj,
             (PyObject*) Py_TYPE(Py_NotImplemented)
@@ -4120,10 +4133,7 @@ class NotImplementedType : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return std::is_base_of_v<NotImplementedType, T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, NotImplementedType, check_not_implemented)
+    BERTRAND_OBJECT_COMMON(Base, NotImplementedType, comptime_check, runtime_check)
 
     /* Default constructor.  Initializes to Python's global NotImplemented singleton. */
     NotImplementedType() : Base(Py_NotImplemented, borrowed_t{}) {}
@@ -4139,7 +4149,10 @@ public:
 class EllipsisType : public Object {
     using Base = Object;
 
-    inline static int check_ellipsis(PyObject* obj) {
+    template <typename T>
+    static constexpr bool comptime_check = std::is_base_of_v<EllipsisType, T>;
+
+    inline static int runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(
             obj,
             (PyObject*) Py_TYPE(Py_Ellipsis)
@@ -4153,10 +4166,7 @@ class EllipsisType : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return std::is_base_of_v<EllipsisType, T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, EllipsisType, check_ellipsis)
+    BERTRAND_OBJECT_COMMON(Base, EllipsisType, comptime_check, runtime_check)
 
     /* Default constructor.  Initializes to Python's global Ellipsis singleton. */
     EllipsisType() : Base(Py_Ellipsis, borrowed_t{}) {}
@@ -4395,14 +4405,11 @@ class Slice : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::slice_like<T>; }
+    BERTRAND_OBJECT_COMMON(Base, Slice, impl::slice_like, PySlice_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_COMMON(Base, Slice, PySlice_Check)
 
     /* Default constructor.  Initializes to all Nones. */
     Slice() : Base(PySlice_New(nullptr, nullptr, nullptr), stolen_t{}) {
@@ -4533,10 +4540,7 @@ class Module : public Object {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::module_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, Module, PyModule_Check)
+    BERTRAND_OBJECT_COMMON(Base, Module, impl::module_like, PyModule_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

@@ -104,10 +104,7 @@ class List : public Object, public impl::SequenceOps<List> {
 public:
     static Type type;
 
-    template <typename T>
-    static constexpr bool check() { return impl::list_like<T>; }
-
-    BERTRAND_OBJECT_COMMON(Base, List, PyList_Check)
+    BERTRAND_OBJECT_COMMON(Base, List, impl::list_like, PyList_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

@@ -120,10 +120,6 @@ inline Type Property::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*
 ////////////////////////////////////
 
 
-template <typename T> requires (!impl::python_like<T> && impl::is_callable_any<T>)
-inline Object::Object(const T& value) : Base(Function(value).release().ptr(), stolen_t{}) {}
-
-
 template <typename T>
     requires (impl::python_like<T> && impl::str_like<T>)
 inline Int::Int(const T& str, int base) :
