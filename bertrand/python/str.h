@@ -811,7 +811,6 @@ public:
     /////////////////////////
 
 protected:
-
     using impl::SequenceOps<Str>::operator_mul;
     using impl::SequenceOps<Str>::operator_imul;
 

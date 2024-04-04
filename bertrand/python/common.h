@@ -27,7 +27,7 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pytypes.h>
 #include <pybind11/stl.h>
-#include <pybind11/stl_bind.h>
+// #include <pybind11/stl_bind.h>  // complicates error messages for operator overloads
 
 #include "bertrand/static_str.h"
 
@@ -1035,13 +1035,6 @@ namespace impl {
         using Return = T;
     };
 
-
-    // TODO: require lvalue references for in-place operator Return types.
-
-    // TODO: reverse operators still might be a bit wonky.  Currently, I'm just
-    // disabling them if the other operand is a subclass of Object.  This might not be
-    // totally accurate, but it seems to work for now.
-
     #define BERTRAND_OBJECT_OPERATORS(cls)                                              \
         template <typename... Args> requires (impl::__call__<cls, Args...>::enable)     \
         inline auto operator()(Args&&... args) const {                                  \
@@ -1158,798 +1151,6 @@ namespace impl {
             );                                                                          \
             return operator_len<Return>(*this);                                         \
         }                                                                               \
-                                                                                        \
-        template <typename T = cls> requires (impl::__pos__<T>::enable)                 \
-        inline auto operator+() const {                                                 \
-            using Return = typename impl::__pos__<T>::Return;                           \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Unary positive operator must return a py::Object subclass.  Check "    \
-                "your specialization of __pos__ for this type and ensure the Return "   \
-                "type is set to a py::Object subclass."                                 \
-            );                                                                          \
-            return operator_pos<Return>(*this);                                         \
-        }                                                                               \
-                                                                                        \
-        template <typename T = cls> requires (impl::__neg__<T>::enable)                 \
-        inline auto operator-() const {                                                 \
-            using Return = typename impl::__neg__<T>::Return;                           \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Unary negative operator must return a py::Object subclass.  Check "    \
-                "your specialization of __neg__ for this type and ensure the Return "   \
-                "type is set to a py::Object subclass."                                 \
-            );                                                                          \
-            return operator_neg<Return>(*this);                                         \
-        }                                                                               \
-                                                                                        \
-        template <typename T = cls> requires (impl::__invert__<T>::enable)              \
-        inline auto operator~() const {                                                 \
-            using Return = typename impl::__invert__<T>::Return;                        \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Bitwise NOT operator must return a py::Object subclass.  Check your "  \
-                "specialization of __invert__ for this type and ensure the Return type "\
-                "is set to a py::Object subclass."                                      \
-            );                                                                          \
-            return operator_invert<Return>(*this);                                      \
-        }                                                                               \
-                                                                                        \
-        template <typename T = cls> requires (impl::__increment__<T>::enable)           \
-        inline cls& operator++() {                                                      \
-            using Return = typename impl::__increment__<T>::Return;                     \
-            static_assert(                                                              \
-                std::is_same_v<Return, T>,                                              \
-                "Increment operator must return a reference to the derived type.  "     \
-                "Check your specialization of __increment__ for this type and ensure "  \
-                "the Return type is set to the derived type."                           \
-            );                                                                          \
-            operator_increment<Return>(*this);                                          \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T = cls> requires (impl::__increment__<T>::enable)           \
-        inline cls operator++(int) {                                                    \
-            using Return = typename impl::__increment__<T>::Return;                     \
-            static_assert(                                                              \
-                std::is_same_v<Return, T>,                                              \
-                "Increment operator must return a reference to the derived type.  "     \
-                "Check your specialization of __increment__ for this type and ensure "  \
-                "the Return type is set to the derived type."                           \
-            );                                                                          \
-            cls copy = *this;                                                           \
-            operator_increment<Return>(*this);                                          \
-            return copy;                                                                \
-        }                                                                               \
-                                                                                        \
-        template <typename T = cls> requires (impl::__decrement__<T>::enable)           \
-        inline cls& operator--() {                                                      \
-            using Return = typename impl::__decrement__<T>::Return;                     \
-            static_assert(                                                              \
-                std::is_same_v<Return, T>,                                              \
-                "Decrement operator must return a reference to the derived type.  "     \
-                "Check your specialization of __decrement__ for this type and ensure "  \
-                "the Return type is set to the derived type."                           \
-            );                                                                          \
-            operator_decrement<Return>(*this);                                          \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T = cls> requires (impl::__decrement__<T>::enable)           \
-        inline cls operator--(int) {                                                    \
-            using Return = typename impl::__decrement__<T>::Return;                     \
-            static_assert(                                                              \
-                std::is_same_v<Return, T>,                                              \
-                "Decrement operator must return a reference to the derived type.  "     \
-                "Check your specialization of __decrement__ for this type and ensure "  \
-                "the Return type is set to the derived type."                           \
-            );                                                                          \
-            cls copy = *this;                                                           \
-            operator_decrement<Return>(*this);                                          \
-            return copy;                                                                \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__lt__<cls, T>::enable)                   \
-        inline auto operator<(const T& value) const {                                   \
-            using Return = typename impl::__lt__<cls, T>::Return;                       \
-            static_assert(                                                              \
-                std::is_same_v<Return, bool>,                                           \
-                "Less-than operator must return a boolean value.  Check your "          \
-                "specialization of __lt__ for these types and ensure the Return type "  \
-                "is set to bool."                                                       \
-            );                                                                          \
-            return operator_lt<Return>(*this, value);                                   \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__lt__<T, cls>::enable && !std::is_base_of_v<Object, T>)    \
-        inline friend auto operator<(const T& lhs, const cls& rhs) {                    \
-            using Return = typename impl::__lt__<T, cls>::Return;                       \
-            static_assert(                                                              \
-                std::is_same_v<Return, bool>,                                           \
-                "Less-than operator must return a boolean value.  Check your "          \
-                "specialization of __lt__ for these types and ensure the Return type "  \
-                "is set to bool."                                                       \
-            );                                                                          \
-            return operator_lt<Return>(lhs, rhs);                                       \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__le__<cls, T>::enable)                   \
-        inline auto operator<=(const T& value) const {                                  \
-            using Return = typename impl::__le__<cls, T>::Return;                       \
-            static_assert(                                                              \
-                std::is_same_v<Return, bool>,                                           \
-                "Less-than-or-equal operator must return a boolean value.  Check your " \
-                "specialization of __le__ for this type and ensure the Return type is " \
-                "set to bool."                                                          \
-            );                                                                          \
-            return operator_le<Return>(*this, value);                                   \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__le__<T, cls>::enable && !std::is_base_of_v<Object, T>)    \
-        inline friend auto operator<=(const T& lhs, const cls& rhs) {                   \
-            using Return = typename impl::__le__<T, cls>::Return;                       \
-            static_assert(                                                              \
-                std::is_same_v<Return, bool>,                                           \
-                "Less-than-or-equal operator must return a boolean value.  Check your " \
-                "specialization of __le__ for this type and ensure the Return type is " \
-                "set to bool."                                                          \
-            );                                                                          \
-            return operator_le<Return>(lhs, rhs);                                       \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__eq__<cls, T>::enable)                   \
-        inline auto operator==(const T& value) const {                                  \
-            using Return = typename impl::__eq__<cls, T>::Return;                       \
-            static_assert(                                                              \
-                std::is_same_v<Return, bool>,                                           \
-                "Equality operator must return a boolean value.  Check your "           \
-                "specialization of __eq__ for this type and ensure the Return type is " \
-                "set to bool."                                                          \
-            );                                                                          \
-            return operator_eq<Return>(*this, value);                                   \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__eq__<T, cls>::enable && !std::is_base_of_v<Object, T>)    \
-        inline friend auto operator==(const T& lhs, const cls& rhs) {                   \
-            using Return = typename impl::__eq__<T, cls>::Return;                       \
-            static_assert(                                                              \
-                std::is_same_v<Return, bool>,                                           \
-                "Equality operator must return a boolean value.  Check your "           \
-                "specialization of __eq__ for this type and ensure the Return type is " \
-                "set to bool."                                                          \
-            );                                                                          \
-            return operator_eq<Return>(lhs, rhs);                                       \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__ne__<cls, T>::enable)                   \
-        inline auto operator!=(const T& value) const {                                  \
-            using Return = typename impl::__ne__<cls, T>::Return;                       \
-            static_assert(                                                              \
-                std::is_same_v<Return, bool>,                                           \
-                "Inequality operator must return a boolean value.  Check your "         \
-                "specialization of __ne__ for this type and ensure the Return type is " \
-                "set to bool."                                                          \
-            );                                                                          \
-            return operator_ne<Return>(*this, value);                                   \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__ne__<T, cls>::enable && !std::is_base_of_v<Object, T>)    \
-        inline friend auto operator!=(const T& lhs, const cls& rhs) {                   \
-            using Return = typename impl::__ne__<T, cls>::Return;                       \
-            static_assert(                                                              \
-                std::is_same_v<Return, bool>,                                           \
-                "Inequality operator must return a boolean value.  Check your "         \
-                "specialization of __ne__ for this type and ensure the Return type is " \
-                "set to bool."                                                          \
-            );                                                                          \
-            return operator_ne<Return>(lhs, rhs);                                       \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__ge__<cls, T>::enable)                   \
-        inline auto operator>=(const T& value) const {                                  \
-            using Return = typename impl::__ge__<cls, T>::Return;                       \
-            static_assert(                                                              \
-                std::is_same_v<Return, bool>,                                           \
-                "Greater-than-or-equal operator must return a boolean value.  Check "   \
-                "your specialization of __ge__ for this type and ensure the Return "    \
-                "type is set to bool."                                                  \
-            );                                                                          \
-            return operator_ge<Return>(*this, value);                                   \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__ge__<T, cls>::enable && !std::is_base_of_v<Object, T>)    \
-        inline friend auto operator>=(const T& lhs, const cls& rhs) {                   \
-            using Return = typename impl::__ge__<T, cls>::Return;                       \
-            static_assert(                                                              \
-                std::is_same_v<Return, bool>,                                           \
-                "Greater-than-or-equal operator must return a boolean value.  Check "   \
-                "your specialization of __ge__ for this type and ensure the Return "    \
-                "type is set to bool."                                                  \
-            );                                                                          \
-            return operator_ge<Return>(lhs, rhs);                                       \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__gt__<cls, T>::enable)                   \
-        inline auto operator>(const T& value) const {                                   \
-            using Return = typename impl::__gt__<cls, T>::Return;                       \
-            static_assert(                                                              \
-                std::is_same_v<Return, bool>,                                           \
-                "Greater-than operator must return a boolean value.  Check your "       \
-                "specialization of __gt__ for this type and ensure the Return type is " \
-                "set to bool."                                                          \
-            );                                                                          \
-            return operator_gt<Return>(*this, value);                                   \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__gt__<T, cls>::enable && !std::is_base_of_v<Object, T>)    \
-        inline friend auto operator>(const T& lhs, const cls& rhs) {                    \
-            using Return = typename impl::__gt__<T, cls>::Return;                       \
-            static_assert(                                                              \
-                std::is_same_v<Return, bool>,                                           \
-                "Greater-than operator must return a boolean value.  Check your "       \
-                "specialization of __gt__ for this type and ensure the Return type is " \
-                "set to bool."                                                          \
-            );                                                                          \
-            return operator_gt<Return>(lhs, rhs);                                       \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__add__<cls, T>::enable)                  \
-        inline auto operator+(const T& value) const {                                   \
-            using Return = typename impl::__add__<cls, T>::Return;                      \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Addition operator must return a py::Object subclass.  Check your "     \
-                "specialization of __add__ for this type and ensure the Return type is "\
-                "derived from py::Object."                                              \
-            );                                                                          \
-            return operator_add<Return>(*this, value);                                  \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__add__<T, cls>::enable && !std::is_base_of_v<Object, T>)   \
-        inline friend auto operator+(const T& lhs, const cls& rhs) {                    \
-            using Return = typename impl::__add__<T, cls>::Return;                      \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Addition operator must return a py::Object subclass.  Check your "     \
-                "specialization of __add__ for this type and ensure the Return type is "\
-                "derived from py::Object."                                              \
-            );                                                                          \
-            return operator_add<Return>(lhs, rhs);                                      \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__iadd__<cls, T>::enable && !impl::proxy_like<T>)           \
-        inline cls& operator+=(const T& value) {                                        \
-            using Return = typename impl::__iadd__<cls, T>::Return;                     \
-            static_assert(                                                              \
-                std::is_same_v<cls, Return>,                                            \
-                "In-place addition operator must return the same type as the left "     \
-                "operand.  Check your specialization of __iadd__ for these types and "  \
-                "ensure the Return type is set to the left operand."                    \
-            );                                                                          \
-            operator_iadd<Return>(*this, value);                                        \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::proxy_like<T>)                            \
-        inline cls& operator+=(const T& value) {                                        \
-            *this += value.value();                                                     \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__sub__<cls, T>::enable)                  \
-        inline auto operator-(const T& value) const {                                   \
-            using Return = typename impl::__sub__<cls, T>::Return;                      \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Subtraction operator must return a py::Object subclass.  Check your "  \
-                "specialization of __sub__ for this type and ensure the Return type is "\
-                "derived from py::Object."                                              \
-            );                                                                          \
-            return operator_sub<Return>(*this, value);                                  \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__sub__<T, cls>::enable && !std::is_base_of_v<Object, T>)   \
-        inline friend auto operator-(const T& lhs, const cls& rhs) {                    \
-            using Return = typename impl::__sub__<T, cls>::Return;                      \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Subtraction operator must return a py::Object subclass.  Check your "  \
-                "specialization of __sub__ for this type and ensure the Return type is "\
-                "derived from py::Object."                                              \
-            );                                                                          \
-            return operator_sub<Return>(lhs, rhs);                                      \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__isub__<cls, T>::enable && !impl::proxy_like<T>)           \
-        inline cls& operator-=(const T& value) {                                        \
-            using Return = typename impl::__isub__<cls, T>::Return;                     \
-            static_assert(                                                              \
-                std::is_same_v<cls, Return>,                                            \
-                "In-place addition operator must return the same type as the left "     \
-                "operand.  Check your specialization of __iadd__ for these types and "  \
-                "ensure the Return type is set to the left operand."                    \
-            );                                                                          \
-            operator_isub<Return>(*this, value);                                        \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::proxy_like<T>)                            \
-        inline cls& operator-=(const T& value) {                                        \
-            *this -= value.value();                                                     \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__mul__<cls, T>::enable)                  \
-        inline auto operator*(const T& value) const {                                   \
-            using Return = typename impl::__mul__<cls, T>::Return;                      \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Multiplication operator must return a py::Object subclass.  Check "    \
-                "your specialization of __mul__ for this type and ensure the Return "   \
-                "type is derived from py::Object."                                      \
-            );                                                                          \
-            return operator_mul<Return>(*this, value);                                  \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__mul__<T, cls>::enable && !std::is_base_of_v<Object, T>)   \
-        inline friend auto operator*(const T& lhs, const cls& rhs) {                    \
-            using Return = typename impl::__mul__<T, cls>::Return;                      \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Multiplication operator must return a py::Object subclass.  Check "    \
-                "your specialization of __mul__ for this type and ensure the Return "   \
-                "type is derived from py::Object."                                      \
-            );                                                                          \
-            return operator_mul<Return>(lhs, rhs);                                      \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__imul__<cls, T>::enable && !impl::proxy_like<T>)           \
-        inline cls& operator*=(const T& value) {                                        \
-            using Return = typename impl::__imul__<cls, T>::Return;                     \
-            static_assert(                                                              \
-                std::is_same_v<cls, Return>,                                            \
-                "In-place multiplication operator must return the same type as the "    \
-                "left operand.  Check your specialization of __imul__ for these types " \
-                "and ensure the Return type is set to the left operand."                \
-            );                                                                          \
-            operator_imul<Return>(*this, value);                                        \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::proxy_like<T>)                            \
-        inline cls& operator*=(const T& value) {                                        \
-            *this *= value.value();                                                     \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__truediv__<cls, T>::enable)              \
-        inline auto operator/(const T& value) const {                                   \
-            using Return = typename impl::__truediv__<cls, T>::Return;                  \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "True division operator must return a py::Object subclass.  Check "     \
-                "your specialization of __truediv__ for this type and ensure the "      \
-                "Return type is derived from py::Object."                               \
-            );                                                                          \
-            return operator_truediv<Return>(*this, value);                              \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (                                                                  \
-                impl::__truediv__<T, cls>::enable &&                                    \
-                !std::is_base_of_v<Object, T>                                           \
-            )                                                                           \
-        inline friend auto operator/(const T& lhs, const cls& rhs) {                    \
-            using Return = typename impl::__truediv__<T, cls>::Return;                  \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "True division operator must return a py::Object subclass.  Check "     \
-                "your specialization of __truediv__ for this type and ensure the "      \
-                "Return type is derived from py::Object."                               \
-            );                                                                          \
-            return operator_truediv<Return>(lhs, rhs);                                  \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__itruediv__<cls, T>::enable && !impl::proxy_like<T>)       \
-        inline cls& operator/=(const T& value) {                                        \
-            using Return = typename impl::__itruediv__<cls, T>::Return;                 \
-            static_assert(                                                              \
-                std::is_same_v<cls, Return>,                                            \
-                "In-place true division operator must return the same type as the "     \
-                "left operand.  Check your specialization of __itruediv__ for these "   \
-                "types and ensure the Return type is set to the left operand."          \
-            );                                                                          \
-            operator_itruediv<Return>(*this, value);                                    \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::proxy_like<T>)                            \
-        inline cls& operator/=(const T& value) {                                        \
-            *this /= value.value();                                                     \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__mod__<cls, T>::enable)                  \
-        inline auto operator%(const T& value) const {                                   \
-            using Return = typename impl::__mod__<cls, T>::Return;                      \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Modulus operator must return a py::Object subclass.  Check your "      \
-                "specialization of __mod__ for this type and ensure the Return type "   \
-                "is derived from py::Object."                                           \
-            );                                                                          \
-            return operator_mod<Return>(*this, value);                                  \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__mod__<T, cls>::enable && !std::is_base_of_v<Object, T>)   \
-        inline friend auto operator%(const T& lhs, const cls& rhs) {                    \
-            using Return = typename impl::__mod__<T, cls>::Return;                      \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Modulus operator must return a py::Object subclass.  Check your "      \
-                "specialization of __mod__ for this type and ensure the Return type "   \
-                "is derived from py::Object."                                           \
-            );                                                                          \
-            return operator_mod<Return>(lhs, rhs);                                      \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__imod__<cls, T>::enable && !impl::proxy_like<T>)           \
-        inline cls& operator%=(const T& value) {                                        \
-            using Return = typename impl::__imod__<cls, T>::Return;                     \
-            static_assert(                                                              \
-                std::is_same_v<cls, Return>,                                            \
-                "In-place modulus operator must return the same type as the left "      \
-                "operand.  Check your specialization of __imod__ for these types and "  \
-                "ensure the Return type is set to the left operand."                    \
-            );                                                                          \
-            operator_imod<Return>(*this, value);                                        \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::proxy_like<T>)                            \
-        inline cls& operator%=(const T& value) {                                        \
-            *this %= value.value();                                                     \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__lshift__<cls, T>::enable)               \
-        inline auto operator<<(const T& value) const {                                  \
-            using Return = typename impl::__lshift__<cls, T>::Return;                   \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Left shift operator must return a py::Object subclass.  Check your "   \
-                "specialization of __lshift__ for this type and ensure the Return "     \
-                "type is derived from py::Object."                                      \
-            );                                                                          \
-            return operator_lshift<Return>(*this, value);                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (                                                                  \
-                impl::__lshift__<T, cls>::enable &&                                     \
-                !std::is_base_of_v<Object, T> &&                                        \
-                !std::is_base_of_v<std::ostream, T>                                     \
-            )                                                                           \
-        inline friend auto operator<<(const T& lhs, const cls& rhs) {                   \
-            using Return = typename impl::__lshift__<T, cls>::Return;                   \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Left shift operator must return a py::Object subclass.  Check your "   \
-                "specialization of __lshift__ for this type and ensure the Return "     \
-                "type is derived from py::Object."                                      \
-            );                                                                          \
-            return operator_lshift<Return>(lhs, rhs);                                   \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__ilshift__<cls, T>::enable && !impl::proxy_like<T>)        \
-        inline cls& operator<<=(const T& value) {                                       \
-            using Return = typename impl::__ilshift__<cls, T>::Return;                  \
-            static_assert(                                                              \
-                std::is_same_v<cls, Return>,                                            \
-                "In-place left shift operator must return the same type as the left "   \
-                "operand.  Check your specialization of __ilshift__ for these types "   \
-                "and ensure the Return type is set to the left operand."                \
-            );                                                                          \
-            operator_ilshift<Return>(*this, value);                                     \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::proxy_like<T>)                            \
-        inline cls& operator<<=(const T& value) {                                       \
-            *this <<= value.value();                                                    \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__rshift__<cls, T>::enable)               \
-        inline auto operator>>(const T& value) const {                                  \
-            using Return = typename impl::__rshift__<cls, T>::Return;                   \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Right shift operator must return a py::Object subclass.  Check your "  \
-                "specialization of __rshift__ for this type and ensure the Return "     \
-                "type is derived from py::Object."                                      \
-            );                                                                          \
-            return operator_rshift<Return>(*this, value);                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (                                                                  \
-                impl::__rshift__<T, cls>::enable &&                                     \
-                !std::is_base_of_v<Object, T> &&                                        \
-                !std::is_base_of_v<std::istream, T>                                     \
-            )                                                                           \
-        inline friend auto operator>>(const T& lhs, const cls& rhs) {                   \
-            using Return = typename impl::__rshift__<T, cls>::Return;                   \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Right shift operator must return a py::Object subclass.  Check your "  \
-                "specialization of __rshift__ for this type and ensure the Return "     \
-                "type is derived from py::Object."                                      \
-            );                                                                          \
-            return operator_rshift<Return>(lhs, rhs);                                   \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__irshift__<cls, T>::enable && !impl::proxy_like<T>)        \
-        inline cls& operator>>=(const T& value) {                                       \
-            using Return = typename impl::__irshift__<cls, T>::Return;                  \
-            static_assert(                                                              \
-                std::is_same_v<cls, Return>,                                            \
-                "In-place right shift operator must return the same type as the left "  \
-                "operand.  Check your specialization of __irshift__ for these types "   \
-                "and ensure the Return type is set to the left operand."                \
-            );                                                                          \
-            operator_irshift<Return>(*this, value);                                     \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::proxy_like<T>)                            \
-        inline cls& operator>>=(const T& value) {                                       \
-            *this >>= value.value();                                                    \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__and__<cls, T>::enable)                  \
-        inline auto operator&(const T& value) const {                                   \
-            using Return = typename impl::__and__<cls, T>::Return;                      \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Bitwise AND operator must return a py::Object subclass.  Check your "  \
-                "specialization of __and__ for this type and ensure the Return type "   \
-                "is derived from py::Object."                                           \
-            );                                                                          \
-            return operator_and<Return>(*this, value);                                  \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__and__<T, cls>::enable && !std::is_base_of_v<Object, T>)   \
-        inline friend auto operator&(const T& lhs, const cls& rhs) {                    \
-            using Return = typename impl::__and__<T, cls>::Return;                      \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Bitwise AND operator must return a py::Object subclass.  Check your "  \
-                "specialization of __and__ for this type and ensure the Return type "   \
-                "is derived from py::Object."                                           \
-            );                                                                          \
-            return operator_and<Return>(lhs, rhs);                                      \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__iand__<cls, T>::enable && !impl::proxy_like<T>)           \
-        inline cls& operator&=(const T& value) {                                        \
-            using Return = typename impl::__iand__<cls, T>::Return;                     \
-            static_assert(                                                              \
-                std::is_same_v<cls, Return>,                                            \
-                "In-place bitwise AND operator must return the same type as the left "  \
-                "operand.  Check your specialization of __iand__ for these types and "  \
-                "ensure the Return type is set to the left operand."                    \
-            );                                                                          \
-            operator_iand<Return>(*this, value);                                        \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::proxy_like<T>)                            \
-        inline cls& operator&=(const T& value) {                                        \
-            *this &= value.value();                                                     \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__or__<cls, T>::enable)                   \
-        inline auto operator|(const T& value) const {                                   \
-            using Return = typename impl::__or__<cls, T>::Return;                       \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Bitwise OR operator must return a py::Object subclass.  Check your "   \
-                "specialization of __or__ for this type and ensure the Return type is " \
-                "derived from py::Object."                                              \
-            );                                                                          \
-            return operator_or<Return>(*this, value);                                   \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__or__<T, cls>::enable && !std::is_base_of_v<Object, T>)    \
-        inline friend auto operator|(const T& lhs, const cls& rhs) {                    \
-            using Return = typename impl::__or__<T, cls>::Return;                       \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Bitwise OR operator must return a py::Object subclass.  Check your "   \
-                "specialization of __or__ for this type and ensure the Return type is " \
-                "derived from py::Object."                                              \
-            );                                                                          \
-            return operator_or<Return>(lhs, rhs);                                       \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__ior__<cls, T>::enable && !impl::proxy_like<T>)            \
-        inline cls& operator|=(const T& value) {                                        \
-            using Return = typename impl::__ior__<cls, T>::Return;                      \
-            static_assert(                                                              \
-                std::is_same_v<cls, Return>,                                            \
-                "In-place bitwise OR operator must return the same type as the left "   \
-                "operand.  Check your specialization of __ior__ for these types and "   \
-                "ensure the Return type is set to the left operand."                    \
-            );                                                                          \
-            operator_ior<Return>(*this, value);                                         \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::proxy_like<T>)                            \
-        inline cls& operator|=(const T& value) {                                        \
-            *this |= value.value();                                                     \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::__xor__<cls, T>::enable)                  \
-        inline auto operator^(const T& value) const {                                   \
-            using Return = typename impl::__xor__<cls, T>::Return;                      \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Bitwise XOR operator must return a py::Object subclass.  Check your "  \
-                "specialization of __xor__ for this type and ensure the Return type "   \
-                "is derived from py::Object."                                           \
-            );                                                                          \
-            return operator_xor<Return>(*this, value);                                  \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__xor__<T, cls>::enable && !std::is_base_of_v<Object, T>)   \
-        inline friend auto operator^(const T& lhs, const cls& rhs) {                    \
-            using Return = typename impl::__xor__<T, cls>::Return;                      \
-            static_assert(                                                              \
-                std::is_base_of_v<Object, Return>,                                      \
-                "Bitwise XOR operator must return a py::Object subclass.  Check your "  \
-                "specialization of __xor__ for this type and ensure the Return type "   \
-                "is derived from py::Object."                                           \
-            );                                                                          \
-            return operator_xor<Return>(lhs, rhs);                                      \
-        }                                                                               \
-                                                                                        \
-        template <typename T>                                                           \
-            requires (impl::__ixor__<cls, T>::enable && !impl::proxy_like<T>)           \
-        inline cls& operator^=(const T& value) {                                        \
-            using Return = typename impl::__ixor__<cls, T>::Return;                     \
-            static_assert(                                                              \
-                std::is_same_v<cls, Return>,                                            \
-                "In-place bitwise XOR operator must return the same type as the left "  \
-                "operand.  Check your specialization of __ixor__ for these types and "  \
-                "ensure the Return type is set to the left operand."                    \
-            );                                                                          \
-            operator_ixor<Return>(*this, value);                                        \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::proxy_like<T>)                            \
-        inline cls& operator^=(const T& value) {                                        \
-            *this ^= value.value();                                                     \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        inline friend std::ostream& operator<<(std::ostream& os, const cls& obj) {      \
-            PyObject* repr = PyObject_Repr(obj.ptr());                                  \
-            if (repr == nullptr) {                                                      \
-                throw error_already_set();                                              \
-            }                                                                           \
-            Py_ssize_t size;                                                            \
-            const char* data = PyUnicode_AsUTF8AndSize(repr, &size);                    \
-            if (data == nullptr) {                                                      \
-                Py_DECREF(repr);                                                        \
-                throw error_already_set();                                              \
-            }                                                                           \
-            os.write(data, size);                                                       \
-            Py_DECREF(repr);                                                            \
-            return os;                                                                  \
-        }                                                                               \
-
-    /* All subclasses of py::Object must define these constructors, which are taken
-    directly from PYBIND11_OBJECT_COMMON and cover the basic object creation and
-    conversion logic.
-
-    The check() function will be called whenever a generic Object wrapper is implicitly
-    converted to this type.  It should return true if and only if the object has a
-    compatible type, and it will never be passed a null pointer.  If it returns false,
-    a TypeError will be raised during the assignment.
-
-    Also included are generic copy and move constructors that work with any object type
-    that is like this one.  It depends on each type implementing the `like` trait
-    before invoking this macro.
-
-    Lastly, a generic assignment operator is provided that triggers implicit
-    conversions to this type for any inputs that support them.  This is especially
-    nice for initializer-list syntax, enabling containers to be assigned to like this:
-
-        py::List list = {1, 2, 3, 4, 5};
-        list = {5, 4, 3, 2, 1};
-    */
-    #define BERTRAND_OBJECT_COMMON(parent, cls, check_func)                             \
-        /* Overload check() for runtime Python values using check_func. */              \
-        template <typename T> requires (impl::python_like<T>)                           \
-        static constexpr bool check(const T& obj) {                                     \
-            return obj.ptr() != nullptr && check_func(obj.ptr());                       \
-        }                                                                               \
-                                                                                        \
-        /* Overload check() for runtime C++ values using template metaprogramming. */   \
-        template <typename T> requires (!impl::python_like<T>)                          \
-        static constexpr bool check(const T&) {                                         \
-            return check<T>();                                                          \
-        }                                                                               \
-                                                                                        \
-        /* pybind11 expects check_ internally, but the idea is the same. */             \
-        template <typename T> requires (impl::python_like<T>)                           \
-        static constexpr bool check_(const T& value) { return check(value); }           \
-        template <typename T> requires (!impl::python_like<T>)                          \
-        static constexpr bool check_(const T& value) { return check(value); }           \
-                                                                                        \
-        /* Inherit tagged borrow/steal constructors. */                                 \
-        cls(Handle h, const borrowed_t& t) : parent(h, t) {}                            \
-        cls(Handle h, const stolen_t& t) : parent(h, t) {}                              \
-                                                                                        \
-        /* Convert a pybind11 accessor into this type. */                               \
-        template <typename Policy>                                                      \
-        cls(const detail::accessor<Policy>& a) {                                        \
-            pybind11::object obj(a);                                                    \
-            if (obj.ptr() != nullptr && check_func(obj.ptr())) {                        \
-                m_ptr = obj.release().ptr();                                            \
-            } else {                                                                    \
-                throw impl::noconvert<cls>(obj.ptr());                                  \
-            }                                                                           \
-        }                                                                               \
-                                                                                        \
-        /* Trigger implicit conversions to this type via the assignment operator. */    \
-        template <typename T> requires (std::is_convertible_v<T, cls>)                  \
-        cls& operator=(T&& value) {                                                     \
-            if constexpr (std::is_same_v<cls, std::decay_t<T>>) {                       \
-                if (this != &value) {                                                   \
-                    parent::operator=(std::forward<T>(value));                          \
-                }                                                                       \
-            } else if constexpr (impl::has_conversion_operator<std::decay_t<T>, cls>) { \
-                parent::operator=(value.operator cls());                                \
-            } else {                                                                    \
-                parent::operator=(cls(std::forward<T>(value)));                         \
-            }                                                                           \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        /* Delete type narrowing operator inherited from Object. */                     \
-        template <typename T> requires (std::is_base_of_v<Object, T>)                   \
-        operator T() const = delete;                                                    \
-                                                                                        \
-        BERTRAND_OBJECT_OPERATORS(cls)                                                  \
 
     template <typename ... Args>
     struct __call__<Object, Args...>                        : Returns<Object> {};
@@ -2118,11 +1319,133 @@ namespace impl {
 }  // namespace impl
 
 
+/* Intermediate class deletes all operator overloads inherited from pybind11::object. */
+struct BaseObject : public pybind11::object {
+    using pybind11::object::object;
+    using pybind11::object::operator=;
+
+    /* Copy constructor.  Borrows a reference to an existing object. */
+    BaseObject(const pybind11::object& o) : pybind11::object(o) {}
+
+    /* Move constructor.  Steals a reference to a temporary object. */
+    BaseObject(pybind11::object&& o) : pybind11::object(std::move(o)) {}
+
+    inline auto operator~() const = delete;
+
+    template <typename T>
+    bool operator<(const T& value) const = delete;
+    template <typename T>
+    friend bool operator<(const T& lhs, const BaseObject& rhs) = delete;
+
+    template <typename T>
+    bool operator<=(const T& value) const = delete;
+    template <typename T>
+    friend bool operator<=(const T& lhs, const BaseObject& rhs) = delete;
+
+    template <typename T>
+    bool operator==(const T& value) const = delete;
+    template <typename T>
+    friend bool operator==(const T& lhs, const BaseObject& rhs) = delete;
+
+    template <typename T>
+    bool operator!=(const T& value) const = delete;
+    template <typename T>
+    friend bool operator!=(const T& lhs, const BaseObject& rhs) = delete;
+
+    template <typename T>
+    bool operator>=(const T& value) const = delete;
+    template <typename T>
+    friend bool operator>=(const T& lhs, const BaseObject& rhs) = delete;
+
+    template <typename T>
+    bool operator>(const T& value) const = delete;
+    template <typename T>
+    friend bool operator>(const T& lhs, const BaseObject& rhs) = delete;
+
+    inline auto operator+() const = delete;
+    inline auto operator++() = delete;
+    inline auto operator++(int) = delete;
+    template <typename T>
+    BaseObject operator+(const T& value) const = delete;
+    template <typename T>
+    friend BaseObject operator+(const T& lhs, const BaseObject& rhs) = delete;
+    template <typename T>
+    BaseObject& operator+=(const T& value) = delete;
+
+    inline auto operator-() const = delete;
+    inline auto operator--() = delete;
+    inline auto operator--(int) = delete;
+    template <typename T>
+    BaseObject operator-(const T& value) const = delete;
+    template <typename T>
+    friend BaseObject operator-(const T& lhs, const BaseObject& rhs) = delete;
+    template <typename T>
+    BaseObject& operator-=(const T& value) = delete;
+
+    template <typename T>
+    BaseObject operator*(const T& value) const = delete;
+    template <typename T>
+    friend BaseObject operator*(const T& lhs, const BaseObject& rhs) = delete;
+    template <typename T>
+    BaseObject& operator*=(const T& value) = delete;
+
+    template <typename T>
+    BaseObject operator/(const T& value) const = delete;
+    template <typename T>
+    friend BaseObject operator/(const T& lhs, const BaseObject& rhs) = delete;
+    template <typename T>
+    BaseObject& operator/=(const T& value) = delete;
+
+    template <typename T>
+    BaseObject operator%(const T& value) const = delete;
+    template <typename T>
+    friend BaseObject operator%(const T& lhs, const BaseObject& rhs) = delete;
+    template <typename T>
+    BaseObject& operator%=(const T& value) = delete;
+
+    template <typename T>
+    BaseObject operator<<(const T& value) const = delete;
+    template <typename T>
+    friend BaseObject operator<<(const T& lhs, const BaseObject& rhs) = delete;
+    template <typename T>
+    BaseObject& operator<<=(const T& value) = delete;
+
+    template <typename T>
+    BaseObject operator>>(const T& value) const = delete;
+    template <typename T>
+    friend BaseObject operator>>(const T& lhs, const BaseObject& rhs) = delete;
+    template <typename T>
+    BaseObject& operator>>=(const T& value) = delete;
+
+    template <typename T>
+    BaseObject operator&(const T& value) const = delete;
+    template <typename T>
+    friend BaseObject operator&(const T& lhs, const BaseObject& rhs) = delete;
+    template <typename T>
+    BaseObject& operator&=(const T& value) = delete;
+
+    template <typename T>
+    BaseObject operator|(const T& value) const = delete;
+    template <typename T>
+    friend BaseObject operator|(const T& lhs, const BaseObject& rhs) = delete;
+    template <typename T>
+    BaseObject& operator|=(const T& value) = delete;
+
+    template <typename T>
+    BaseObject operator^(const T& value) const = delete;
+    template <typename T>
+    friend BaseObject operator^(const T& lhs, const BaseObject& rhs) = delete;
+    template <typename T>
+    BaseObject& operator^=(const T& value) = delete;
+
+};
+
+
 /* A revised pybind11::object interface that allows implicit conversions to subtypes
 (applying a type check on the way), explicit conversions to arbitrary C++ types via
 static_cast<>, cross-language math operators, and generalized slice/attr syntax. */
-class Object : public pybind11::object {
-    using Base = pybind11::object;
+class Object : public BaseObject {
+    using Base = BaseObject;
 
 protected:
 
@@ -2285,35 +1608,518 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    /* Type-safe operator overloads are easily the most complicated thing about
-     * bertrand's Object interface.  They are implemented using the control structs
-     * defined in the `impl::` namespace above, which can be specialized to selectively
-     * enable certain operators and assign appropriate return types for static analysis.
-     * Each operator expands to an optimized CPython API call, which users should never
-     * need to interact with on their own.  Specializing the appropriate control struct
-     * is all that's needed to enable an operator or assign a return type, and that can
-     * be done in 2 lines of code, including support for C++20 concepts.
-     */
+    BERTRAND_OBJECT_OPERATORS(Object)
 
     template <StaticStr key>
     inline impl::AttrProxy<Object> attr() const;
 
-    BERTRAND_OBJECT_OPERATORS(Object)
+    template <typename T> requires (impl::__invert__<T>::enable)
+    inline friend auto operator~(const T& self) {
+        using Return = typename impl::__invert__<T>::Return;
+        static_assert(
+            std::is_base_of_v<Object, Return>,
+            "Bitwise NOT operator must return a py::Object subclass.  Check your "
+            "specialization of __invert__ for this type and ensure the Return type "
+            "is set to a py::Object subclass."
+        );
+        return T::template operator_invert<Return>(self);
+    }
+
+    template <typename L, typename R> requires (impl::__lt__<L, R>::enable)
+    inline friend auto operator<(const L& lhs, const R& rhs) {
+        using Return = typename impl::__lt__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, bool>,
+            "Less-than operator must return a boolean value.  Check your "
+            "specialization of __lt__ for these types and ensure the Return type "
+            "is set to bool."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_lt<Return>(lhs, rhs);
+        } else {
+            return R::template operator_lt<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__le__<L, R>::enable)
+    inline friend auto operator<=(const L& lhs, const R& rhs) {
+        using Return = typename impl::__le__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, bool>,
+            "Less-than-or-equal operator must return a boolean value.  Check your "
+            "specialization of __le__ for this type and ensure the Return type is "
+            "set to bool."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_le<Return>(lhs, rhs);
+        } else {
+            return R::template operator_le<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__eq__<L, R>::enable)
+    inline friend auto operator==(const L& lhs, const R& rhs) {
+        using Return = typename impl::__eq__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, bool>,
+            "Equality operator must return a boolean value.  Check your "
+            "specialization of __eq__ for this type and ensure the Return type is "
+            "set to bool."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_eq<Return>(lhs, rhs);
+        } else {
+            return R::template operator_eq<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__ne__<L, R>::enable)
+    inline friend auto operator!=(const L& lhs, const R& rhs) {
+        using Return = typename impl::__ne__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, bool>,
+            "Inequality operator must return a boolean value.  Check your "
+            "specialization of __ne__ for this type and ensure the Return type is "
+            "set to bool."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_ne<Return>(lhs, rhs);
+        } else {
+            return R::template operator_ne<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__ge__<L, R>::enable)
+    inline friend auto operator>=(const L& lhs, const R& rhs) {
+        using Return = typename impl::__ge__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, bool>,
+            "Greater-than-or-equal operator must return a boolean value.  Check "
+            "your specialization of __ge__ for this type and ensure the Return "
+            "type is set to bool."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_ge<Return>(lhs, rhs);
+        } else {
+            return R::template operator_ge<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__gt__<L, R>::enable)
+    inline friend auto operator>(const L& lhs, const R& rhs) {
+        using Return = typename impl::__gt__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, bool>,
+            "Greater-than operator must return a boolean value.  Check your "
+            "specialization of __gt__ for this type and ensure the Return type is "
+            "set to bool."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_gt<Return>(lhs, rhs);
+        } else {
+            return R::template operator_gt<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename T> requires (impl::__pos__<T>::enable)
+    inline friend auto operator+(const T& self) {
+        using Return = typename impl::__pos__<T>::Return;
+        static_assert(
+            std::is_base_of_v<Object, Return>,
+            "Unary positive operator must return a py::Object subclass.  Check "
+            "your specialization of __pos__ for this type and ensure the Return "
+            "type is set to a py::Object subclass."
+        );
+        return T::template operator_pos<Return>(self);
+    }
+
+    template <typename T> requires (impl::__increment__<T>::enable)
+    inline friend T& operator++(T& self) {
+        using Return = typename impl::__increment__<T>::Return;
+        static_assert(
+            std::is_same_v<Return, T>,
+            "Increment operator must return a reference to the derived type.  "
+            "Check your specialization of __increment__ for this type and ensure "
+            "the Return type is set to the derived type."
+        );
+        T::template operator_increment<Return>(self);
+        return self;
+    }
+
+    template <typename T> requires (impl::__increment__<T>::enable)
+    inline friend T operator++(T& self, int) {
+        using Return = typename impl::__increment__<T>::Return;
+        static_assert(
+            std::is_same_v<Return, T>,
+            "Increment operator must return a reference to the derived type.  "
+            "Check your specialization of __increment__ for this type and ensure "
+            "the Return type is set to the derived type."
+        );
+        T copy = self;
+        T::template operator_increment<Return>(self);
+        return copy;
+    }
+
+    template <typename L, typename R> requires (impl::__add__<L, R>::enable)
+    inline friend auto operator+(const L& lhs, const R& rhs) {
+        using Return = typename impl::__add__<L, R>::Return;
+        static_assert(
+            std::is_base_of_v<Object, Return>,
+            "Addition operator must return a py::Object subclass.  Check your "
+            "specialization of __add__ for this type and ensure the Return type is "
+            "derived from py::Object."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_add<Return>(lhs, rhs);
+        } else {
+            return R::template operator_add<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__iadd__<L, R>::enable)
+    inline friend L& operator+=(L& lhs, const R& rhs) {
+        using Return = typename impl::__iadd__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, L&>,
+            "In-place addition operator must return a mutable reference to the left "
+            "operand.  Check your specialization of __iadd__ for these types and "
+            "ensure the Return type is set to the left operand."
+        );
+        L::template operator_iadd<Return>(lhs, rhs);
+        return lhs;
+    }
+
+    template <typename T> requires (impl::__neg__<T>::enable)
+    inline friend auto operator-(const T& self) {
+        using Return = typename impl::__neg__<T>::Return;
+        static_assert(
+            std::is_base_of_v<Object, Return>,
+            "Unary negative operator must return a py::Object subclass.  Check "
+            "your specialization of __neg__ for this type and ensure the Return "
+            "type is set to a py::Object subclass."
+        );
+        return T::template operator_neg<Return>(self);
+    }
+
+    template <typename T> requires (impl::__decrement__<T>::enable)
+    inline friend T& operator--(T& self) {
+        using Return = typename impl::__decrement__<T>::Return;
+        static_assert(
+            std::is_same_v<Return, T>,
+            "Decrement operator must return a reference to the derived type.  "
+            "Check your specialization of __decrement__ for this type and ensure "
+            "the Return type is set to the derived type."
+        );
+        T::template operator_decrement<Return>(self);
+        return self;
+    }
+
+    template <typename T> requires (impl::__decrement__<T>::enable)
+    inline friend T operator--(T& self, int) {
+        using Return = typename impl::__decrement__<T>::Return;
+        static_assert(
+            std::is_same_v<Return, T>,
+            "Decrement operator must return a reference to the derived type.  "
+            "Check your specialization of __decrement__ for this type and ensure "
+            "the Return type is set to the derived type."
+        );
+        T copy = self;
+        T::template operator_decrement<Return>(self);
+        return copy;
+    }
+
+    template <typename L, typename R> requires (impl::__sub__<L, R>::enable)
+    inline friend auto operator-(const L& lhs, const R& rhs) {
+        using Return = typename impl::__sub__<L, R>::Return;
+        static_assert(
+            std::is_base_of_v<Object, Return>,
+            "Subtraction operator must return a py::Object subclass.  Check your "
+            "specialization of __sub__ for this type and ensure the Return type is "
+            "derived from py::Object."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_sub<Return>(lhs, rhs);
+        } else {
+            return R::template operator_sub<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__isub__<L, R>::enable)
+    inline friend L& operator-=(L& lhs, const R& rhs) {
+        using Return = typename impl::__isub__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, L&>,
+            "In-place addition operator must return a mutable reference to the left "
+            "operand.  Check your specialization of __isub__ for these types and "
+            "ensure the Return type is set to the left operand."
+        );
+        L::template operator_isub<Return>(lhs, rhs);
+        return lhs;
+    }
+
+    template <typename L, typename R> requires (impl::__mul__<L, R>::enable)
+    inline friend auto operator*(const L& lhs, const R& rhs) {
+        using Return = typename impl::__mul__<L, R>::Return;
+        static_assert(
+            std::is_base_of_v<Object, Return>,
+            "Multiplication operator must return a py::Object subclass.  Check "
+            "your specialization of __mul__ for this type and ensure the Return "
+            "type is derived from py::Object."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_mul<Return>(lhs, rhs);
+        } else {
+            return R::template operator_mul<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__imul__<L, R>::enable)
+    inline friend L& operator*=(L& lhs, const R& rhs) {
+        using Return = typename impl::__imul__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, L&>,
+            "In-place multiplication operator must return a mutable reference to the "
+            "left operand.  Check your specialization of __imul__ for these types "
+            "and ensure the Return type is set to the left operand."
+        );
+        L::template operator_imul<Return>(lhs, rhs);
+        return lhs;
+    }
+
+    template <typename L, typename R> requires (impl::__truediv__<L, R>::enable)
+    inline friend auto operator/(const L& lhs, const R& rhs) {
+        using Return = typename impl::__truediv__<L, R>::Return;
+        static_assert(
+            std::is_base_of_v<Object, Return>,
+            "True division operator must return a py::Object subclass.  Check "
+            "your specialization of __truediv__ for this type and ensure the "
+            "Return type is derived from py::Object."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_truediv<Return>(lhs, rhs);
+        } else {
+            return R::template operator_truediv<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__itruediv__<L, R>::enable)
+    inline friend L& operator/=(L& lhs, const R& rhs) {
+        using Return = typename impl::__itruediv__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, L&>,
+            "In-place true division operator must return a mutable reference to the "
+            "left operand.  Check your specialization of __itruediv__ for these "
+            "types and ensure the Return type is set to the left operand."
+        );
+        L::template operator_itruediv<Return>(lhs, rhs);
+        return lhs;
+    }
+
+    template <typename L, typename R> requires (impl::__mod__<L, R>::enable)
+    inline friend auto operator%(const L& lhs, const R& rhs) {
+        using Return = typename impl::__mod__<L, R>::Return;
+        static_assert(
+            std::is_base_of_v<Object, Return>,
+            "Modulus operator must return a py::Object subclass.  Check your "
+            "specialization of __mod__ for this type and ensure the Return type "
+            "is derived from py::Object."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_mod<Return>(lhs, rhs);
+        } else {
+            return R::template operator_mod<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__imod__<L, R>::enable)
+    inline friend L& operator%=(L& lhs, const R& rhs) {
+        using Return = typename impl::__imod__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, L&>,
+            "In-place modulus operator must return a mutable reference to the left "
+            "operand.  Check your specialization of __imod__ for these types and "
+            "ensure the Return type is set to the left operand."
+        );
+        L::template operator_imod<Return>(lhs, rhs);
+        return lhs;
+    }
+
+    template <typename L, typename R> requires (impl::__lshift__<L, R>::enable)
+    inline friend auto operator<<(const L& lhs, const R& rhs) {
+        using Return = typename impl::__lshift__<L, R>::Return;
+        static_assert(
+            std::is_base_of_v<Object, Return>,
+            "Left shift operator must return a py::Object subclass.  Check your "
+            "specialization of __lshift__ for this type and ensure the Return "
+            "type is derived from py::Object."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_lshift<Return>(lhs, rhs);
+        } else {
+            return R::template operator_lshift<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__ilshift__<L, R>::enable)
+    inline friend L& operator<<=(L& lhs, const R& rhs) {
+        using Return = typename impl::__ilshift__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, L&>,
+            "In-place left shift operator must return a mutable reference to the left "
+            "operand.  Check your specialization of __ilshift__ for these types "
+            "and ensure the Return type is set to the left operand."
+        );
+        L::template operator_ilshift<Return>(lhs, rhs);
+        return lhs;
+    }
+
+    template <typename L, typename R> requires (impl::__rshift__<L, R>::enable)
+    inline friend auto operator>>(const L& lhs, const R& rhs) {
+        using Return = typename impl::__rshift__<L, R>::Return;
+        static_assert(
+            std::is_base_of_v<Object, Return>,
+            "Right shift operator must return a py::Object subclass.  Check your "
+            "specialization of __rshift__ for this type and ensure the Return "
+            "type is derived from py::Object."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_rshift<Return>(lhs, rhs);
+        } else {
+            return R::template operator_rshift<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__irshift__<L, R>::enable)
+    inline friend L& operator>>=(L& lhs, const L& rhs) {
+        using Return = typename impl::__irshift__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, L&>,
+            "In-place right shift operator must return a mutable reference to the left "
+            "operand.  Check your specialization of __irshift__ for these types "
+            "and ensure the Return type is set to the left operand."
+        );
+        L::template operator_irshift<Return>(lhs, rhs);
+        return lhs;
+    }
+
+    template <typename L, typename R> requires (impl::__and__<L, R>::enable)
+    inline friend auto operator&(const L& lhs, const R& rhs) {
+        using Return = typename impl::__and__<L, R>::Return;
+        static_assert(
+            std::is_base_of_v<Object, Return>,
+            "Bitwise AND operator must return a py::Object subclass.  Check your "
+            "specialization of __and__ for this type and ensure the Return type "
+            "is derived from py::Object."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_and<Return>(lhs, rhs);
+        } else {
+            return R::template operator_and<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__iand__<L, R>::enable)
+    inline friend L& operator&=(L& lhs, const R& rhs) {
+        using Return = typename impl::__iand__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, L&>,
+            "In-place bitwise AND operator must return a mutable reference to the left "
+            "operand.  Check your specialization of __iand__ for these types and "
+            "ensure the Return type is set to the left operand."
+        );
+        L::template operator_iand<Return>(lhs, rhs);
+        return lhs;
+    }
+
+    template <typename L, typename R> requires (impl::__or__<L, R>::enable)
+    inline friend auto operator|(const L& lhs, const R& rhs) {
+        using Return = typename impl::__or__<L, R>::Return;
+        static_assert(
+            std::is_base_of_v<Object, Return>,
+            "Bitwise OR operator must return a py::Object subclass.  Check your "
+            "specialization of __or__ for this type and ensure the Return type is "
+            "derived from py::Object."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_or<Return>(lhs, rhs);
+        } else {
+            return R::template operator_or<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__ior__<L, R>::enable)
+    inline friend L& operator|=(L& lhs, const R& rhs) {
+        using Return = typename impl::__ior__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, L&>,
+            "In-place bitwise OR operator must return a mutable reference to the left "
+            "operand.  Check your specialization of __ior__ for these types and "
+            "ensure the Return type is set to the left operand."
+        );
+        L::template operator_ior<Return>(lhs, rhs);
+        return lhs;
+    }
+
+    template <typename L, typename R> requires (impl::__xor__<L, R>::enable)
+    inline friend auto operator^(const L& lhs, const R& rhs) {
+        using Return = typename impl::__xor__<L, R>::Return;
+        static_assert(
+            std::is_base_of_v<Object, Return>,
+            "Bitwise XOR operator must return a py::Object subclass.  Check your "
+            "specialization of __xor__ for this type and ensure the Return type "
+            "is derived from py::Object."
+        );
+        if constexpr (std::is_base_of_v<Object, L>) {
+            return L::template operator_xor<Return>(lhs, rhs);
+        } else {
+            return R::template operator_xor<Return>(lhs, rhs);
+        }
+    }
+
+    template <typename L, typename R> requires (impl::__ixor__<L, R>::enable)
+    inline friend L& operator^=(L& lhs, const R& rhs) {
+        using Return = typename impl::__ixor__<L, R>::Return;
+        static_assert(
+            std::is_same_v<Return, L&>,
+            "In-place bitwise XOR operator must return a mutable reference to the left "
+            "operand.  Check your specialization of __ixor__ for these types and "
+            "ensure the Return type is set to the left operand."
+        );
+        L::template operator_ixor<Return>(lhs, rhs);
+        return lhs;
+    }
+
+    template <typename T>
+    inline friend std::ostream& operator<<(std::ostream& os, const T& obj) {
+        PyObject* repr = PyObject_Repr(obj.ptr());
+        if (repr == nullptr) {
+            throw error_already_set();
+        }
+        Py_ssize_t size;
+        const char* data = PyUnicode_AsUTF8AndSize(repr, &size);
+        if (data == nullptr) {
+            Py_DECREF(repr);
+            throw error_already_set();
+        }
+        os.write(data, size);
+        Py_DECREF(repr);
+        return os;
+    }
 
 private:
 
     template <typename... Args>
     inline auto operator_call_impl(Args&&... args) const {
-        return Base::operator()(std::forward<Args>(args)...);
+        return pybind11::object::operator()(std::forward<Args>(args)...);
     }
 
     template <typename T>
     inline bool operator_contains_impl(const T& key) const {
-        return Base::contains(key);
+        return pybind11::object::contains(key);
     }
 
     inline auto operator_dereference_impl() const {
-        return Base::operator*();
+        return pybind11::object::operator*();
     }
 
 protected:
@@ -2787,6 +2593,184 @@ protected:
 
 
 namespace impl {
+
+    /* All subclasses of py::Object must define these constructors, which are taken
+    directly from PYBIND11_OBJECT_COMMON and cover the basic object creation and
+    conversion logic.
+
+    The check() function will be called whenever a generic Object wrapper is implicitly
+    converted to this type.  It should return true if and only if the object has a
+    compatible type, and it will never be passed a null pointer.  If it returns false,
+    a TypeError will be raised during the assignment.
+
+    Also included are generic copy and move constructors that work with any object type
+    that is like this one.  It depends on each type implementing the `like` trait
+    before invoking this macro.
+
+    Lastly, a generic assignment operator is provided that triggers implicit
+    conversions to this type for any inputs that support them.  This is especially
+    nice for initializer-list syntax, enabling containers to be assigned to like this:
+
+        py::List list = {1, 2, 3, 4, 5};
+        list = {5, 4, 3, 2, 1};
+    */
+    #define BERTRAND_OBJECT_COMMON(parent, cls, check_func)                             \
+        /* Overload check() for runtime Python values using check_func. */              \
+        template <typename T> requires (impl::python_like<T>)                           \
+        static constexpr bool check(const T& obj) {                                     \
+            return obj.ptr() != nullptr && check_func(obj.ptr());                       \
+        }                                                                               \
+                                                                                        \
+        /* Overload check() for runtime C++ values using template metaprogramming. */   \
+        template <typename T> requires (!impl::python_like<T>)                          \
+        static constexpr bool check(const T&) {                                         \
+            return check<T>();                                                          \
+        }                                                                               \
+                                                                                        \
+        /* pybind11 expects check_ internally, but the idea is the same. */             \
+        template <typename T> requires (impl::python_like<T>)                           \
+        static constexpr bool check_(const T& value) { return check(value); }           \
+        template <typename T> requires (!impl::python_like<T>)                          \
+        static constexpr bool check_(const T& value) { return check(value); }           \
+                                                                                        \
+        /* Inherit tagged borrow/steal constructors. */                                 \
+        cls(Handle h, const borrowed_t& t) : parent(h, t) {}                            \
+        cls(Handle h, const stolen_t& t) : parent(h, t) {}                              \
+                                                                                        \
+        /* Convert a pybind11 accessor into this type. */                               \
+        template <typename Policy>                                                      \
+        cls(const detail::accessor<Policy>& a) {                                        \
+            pybind11::object obj(a);                                                    \
+            if (obj.ptr() != nullptr && check_func(obj.ptr())) {                        \
+                m_ptr = obj.release().ptr();                                            \
+            } else {                                                                    \
+                throw impl::noconvert<cls>(obj.ptr());                                  \
+            }                                                                           \
+        }                                                                               \
+                                                                                        \
+        /* Trigger implicit conversions to this type via the assignment operator. */    \
+        template <typename T> requires (std::is_convertible_v<T, cls>)                  \
+        cls& operator=(T&& value) {                                                     \
+            if constexpr (std::is_same_v<cls, std::decay_t<T>>) {                       \
+                if (this != &value) {                                                   \
+                    parent::operator=(std::forward<T>(value));                          \
+                }                                                                       \
+            } else if constexpr (impl::has_conversion_operator<std::decay_t<T>, cls>) { \
+                parent::operator=(value.operator cls());                                \
+            } else {                                                                    \
+                parent::operator=(cls(std::forward<T>(value)));                         \
+            }                                                                           \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        /* Delete type narrowing operator inherited from Object. */                     \
+        template <typename T> requires (std::is_base_of_v<Object, T>)                   \
+        operator T() const = delete;                                                    \
+                                                                                        \
+        BERTRAND_OBJECT_OPERATORS(cls)                                                  \
+                                                                                        \
+    protected:                                                                          \
+                                                                                        \
+        template <typename T> requires (impl::__invert__<T>::enable)                    \
+        friend auto operator~(const T& self);                                           \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__lt__<L, R>::enable)         \
+        friend auto operator<(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__le__<L, R>::enable)         \
+        friend auto operator<=(const L& lhs, const R& rhs);                             \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__eq__<L, R>::enable)         \
+        friend auto operator==(const L& lhs, const R& rhs);                             \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__ne__<L, R>::enable)         \
+        friend auto operator!=(const L& lhs, const R& rhs);                             \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__ge__<L, R>::enable)         \
+        friend auto operator>=(const L& lhs, const R& rhs);                             \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__gt__<L, R>::enable)         \
+        friend auto operator>(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename T> requires (impl::__pos__<T>::enable)                       \
+        friend auto operator+(const T& self);                                           \
+                                                                                        \
+        template <typename T> requires (impl::__increment__<T>::enable)                 \
+        friend auto operator++(T& self);                                                \
+                                                                                        \
+        template <typename T> requires (impl::__increment__<T>::enable)                 \
+        friend auto operator++(T& self, int);                                           \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__add__<L, R>::enable)        \
+        friend auto operator+(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__iadd__<L, R>::enable)       \
+        friend L& operator+=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+        template <typename T> requires (impl::__neg__<T>::enable)                       \
+        friend auto operator-(const T& self);                                           \
+                                                                                        \
+        template <typename T> requires (impl::__decrement__<T>::enable)                 \
+        friend auto operator--(T& self);                                                \
+                                                                                        \
+        template <typename T> requires (impl::__decrement__<T>::enable)                 \
+        friend auto operator--(T& self, int);                                           \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__sub__<L, R>::enable)        \
+        friend auto operator-(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__isub__<L, R>::enable)       \
+        friend L& operator-=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__mul__<L, R>::enable)        \
+        friend auto operator*(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__imul__<L, R>::enable)       \
+        friend L& operator*=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__truediv__<L, R>::enable)    \
+        friend auto operator/(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__itruediv__<L, R>::enable)   \
+        friend L& operator/=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__mod__<L, R>::enable)        \
+        friend auto operator%(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__imod__<L, R>::enable)       \
+        friend L& operator%=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__lshift__<L, R>::enable)     \
+        friend auto operator<<(const L& lhs, const R& rhs);                             \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__ilshift__<L, R>::enable)    \
+        friend L& operator<<=(L& lhs, const R& rhs);                                    \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__rshift__<L, R>::enable)     \
+        friend auto operator>>(const L& lhs, const R& rhs);                             \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__irshift__<L, R>::enable)    \
+        friend L& operator>>=(L& lhs, const R& rhs);                                    \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__and__<L, R>::enable)        \
+        friend auto operator&(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__iand__<L, R>::enable)       \
+        friend L& operator&=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__or__<L, R>::enable)         \
+        friend auto operator|(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__ior__<L, R>::enable)        \
+        friend L& operator|=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__xor__<L, R>::enable)        \
+        friend auto operator^(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__ixor__<L, R>::enable)       \
+        friend L& operator^=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+    public:                                                                             \
 
     /* Base class for all accessor proxies.  Stores an arbitrary object in a buffer and
     forwards its interface using pointer semantics. */
