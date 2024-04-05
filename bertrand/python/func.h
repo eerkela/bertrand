@@ -250,6 +250,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Code, comptime_check, PyCode_Check)
+    BERTRAND_OBJECT_OPERATORS(Code)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -437,6 +438,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Frame, comptime_check, PyFrame_Check)
+    BERTRAND_OBJECT_OPERATORS(Frame)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -579,6 +581,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Function, impl::is_callable_any, runtime_check)
+    BERTRAND_OBJECT_OPERATORS(Function)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -856,6 +859,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Method, comptime_check, PyInstanceMethod_Check)
+    BERTRAND_OBJECT_OPERATORS(Method)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Method() = delete;
@@ -906,6 +910,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, ClassMethod, comptime_check, runtime_check)
+    BERTRAND_OBJECT_OPERATORS(ClassMethod)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     ClassMethod() = delete;
@@ -952,6 +957,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, StaticMethod, comptime_check, runtime_check)
+    BERTRAND_OBJECT_OPERATORS(StaticMethod)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     StaticMethod() = delete;
@@ -995,6 +1001,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Property, comptime_check, runtime_check)
+    BERTRAND_OBJECT_OPERATORS(Property)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Property() = delete;

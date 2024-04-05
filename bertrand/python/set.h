@@ -467,6 +467,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, FrozenSet, impl::frozenset_like, PyFrozenSet_Check)
+    BERTRAND_OBJECT_OPERATORS(FrozenSet)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -620,6 +621,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Set, impl::set_like, PySet_Check)
+    BERTRAND_OBJECT_OPERATORS(Set)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

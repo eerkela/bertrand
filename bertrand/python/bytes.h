@@ -417,6 +417,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Bytes, impl::bytes_like, PyBytes_Check)
+    BERTRAND_OBJECT_OPERATORS(Bytes)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -547,6 +548,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, ByteArray, impl::bytearray_like, PyByteArray_Check)
+    BERTRAND_OBJECT_OPERATORS(ByteArray)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

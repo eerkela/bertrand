@@ -138,6 +138,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Str, impl::str_like, PyUnicode_Check)
+    BERTRAND_OBJECT_OPERATORS(Str)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

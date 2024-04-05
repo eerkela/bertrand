@@ -151,6 +151,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, KeysView, comptime_check, runtime_check)
+    BERTRAND_OBJECT_OPERATORS(KeysView)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -239,6 +240,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, ValuesView, comptime_check, runtime_check)
+    BERTRAND_OBJECT_OPERATORS(ValuesView)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -284,6 +286,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, ItemsView, comptime_check, runtime_check)
+    BERTRAND_OBJECT_OPERATORS(ItemsView)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -325,7 +328,8 @@ class Dict : public Object {
 public:
     static Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Dict, impl::dict_like, PyDict_Check);
+    BERTRAND_OBJECT_COMMON(Base, Dict, impl::dict_like, PyDict_Check)
+    BERTRAND_OBJECT_OPERATORS(Dict)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -788,6 +792,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, MappingProxy, impl::mappingproxy_like, runtime_check)
+    BERTRAND_OBJECT_OPERATORS(MappingProxy)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

@@ -32,6 +32,16 @@
 #include "bertrand/static_str.h"
 
 
+// TODO: refactor Object to contain a PyObject* directly and decouple from pybind11.
+// This means I don't need to worry about inheriting unwanted behaviors from pybind11,
+// and get the best possible error messages from the compiler.  It also allows me to
+// bypass the pybind11 destructor, which means all objects can be statically allocated
+// by default.  These are huge wins for developer experience.
+
+
+
+
+
 /* NOTES ON PERFORMANCE:
  * In general, bertrand should be as fast or faster than the equivalent Python code,
  * owing to the use of static typing, comp time, and optimized CPython API calls.  
@@ -1319,133 +1329,14 @@ namespace impl {
 }  // namespace impl
 
 
-/* Intermediate class deletes all operator overloads inherited from pybind11::object. */
-struct BaseObject : public pybind11::object {
-    using pybind11::object::object;
-    using pybind11::object::operator=;
-
-    /* Copy constructor.  Borrows a reference to an existing object. */
-    BaseObject(const pybind11::object& o) : pybind11::object(o) {}
-
-    /* Move constructor.  Steals a reference to a temporary object. */
-    BaseObject(pybind11::object&& o) : pybind11::object(std::move(o)) {}
-
-    inline auto operator~() const = delete;
-
-    template <typename T>
-    bool operator<(const T& value) const = delete;
-    template <typename T>
-    friend bool operator<(const T& lhs, const BaseObject& rhs) = delete;
-
-    template <typename T>
-    bool operator<=(const T& value) const = delete;
-    template <typename T>
-    friend bool operator<=(const T& lhs, const BaseObject& rhs) = delete;
-
-    template <typename T>
-    bool operator==(const T& value) const = delete;
-    template <typename T>
-    friend bool operator==(const T& lhs, const BaseObject& rhs) = delete;
-
-    template <typename T>
-    bool operator!=(const T& value) const = delete;
-    template <typename T>
-    friend bool operator!=(const T& lhs, const BaseObject& rhs) = delete;
-
-    template <typename T>
-    bool operator>=(const T& value) const = delete;
-    template <typename T>
-    friend bool operator>=(const T& lhs, const BaseObject& rhs) = delete;
-
-    template <typename T>
-    bool operator>(const T& value) const = delete;
-    template <typename T>
-    friend bool operator>(const T& lhs, const BaseObject& rhs) = delete;
-
-    inline auto operator+() const = delete;
-    inline auto operator++() = delete;
-    inline auto operator++(int) = delete;
-    template <typename T>
-    BaseObject operator+(const T& value) const = delete;
-    template <typename T>
-    friend BaseObject operator+(const T& lhs, const BaseObject& rhs) = delete;
-    template <typename T>
-    BaseObject& operator+=(const T& value) = delete;
-
-    inline auto operator-() const = delete;
-    inline auto operator--() = delete;
-    inline auto operator--(int) = delete;
-    template <typename T>
-    BaseObject operator-(const T& value) const = delete;
-    template <typename T>
-    friend BaseObject operator-(const T& lhs, const BaseObject& rhs) = delete;
-    template <typename T>
-    BaseObject& operator-=(const T& value) = delete;
-
-    template <typename T>
-    BaseObject operator*(const T& value) const = delete;
-    template <typename T>
-    friend BaseObject operator*(const T& lhs, const BaseObject& rhs) = delete;
-    template <typename T>
-    BaseObject& operator*=(const T& value) = delete;
-
-    template <typename T>
-    BaseObject operator/(const T& value) const = delete;
-    template <typename T>
-    friend BaseObject operator/(const T& lhs, const BaseObject& rhs) = delete;
-    template <typename T>
-    BaseObject& operator/=(const T& value) = delete;
-
-    template <typename T>
-    BaseObject operator%(const T& value) const = delete;
-    template <typename T>
-    friend BaseObject operator%(const T& lhs, const BaseObject& rhs) = delete;
-    template <typename T>
-    BaseObject& operator%=(const T& value) = delete;
-
-    template <typename T>
-    BaseObject operator<<(const T& value) const = delete;
-    template <typename T>
-    friend BaseObject operator<<(const T& lhs, const BaseObject& rhs) = delete;
-    template <typename T>
-    BaseObject& operator<<=(const T& value) = delete;
-
-    template <typename T>
-    BaseObject operator>>(const T& value) const = delete;
-    template <typename T>
-    friend BaseObject operator>>(const T& lhs, const BaseObject& rhs) = delete;
-    template <typename T>
-    BaseObject& operator>>=(const T& value) = delete;
-
-    template <typename T>
-    BaseObject operator&(const T& value) const = delete;
-    template <typename T>
-    friend BaseObject operator&(const T& lhs, const BaseObject& rhs) = delete;
-    template <typename T>
-    BaseObject& operator&=(const T& value) = delete;
-
-    template <typename T>
-    BaseObject operator|(const T& value) const = delete;
-    template <typename T>
-    friend BaseObject operator|(const T& lhs, const BaseObject& rhs) = delete;
-    template <typename T>
-    BaseObject& operator|=(const T& value) = delete;
-
-    template <typename T>
-    BaseObject operator^(const T& value) const = delete;
-    template <typename T>
-    friend BaseObject operator^(const T& lhs, const BaseObject& rhs) = delete;
-    template <typename T>
-    BaseObject& operator^=(const T& value) = delete;
-
-};
-
-
 /* A revised pybind11::object interface that allows implicit conversions to subtypes
 (applying a type check on the way), explicit conversions to arbitrary C++ types via
 static_cast<>, cross-language math operators, and generalized slice/attr syntax. */
-class Object : public BaseObject {
-    using Base = BaseObject;
+class Object : public pybind11::object {
+    using Base = pybind11::object;
+
+    template <typename L, typename R>
+    static constexpr bool noproxy = !impl::proxy_like<L> && !impl::proxy_like<R>;
 
 protected:
 
@@ -1622,6 +1513,8 @@ public:
     template <StaticStr key>
     inline impl::AttrProxy<Object> attr() const;
 
+    template <typename T> requires (!impl::__invert__<T>::enable)
+    inline friend bool operator~(const T& self) = delete;
     template <typename T> requires (impl::__invert__<T>::enable)
     inline friend auto operator~(const T& self) {
         using Return = typename impl::__invert__<T>::Return;
@@ -1634,6 +1527,9 @@ public:
         return T::template operator_invert<Return>(self);
     }
 
+    template <typename L, typename R>
+        requires (!impl::__lt__<L, R>::enable && noproxy<L, R>)
+    inline friend bool operator<(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__lt__<L, R>::enable)
     inline friend auto operator<(const L& lhs, const R& rhs) {
         using Return = typename impl::__lt__<L, R>::Return;
@@ -1650,6 +1546,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__le__<L, R>::enable && noproxy<L, R>)
+    inline friend bool operator<=(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__le__<L, R>::enable)
     inline friend auto operator<=(const L& lhs, const R& rhs) {
         using Return = typename impl::__le__<L, R>::Return;
@@ -1666,6 +1565,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__eq__<L, R>::enable && noproxy<L, R>)
+    inline friend bool operator==(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__eq__<L, R>::enable)
     inline friend auto operator==(const L& lhs, const R& rhs) {
         using Return = typename impl::__eq__<L, R>::Return;
@@ -1682,6 +1584,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__ne__<L, R>::enable && noproxy<L, R>)
+    inline friend bool operator!=(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__ne__<L, R>::enable)
     inline friend auto operator!=(const L& lhs, const R& rhs) {
         using Return = typename impl::__ne__<L, R>::Return;
@@ -1698,6 +1603,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__ge__<L, R>::enable && noproxy<L, R>)
+    inline friend bool operator>=(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__ge__<L, R>::enable)
     inline friend auto operator>=(const L& lhs, const R& rhs) {
         using Return = typename impl::__ge__<L, R>::Return;
@@ -1714,6 +1622,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__gt__<L, R>::enable && noproxy<L, R>)
+    inline friend bool operator>(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__gt__<L, R>::enable)
     inline friend auto operator>(const L& lhs, const R& rhs) {
         using Return = typename impl::__gt__<L, R>::Return;
@@ -1730,6 +1641,8 @@ public:
         }
     }
 
+    template <typename T> requires (!impl::__pos__<T>::enable)
+    inline friend auto operator+(const T& self) = delete;
     template <typename T> requires (impl::__pos__<T>::enable)
     inline friend auto operator+(const T& self) {
         using Return = typename impl::__pos__<T>::Return;
@@ -1742,6 +1655,8 @@ public:
         return T::template operator_pos<Return>(self);
     }
 
+    template <typename T> requires (!impl::__increment__<T>::enable)
+    inline friend T& operator++(T& self) = delete;
     template <typename T> requires (impl::__increment__<T>::enable)
     inline friend T& operator++(T& self) {
         using Return = typename impl::__increment__<T>::Return;
@@ -1755,6 +1670,8 @@ public:
         return self;
     }
 
+    template <typename T> requires (!impl::__increment__<T>::enable)
+    inline friend T operator++(T& self, int) = delete;
     template <typename T> requires (impl::__increment__<T>::enable)
     inline friend T operator++(T& self, int) {
         using Return = typename impl::__increment__<T>::Return;
@@ -1769,6 +1686,9 @@ public:
         return copy;
     }
 
+    template <typename L, typename R>
+        requires (!impl::__add__<L, R>::enable && noproxy<L, R>)
+    inline friend auto operator+(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__add__<L, R>::enable)
     inline friend auto operator+(const L& lhs, const R& rhs) {
         using Return = typename impl::__add__<L, R>::Return;
@@ -1785,6 +1705,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__iadd__<L, R>::enable && noproxy<L, R>)
+    inline friend L& operator+=(L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__iadd__<L, R>::enable)
     inline friend L& operator+=(L& lhs, const R& rhs) {
         using Return = typename impl::__iadd__<L, R>::Return;
@@ -1798,6 +1721,8 @@ public:
         return lhs;
     }
 
+    template <typename T> requires (!impl::__neg__<T>::enable)
+    inline friend auto operator-(const T& self) = delete;
     template <typename T> requires (impl::__neg__<T>::enable)
     inline friend auto operator-(const T& self) {
         using Return = typename impl::__neg__<T>::Return;
@@ -1810,6 +1735,8 @@ public:
         return T::template operator_neg<Return>(self);
     }
 
+    template <typename T> requires (!impl::__decrement__<T>::enable)
+    inline friend T& operator--(T& self) = delete;
     template <typename T> requires (impl::__decrement__<T>::enable)
     inline friend T& operator--(T& self) {
         using Return = typename impl::__decrement__<T>::Return;
@@ -1823,6 +1750,8 @@ public:
         return self;
     }
 
+    template <typename T> requires (!impl::__decrement__<T>::enable)
+    inline friend T operator--(T& self, int) = delete;
     template <typename T> requires (impl::__decrement__<T>::enable)
     inline friend T operator--(T& self, int) {
         using Return = typename impl::__decrement__<T>::Return;
@@ -1837,6 +1766,9 @@ public:
         return copy;
     }
 
+    template <typename L, typename R>
+        requires (!impl::__sub__<L, R>::enable && noproxy<L, R>)
+    inline friend auto operator-(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__sub__<L, R>::enable)
     inline friend auto operator-(const L& lhs, const R& rhs) {
         using Return = typename impl::__sub__<L, R>::Return;
@@ -1853,6 +1785,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__isub__<L, R>::enable && noproxy<L, R>)
+    inline friend L& operator-=(L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__isub__<L, R>::enable)
     inline friend L& operator-=(L& lhs, const R& rhs) {
         using Return = typename impl::__isub__<L, R>::Return;
@@ -1866,6 +1801,9 @@ public:
         return lhs;
     }
 
+    template <typename L, typename R>
+        requires (!impl::__mul__<L, R>::enable && noproxy<L, R>)
+    inline friend auto operator*(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__mul__<L, R>::enable)
     inline friend auto operator*(const L& lhs, const R& rhs) {
         using Return = typename impl::__mul__<L, R>::Return;
@@ -1882,6 +1820,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__imul__<L, R>::enable && noproxy<L, R>)
+    inline friend L& operator*=(L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__imul__<L, R>::enable)
     inline friend L& operator*=(L& lhs, const R& rhs) {
         using Return = typename impl::__imul__<L, R>::Return;
@@ -1895,6 +1836,9 @@ public:
         return lhs;
     }
 
+    template <typename L, typename R>
+        requires (!impl::__truediv__<L, R>::enable && noproxy<L, R>)
+    inline friend auto operator/(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__truediv__<L, R>::enable)
     inline friend auto operator/(const L& lhs, const R& rhs) {
         using Return = typename impl::__truediv__<L, R>::Return;
@@ -1911,6 +1855,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__itruediv__<L, R>::enable && noproxy<L, R>)
+    inline friend L& operator/=(L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__itruediv__<L, R>::enable)
     inline friend L& operator/=(L& lhs, const R& rhs) {
         using Return = typename impl::__itruediv__<L, R>::Return;
@@ -1924,6 +1871,9 @@ public:
         return lhs;
     }
 
+    template <typename L, typename R>
+        requires (!impl::__mod__<L, R>::enable && noproxy<L, R>)
+    inline friend auto operator%(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__mod__<L, R>::enable)
     inline friend auto operator%(const L& lhs, const R& rhs) {
         using Return = typename impl::__mod__<L, R>::Return;
@@ -1940,6 +1890,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__imod__<L, R>::enable && noproxy<L, R>)
+    inline friend L& operator%=(L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__imod__<L, R>::enable)
     inline friend L& operator%=(L& lhs, const R& rhs) {
         using Return = typename impl::__imod__<L, R>::Return;
@@ -1953,6 +1906,9 @@ public:
         return lhs;
     }
 
+    template <typename L, typename R>
+        requires (!impl::__lshift__<L, R>::enable && noproxy<L, R>)
+    inline friend auto operator<<(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__lshift__<L, R>::enable)
     inline friend auto operator<<(const L& lhs, const R& rhs) {
         using Return = typename impl::__lshift__<L, R>::Return;
@@ -1969,6 +1925,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__ilshift__<L, R>::enable && noproxy<L, R>)
+    inline friend L& operator<<=(L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__ilshift__<L, R>::enable)
     inline friend L& operator<<=(L& lhs, const R& rhs) {
         using Return = typename impl::__ilshift__<L, R>::Return;
@@ -1982,6 +1941,9 @@ public:
         return lhs;
     }
 
+    template <typename L, typename R>
+        requires (!impl::__rshift__<L, R>::enable && noproxy<L, R>)
+    inline friend auto operator>>(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__rshift__<L, R>::enable)
     inline friend auto operator>>(const L& lhs, const R& rhs) {
         using Return = typename impl::__rshift__<L, R>::Return;
@@ -1998,6 +1960,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__irshift__<L, R>::enable && noproxy<L, R>)
+    inline friend L& operator>>=(L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__irshift__<L, R>::enable)
     inline friend L& operator>>=(L& lhs, const L& rhs) {
         using Return = typename impl::__irshift__<L, R>::Return;
@@ -2011,6 +1976,9 @@ public:
         return lhs;
     }
 
+    template <typename L, typename R>
+        requires (!impl::__and__<L, R>::enable && noproxy<L, R>)
+    inline friend auto operator&(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__and__<L, R>::enable)
     inline friend auto operator&(const L& lhs, const R& rhs) {
         using Return = typename impl::__and__<L, R>::Return;
@@ -2027,6 +1995,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__iand__<L, R>::enable && noproxy<L, R>)
+    inline friend L& operator&=(L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__iand__<L, R>::enable)
     inline friend L& operator&=(L& lhs, const R& rhs) {
         using Return = typename impl::__iand__<L, R>::Return;
@@ -2040,6 +2011,9 @@ public:
         return lhs;
     }
 
+    template <typename L, typename R>
+        requires (!impl::__or__<L, R>::enable && noproxy<L, R>)
+    inline friend auto operator|(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__or__<L, R>::enable)
     inline friend auto operator|(const L& lhs, const R& rhs) {
         using Return = typename impl::__or__<L, R>::Return;
@@ -2056,6 +2030,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__ior__<L, R>::enable && noproxy<L, R>)
+    inline friend L& operator|=(L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__ior__<L, R>::enable)
     inline friend L& operator|=(L& lhs, const R& rhs) {
         using Return = typename impl::__ior__<L, R>::Return;
@@ -2069,6 +2046,9 @@ public:
         return lhs;
     }
 
+    template <typename L, typename R>
+        requires (!impl::__xor__<L, R>::enable && noproxy<L, R>)
+    inline friend auto operator^(const L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__xor__<L, R>::enable)
     inline friend auto operator^(const L& lhs, const R& rhs) {
         using Return = typename impl::__xor__<L, R>::Return;
@@ -2085,6 +2065,9 @@ public:
         }
     }
 
+    template <typename L, typename R>
+        requires (!impl::__ixor__<L, R>::enable && noproxy<L, R>)
+    inline friend L& operator^=(L& lhs, const R& rhs) = delete;
     template <typename L, typename R> requires (impl::__ixor__<L, R>::enable)
     inline friend L& operator^=(L& lhs, const R& rhs) {
         using Return = typename impl::__ixor__<L, R>::Return;
@@ -2680,8 +2663,6 @@ namespace impl {
         template <typename T> requires (std::is_base_of_v<Object, T>)                   \
         operator T() const = delete;                                                    \
                                                                                         \
-        BERTRAND_OBJECT_OPERATORS(cls)                                                  \
-                                                                                        \
     protected:                                                                          \
                                                                                         \
         template <typename T> requires (impl::__invert__<T>::enable)                    \
@@ -2990,79 +2971,211 @@ namespace impl {
         inline auto rbegin() const { return deref().rbegin(); }
         inline auto rend() const { return deref().rend(); }
 
-        #define BINARY_OPERATOR(op)                                                     \
-            template <typename T>                                                       \
-            inline auto operator op(const T& value) const {                             \
-                return deref() op value;                                                \
-            }                                                                           \
-            template <typename T>                                                       \
-            inline friend auto operator op(const T& value, const Proxy& self) {         \
-                return value op self.deref();                                           \
-            }                                                                           \
-
-        #define INPLACE_OPERATOR(op)                                                    \
-            template <typename T>                                                       \
-            inline Proxy& operator op(const T& value) {                                 \
-                deref() op value;                                                       \
-                return *this;                                                           \
-            }                                                                           \
-
-        inline auto operator+() const { return +deref(); }
-        inline auto operator-() const { return -deref(); }
         inline auto operator~() const { return ~deref(); }
-        inline auto operator++() { return ++deref(); }
-        inline auto operator--() { return --deref(); }
-        inline auto operator++(int) { return deref()++; }
-        inline auto operator--(int) { return deref()--; }
-        BINARY_OPERATOR(<)
-        BINARY_OPERATOR(<=)
-        BINARY_OPERATOR(==)
-        BINARY_OPERATOR(!=)
-        BINARY_OPERATOR(>=)
-        BINARY_OPERATOR(>)
-        BINARY_OPERATOR(+)
-        BINARY_OPERATOR(-)
-        BINARY_OPERATOR(*)
-        BINARY_OPERATOR(/)
-        BINARY_OPERATOR(%)
-        BINARY_OPERATOR(&)
-        BINARY_OPERATOR(|)
-        BINARY_OPERATOR(^)
-        INPLACE_OPERATOR(+=)
-        INPLACE_OPERATOR(-=)
-        INPLACE_OPERATOR(*=)
-        INPLACE_OPERATOR(/=)
-        INPLACE_OPERATOR(%=)
-        INPLACE_OPERATOR(<<=)
-        INPLACE_OPERATOR(>>=)
-        INPLACE_OPERATOR(&=)
-        INPLACE_OPERATOR(|=)
-        INPLACE_OPERATOR(^=)
 
-        #undef BINARY_OPERATOR
-        #undef INPLACE_OPERATOR
-
-        template <typename T>
-        inline auto operator<<(const T& value) const {
-            return deref() << value;
+        template <typename R>
+        inline auto operator<(const R& rhs) {
+            return deref() < rhs;
         }
-        template <typename T> requires (!std::is_base_of_v<std::ostream, T>)
-        inline friend auto operator<<(const T& value, const Proxy& self) {
-            return value << self.deref();
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator<(const L& lhs, const Proxy& rhs) {
+            return lhs < rhs.deref();
+        }
+
+        template <typename R>
+        inline auto operator<=(const R& rhs) {
+            return deref() <= rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator<=(const L& lhs, const Proxy& rhs) {
+            return lhs <= rhs.deref();
+        }
+
+        template <typename R>
+        inline auto operator==(const R& rhs) {
+            return deref() == rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator==(const L& lhs, const Proxy& rhs) {
+            return lhs == rhs.deref();
+        }
+
+        template <typename R>
+        inline auto operator!=(const R& rhs) {
+            return deref() != rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator!=(const L& lhs, const Proxy& rhs) {
+            return lhs != rhs.deref();
+        }
+
+        template <typename R>
+        inline auto operator>=(const R& rhs) {
+            return deref() >= rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator>=(const L& lhs, const Proxy& rhs) {
+            return lhs >= rhs.deref();
+        }
+
+        template <typename R>
+        inline auto operator>(const R& rhs) {
+            return deref() > rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator>(const L& lhs, const Proxy& rhs) {
+            return lhs > rhs.deref();
+        }
+
+        inline auto operator+() { return +deref(); }
+        inline auto operator++() { return ++deref(); }
+        inline auto operator++(int) { return deref()++; }
+        template <typename R>
+        inline auto operator+(const R& rhs) {
+            return deref() + rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator+(const L& lhs, const Proxy& rhs) {
+            return lhs + rhs.deref();
+        }
+        template <typename R>
+        inline auto operator+=(const R& rhs) {
+            deref() += rhs;
+            return *this;
+        }
+
+        inline auto operator-() { return -deref(); }
+        inline auto operator--() { return --deref(); }
+        inline auto operator--(int) { return deref()--; }
+        template <typename R>
+        inline auto operator-(const R& rhs) {
+            return deref() - rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator-(const L& lhs, const Proxy& rhs) {
+            return lhs - rhs.deref();
+        }
+        template <typename R>
+        inline auto operator-=(const R& rhs) {
+            deref() -= rhs;
+            return *this;
+        }
+
+        template <typename R>
+        inline auto operator*(const R& rhs) {
+            return deref() * rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator*(const L& lhs, const Proxy& rhs) {
+            return lhs * rhs.deref();
+        }
+        template <typename R>
+        inline auto operator*=(const R& rhs) {
+            deref() *= rhs;
+            return *this;
+        }
+
+        template <typename R>
+        inline auto operator/(const R& rhs) {
+            return deref() / rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator/(const L& lhs, const Proxy& rhs) {
+            return lhs / rhs.deref();
+        }
+        template <typename R>
+        inline auto operator/=(const R& rhs) {
+            deref() /= rhs;
+            return *this;
+        }
+
+        template <typename R>
+        inline auto operator%(const R& rhs) {
+            return deref() % rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator%(const L& lhs, const Proxy& rhs) {
+            return lhs % rhs.deref();
+        }
+        template <typename R>
+        inline auto operator%=(const R& rhs) {
+            deref() %= rhs;
+            return *this;
+        }
+
+        template <typename R>
+        inline auto operator<<(const R& rhs) {
+            return deref() << rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator<<(const L& lhs, const Proxy& rhs) {
+            return lhs << rhs.deref();
+        }
+        template <typename R>
+        inline auto operator<<=(const R& rhs) {
+            deref() <<= rhs;
+            return *this;
+        }
+
+        template <typename R>
+        inline auto operator>>(const R& rhs) {
+            return deref() >> rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator>>(const L& lhs, const Proxy& rhs) {
+            return lhs >> rhs.deref();
+        }
+        template <typename R>
+        inline auto operator>>=(const R& rhs) {
+            deref() >>= rhs;
+            return *this;
+        }
+
+        template <typename R>
+        inline auto operator&(const R& rhs) {
+            return deref() & rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator&(const L& lhs, const Proxy& rhs) {
+            return lhs & rhs.deref();
+        }
+        template <typename R>
+        inline auto operator&=(const R& rhs) {
+            deref() &= rhs;
+            return *this;
+        }
+
+        template <typename R>
+        inline auto operator|(const R& rhs) {
+            return deref() | rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator|(const L& lhs, const Proxy& rhs) {
+            return lhs | rhs.deref();
+        }
+        template <typename R>
+        inline auto operator|=(const R& rhs) {
+            deref() |= rhs;
+            return *this;
+        }
+
+        template <typename R>
+        inline auto operator^(const R& rhs) {
+            return deref() ^ rhs;
+        }
+        template <typename L> requires (!impl::proxy_like<L>)
+        inline friend auto operator^(const L& lhs, const Proxy& rhs) {
+            return lhs ^ rhs.deref();
+        }
+        template <typename R>
+        inline auto operator^=(const R& rhs) {
+            deref() ^= rhs;
+            return *this;
         }
 
         inline friend std::ostream& operator<<(std::ostream& os, const Proxy& self) {
             os << self.deref();
             return os;
-        }
-
-        template <typename T>
-        inline auto operator>>(const T& value) const {
-            return deref() >> value;
-        }
-        template <typename T> requires (!std::is_base_of_v<std::istream, T>)
-        inline friend auto operator>>(const T& value, const Proxy& self) {
-            return value >> self.deref();
         }
 
         inline friend std::istream& operator>>(std::istream& os, const Proxy& self) {
@@ -4062,6 +4175,14 @@ namespace impl {
 }  // namespace impl
 
 
+
+// TODO: eliminate Static proxy and insert Py_IsInitialized check directly into
+// subclass destructors where necessary.  This allows any object to be stored with
+// static duration at a small performance penalty (which you only pay if you use)
+
+
+
+
 /* A Proxy policy that allows any Python object to be stored with static duration.
 
 Normally, storing a static Python object is unsafe because it causes the Python
@@ -4101,6 +4222,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, NoneType, impl::none_like, Py_IsNone)
+    BERTRAND_OBJECT_OPERATORS(NoneType)
 
     /* Default constructor.  Initializes to Python's global None singleton. */
     NoneType() : Base(Py_None, borrowed_t{}) {}
@@ -4134,6 +4256,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, NotImplementedType, comptime_check, runtime_check)
+    BERTRAND_OBJECT_OPERATORS(NotImplementedType)
 
     /* Default constructor.  Initializes to Python's global NotImplemented singleton. */
     NotImplementedType() : Base(Py_NotImplemented, borrowed_t{}) {}
@@ -4167,6 +4290,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, EllipsisType, comptime_check, runtime_check)
+    BERTRAND_OBJECT_OPERATORS(EllipsisType)
 
     /* Default constructor.  Initializes to Python's global Ellipsis singleton. */
     EllipsisType() : Base(Py_Ellipsis, borrowed_t{}) {}
@@ -4406,6 +4530,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Slice, impl::slice_like, PySlice_Check)
+    BERTRAND_OBJECT_OPERATORS(Slice)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -4541,6 +4666,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Module, impl::module_like, PyModule_Check)
+    BERTRAND_OBJECT_OPERATORS(Module)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

@@ -128,6 +128,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Complex, impl::complex_like, PyComplex_Check)
+    BERTRAND_OBJECT_OPERATORS(Complex)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

@@ -288,6 +288,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Bool, impl::bool_like, PyBool_Check)
+    BERTRAND_OBJECT_OPERATORS(Bool)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

@@ -167,6 +167,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Float, impl::float_like, PyFloat_Check)
+    BERTRAND_OBJECT_OPERATORS(Float)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

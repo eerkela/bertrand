@@ -143,6 +143,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Type, impl::type_like, PyType_Check)
+    BERTRAND_OBJECT_OPERATORS(Type)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -477,6 +478,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Super, comptime_check, runtime_check)
+    BERTRAND_OBJECT_OPERATORS(Super)
 
     /* Default constructor.  Equivalent to Python `super()` with no arguments, which
     uses the calling context's inheritance hierarchy. */

@@ -378,6 +378,7 @@ public:
     static Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Int, impl::int_like, PyLong_Check)
+    BERTRAND_OBJECT_OPERATORS(Int)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
