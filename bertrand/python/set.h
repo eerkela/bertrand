@@ -276,35 +276,6 @@ namespace impl {
         ////    OPERATORS    ////
         /////////////////////////
 
-        using Base::operator|;
-        using Base::operator&;
-        using Base::operator-;
-        using Base::operator^;
-
-        inline Derived operator|(
-            const std::initializer_list<impl::HashInitializer>& other
-        ) const {
-            return union_(other);
-        }
-
-        inline Derived operator&(
-            const std::initializer_list<impl::HashInitializer>& other
-        ) const {
-            return intersection(other);
-        }
-
-        inline Derived operator-(
-            const std::initializer_list<impl::HashInitializer>& other
-        ) const {
-            return difference(other);
-        }
-
-        inline Derived operator^(
-            const std::initializer_list<impl::HashInitializer>& other
-        ) const {
-            return symmetric_difference(other);
-        }
-
     protected:
 
         template <typename Return, typename T>
@@ -445,6 +416,42 @@ struct __ixor__<Set, T>                                         : Returns<Set&> 
 }  // namespace impl
 
 
+template <typename Derived>
+inline Derived operator|(
+    const impl::ISet<Derived>& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    return self.union_(other);
+}
+
+
+template <typename Derived>
+inline Derived operator&(
+    const impl::ISet<Derived>& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    return self.intersection(other);
+}
+
+
+template <typename Derived>
+inline Derived operator-(
+    const impl::ISet<Derived>& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    return self.difference(other);
+}
+
+
+template <typename Derived>
+inline Derived operator^(
+    const impl::ISet<Derived>& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    return self.symmetric_difference(other);
+}
+
+
 /* Wrapper around pybind11::frozenset that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
 class FrozenSet : public impl::ISet<FrozenSet> {
@@ -572,31 +579,52 @@ public:
         }
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
 
-    inline FrozenSet& operator|=(const std::initializer_list<impl::HashInitializer>& other) {
-        *this = union_(other);
-        return *this;
-    }
-
-    inline FrozenSet& operator&=(const std::initializer_list<impl::HashInitializer>& other) {
-        *this = intersection(other);
-        return *this;
-    }
-
-    inline FrozenSet& operator-=(const std::initializer_list<impl::HashInitializer>& other) {
-        *this = difference(other);
-        return *this;
-    }
-
-    inline FrozenSet& operator^=(const std::initializer_list<impl::HashInitializer>& other) {
-        *this = symmetric_difference(other);
-        return *this;
+    /* Implicitly convert to pybind11::frozenset. */
+    inline operator pybind11::frozenset() const {
+        return reinterpret_borrow<pybind11::frozenset>(m_ptr);
     }
 
 };
+
+
+inline FrozenSet& operator|=(
+    FrozenSet& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    self = self.union_(other);
+    return self;
+}
+
+
+inline FrozenSet& operator&=(
+    FrozenSet& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    self = self.intersection(other);
+    return self;
+}
+
+
+inline FrozenSet& operator-=(
+    FrozenSet& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    self = self.difference(other);
+    return self;
+}
+
+
+inline FrozenSet& operator^=(
+    FrozenSet& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    self = self.symmetric_difference(other);
+    return self;
+}
 
 
 /* Wrapper around pybind11::set that allows it to be directly initialized using
@@ -725,6 +753,15 @@ public:
         }
     }
 
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
+
+    /* Implicitly convert to pybind11::set. */
+    inline operator pybind11::set() const {
+        return reinterpret_borrow<pybind11::set>(m_ptr);
+    }
+
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
@@ -837,35 +874,43 @@ public:
         }
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    /* Equivalent to Python `set |= <braced initializer list>`. */
-    inline Set& operator|=(const std::initializer_list<impl::HashInitializer>& other) {
-        update(other);
-        return *this;
-    }
-
-    /* Equivalent to Python `set &= <braced initializer list>`. */
-    inline Set& operator&=(const std::initializer_list<impl::HashInitializer>& other) {
-        intersection_update(other);
-        return *this;
-    }
-
-    /* Equivalent to Python `set -= <braced initializer list>`. */
-    inline Set& operator-=(const std::initializer_list<impl::HashInitializer>& other) {
-        difference_update(other);
-        return *this;
-    }
-
-    /* Equivalent to Python `set ^= <braced initializer list>`. */
-    inline Set& operator^=(const std::initializer_list<impl::HashInitializer>& other) {
-        symmetric_difference_update(other);
-        return *this;
-    }
-
 };
+
+
+inline Set& operator|=(
+    Set& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    self.update(other);
+    return self;
+}
+
+
+inline Set& operator&=(
+    Set& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    self.intersection_update(other);
+    return self;
+}
+
+
+inline Set& operator-=(
+    Set& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    self.difference_update(other);
+    return self;
+}
+
+
+inline Set& operator^=(
+    Set& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    self.symmetric_difference_update(other);
+    return self;
+}
 
 
 }  // namespace py

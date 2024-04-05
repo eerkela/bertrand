@@ -125,9 +125,6 @@ namespace py {
 
 
 // binding functions
-// using pybind11::cast;
-using pybind11::reinterpret_borrow;
-using pybind11::reinterpret_steal;
 using pybind11::implicitly_convertible;
 using pybind11::args_are_all_keyword_or_ds;
 using pybind11::make_iterator;  // TODO: roll into Iterator() constructor
@@ -383,9 +380,6 @@ PYTHON_EXCEPTION(Exception, ValueError, PyExc_ValueError)
 
 namespace impl {
 
-    /* Tag class to identify object proxies during SFINAE checks. */
-    struct ProxyTag {};
-
     /* Helper function triggers implicit conversion operators and/or implicit
     constructors, but not explicit ones.  In contrast, static_cast<>() will trigger
     explicit constructors on the target type, which can give unexpected results and
@@ -491,8 +485,14 @@ namespace impl {
 
     }
 
+    /* Tag class to identify object proxies during SFINAE checks. */
+    struct ProxyTag {};
+
     template <typename T>
-    concept python_like = detail::is_pyobject<std::remove_cvref_t<T>>::value;
+    concept python_like = (
+        detail::is_pyobject<std::remove_cvref_t<T>>::value ||
+        std::is_base_of_v<Object, std::remove_cvref_t<T>>
+    );
 
     template <typename T>
     concept proxy_like = std::is_base_of_v<ProxyTag, std::remove_cvref_t<T>>;
@@ -1013,9 +1013,9 @@ namespace impl {
     template <typename L, typename R>
     struct __and__ { static constexpr bool enable = false; };
     template <typename L, typename R>
-    struct __xor__ { static constexpr bool enable = false; };
-    template <typename L, typename R>
     struct __or__ { static constexpr bool enable = false; };
+    template <typename L, typename R>
+    struct __xor__ { static constexpr bool enable = false; };
     template <typename L, typename R>
     struct __iadd__ { static constexpr bool enable = false; };
     template <typename L, typename R>
@@ -1033,9 +1033,202 @@ namespace impl {
     template <typename L, typename R>
     struct __iand__ { static constexpr bool enable = false; };
     template <typename L, typename R>
-    struct __ixor__ { static constexpr bool enable = false; };
-    template <typename L, typename R>
     struct __ior__ { static constexpr bool enable = false; };
+    template <typename L, typename R>
+    struct __ixor__ { static constexpr bool enable = false; };
+
+    template <proxy_like T, typename... Args>
+    struct __call__<T, Args...> : public __call__<typename T::Wrapped, Args...> {};
+    template <proxy_like T>
+    struct __len__<T> : public __len__<typename T::Wrapped> {};
+    template <proxy_like T>
+    struct __iter__<T> : public __iter__<typename T::Wrapped> {};
+    template <proxy_like T>
+    struct __reversed__<T> : public __reversed__<typename T::Wrapped> {};
+    template <proxy_like T, typename Key>
+    struct __contains__<T, Key> : public __contains__<typename T::Wrapped, Key> {};
+    template <proxy_like T, typename Key>
+    struct __getitem__<T, Key> : public __getitem__<typename T::Wrapped, Key> {};
+    template <proxy_like T, typename Key, typename Value>
+    struct __setitem__<T, Key, Value> : public __setitem__<typename T::Wrapped, Key, Value> {};
+    template <proxy_like T, typename Key>
+    struct __delitem__<T, Key> : public __delitem__<typename T::Wrapped, Key> {};
+    template <proxy_like T, StaticStr name>
+    struct __getattr__<T, name> : public __getattr__<typename T::Wrapped, name> {};
+    template <proxy_like T, StaticStr name>
+    struct __setattr__<T, name> : public __setattr__<typename T::Wrapped, name> {};
+    template <proxy_like T, StaticStr name>
+    struct __delattr__<T, name> : public __delattr__<typename T::Wrapped, name> {};
+    template <proxy_like T>
+    struct __pos__<T> : public __pos__<typename T::Wrapped> {};
+    template <proxy_like T>
+    struct __neg__<T> : public __neg__<typename T::Wrapped> {};
+    template <proxy_like T>
+    struct __abs__<T> : public __abs__<typename T::Wrapped> {};
+    template <proxy_like T>
+    struct __invert__<T> : public __invert__<typename T::Wrapped> {};
+    template <proxy_like T>
+    struct __increment__<T> : public __increment__<typename T::Wrapped> {};
+    template <proxy_like T>
+    struct __decrement__<T> : public __decrement__<typename T::Wrapped> {};
+    template <proxy_like T>
+    struct __hash__<T> : public __hash__<typename T::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __lt__<L, R> : public __lt__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __lt__<L, R> : public __lt__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __lt__<L, R> : public __lt__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __le__<L, R> : public __le__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __le__<L, R> : public __le__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __le__<L, R> : public __le__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __eq__<L, R> : public __eq__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __eq__<L, R> : public __eq__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __eq__<L, R> : public __eq__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __ne__<L, R> : public __ne__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __ne__<L, R> : public __ne__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __ne__<L, R> : public __ne__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __ge__<L, R> : public __ge__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __ge__<L, R> : public __ge__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __ge__<L, R> : public __ge__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __gt__<L, R> : public __gt__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __gt__<L, R> : public __gt__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __gt__<L, R> : public __gt__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __add__<L, R> : public __add__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __add__<L, R> : public __add__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __add__<L, R> : public __add__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __sub__<L, R> : public __sub__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __sub__<L, R> : public __sub__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __sub__<L, R> : public __sub__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __mul__<L, R> : public __mul__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __mul__<L, R> : public __mul__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __mul__<L, R> : public __mul__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __truediv__<L, R> : public __truediv__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __truediv__<L, R> : public __truediv__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __truediv__<L, R> : public __truediv__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __mod__<L, R> : public __mod__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __mod__<L, R> : public __mod__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __mod__<L, R> : public __mod__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __lshift__<L, R> : public __lshift__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __lshift__<L, R> : public __lshift__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __lshift__<L, R> : public __lshift__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __rshift__<L, R> : public __rshift__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __rshift__<L, R> : public __rshift__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __rshift__<L, R> : public __rshift__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __and__<L, R> : public __and__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __and__<L, R> : public __and__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __and__<L, R> : public __and__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __or__<L, R> : public __or__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __or__<L, R> : public __or__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __or__<L, R> : public __or__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __xor__<L, R> : public __xor__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __xor__<L, R> : public __xor__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __xor__<L, R> : public __xor__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __iadd__<L, R> : public __iadd__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __iadd__<L, R> : public __iadd__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __iadd__<L, R> : public __iadd__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __isub__<L, R> : public __isub__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __isub__<L, R> : public __isub__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __isub__<L, R> : public __isub__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __imul__<L, R> : public __imul__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __imul__<L, R> : public __imul__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __imul__<L, R> : public __imul__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __itruediv__<L, R> : public __itruediv__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __itruediv__<L, R> : public __itruediv__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __itruediv__<L, R> : public __itruediv__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __imod__<L, R> : public __imod__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __imod__<L, R> : public __imod__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __imod__<L, R> : public __imod__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __ilshift__<L, R> : public __ilshift__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __ilshift__<L, R> : public __ilshift__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __ilshift__<L, R> : public __ilshift__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __irshift__<L, R> : public __irshift__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __irshift__<L, R> : public __irshift__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __irshift__<L, R> : public __irshift__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __iand__<L, R> : public __iand__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __iand__<L, R> : public __iand__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __iand__<L, R> : public __iand__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __ior__<L, R> : public __ior__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __ior__<L, R> : public __ior__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __ior__<L, R> : public __ior__<typename L::Wrapped, typename R::Wrapped> {};
+    template <proxy_like L, typename R> requires (!proxy_like<R>)
+    struct __ixor__<L, R> : public __ixor__<typename L::Wrapped, R> {};
+    template <typename L, proxy_like R> requires (!proxy_like<L>)
+    struct __ixor__<L, R> : public __ixor__<L, typename R::Wrapped> {};
+    template <proxy_like L, proxy_like R>
+    struct __ixor__<L, R> : public __ixor__<typename L::Wrapped, typename R::Wrapped> {};
 
     /* Base class for enabled operators.  Encodes the return type as a template
     parameter. */
@@ -1058,16 +1251,14 @@ namespace impl {
             return operator_call<Return>(*this, std::forward<Args>(args)...);           \
         }                                                                               \
                                                                                         \
-        template <typename Key>                                                         \
-            requires (impl::__getitem__<cls, Key>::enable && !impl::proxy_like<Key>)    \
+        template <typename Key> requires (impl::__getitem__<cls, Key>::enable)          \
         inline auto operator[](const Key& key) const {                                  \
             using Return = typename impl::__getitem__<cls, Key>::Return;                \
-            return operator_getitem<Return>(*this, key);                                \
-        }                                                                               \
-                                                                                        \
-        template <typename Key> requires (impl::proxy_like<Key>)                        \
-        inline auto operator[](const Key& key) const {                                  \
-            return (*this)[key.value()];                                                \
+            if constexpr (impl::proxy_like<Key>) {                                      \
+                return (*this)[key.value()];                                            \
+            } else {                                                                    \
+                return operator_getitem<Return>(*this, key);                            \
+            }                                                                           \
         }                                                                               \
                                                                                         \
         template <typename T = cls> requires (impl::__getitem__<T, Slice>::enable)      \
@@ -1132,8 +1323,7 @@ namespace impl {
             return operator_rend<Return>(*this);                                        \
         }                                                                               \
                                                                                         \
-        template <typename T>                                                           \
-            requires (impl::__contains__<cls, T>::enable && !impl::proxy_like<T>)       \
+        template <typename T> requires (impl::__contains__<cls, T>::enable)             \
         inline bool contains(const T& key) const {                                      \
             using Return = typename impl::__contains__<cls, T>::Return;                 \
             static_assert(                                                              \
@@ -1142,12 +1332,11 @@ namespace impl {
                 "specialization of __contains__ for these types and ensure the Return " \
                 "type is set to bool."                                                  \
             );                                                                          \
-            return operator_contains<Return>(*this, key);                               \
-        }                                                                               \
-                                                                                        \
-        template <typename T> requires (impl::proxy_like<T>)                            \
-        inline bool contains(const T& key) const {                                      \
-            return this->contains(key.value());                                         \
+            if constexpr (impl::proxy_like<T>) {                                        \
+                return this->contains(key.value());                                     \
+            } else {                                                                    \
+                return operator_contains<Return>(*this, key);                           \
+            }                                                                           \
         }                                                                               \
                                                                                         \
         template <typename T = cls> requires (impl::__len__<T>::enable)                 \
@@ -1161,6 +1350,109 @@ namespace impl {
             );                                                                          \
             return operator_len<Return>(*this);                                         \
         }                                                                               \
+                                                                                        \
+    protected:                                                                          \
+                                                                                        \
+        template <typename T> requires (impl::__invert__<T>::enable)                    \
+        friend auto operator~(const T& self);                                           \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__lt__<L, R>::enable)         \
+        friend auto operator<(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__le__<L, R>::enable)         \
+        friend auto operator<=(const L& lhs, const R& rhs);                             \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__eq__<L, R>::enable)         \
+        friend auto operator==(const L& lhs, const R& rhs);                             \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__ne__<L, R>::enable)         \
+        friend auto operator!=(const L& lhs, const R& rhs);                             \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__ge__<L, R>::enable)         \
+        friend auto operator>=(const L& lhs, const R& rhs);                             \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__gt__<L, R>::enable)         \
+        friend auto operator>(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename T> requires (impl::__pos__<T>::enable)                       \
+        friend auto operator+(const T& self);                                           \
+                                                                                        \
+        template <typename T> requires (impl::__increment__<T>::enable)                 \
+        friend T& operator++(T& self);                                                  \
+                                                                                        \
+        template <typename T> requires (impl::__increment__<T>::enable)                 \
+        friend T operator++(T& self, int);                                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__add__<L, R>::enable)        \
+        friend auto operator+(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__iadd__<L, R>::enable)       \
+        friend L& operator+=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+        template <typename T> requires (impl::__neg__<T>::enable)                       \
+        friend auto operator-(const T& self);                                           \
+                                                                                        \
+        template <typename T> requires (impl::__decrement__<T>::enable)                 \
+        friend T& operator--(T& self);                                                  \
+                                                                                        \
+        template <typename T> requires (impl::__decrement__<T>::enable)                 \
+        friend T operator--(T& self, int);                                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__sub__<L, R>::enable)        \
+        friend auto operator-(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__isub__<L, R>::enable)       \
+        friend L& operator-=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__mul__<L, R>::enable)        \
+        friend auto operator*(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__imul__<L, R>::enable)       \
+        friend L& operator*=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__truediv__<L, R>::enable)    \
+        friend auto operator/(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__itruediv__<L, R>::enable)   \
+        friend L& operator/=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__mod__<L, R>::enable)        \
+        friend auto operator%(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__imod__<L, R>::enable)       \
+        friend L& operator%=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__lshift__<L, R>::enable)     \
+        friend auto operator<<(const L& lhs, const R& rhs);                             \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__ilshift__<L, R>::enable)    \
+        friend L& operator<<=(L& lhs, const R& rhs);                                    \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__rshift__<L, R>::enable)     \
+        friend auto operator>>(const L& lhs, const R& rhs);                             \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__irshift__<L, R>::enable)    \
+        friend L& operator>>=(L& lhs, const R& rhs);                                    \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__and__<L, R>::enable)        \
+        friend auto operator&(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__iand__<L, R>::enable)       \
+        friend L& operator&=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__or__<L, R>::enable)         \
+        friend auto operator|(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__ior__<L, R>::enable)        \
+        friend L& operator|=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__xor__<L, R>::enable)        \
+        friend auto operator^(const L& lhs, const R& rhs);                              \
+                                                                                        \
+        template <typename L, typename R> requires (impl::__ixor__<L, R>::enable)       \
+        friend L& operator^=(L& lhs, const R& rhs);                                     \
+                                                                                        \
+    public:                                                                             \
 
     template <typename ... Args>
     struct __call__<Object, Args...>                        : Returns<Object> {};
@@ -1298,21 +1590,6 @@ namespace impl {
     template <>
     struct __hash__<Module>                                     : Returns<size_t> {};
 
-    /* Standardized error message for type narrowing via pybind11 accessors or the
-    generic Object wrapper. */
-    template <typename Derived>
-    TypeError noconvert(PyObject* obj) {
-        pybind11::type source = pybind11::type::of(obj);
-        pybind11::type dest = Derived::type;
-        const char* source_name = reinterpret_cast<PyTypeObject*>(source.ptr())->tp_name;
-        const char* dest_name = reinterpret_cast<PyTypeObject*>(dest.ptr())->tp_name;
-
-        std::ostringstream msg;
-        msg << "cannot convert python object from type '" << source_name;
-        msg << "' to type '" << dest_name << "'";
-        return TypeError(msg.str());
-    }
-
     template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
     class Item;
     template <typename Obj>
@@ -1326,836 +1603,786 @@ namespace impl {
 
     struct SliceInitializer;
 
+    /* Standardized error message for type narrowing via pybind11 accessors or the
+    generic Object wrapper. */
+    template <typename Derived>
+    TypeError noconvert(PyObject* obj) {
+        std::ostringstream msg;
+        msg << "cannot convert python object from type '"
+            << Py_TYPE(obj)->tp_name
+            << "' to type '"
+            << reinterpret_cast<PyTypeObject*>(Derived::type.ptr())->tp_name
+            << "'";
+        return TypeError(msg.str());
+    }
+
 }  // namespace impl
 
 
-/* A revised pybind11::object interface that allows implicit conversions to subtypes
-(applying a type check on the way), explicit conversions to arbitrary C++ types via
-static_cast<>, cross-language math operators, and generalized slice/attr syntax. */
-class Object : public pybind11::object {
-    using Base = pybind11::object;
-
-    template <typename L, typename R>
-    static constexpr bool noproxy = !impl::proxy_like<L> && !impl::proxy_like<R>;
-
-protected:
-
-    /* Default constructor.  Initializes to a null object, which should always be
-    filled in before being returned to the user.  Protecting this reduces the risk of
-    null pointers being accidentally introduced in client code.  As it stands, the only
-    that can happen is by interacting with an object after it has been moved from,
-    which is undefined behavior anyways. */
-    Object() = default;
-
-public:
-    static Type type;
-
-    /* Check whether the templated type is considered object-like at compile time. */
-    template <typename T>
-    static constexpr bool check() { return std::is_base_of_v<pybind11::object, T>; }
-
-    /* Check whether a C++ value is considered object-like at compile time. */
-    template <typename T> requires (!impl::python_like<T>)
-    static constexpr bool check(const T& value) { return check<T>(); }
-
-    /* Check whether a Python value is considered object-like at runtime. */
-    template <typename T> requires (impl::python_like<T>)
-    static constexpr bool check(const T& value) { return value.ptr() != nullptr; }
-
-    /* Identical to the above, but pybind11 expects a method of this name. */
-    template <typename T> requires (!impl::python_like<T>)
-    static constexpr bool check_(const T& value) { return check(value); }
-    template <typename T> requires (impl::python_like<T>)
-    static constexpr bool check_(const T& value) { return check(value); }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* reinterpret_borrow()/reinterpret_steal() constructors.  The tags themselves are
-    protected and only accessible within subclasses of pybind11::object. */
-    Object(pybind11::handle h, const borrowed_t& t) : Base(h, t) {}
-    Object(pybind11::handle h, const stolen_t& t) : Base(h, t) {}
-
-    /* Copy constructor.  Borrows a reference to an existing object. */
-    Object(const pybind11::object& o) : Base(o) {}
-
-    /* Move constructor.  Steals a reference to a temporary object. */
-    Object(pybind11::object&& o) : Base(std::move(o)) {}
-
-    /* Convert a pybind11 accessor into a generic Object. */
-    template <typename Policy>
-    Object(const detail::accessor<Policy> &a) {
-        pybind11::object obj(a);
-        if (check(obj)) {
-            m_ptr = obj.release().ptr();
-        } else {
-            throw impl::noconvert<Object>(obj.ptr());
-        }
-    }
-
-    /* Convert any C++ value into a generic python object. */
-    template <typename T> requires (!impl::python_like<T>)
-    Object(const T& value) : Base(pybind11::cast(value).release(), stolen_t{}) {}
-
-    /* Trigger implicit conversions to this type via the assignment operator. */
-    template <typename T> requires (std::is_convertible_v<T, Object>)
-    Object& operator=(T&& value) {
-        if constexpr (std::is_same_v<Object, std::decay_t<T>>) {
-            if (this != &value) {
-                Base::operator=(std::forward<T>(value));
-            }
-        } else if constexpr (impl::has_conversion_operator<std::decay_t<T>, Object>) {
-            Base::operator=(value.operator Object());
-        } else {
-            Base::operator=(Object(std::forward<T>(value)));
-        }
-        return *this;
-    }
-
-    ///////////////////////////
-    ////    CONVERSIONS    ////
-    ///////////////////////////
-
-    /* NOTE: the Object wrapper can be implicitly converted to any of its subclasses by
-     * applying a runtime type check as part of the assignment.  This allows us to
-     * safely convert from a generic object to a more specialized type without worrying
-     * about type mismatches or triggering arbitrary conversion logic.  It allows us to
-     * write code like this:
-     *
-     *      py::Object obj = true;
-     *      py::Bool b = obj;
-     *
-     * But not like this:
-     *
-     *      py::Object obj = true;
-     *      py::Str s = obj;  // throws a TypeError
-     *
-     * While simultaneously preserving the ability to explicitly convert using a normal
-     * constructor call:
-     *
-     *      py::Object obj = true;
-     *      py::Str s(obj);
-     *
-     * Which is identical to calling `str()` at the python level.  Note that the
-     * implicit conversion operator is only enabled for Object itself, and is deleted
-     * in all of its subclasses.  This prevents implicit conversions between subclasses
-     * and promotes any attempt to do so into a compile-time error.  For instance:
-     *
-     *      py::Bool b = true;
-     *      py::Str s = b;  // fails to compile, calls a deleted function
-     *
-     * In general, this makes assignment via the `=` operator type-safe by default,
-     * while explicit constructors are reserved for non-trivial conversions and/or
-     * packing in the case of containers.
-     */
-
-    /* Implicitly convert an Object wrapper to one of its subclasses, applying a
-    runtime type check against the underlying value. */
-    template <typename T> requires (std::is_base_of_v<Object, T>)
-    inline operator T() const {
-        if (!T::check(*this)) {
-            throw impl::noconvert<T>(this->ptr());
-        }
-        return reinterpret_borrow<T>(this->ptr());
-    }
-
-    /* Implicitly convert an Object to a proxy class, which moves it into a managed
-    buffer for static storage duration, attribute access, etc. */
-    template <typename T> requires (impl::proxy_like<T>)
-    inline operator T() const {
-        return T(this->operator typename T::Wrapped());
-    }
-
-    /* Explicitly convert to any other non-Object type using pybind11's type casting
-    mechanism. */
-    template <typename T>
-        requires (!impl::proxy_like<T> && !std::is_base_of_v<Object, T>)
-    inline explicit operator T() const {
-        return Base::cast<T>();
-    }
-
-    /* Contextually convert an Object into a boolean for use in if/else statements,
-    with the same semantics as in Python. */
-    inline explicit operator bool() const {
-        int result = PyObject_IsTrue(this->ptr());
-        if (result == -1) {
-            throw error_already_set();
-        }
-        return result;
-    }
-
-    /* Explicitly cast to a string representation.  For some reason,
-    pybind11::cast<std::string>() doesn't always work for arbitrary types.  This
-    corrects that and gives the same results as Python `str(obj)`. */
-    inline explicit operator std::string() const {
-        PyObject* str = PyObject_Str(this->ptr());
-        if (str == nullptr) {
-            throw error_already_set();
-        }
-        Py_ssize_t size;
-        const char* data = PyUnicode_AsUTF8AndSize(str, &size);
-        if (data == nullptr) {
-            Py_DECREF(str);
-            throw error_already_set();
-        }
-        std::string result(data, size);
-        Py_DECREF(str);
-        return result;
-    }
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    BERTRAND_OBJECT_OPERATORS(Object)
-
-    template <StaticStr key>
-    inline impl::AttrProxy<Object> attr() const;
-
-    template <typename T> requires (!impl::__invert__<T>::enable)
-    inline friend bool operator~(const T& self) = delete;
-    template <typename T> requires (impl::__invert__<T>::enable)
-    inline friend auto operator~(const T& self) {
-        using Return = typename impl::__invert__<T>::Return;
-        static_assert(
-            std::is_base_of_v<Object, Return>,
-            "Bitwise NOT operator must return a py::Object subclass.  Check your "
-            "specialization of __invert__ for this type and ensure the Return type "
-            "is set to a py::Object subclass."
-        );
+template <typename T> requires (impl::__invert__<T>::enable)
+inline auto operator~(const T& self) {
+    using Return = typename impl::__invert__<T>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "Bitwise NOT operator must return a py::Object subclass.  Check your "
+        "specialization of __invert__ for this type and ensure the Return type "
+        "is set to a py::Object subclass."
+    );
+    if constexpr (impl::proxy_like<T>) {
+        return ~self.value();
+    } else {
         return T::template operator_invert<Return>(self);
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__lt__<L, R>::enable && noproxy<L, R>)
-    inline friend bool operator<(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__lt__<L, R>::enable)
-    inline friend auto operator<(const L& lhs, const R& rhs) {
-        using Return = typename impl::__lt__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, bool>,
-            "Less-than operator must return a boolean value.  Check your "
-            "specialization of __lt__ for these types and ensure the Return type "
-            "is set to bool."
-        );
+
+template <typename L, typename R> requires (impl::__lt__<L, R>::enable)
+inline auto operator<(const L& lhs, const R& rhs) {
+    using Return = typename impl::__lt__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, bool>,
+        "Less-than operator must return a boolean value.  Check your "
+        "specialization of __lt__ for these types and ensure the Return type "
+        "is set to bool."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() < rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs < rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_lt<Return>(lhs, rhs);
         } else {
             return R::template operator_lt<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__le__<L, R>::enable && noproxy<L, R>)
-    inline friend bool operator<=(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__le__<L, R>::enable)
-    inline friend auto operator<=(const L& lhs, const R& rhs) {
-        using Return = typename impl::__le__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, bool>,
-            "Less-than-or-equal operator must return a boolean value.  Check your "
-            "specialization of __le__ for this type and ensure the Return type is "
-            "set to bool."
-        );
+
+template <typename L, typename R> requires (impl::__le__<L, R>::enable)
+inline auto operator<=(const L& lhs, const R& rhs) {
+    using Return = typename impl::__le__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, bool>,
+        "Less-than-or-equal operator must return a boolean value.  Check your "
+        "specialization of __le__ for this type and ensure the Return type is "
+        "set to bool."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() <= rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs <= rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_le<Return>(lhs, rhs);
         } else {
             return R::template operator_le<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__eq__<L, R>::enable && noproxy<L, R>)
-    inline friend bool operator==(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__eq__<L, R>::enable)
-    inline friend auto operator==(const L& lhs, const R& rhs) {
-        using Return = typename impl::__eq__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, bool>,
-            "Equality operator must return a boolean value.  Check your "
-            "specialization of __eq__ for this type and ensure the Return type is "
-            "set to bool."
-        );
+
+template <typename L, typename R> requires (impl::__eq__<L, R>::enable)
+inline auto operator==(const L& lhs, const R& rhs) {
+    using Return = typename impl::__eq__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, bool>,
+        "Equality operator must return a boolean value.  Check your "
+        "specialization of __eq__ for this type and ensure the Return type is "
+        "set to bool."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() == rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs == rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_eq<Return>(lhs, rhs);
         } else {
             return R::template operator_eq<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__ne__<L, R>::enable && noproxy<L, R>)
-    inline friend bool operator!=(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__ne__<L, R>::enable)
-    inline friend auto operator!=(const L& lhs, const R& rhs) {
-        using Return = typename impl::__ne__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, bool>,
-            "Inequality operator must return a boolean value.  Check your "
-            "specialization of __ne__ for this type and ensure the Return type is "
-            "set to bool."
-        );
+
+template <typename L, typename R> requires (impl::__ne__<L, R>::enable)
+inline auto operator!=(const L& lhs, const R& rhs) {
+    using Return = typename impl::__ne__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, bool>,
+        "Inequality operator must return a boolean value.  Check your "
+        "specialization of __ne__ for this type and ensure the Return type is "
+        "set to bool."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() != rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs != rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_ne<Return>(lhs, rhs);
         } else {
             return R::template operator_ne<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__ge__<L, R>::enable && noproxy<L, R>)
-    inline friend bool operator>=(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__ge__<L, R>::enable)
-    inline friend auto operator>=(const L& lhs, const R& rhs) {
-        using Return = typename impl::__ge__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, bool>,
-            "Greater-than-or-equal operator must return a boolean value.  Check "
-            "your specialization of __ge__ for this type and ensure the Return "
-            "type is set to bool."
-        );
+
+template <typename L, typename R> requires (impl::__ge__<L, R>::enable)
+inline auto operator>=(const L& lhs, const R& rhs) {
+    using Return = typename impl::__ge__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, bool>,
+        "Greater-than-or-equal operator must return a boolean value.  Check "
+        "your specialization of __ge__ for this type and ensure the Return "
+        "type is set to bool."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() >= rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs >= rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_ge<Return>(lhs, rhs);
         } else {
             return R::template operator_ge<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__gt__<L, R>::enable && noproxy<L, R>)
-    inline friend bool operator>(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__gt__<L, R>::enable)
-    inline friend auto operator>(const L& lhs, const R& rhs) {
-        using Return = typename impl::__gt__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, bool>,
-            "Greater-than operator must return a boolean value.  Check your "
-            "specialization of __gt__ for this type and ensure the Return type is "
-            "set to bool."
-        );
+
+template <typename L, typename R> requires (impl::__gt__<L, R>::enable)
+inline auto operator>(const L& lhs, const R& rhs) {
+    using Return = typename impl::__gt__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, bool>,
+        "Greater-than operator must return a boolean value.  Check your "
+        "specialization of __gt__ for this type and ensure the Return type is "
+        "set to bool."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() > rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs > rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_gt<Return>(lhs, rhs);
         } else {
             return R::template operator_gt<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename T> requires (!impl::__pos__<T>::enable)
-    inline friend auto operator+(const T& self) = delete;
-    template <typename T> requires (impl::__pos__<T>::enable)
-    inline friend auto operator+(const T& self) {
-        using Return = typename impl::__pos__<T>::Return;
-        static_assert(
-            std::is_base_of_v<Object, Return>,
-            "Unary positive operator must return a py::Object subclass.  Check "
-            "your specialization of __pos__ for this type and ensure the Return "
-            "type is set to a py::Object subclass."
-        );
+
+template <typename T> requires (impl::__pos__<T>::enable)
+inline auto operator+(const T& self) {
+    using Return = typename impl::__pos__<T>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "Unary positive operator must return a py::Object subclass.  Check "
+        "your specialization of __pos__ for this type and ensure the Return "
+        "type is set to a py::Object subclass."
+    );
+    if constexpr (impl::proxy_like<T>) {
+        return +self.value();
+    } else {
         return T::template operator_pos<Return>(self);
     }
+}
 
-    template <typename T> requires (!impl::__increment__<T>::enable)
-    inline friend T& operator++(T& self) = delete;
-    template <typename T> requires (impl::__increment__<T>::enable)
-    inline friend T& operator++(T& self) {
-        using Return = typename impl::__increment__<T>::Return;
-        static_assert(
-            std::is_same_v<Return, T>,
-            "Increment operator must return a reference to the derived type.  "
-            "Check your specialization of __increment__ for this type and ensure "
-            "the Return type is set to the derived type."
-        );
+
+template <typename T> requires (impl::__increment__<T>::enable)
+inline T& operator++(T& self) {
+    using Return = typename impl::__increment__<T>::Return;
+    static_assert(
+        std::is_same_v<Return, T>,
+        "Increment operator must return a reference to the derived type.  "
+        "Check your specialization of __increment__ for this type and ensure "
+        "the Return type is set to the derived type."
+    );
+    if constexpr (impl::proxy_like<T>) {
+        ++self.value();
+    } else {
         T::template operator_increment<Return>(self);
-        return self;
     }
+    return self;
+}
 
-    template <typename T> requires (!impl::__increment__<T>::enable)
-    inline friend T operator++(T& self, int) = delete;
-    template <typename T> requires (impl::__increment__<T>::enable)
-    inline friend T operator++(T& self, int) {
-        using Return = typename impl::__increment__<T>::Return;
-        static_assert(
-            std::is_same_v<Return, T>,
-            "Increment operator must return a reference to the derived type.  "
-            "Check your specialization of __increment__ for this type and ensure "
-            "the Return type is set to the derived type."
-        );
-        T copy = self;
+
+template <typename T> requires (impl::__increment__<T>::enable)
+inline T operator++(T& self, int) {
+    using Return = typename impl::__increment__<T>::Return;
+    static_assert(
+        std::is_same_v<Return, T>,
+        "Increment operator must return a reference to the derived type.  "
+        "Check your specialization of __increment__ for this type and ensure "
+        "the Return type is set to the derived type."
+    );
+    T copy = self;
+    if constexpr (impl::proxy_like<T>) {
+        ++self.value();
+    } else {
         T::template operator_increment<Return>(self);
-        return copy;
     }
+    return copy;
+}
 
-    template <typename L, typename R>
-        requires (!impl::__add__<L, R>::enable && noproxy<L, R>)
-    inline friend auto operator+(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__add__<L, R>::enable)
-    inline friend auto operator+(const L& lhs, const R& rhs) {
-        using Return = typename impl::__add__<L, R>::Return;
-        static_assert(
-            std::is_base_of_v<Object, Return>,
-            "Addition operator must return a py::Object subclass.  Check your "
-            "specialization of __add__ for this type and ensure the Return type is "
-            "derived from py::Object."
-        );
+
+template <typename L, typename R> requires (impl::__add__<L, R>::enable)
+inline auto operator+(const L& lhs, const R& rhs) {
+    using Return = typename impl::__add__<L, R>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "Addition operator must return a py::Object subclass.  Check your "
+        "specialization of __add__ for this type and ensure the Return type is "
+        "derived from py::Object."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() + rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs + rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_add<Return>(lhs, rhs);
         } else {
             return R::template operator_add<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__iadd__<L, R>::enable && noproxy<L, R>)
-    inline friend L& operator+=(L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__iadd__<L, R>::enable)
-    inline friend L& operator+=(L& lhs, const R& rhs) {
-        using Return = typename impl::__iadd__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, L&>,
-            "In-place addition operator must return a mutable reference to the left "
-            "operand.  Check your specialization of __iadd__ for these types and "
-            "ensure the Return type is set to the left operand."
-        );
+
+template <typename L, typename R> requires (impl::__iadd__<L, R>::enable)
+inline L& operator+=(L& lhs, const R& rhs) {
+    using Return = typename impl::__iadd__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, L&>,
+        "In-place addition operator must return a mutable reference to the left "
+        "operand.  Check your specialization of __iadd__ for these types and "
+        "ensure the Return type is set to the left operand."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        lhs.value() += rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        lhs += rhs.value();
+    } else {
         L::template operator_iadd<Return>(lhs, rhs);
-        return lhs;
     }
+    return lhs;
+}
 
-    template <typename T> requires (!impl::__neg__<T>::enable)
-    inline friend auto operator-(const T& self) = delete;
-    template <typename T> requires (impl::__neg__<T>::enable)
-    inline friend auto operator-(const T& self) {
-        using Return = typename impl::__neg__<T>::Return;
-        static_assert(
-            std::is_base_of_v<Object, Return>,
-            "Unary negative operator must return a py::Object subclass.  Check "
-            "your specialization of __neg__ for this type and ensure the Return "
-            "type is set to a py::Object subclass."
-        );
+
+template <typename T> requires (impl::__neg__<T>::enable)
+inline auto operator-(const T& self) {
+    using Return = typename impl::__neg__<T>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "Unary negative operator must return a py::Object subclass.  Check "
+        "your specialization of __neg__ for this type and ensure the Return "
+        "type is set to a py::Object subclass."
+    );
+    if constexpr (impl::proxy_like<T>) {
+        return -self.value();
+    } else {
         return T::template operator_neg<Return>(self);
     }
+}
 
-    template <typename T> requires (!impl::__decrement__<T>::enable)
-    inline friend T& operator--(T& self) = delete;
-    template <typename T> requires (impl::__decrement__<T>::enable)
-    inline friend T& operator--(T& self) {
-        using Return = typename impl::__decrement__<T>::Return;
-        static_assert(
-            std::is_same_v<Return, T>,
-            "Decrement operator must return a reference to the derived type.  "
-            "Check your specialization of __decrement__ for this type and ensure "
-            "the Return type is set to the derived type."
-        );
+
+template <typename T> requires (impl::__decrement__<T>::enable)
+inline T& operator--(T& self) {
+    using Return = typename impl::__decrement__<T>::Return;
+    static_assert(
+        std::is_same_v<Return, T>,
+        "Decrement operator must return a reference to the derived type.  "
+        "Check your specialization of __decrement__ for this type and ensure "
+        "the Return type is set to the derived type."
+    );
+    if constexpr (impl::proxy_like<T>) {
+        --self.value();
+    } else {
         T::template operator_decrement<Return>(self);
-        return self;
     }
+    return self;
+}
 
-    template <typename T> requires (!impl::__decrement__<T>::enable)
-    inline friend T operator--(T& self, int) = delete;
-    template <typename T> requires (impl::__decrement__<T>::enable)
-    inline friend T operator--(T& self, int) {
-        using Return = typename impl::__decrement__<T>::Return;
-        static_assert(
-            std::is_same_v<Return, T>,
-            "Decrement operator must return a reference to the derived type.  "
-            "Check your specialization of __decrement__ for this type and ensure "
-            "the Return type is set to the derived type."
-        );
-        T copy = self;
+
+template <typename T> requires (impl::__decrement__<T>::enable)
+inline T operator--(T& self, int) {
+    using Return = typename impl::__decrement__<T>::Return;
+    static_assert(
+        std::is_same_v<Return, T>,
+        "Decrement operator must return a reference to the derived type.  "
+        "Check your specialization of __decrement__ for this type and ensure "
+        "the Return type is set to the derived type."
+    );
+    T copy = self;
+    if constexpr (impl::proxy_like<T>) {
+        --self.value();
+    } else {
         T::template operator_decrement<Return>(self);
-        return copy;
     }
+    return copy;
+}
 
-    template <typename L, typename R>
-        requires (!impl::__sub__<L, R>::enable && noproxy<L, R>)
-    inline friend auto operator-(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__sub__<L, R>::enable)
-    inline friend auto operator-(const L& lhs, const R& rhs) {
-        using Return = typename impl::__sub__<L, R>::Return;
-        static_assert(
-            std::is_base_of_v<Object, Return>,
-            "Subtraction operator must return a py::Object subclass.  Check your "
-            "specialization of __sub__ for this type and ensure the Return type is "
-            "derived from py::Object."
-        );
+
+template <typename L, typename R> requires (impl::__sub__<L, R>::enable)
+inline auto operator-(const L& lhs, const R& rhs) {
+    using Return = typename impl::__sub__<L, R>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "Subtraction operator must return a py::Object subclass.  Check your "
+        "specialization of __sub__ for this type and ensure the Return type is "
+        "derived from py::Object."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() - rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs - rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_sub<Return>(lhs, rhs);
         } else {
             return R::template operator_sub<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__isub__<L, R>::enable && noproxy<L, R>)
-    inline friend L& operator-=(L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__isub__<L, R>::enable)
-    inline friend L& operator-=(L& lhs, const R& rhs) {
-        using Return = typename impl::__isub__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, L&>,
-            "In-place addition operator must return a mutable reference to the left "
-            "operand.  Check your specialization of __isub__ for these types and "
-            "ensure the Return type is set to the left operand."
-        );
+
+template <typename L, typename R> requires (impl::__isub__<L, R>::enable)
+inline L& operator-=(L& lhs, const R& rhs) {
+    using Return = typename impl::__isub__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, L&>,
+        "In-place addition operator must return a mutable reference to the left "
+        "operand.  Check your specialization of __isub__ for these types and "
+        "ensure the Return type is set to the left operand."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        lhs.value() -= rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        lhs -= rhs.value();
+    } else {
         L::template operator_isub<Return>(lhs, rhs);
-        return lhs;
     }
+    return lhs;
+}
 
-    template <typename L, typename R>
-        requires (!impl::__mul__<L, R>::enable && noproxy<L, R>)
-    inline friend auto operator*(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__mul__<L, R>::enable)
-    inline friend auto operator*(const L& lhs, const R& rhs) {
-        using Return = typename impl::__mul__<L, R>::Return;
-        static_assert(
-            std::is_base_of_v<Object, Return>,
-            "Multiplication operator must return a py::Object subclass.  Check "
-            "your specialization of __mul__ for this type and ensure the Return "
-            "type is derived from py::Object."
-        );
+
+template <typename L, typename R> requires (impl::__mul__<L, R>::enable)
+inline auto operator*(const L& lhs, const R& rhs) {
+    using Return = typename impl::__mul__<L, R>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "Multiplication operator must return a py::Object subclass.  Check "
+        "your specialization of __mul__ for this type and ensure the Return "
+        "type is derived from py::Object."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() * rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs * rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_mul<Return>(lhs, rhs);
         } else {
             return R::template operator_mul<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__imul__<L, R>::enable && noproxy<L, R>)
-    inline friend L& operator*=(L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__imul__<L, R>::enable)
-    inline friend L& operator*=(L& lhs, const R& rhs) {
-        using Return = typename impl::__imul__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, L&>,
-            "In-place multiplication operator must return a mutable reference to the "
-            "left operand.  Check your specialization of __imul__ for these types "
-            "and ensure the Return type is set to the left operand."
-        );
+
+template <typename L, typename R> requires (impl::__imul__<L, R>::enable)
+inline L& operator*=(L& lhs, const R& rhs) {
+    using Return = typename impl::__imul__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, L&>,
+        "In-place multiplication operator must return a mutable reference to the "
+        "left operand.  Check your specialization of __imul__ for these types "
+        "and ensure the Return type is set to the left operand."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        lhs.value() *= rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        lhs *= rhs.value();
+    } else {
         L::template operator_imul<Return>(lhs, rhs);
-        return lhs;
     }
+    return lhs;
+}
 
-    template <typename L, typename R>
-        requires (!impl::__truediv__<L, R>::enable && noproxy<L, R>)
-    inline friend auto operator/(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__truediv__<L, R>::enable)
-    inline friend auto operator/(const L& lhs, const R& rhs) {
-        using Return = typename impl::__truediv__<L, R>::Return;
-        static_assert(
-            std::is_base_of_v<Object, Return>,
-            "True division operator must return a py::Object subclass.  Check "
-            "your specialization of __truediv__ for this type and ensure the "
-            "Return type is derived from py::Object."
-        );
+
+template <typename L, typename R> requires (impl::__truediv__<L, R>::enable)
+inline auto operator/(const L& lhs, const R& rhs) {
+    using Return = typename impl::__truediv__<L, R>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "True division operator must return a py::Object subclass.  Check "
+        "your specialization of __truediv__ for this type and ensure the "
+        "Return type is derived from py::Object."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() / rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs / rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_truediv<Return>(lhs, rhs);
         } else {
             return R::template operator_truediv<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__itruediv__<L, R>::enable && noproxy<L, R>)
-    inline friend L& operator/=(L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__itruediv__<L, R>::enable)
-    inline friend L& operator/=(L& lhs, const R& rhs) {
-        using Return = typename impl::__itruediv__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, L&>,
-            "In-place true division operator must return a mutable reference to the "
-            "left operand.  Check your specialization of __itruediv__ for these "
-            "types and ensure the Return type is set to the left operand."
-        );
+
+template <typename L, typename R> requires (impl::__itruediv__<L, R>::enable)
+inline L& operator/=(L& lhs, const R& rhs) {
+    using Return = typename impl::__itruediv__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, L&>,
+        "In-place true division operator must return a mutable reference to the "
+        "left operand.  Check your specialization of __itruediv__ for these "
+        "types and ensure the Return type is set to the left operand."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        lhs.value() /= rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        lhs /= rhs.value();
+    } else {
         L::template operator_itruediv<Return>(lhs, rhs);
-        return lhs;
     }
+    return lhs;
+}
 
-    template <typename L, typename R>
-        requires (!impl::__mod__<L, R>::enable && noproxy<L, R>)
-    inline friend auto operator%(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__mod__<L, R>::enable)
-    inline friend auto operator%(const L& lhs, const R& rhs) {
-        using Return = typename impl::__mod__<L, R>::Return;
-        static_assert(
-            std::is_base_of_v<Object, Return>,
-            "Modulus operator must return a py::Object subclass.  Check your "
-            "specialization of __mod__ for this type and ensure the Return type "
-            "is derived from py::Object."
-        );
+
+template <typename L, typename R> requires (impl::__mod__<L, R>::enable)
+inline auto operator%(const L& lhs, const R& rhs) {
+    using Return = typename impl::__mod__<L, R>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "Modulus operator must return a py::Object subclass.  Check your "
+        "specialization of __mod__ for this type and ensure the Return type "
+        "is derived from py::Object."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() % rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs % rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_mod<Return>(lhs, rhs);
         } else {
             return R::template operator_mod<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__imod__<L, R>::enable && noproxy<L, R>)
-    inline friend L& operator%=(L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__imod__<L, R>::enable)
-    inline friend L& operator%=(L& lhs, const R& rhs) {
-        using Return = typename impl::__imod__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, L&>,
-            "In-place modulus operator must return a mutable reference to the left "
-            "operand.  Check your specialization of __imod__ for these types and "
-            "ensure the Return type is set to the left operand."
-        );
+
+template <typename L, typename R> requires (impl::__imod__<L, R>::enable)
+inline L& operator%=(L& lhs, const R& rhs) {
+    using Return = typename impl::__imod__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, L&>,
+        "In-place modulus operator must return a mutable reference to the left "
+        "operand.  Check your specialization of __imod__ for these types and "
+        "ensure the Return type is set to the left operand."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        lhs.value() %= rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        lhs %= rhs.value();
+    } else {
         L::template operator_imod<Return>(lhs, rhs);
-        return lhs;
     }
+    return lhs;
+}
 
-    template <typename L, typename R>
-        requires (!impl::__lshift__<L, R>::enable && noproxy<L, R>)
-    inline friend auto operator<<(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__lshift__<L, R>::enable)
-    inline friend auto operator<<(const L& lhs, const R& rhs) {
-        using Return = typename impl::__lshift__<L, R>::Return;
-        static_assert(
-            std::is_base_of_v<Object, Return>,
-            "Left shift operator must return a py::Object subclass.  Check your "
-            "specialization of __lshift__ for this type and ensure the Return "
-            "type is derived from py::Object."
-        );
+
+template <typename L, typename R> requires (impl::__lshift__<L, R>::enable)
+inline auto operator<<(const L& lhs, const R& rhs) {
+    using Return = typename impl::__lshift__<L, R>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "Left shift operator must return a py::Object subclass.  Check your "
+        "specialization of __lshift__ for this type and ensure the Return "
+        "type is derived from py::Object."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() << rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs << rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_lshift<Return>(lhs, rhs);
         } else {
             return R::template operator_lshift<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__ilshift__<L, R>::enable && noproxy<L, R>)
-    inline friend L& operator<<=(L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__ilshift__<L, R>::enable)
-    inline friend L& operator<<=(L& lhs, const R& rhs) {
-        using Return = typename impl::__ilshift__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, L&>,
-            "In-place left shift operator must return a mutable reference to the left "
-            "operand.  Check your specialization of __ilshift__ for these types "
-            "and ensure the Return type is set to the left operand."
-        );
+
+template <typename L, typename R> requires (impl::__ilshift__<L, R>::enable)
+inline L& operator<<=(L& lhs, const R& rhs) {
+    using Return = typename impl::__ilshift__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, L&>,
+        "In-place left shift operator must return a mutable reference to the left "
+        "operand.  Check your specialization of __ilshift__ for these types "
+        "and ensure the Return type is set to the left operand."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        lhs.value() <<= rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        lhs <<= rhs.value();
+    } else {
         L::template operator_ilshift<Return>(lhs, rhs);
-        return lhs;
     }
+    return lhs;
+}
 
-    template <typename L, typename R>
-        requires (!impl::__rshift__<L, R>::enable && noproxy<L, R>)
-    inline friend auto operator>>(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__rshift__<L, R>::enable)
-    inline friend auto operator>>(const L& lhs, const R& rhs) {
-        using Return = typename impl::__rshift__<L, R>::Return;
-        static_assert(
-            std::is_base_of_v<Object, Return>,
-            "Right shift operator must return a py::Object subclass.  Check your "
-            "specialization of __rshift__ for this type and ensure the Return "
-            "type is derived from py::Object."
-        );
+
+template <typename L, typename R> requires (impl::__rshift__<L, R>::enable)
+inline auto operator>>(const L& lhs, const R& rhs) {
+    using Return = typename impl::__rshift__<L, R>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "Right shift operator must return a py::Object subclass.  Check your "
+        "specialization of __rshift__ for this type and ensure the Return "
+        "type is derived from py::Object."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() >> rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs >> rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_rshift<Return>(lhs, rhs);
         } else {
             return R::template operator_rshift<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__irshift__<L, R>::enable && noproxy<L, R>)
-    inline friend L& operator>>=(L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__irshift__<L, R>::enable)
-    inline friend L& operator>>=(L& lhs, const L& rhs) {
-        using Return = typename impl::__irshift__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, L&>,
-            "In-place right shift operator must return a mutable reference to the left "
-            "operand.  Check your specialization of __irshift__ for these types "
-            "and ensure the Return type is set to the left operand."
-        );
+
+template <typename L, typename R> requires (impl::__irshift__<L, R>::enable)
+inline L& operator>>=(L& lhs, const L& rhs) {
+    using Return = typename impl::__irshift__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, L&>,
+        "In-place right shift operator must return a mutable reference to the left "
+        "operand.  Check your specialization of __irshift__ for these types "
+        "and ensure the Return type is set to the left operand."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        lhs.value() >>= rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        lhs >>= rhs.value();
+    } else {
         L::template operator_irshift<Return>(lhs, rhs);
-        return lhs;
     }
+    return lhs;
+}
 
-    template <typename L, typename R>
-        requires (!impl::__and__<L, R>::enable && noproxy<L, R>)
-    inline friend auto operator&(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__and__<L, R>::enable)
-    inline friend auto operator&(const L& lhs, const R& rhs) {
-        using Return = typename impl::__and__<L, R>::Return;
-        static_assert(
-            std::is_base_of_v<Object, Return>,
-            "Bitwise AND operator must return a py::Object subclass.  Check your "
-            "specialization of __and__ for this type and ensure the Return type "
-            "is derived from py::Object."
-        );
+
+template <typename L, typename R> requires (impl::__and__<L, R>::enable)
+inline auto operator&(const L& lhs, const R& rhs) {
+    using Return = typename impl::__and__<L, R>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "Bitwise AND operator must return a py::Object subclass.  Check your "
+        "specialization of __and__ for this type and ensure the Return type "
+        "is derived from py::Object."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() & rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs & rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_and<Return>(lhs, rhs);
         } else {
             return R::template operator_and<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__iand__<L, R>::enable && noproxy<L, R>)
-    inline friend L& operator&=(L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__iand__<L, R>::enable)
-    inline friend L& operator&=(L& lhs, const R& rhs) {
-        using Return = typename impl::__iand__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, L&>,
-            "In-place bitwise AND operator must return a mutable reference to the left "
-            "operand.  Check your specialization of __iand__ for these types and "
-            "ensure the Return type is set to the left operand."
-        );
+
+template <typename L, typename R> requires (impl::__iand__<L, R>::enable)
+inline L& operator&=(L& lhs, const R& rhs) {
+    using Return = typename impl::__iand__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, L&>,
+        "In-place bitwise AND operator must return a mutable reference to the left "
+        "operand.  Check your specialization of __iand__ for these types and "
+        "ensure the Return type is set to the left operand."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        lhs.value() &= rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        lhs &= rhs.value();
+    } else {
         L::template operator_iand<Return>(lhs, rhs);
-        return lhs;
     }
+    return lhs;
+}
 
-    template <typename L, typename R>
-        requires (!impl::__or__<L, R>::enable && noproxy<L, R>)
-    inline friend auto operator|(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__or__<L, R>::enable)
-    inline friend auto operator|(const L& lhs, const R& rhs) {
-        using Return = typename impl::__or__<L, R>::Return;
-        static_assert(
-            std::is_base_of_v<Object, Return>,
-            "Bitwise OR operator must return a py::Object subclass.  Check your "
-            "specialization of __or__ for this type and ensure the Return type is "
-            "derived from py::Object."
-        );
+
+template <typename L, typename R> requires (impl::__or__<L, R>::enable)
+inline auto operator|(const L& lhs, const R& rhs) {
+    using Return = typename impl::__or__<L, R>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "Bitwise OR operator must return a py::Object subclass.  Check your "
+        "specialization of __or__ for this type and ensure the Return type is "
+        "derived from py::Object."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() | rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs | rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_or<Return>(lhs, rhs);
         } else {
             return R::template operator_or<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__ior__<L, R>::enable && noproxy<L, R>)
-    inline friend L& operator|=(L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__ior__<L, R>::enable)
-    inline friend L& operator|=(L& lhs, const R& rhs) {
-        using Return = typename impl::__ior__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, L&>,
-            "In-place bitwise OR operator must return a mutable reference to the left "
-            "operand.  Check your specialization of __ior__ for these types and "
-            "ensure the Return type is set to the left operand."
-        );
+
+template <typename L, typename R> requires (impl::__ior__<L, R>::enable)
+inline L& operator|=(L& lhs, const R& rhs) {
+    using Return = typename impl::__ior__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, L&>,
+        "In-place bitwise OR operator must return a mutable reference to the left "
+        "operand.  Check your specialization of __ior__ for these types and "
+        "ensure the Return type is set to the left operand."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        lhs.value() |= rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        lhs |= rhs.value();
+    } else {
         L::template operator_ior<Return>(lhs, rhs);
-        return lhs;
     }
+    return lhs;
+}
 
-    template <typename L, typename R>
-        requires (!impl::__xor__<L, R>::enable && noproxy<L, R>)
-    inline friend auto operator^(const L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__xor__<L, R>::enable)
-    inline friend auto operator^(const L& lhs, const R& rhs) {
-        using Return = typename impl::__xor__<L, R>::Return;
-        static_assert(
-            std::is_base_of_v<Object, Return>,
-            "Bitwise XOR operator must return a py::Object subclass.  Check your "
-            "specialization of __xor__ for this type and ensure the Return type "
-            "is derived from py::Object."
-        );
+
+template <typename L, typename R> requires (impl::__xor__<L, R>::enable)
+inline auto operator^(const L& lhs, const R& rhs) {
+    using Return = typename impl::__xor__<L, R>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "Bitwise XOR operator must return a py::Object subclass.  Check your "
+        "specialization of __xor__ for this type and ensure the Return type "
+        "is derived from py::Object."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() ^ rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs ^ rhs.value();
+    } else {
         if constexpr (std::is_base_of_v<Object, L>) {
             return L::template operator_xor<Return>(lhs, rhs);
         } else {
             return R::template operator_xor<Return>(lhs, rhs);
         }
     }
+}
 
-    template <typename L, typename R>
-        requires (!impl::__ixor__<L, R>::enable && noproxy<L, R>)
-    inline friend L& operator^=(L& lhs, const R& rhs) = delete;
-    template <typename L, typename R> requires (impl::__ixor__<L, R>::enable)
-    inline friend L& operator^=(L& lhs, const R& rhs) {
-        using Return = typename impl::__ixor__<L, R>::Return;
-        static_assert(
-            std::is_same_v<Return, L&>,
-            "In-place bitwise XOR operator must return a mutable reference to the left "
-            "operand.  Check your specialization of __ixor__ for these types and "
-            "ensure the Return type is set to the left operand."
-        );
+
+template <typename L, typename R> requires (impl::__ixor__<L, R>::enable)
+inline L& operator^=(L& lhs, const R& rhs) {
+    using Return = typename impl::__ixor__<L, R>::Return;
+    static_assert(
+        std::is_same_v<Return, L&>,
+        "In-place bitwise XOR operator must return a mutable reference to the left "
+        "operand.  Check your specialization of __ixor__ for these types and "
+        "ensure the Return type is set to the left operand."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        lhs.value() ^= rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        lhs ^= rhs.value();
+    } else {
         L::template operator_ixor<Return>(lhs, rhs);
-        return lhs;
     }
+    return lhs;
+}
 
-    template <typename T>
-    inline friend std::ostream& operator<<(std::ostream& os, const T& obj) {
-        PyObject* repr = PyObject_Repr(obj.ptr());
-        if (repr == nullptr) {
-            throw error_already_set();
-        }
-        Py_ssize_t size;
-        const char* data = PyUnicode_AsUTF8AndSize(repr, &size);
-        if (data == nullptr) {
-            Py_DECREF(repr);
-            throw error_already_set();
-        }
-        os.write(data, size);
-        Py_DECREF(repr);
-        return os;
-    }
 
-private:
+template <typename T> requires (std::is_base_of_v<Object, T>)
+inline T reinterpret_borrow(Handle obj);
+template <typename T> requires (std::is_base_of_v<Object, T>)
+inline T reinterpret_steal(Handle obj);
 
-    template <typename... Args>
-    inline auto operator_call_impl(Args&&... args) const {
-        return pybind11::object::operator()(std::forward<Args>(args)...);
-    }
 
-    template <typename T>
-    inline bool operator_contains_impl(const T& key) const {
-        return pybind11::object::contains(key);
-    }
-
-    inline auto operator_dereference_impl() const {
-        return pybind11::object::operator*();
-    }
-
+/* A revised pybind11::object interface that allows implicit conversions to subtypes
+(applying a type check on the way), explicit conversions to arbitrary C++ types via
+static_cast<>, cross-language math operators, and generalized slice/attr syntax. */
+class Object {
 protected:
+    PyObject* m_ptr;
+
+    /* Default constructor.  Initializes to a null object, which should always be
+    filled in before being returned to the user.  Protecting this reduces the risk of
+    null pointers being accidentally introduced in client code. */
+    Object() = default;
+
+    /* Protected tags mirror pybind11::object and allow for the use of
+    reinterpret_borrow<>, reinterpret_steal<> for bertrand types. */
+    struct borrowed_t {};
+    struct stolen_t {};
+
+    template <typename T> requires (std::is_base_of_v<Object, T>)
+    friend T reinterpret_borrow(Handle);
+    template <typename T> requires (std::is_base_of_v<Object, T>)
+    friend T reinterpret_steal(Handle);
 
     template <typename Return, typename T, typename... Args>
     inline static Return operator_call(const T& obj, Args&&... args) {
         if constexpr (std::is_void_v<Return>) {
-            obj.operator_call_impl(std::forward<Args>(args)...);
+            Handle(obj.ptr())(std::forward<Args>(args)...);
         } else {
-            return reinterpret_steal<Return>(
-                obj.operator_call_impl(std::forward<Args>(args)...).release()
+            return Return(
+                Handle(obj.ptr())(std::forward<Args>(args)...).release(),
+                stolen_t{}
             );
         }
     }
 
     template <typename Return, typename T, typename Key>
-    inline static auto operator_getitem(const T& obj, Key&& key)
-        -> impl::Item<T, std::decay_t<Key>>;
+    inline static impl::Item<T, std::decay_t<Key>> operator_getitem(
+        const T& obj,
+        Key&& key
+    );
 
     template <typename Return, typename T>
-    inline static auto operator_getitem(
+    inline static impl::Item<T, Slice> operator_getitem(
         const T& obj,
         std::initializer_list<impl::SliceInitializer> slice
-    ) -> impl::Item<T, Slice>;
+    );
 
     template <typename Return, typename T>
-    inline static auto operator_begin(const T& obj)
-        -> impl::Iterator<impl::GenericIter<Return>>;
-
+    inline static impl::Iterator<impl::GenericIter<Return>> operator_begin(const T& obj);
     template <typename Return, typename T>
-    inline static auto operator_end(const T& obj)
-        -> impl::Iterator<impl::GenericIter<Return>>;
-
+    inline static impl::Iterator<impl::GenericIter<Return>> operator_end(const T& obj);
     template <typename Return, typename T>
-    inline static auto operator_rbegin(const T& obj)
-        -> impl::Iterator<impl::GenericIter<Return>>;
-
+    inline static impl::Iterator<impl::GenericIter<Return>> operator_rbegin(const T& obj);
     template <typename Return, typename T>
-    inline static auto operator_rend(const T& obj)
-        -> impl::Iterator<impl::GenericIter<Return>>;
+    inline static impl::Iterator<impl::GenericIter<Return>> operator_rend(const T& obj);
 
     template <typename Return, typename L, typename R>
     inline static bool operator_contains(const L& lhs, const R& rhs) {
-        return lhs.operator_contains_impl(rhs);
+        int result = PySequence_Contains(
+            lhs.ptr(),
+            detail::object_or_cast(rhs).ptr()
+        );
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
     }
 
     template <typename Return, typename T>
@@ -2169,25 +2396,7 @@ protected:
 
     template <typename Return, typename T>
     inline static auto operator_dereference(const T& obj) {
-        return obj.operator_dereference_impl();
-    }
-
-    template <typename Return, typename T>
-    inline static auto operator_pos(const T& obj) {
-        PyObject* result = PyNumber_Positive(detail::object_or_cast(obj).ptr());
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return reinterpret_steal<Return>(result);
-    }
-
-    template <typename Return, typename T>
-    inline static auto operator_neg(const T& obj) {
-        PyObject* result = PyNumber_Negative(detail::object_or_cast(obj).ptr());
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        return reinterpret_steal<Return>(result);
+        return *Handle(obj.ptr());
     }
 
     template <typename Return, typename T>
@@ -2196,41 +2405,7 @@ protected:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Return>(result);
-    }
-
-    template <typename Return, typename T>
-    inline static void operator_increment(T& obj) {
-        static const pybind11::int_ one = 1;
-        PyObject* result = PyNumber_InPlaceAdd(
-            detail::object_or_cast(obj).ptr(),
-            one.ptr()
-        );
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        if (result == obj.ptr()) {
-            Py_DECREF(result);
-        } else {
-            obj = reinterpret_steal<Return>(result);
-        }
-    }
-
-    template <typename Return, typename T>
-    inline static void operator_decrement(T& obj) {
-        static const pybind11::int_ one = 1;
-        PyObject* result = PyNumber_InPlaceSubtract(
-            detail::object_or_cast(obj).ptr(),
-            one.ptr()
-        );
-        if (result == nullptr) {
-            throw error_already_set();
-        }
-        if (result == obj.ptr()) {
-            Py_DECREF(result);
-        } else {
-            obj = reinterpret_steal<Return>(result);
-        }
+        return Return(result, stolen_t{});
     }
 
     template <typename Return, typename L, typename R>
@@ -2311,6 +2486,32 @@ protected:
         return result;
     }
 
+    template <typename Return, typename T>
+    inline static auto operator_pos(const T& obj) {
+        PyObject* result = PyNumber_Positive(detail::object_or_cast(obj).ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return Return(result, stolen_t{});
+    }
+
+    template <typename Return, typename T>
+    inline static void operator_increment(T& obj) {
+        static const pybind11::int_ one = 1;
+        PyObject* result = PyNumber_InPlaceAdd(
+            detail::object_or_cast(obj).ptr(),
+            one.ptr()
+        );
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        if (result == obj.ptr()) {
+            Py_DECREF(result);
+        } else {
+            obj = Return(result, stolen_t{});
+        }
+    }
+
     template <typename Return, typename L, typename R>
     inline static auto operator_add(const L& lhs, const R& rhs) {
         PyObject* result = PyNumber_Add(
@@ -2320,7 +2521,7 @@ protected:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Return>(result);
+        return Return(result, stolen_t{});
     }
 
     template <typename Return, typename L, typename R>
@@ -2334,7 +2535,33 @@ protected:
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<L>(result);
+            lhs = L(result, stolen_t{});
+        }
+    }
+
+    template <typename Return, typename T>
+    inline static auto operator_neg(const T& obj) {
+        PyObject* result = PyNumber_Negative(detail::object_or_cast(obj).ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return Return(result, stolen_t{});
+    }
+
+    template <typename Return, typename T>
+    inline static void operator_decrement(T& obj) {
+        static const pybind11::int_ one = 1;
+        PyObject* result = PyNumber_InPlaceSubtract(
+            detail::object_or_cast(obj).ptr(),
+            one.ptr()
+        );
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        if (result == obj.ptr()) {
+            Py_DECREF(result);
+        } else {
+            obj = Return(result, stolen_t{});
         }
     }
 
@@ -2347,7 +2574,7 @@ protected:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Return>(result);
+        return Return(result, stolen_t{});
     }
 
     template <typename Return, typename L, typename R>
@@ -2361,7 +2588,7 @@ protected:
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<L>(result);
+            lhs = L(result, stolen_t{});
         }
     }
 
@@ -2374,7 +2601,7 @@ protected:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Return>(result);
+        return Return(result, stolen_t{});
     }
 
     template <typename Return, typename L, typename R>
@@ -2388,7 +2615,7 @@ protected:
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<L>(result);
+            lhs = L(result, stolen_t{});
         }
     }
 
@@ -2401,7 +2628,7 @@ protected:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Return>(result);
+        return Return(result, stolen_t{});
     }
 
     template <typename Return, typename L, typename R>
@@ -2415,7 +2642,7 @@ protected:
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<L>(result);
+            lhs = L(result, stolen_t{});
         }
     }
 
@@ -2428,7 +2655,7 @@ protected:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Return>(result);
+        return Return(result, stolen_t{});
     }
 
     template <typename Return, typename L, typename R>
@@ -2442,7 +2669,7 @@ protected:
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<L>(result);
+            lhs = L(result, stolen_t{});
         }
     }
 
@@ -2455,7 +2682,7 @@ protected:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Return>(result);
+        return Return(result, stolen_t{});
     }
 
     template <typename Return, typename L, typename R>
@@ -2469,7 +2696,7 @@ protected:
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<L>(result);
+            lhs = L(result, stolen_t{});
         }
     }
 
@@ -2482,7 +2709,7 @@ protected:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Return>(result);
+        return Return(result, stolen_t{});
     }
 
     template <typename Return, typename L, typename R>
@@ -2496,7 +2723,7 @@ protected:
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<L>(result);
+            lhs = L(result, stolen_t{});
         }
     }
 
@@ -2509,7 +2736,7 @@ protected:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Return>(result);
+        return Return(result, stolen_t{});
     }
 
     template <typename Return, typename L, typename R>
@@ -2523,7 +2750,7 @@ protected:
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<L>(result);
+            lhs = L(result, stolen_t{});
         }
     }
 
@@ -2536,7 +2763,7 @@ protected:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Return>(result);
+        return Return(result, stolen_t{});
     }
 
     template <typename Return, typename L, typename R>
@@ -2550,7 +2777,7 @@ protected:
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<L>(result);
+            lhs = L(result, stolen_t{});
         }
     }
 
@@ -2563,7 +2790,7 @@ protected:
         if (result == nullptr) {
             throw error_already_set();
         }
-        return reinterpret_steal<Return>(result);
+        return Return(result, stolen_t{});
     }
 
     template <typename Return, typename L, typename R>
@@ -2577,11 +2804,347 @@ protected:
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
-            lhs = reinterpret_steal<L>(result);
+            lhs = L(result, stolen_t{});
         }
     }
 
+public:
+    static Type type;
+
+    /* Check whether the templated type is considered object-like at compile time. */
+    template <typename T>
+    static constexpr bool check() { return std::is_base_of_v<pybind11::object, T>; }
+
+    /* Check whether a C++ value is considered object-like at compile time. */
+    template <typename T> requires (!impl::python_like<T>)
+    static constexpr bool check(const T& value) { return check<T>(); }
+
+    /* Check whether a Python value is considered object-like at runtime. */
+    template <typename T> requires (impl::python_like<T>)
+    static constexpr bool check(const T& value) { return value.ptr() != nullptr; }
+
+    /* Identical to the above, but pybind11 expects a method of this name. */
+    template <typename T> requires (!impl::python_like<T>)
+    static constexpr bool check_(const T& value) { return check(value); }
+    template <typename T> requires (impl::python_like<T>)
+    static constexpr bool check_(const T& value) { return check(value); }
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* reinterpret_borrow()/reinterpret_steal() constructors.  The tags themselves are
+    protected and only accessible within subclasses of pybind11::object. */
+    Object(Handle ptr, const borrowed_t&) : m_ptr(Py_XNewRef(ptr.ptr())) {}
+    Object(Handle ptr, const stolen_t&) : m_ptr(ptr.ptr()) {}
+
+    /* Copy constructor.  Borrows a reference to an existing object. */
+    Object(const Object& other) : m_ptr(Py_XNewRef(other.m_ptr)) {}
+    Object(const pybind11::object& other) : m_ptr(Py_XNewRef(other.ptr())) {}
+
+    /* Move constructor.  Steals a reference to a temporary object. */
+    Object(Object&& other) : m_ptr(other.m_ptr) { other.m_ptr = nullptr; }
+    Object(pybind11::object&& other) : m_ptr(other.release().ptr()) {}
+
+    /* Convert any C++ value into a generic python object. */
+    template <typename T> requires (!impl::python_like<T>)
+    Object(const T& value) : m_ptr(pybind11::cast(value).release().ptr()) {}
+
+    /* Convert a pybind11 accessor into a generic Object. */
+    template <typename Policy>
+    Object(const detail::accessor<Policy>& accessor) {
+        pybind11::object obj(accessor);
+        if (check(obj)) {
+            m_ptr = obj.release().ptr();
+        } else {
+            throw impl::noconvert<Object>(obj.ptr());
+        }
+    }
+
+    /* Copy assignment operator. */
+    Object& operator=(const Object& other) {
+        if (this != &other) {
+            PyObject* temp = m_ptr;
+            m_ptr = Py_XNewRef(other.m_ptr);
+            Py_XDECREF(temp);
+        }
+        return *this;
+    }
+
+    /* Move assignment operator. */
+    Object& operator=(Object&& other) {
+        if (this != &other) {
+            PyObject* temp = m_ptr;
+            m_ptr = other.m_ptr;
+            other.m_ptr = nullptr;
+            Py_XDECREF(temp);
+        }
+        return *this;
+    }
+
+    /* Trigger implicit conversions to this type via the assignment operator. */
+    template <typename T> requires (std::is_convertible_v<T, Object>)
+    Object& operator=(T&& value) {
+        PyObject* temp = m_ptr;
+        if constexpr (impl::has_conversion_operator<std::remove_cvref_t<T>, Object>) {
+            m_ptr = value.operator Object().release().ptr();
+        } else {
+            m_ptr = Object(std::forward<T>(value)).release().ptr();
+        }
+        Py_XDECREF(temp);
+        return *this;
+    }
+
+    /* Destructor allows any object to be stored with static duration. */
+    ~Object() noexcept {
+        if (Py_IsInitialized()) {
+            Py_XDECREF(m_ptr);
+        }
+    }
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
+
+    /* NOTE: the Object wrapper can be implicitly converted to any of its subclasses by
+     * applying a runtime type check as part of the assignment.  This allows us to
+     * safely convert from a generic object to a more specialized type without worrying
+     * about type mismatches or triggering arbitrary conversion logic.  It allows us to
+     * write code like this:
+     *
+     *      py::Object obj = true;
+     *      py::Bool b = obj;
+     *
+     * But not like this:
+     *
+     *      py::Object obj = true;
+     *      py::Str s = obj;  // throws a TypeError
+     *
+     * While simultaneously preserving the ability to explicitly convert using a normal
+     * constructor call:
+     *
+     *      py::Object obj = true;
+     *      py::Str s(obj);
+     *
+     * Which is identical to calling `str()` at the python level.  Note that the
+     * implicit conversion operator is only enabled for Object itself, and is deleted
+     * in all of its subclasses.  This prevents implicit conversions between subclasses
+     * and promotes any attempt to do so into a compile-time error.  For instance:
+     *
+     *      py::Bool b = true;
+     *      py::Str s = b;  // fails to compile, calls a deleted function
+     *
+     * In general, this makes assignment via the `=` operator type-safe by default,
+     * while explicit constructors are reserved for non-trivial conversions and/or
+     * packing in the case of containers.
+     */
+
+    /* Implicitly convert an Object into a pybind11::handle. */
+    inline operator pybind11::handle() const {
+        return pybind11::handle(m_ptr);
+    }
+
+    /* Implicitly convert an Object into a pybind11::object. */
+    inline operator pybind11::object() const {
+        return pybind11::reinterpret_borrow<pybind11::object>(m_ptr);
+    }
+
+    /* Narrow an Object into one of its subclasses, applying a runtime type check
+    against its value. */
+    template <typename T> requires (std::is_base_of_v<Object, T>)
+    inline operator T() const {
+        if (!T::check(*this)) {
+            throw impl::noconvert<T>(m_ptr);
+        }
+        return T(m_ptr, borrowed_t{});
+    }
+
+    /* Wrap an Object in a proxy class, which moves it into a managed buffer for
+    granular control. */
+    template <typename T> requires (impl::proxy_like<T>)
+    inline operator T() const {
+        return T(this->operator typename T::Wrapped());
+    }
+
+    /* Explicitly convert to any other type using pybind11's type casting mechanism. */
+    template <typename T>
+        requires (!impl::proxy_like<T> && !std::is_base_of_v<Object, T>)
+    inline explicit operator T() const {
+        return Handle(m_ptr).template cast<T>();
+    }
+
+    /* Contextually convert an Object into a boolean value for use in if/else 
+    statements, with the same semantics as in Python. */
+    inline explicit operator bool() const {
+        int result = PyObject_IsTrue(m_ptr);
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    /* Explicitly cast to a string representation.  Equivalent to Python `str(obj)`. */
+    inline explicit operator std::string() const {
+        PyObject* str = PyObject_Str(m_ptr);
+        if (str == nullptr) {
+            throw error_already_set();
+        }
+        Py_ssize_t size;
+        const char* data = PyUnicode_AsUTF8AndSize(str, &size);
+        if (data == nullptr) {
+            Py_DECREF(str);
+            throw error_already_set();
+        }
+        std::string result(data, size);
+        Py_DECREF(str);
+        return result;
+    }
+
+    ////////////////////////////
+    ////    BASE METHODS    ////
+    ////////////////////////////
+
+    /* Return the underlying PyObject pointer. */
+    inline PyObject* ptr() const {
+        return m_ptr;
+    }
+
+    /* Relinquish ownership over the object and return it as a raw handle. */
+    inline Handle release() {
+        PyObject* temp = m_ptr;
+        m_ptr = nullptr;
+        return Handle(temp);
+    }
+
+    /* Check for exact pointer identity. */
+    inline bool is(const Handle& other) const {
+        return m_ptr == other.ptr();
+    }
+
+    /* Check for exact pointer identity. */
+    inline bool is(const Object& other) const {
+        return m_ptr == other.ptr();
+    }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    BERTRAND_OBJECT_OPERATORS(Object)
+
+    template <StaticStr key>
+    inline impl::AttrProxy<Object> attr() const;
+
 };
+
+
+inline std::ostream& operator<<(std::ostream& os, const Object& obj) {
+    PyObject* repr = PyObject_Repr(obj.ptr());
+    if (repr == nullptr) {
+        throw error_already_set();
+    }
+    Py_ssize_t size;
+    const char* data = PyUnicode_AsUTF8AndSize(repr, &size);
+    if (data == nullptr) {
+        Py_DECREF(repr);
+        throw error_already_set();
+    }
+    os.write(data, size);
+    Py_DECREF(repr);
+    return os;
+}
+
+
+template <impl::proxy_like T>
+inline std::ostream& operator<<(std::ostream& os, const T& proxy) {
+    os << proxy.value();
+    return os;
+}
+
+
+/* Borrow a reference to a raw Python handle. */
+template <typename T> requires (std::is_base_of_v<Object, T>)
+inline T reinterpret_borrow(Handle obj) {
+    return T(obj, Object::borrowed_t{});
+}
+
+
+/* Borrow a reference to a raw Python handle. */
+template <typename T> requires (std::is_base_of_v<pybind11::object, T>)
+inline T reinterpret_borrow(Handle obj) {
+    return pybind11::reinterpret_borrow<T>(obj);
+}
+
+
+/* Steal a reference to a raw Python handle. */
+template <typename T> requires (std::is_base_of_v<Object, T>)
+inline T reinterpret_steal(Handle obj) {
+    return T(obj, Object::stolen_t{});
+}
+
+
+/* Steal a reference to a raw Python handle. */
+template <typename T> requires (std::is_base_of_v<pybind11::object, T>)
+inline T reinterpret_steal(Handle obj) {
+    return pybind11::reinterpret_steal<T>(obj);
+}
+
+
+/* Equivalent to Python `abs(obj)` for any object that specializes the __abs__ control
+struct. */
+template <typename T> requires (impl::__abs__<T>::enable)
+inline auto abs(const T& obj) {
+    using Return = impl::__abs__<T>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "Absolute value operator must return a py::Object subclass.  Check your "
+        "specialization of __abs__ for this type and ensure the Return type is set to "
+        "a py::Object subclass."
+    );
+    if constexpr (impl::proxy_like<T>) {
+        return abs(obj.value());
+    } else {
+        PyObject* result = PyNumber_Absolute(obj.ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Return>(result);
+    }
+}
+
+
+/* Equivalent to Python `abs(obj)`, except that it takes a C++ value and applies
+std::abs() for identical semantics. */
+template <typename T> requires (!impl::python_like<T>)
+inline auto abs(const T& value) {
+    return std::abs(value);
+}
+
+
+using pybind11::print;
+
+
+/* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
+represent C++ types using std::to_string or the stream insertion operator (<<).  If all
+else fails, falls back to typeid(obj).name(). */
+template <typename T>
+inline std::string repr(const T& obj) {
+    if constexpr (impl::has_stream_insertion<T>) {
+        std::ostringstream stream;
+        stream << obj;
+        return stream.str();
+
+    } else if constexpr (impl::has_to_string<T>) {
+        return std::to_string(obj);
+
+    } else {
+        try {
+            return pybind11::repr(obj).template cast<std::string>();
+        } catch (...) {
+            return typeid(obj).name();
+        }
+    }
+}
 
 
 namespace impl {
@@ -2635,8 +3198,8 @@ namespace impl {
                                                                                         \
         /* Convert a pybind11 accessor into this type. */                               \
         template <typename Policy>                                                      \
-        cls(const detail::accessor<Policy>& a) {                                        \
-            pybind11::object obj(a);                                                    \
+        cls(const detail::accessor<Policy>& accessor) {                                 \
+            pybind11::object obj(accessor);                                             \
             if (check(obj)) {                                                           \
                 m_ptr = obj.release().ptr();                                            \
             } else {                                                                    \
@@ -2659,112 +3222,19 @@ namespace impl {
             return *this;                                                               \
         }                                                                               \
                                                                                         \
+        /* Convert to a pybind11 handle. */                                             \
+        inline operator pybind11::handle() const {                                      \
+            return pybind11::handle(m_ptr);                                             \
+        }                                                                               \
+                                                                                        \
+        /* Convert to a pybind11 object. */                                             \
+        inline operator pybind11::object() const {                                      \
+            return pybind11::reinterpret_borrow<pybind11::object>(m_ptr);               \
+        }                                                                               \
+                                                                                        \
         /* Delete type narrowing operator inherited from Object. */                     \
         template <typename T> requires (std::is_base_of_v<Object, T>)                   \
         operator T() const = delete;                                                    \
-                                                                                        \
-    protected:                                                                          \
-                                                                                        \
-        template <typename T> requires (impl::__invert__<T>::enable)                    \
-        friend auto operator~(const T& self);                                           \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__lt__<L, R>::enable)         \
-        friend auto operator<(const L& lhs, const R& rhs);                              \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__le__<L, R>::enable)         \
-        friend auto operator<=(const L& lhs, const R& rhs);                             \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__eq__<L, R>::enable)         \
-        friend auto operator==(const L& lhs, const R& rhs);                             \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__ne__<L, R>::enable)         \
-        friend auto operator!=(const L& lhs, const R& rhs);                             \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__ge__<L, R>::enable)         \
-        friend auto operator>=(const L& lhs, const R& rhs);                             \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__gt__<L, R>::enable)         \
-        friend auto operator>(const L& lhs, const R& rhs);                              \
-                                                                                        \
-        template <typename T> requires (impl::__pos__<T>::enable)                       \
-        friend auto operator+(const T& self);                                           \
-                                                                                        \
-        template <typename T> requires (impl::__increment__<T>::enable)                 \
-        friend auto operator++(T& self);                                                \
-                                                                                        \
-        template <typename T> requires (impl::__increment__<T>::enable)                 \
-        friend auto operator++(T& self, int);                                           \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__add__<L, R>::enable)        \
-        friend auto operator+(const L& lhs, const R& rhs);                              \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__iadd__<L, R>::enable)       \
-        friend L& operator+=(L& lhs, const R& rhs);                                     \
-                                                                                        \
-        template <typename T> requires (impl::__neg__<T>::enable)                       \
-        friend auto operator-(const T& self);                                           \
-                                                                                        \
-        template <typename T> requires (impl::__decrement__<T>::enable)                 \
-        friend auto operator--(T& self);                                                \
-                                                                                        \
-        template <typename T> requires (impl::__decrement__<T>::enable)                 \
-        friend auto operator--(T& self, int);                                           \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__sub__<L, R>::enable)        \
-        friend auto operator-(const L& lhs, const R& rhs);                              \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__isub__<L, R>::enable)       \
-        friend L& operator-=(L& lhs, const R& rhs);                                     \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__mul__<L, R>::enable)        \
-        friend auto operator*(const L& lhs, const R& rhs);                              \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__imul__<L, R>::enable)       \
-        friend L& operator*=(L& lhs, const R& rhs);                                     \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__truediv__<L, R>::enable)    \
-        friend auto operator/(const L& lhs, const R& rhs);                              \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__itruediv__<L, R>::enable)   \
-        friend L& operator/=(L& lhs, const R& rhs);                                     \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__mod__<L, R>::enable)        \
-        friend auto operator%(const L& lhs, const R& rhs);                              \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__imod__<L, R>::enable)       \
-        friend L& operator%=(L& lhs, const R& rhs);                                     \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__lshift__<L, R>::enable)     \
-        friend auto operator<<(const L& lhs, const R& rhs);                             \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__ilshift__<L, R>::enable)    \
-        friend L& operator<<=(L& lhs, const R& rhs);                                    \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__rshift__<L, R>::enable)     \
-        friend auto operator>>(const L& lhs, const R& rhs);                             \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__irshift__<L, R>::enable)    \
-        friend L& operator>>=(L& lhs, const R& rhs);                                    \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__and__<L, R>::enable)        \
-        friend auto operator&(const L& lhs, const R& rhs);                              \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__iand__<L, R>::enable)       \
-        friend L& operator&=(L& lhs, const R& rhs);                                     \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__or__<L, R>::enable)         \
-        friend auto operator|(const L& lhs, const R& rhs);                              \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__ior__<L, R>::enable)        \
-        friend L& operator|=(L& lhs, const R& rhs);                                     \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__xor__<L, R>::enable)        \
-        friend auto operator^(const L& lhs, const R& rhs);                              \
-                                                                                        \
-        template <typename L, typename R> requires (impl::__ixor__<L, R>::enable)       \
-        friend L& operator^=(L& lhs, const R& rhs);                                     \
-                                                                                        \
-    public:                                                                             \
 
     /* Base class for all accessor proxies.  Stores an arbitrary object in a buffer and
     forwards its interface using pointer semantics. */
@@ -2970,218 +3440,6 @@ namespace impl {
         inline auto end() const { return deref().end(); }
         inline auto rbegin() const { return deref().rbegin(); }
         inline auto rend() const { return deref().rend(); }
-
-        inline auto operator~() const { return ~deref(); }
-
-        template <typename R>
-        inline auto operator<(const R& rhs) {
-            return deref() < rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator<(const L& lhs, const Proxy& rhs) {
-            return lhs < rhs.deref();
-        }
-
-        template <typename R>
-        inline auto operator<=(const R& rhs) {
-            return deref() <= rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator<=(const L& lhs, const Proxy& rhs) {
-            return lhs <= rhs.deref();
-        }
-
-        template <typename R>
-        inline auto operator==(const R& rhs) {
-            return deref() == rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator==(const L& lhs, const Proxy& rhs) {
-            return lhs == rhs.deref();
-        }
-
-        template <typename R>
-        inline auto operator!=(const R& rhs) {
-            return deref() != rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator!=(const L& lhs, const Proxy& rhs) {
-            return lhs != rhs.deref();
-        }
-
-        template <typename R>
-        inline auto operator>=(const R& rhs) {
-            return deref() >= rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator>=(const L& lhs, const Proxy& rhs) {
-            return lhs >= rhs.deref();
-        }
-
-        template <typename R>
-        inline auto operator>(const R& rhs) {
-            return deref() > rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator>(const L& lhs, const Proxy& rhs) {
-            return lhs > rhs.deref();
-        }
-
-        inline auto operator+() { return +deref(); }
-        inline auto operator++() { return ++deref(); }
-        inline auto operator++(int) { return deref()++; }
-        template <typename R>
-        inline auto operator+(const R& rhs) {
-            return deref() + rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator+(const L& lhs, const Proxy& rhs) {
-            return lhs + rhs.deref();
-        }
-        template <typename R>
-        inline auto operator+=(const R& rhs) {
-            deref() += rhs;
-            return *this;
-        }
-
-        inline auto operator-() { return -deref(); }
-        inline auto operator--() { return --deref(); }
-        inline auto operator--(int) { return deref()--; }
-        template <typename R>
-        inline auto operator-(const R& rhs) {
-            return deref() - rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator-(const L& lhs, const Proxy& rhs) {
-            return lhs - rhs.deref();
-        }
-        template <typename R>
-        inline auto operator-=(const R& rhs) {
-            deref() -= rhs;
-            return *this;
-        }
-
-        template <typename R>
-        inline auto operator*(const R& rhs) {
-            return deref() * rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator*(const L& lhs, const Proxy& rhs) {
-            return lhs * rhs.deref();
-        }
-        template <typename R>
-        inline auto operator*=(const R& rhs) {
-            deref() *= rhs;
-            return *this;
-        }
-
-        template <typename R>
-        inline auto operator/(const R& rhs) {
-            return deref() / rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator/(const L& lhs, const Proxy& rhs) {
-            return lhs / rhs.deref();
-        }
-        template <typename R>
-        inline auto operator/=(const R& rhs) {
-            deref() /= rhs;
-            return *this;
-        }
-
-        template <typename R>
-        inline auto operator%(const R& rhs) {
-            return deref() % rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator%(const L& lhs, const Proxy& rhs) {
-            return lhs % rhs.deref();
-        }
-        template <typename R>
-        inline auto operator%=(const R& rhs) {
-            deref() %= rhs;
-            return *this;
-        }
-
-        template <typename R>
-        inline auto operator<<(const R& rhs) {
-            return deref() << rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator<<(const L& lhs, const Proxy& rhs) {
-            return lhs << rhs.deref();
-        }
-        template <typename R>
-        inline auto operator<<=(const R& rhs) {
-            deref() <<= rhs;
-            return *this;
-        }
-
-        template <typename R>
-        inline auto operator>>(const R& rhs) {
-            return deref() >> rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator>>(const L& lhs, const Proxy& rhs) {
-            return lhs >> rhs.deref();
-        }
-        template <typename R>
-        inline auto operator>>=(const R& rhs) {
-            deref() >>= rhs;
-            return *this;
-        }
-
-        template <typename R>
-        inline auto operator&(const R& rhs) {
-            return deref() & rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator&(const L& lhs, const Proxy& rhs) {
-            return lhs & rhs.deref();
-        }
-        template <typename R>
-        inline auto operator&=(const R& rhs) {
-            deref() &= rhs;
-            return *this;
-        }
-
-        template <typename R>
-        inline auto operator|(const R& rhs) {
-            return deref() | rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator|(const L& lhs, const Proxy& rhs) {
-            return lhs | rhs.deref();
-        }
-        template <typename R>
-        inline auto operator|=(const R& rhs) {
-            deref() |= rhs;
-            return *this;
-        }
-
-        template <typename R>
-        inline auto operator^(const R& rhs) {
-            return deref() ^ rhs;
-        }
-        template <typename L> requires (!impl::proxy_like<L>)
-        inline friend auto operator^(const L& lhs, const Proxy& rhs) {
-            return lhs ^ rhs.deref();
-        }
-        template <typename R>
-        inline auto operator^=(const R& rhs) {
-            deref() ^= rhs;
-            return *this;
-        }
-
-        inline friend std::ostream& operator<<(std::ostream& os, const Proxy& self) {
-            os << self.deref();
-            return os;
-        }
-
-        inline friend std::istream& operator>>(std::istream& os, const Proxy& self) {
-            os >> self.deref();
-            return os;
-        }
 
     };
 
@@ -4175,45 +4433,6 @@ namespace impl {
 }  // namespace impl
 
 
-
-// TODO: eliminate Static proxy and insert Py_IsInitialized check directly into
-// subclass destructors where necessary.  This allows any object to be stored with
-// static duration at a small performance penalty (which you only pay if you use)
-
-
-
-
-/* A Proxy policy that allows any Python object to be stored with static duration.
-
-Normally, storing a static Python object is unsafe because it causes the Python
-interpreter to be in an invalid state at the time the object's destructor is
-called, triggering a memory access violation during shutdown.  This class avoids
-that issue by checking `Py_IsInitialized()` and only invoking the destructor if it
-evaluates to true.  This technically means that we leave an unbalanced reference to
-the object, but since the Python interpreter is shutting down anyway, it doesn't
-actually matter.  Python will clean up the object regardless of its reference count.
-
-Note that storing objects that require explicit cleanup - such as open file handles
-or remote connections - is still unsafe, as the object's destructor will not be
-called at shutdown. */
-template <typename T>
-class Static : public impl::Proxy<T, Static<T>> {
-    using Base = impl::Proxy<T, Static<T>>;
-
-public:
-    using Base::Base;
-
-    /* Default constructor. */
-    Static() : Base(T()) {}
-
-    /* Destructor only called if Py_IsInitialized() evalutes to true. */
-    ~Static() {
-        Base::initialized &= Py_IsInitialized();
-    }
-
-};
-
-
 /* Object subclass that represents Python's global None singleton. */
 class NoneType : public Object {
     using Base = Object;
@@ -4230,6 +4449,11 @@ public:
     /* Copy/move constructors. */
     template <typename T> requires (check<T>() && impl::python_like<T>)
     NoneType(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Implicitly convert to pybind11::none. */
+    operator pybind11::none() const {
+        return reinterpret_borrow<pybind11::none>(m_ptr);
+    }
 
 };
 
@@ -4298,6 +4522,11 @@ public:
     /* Copy/move constructors. */
     template <typename T> requires (check<T>() && impl::python_like<T>)
     EllipsisType(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Implicitly convert to pybind11::ellipsis. */
+    operator pybind11::ellipsis() const {
+        return reinterpret_borrow<pybind11::ellipsis>(m_ptr);
+    }
 
 };
 
@@ -4600,6 +4829,15 @@ public:
         }
     }
 
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
+
+    /* Implicitly convert to pybind11::slice. */
+    operator pybind11::slice() const {
+        return reinterpret_borrow<pybind11::slice>(m_ptr);
+    }
+
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
@@ -4704,16 +4942,14 @@ public:
         }
     }
 
-    /* Destructor allows Code objects to be stored with static duration. */
-    ~Module() {
-        if (!Py_IsInitialized()) {
-            m_ptr = nullptr;  // avoid calling XDECREF if Python is shutting down
-        }
-    }
-
     //////////////////////////////////
     ////    PYBIND11 INTERFACE    ////
     //////////////////////////////////
+
+    /* Implicitly convert to pybind11::module_. */
+    operator pybind11::module_() const {
+        return reinterpret_borrow<pybind11::module_>(m_ptr);
+    }
 
     /* Equivalent to pybind11::module_::def(). */
     template <typename Func, typename... Extra>
@@ -4792,19 +5028,16 @@ inline impl::AttrProxy<Object> Object::attr() const {
 
 
 template <typename Return, typename T, typename Key>
-inline auto Object::operator_getitem(const T& obj, Key&& key)
-    -> impl::Item<T, std::decay_t<Key>>
-{
+inline impl::Item<T, std::decay_t<Key>> Object::operator_getitem(const T& obj, Key&& key) {
     return impl::Item<T, std::decay_t<Key>>(obj, std::forward<Key>(key));
 }
 
 
 template <typename Return, typename T>
-inline auto Object::operator_getitem(
+inline impl::Item<T, Slice> Object::operator_getitem(
     const T& obj,
     std::initializer_list<impl::SliceInitializer> slice
-) -> impl::Item<T, Slice>
-{
+) {
     if (slice.size() > 3) {
         throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
     }
@@ -4818,9 +5051,7 @@ inline auto Object::operator_getitem(
 
 
 template <typename Return, typename T>
-inline auto Object::operator_begin(const T& obj)
-    -> impl::Iterator<impl::GenericIter<Return>>
-{
+inline impl::Iterator<impl::GenericIter<Return>> Object::operator_begin(const T& obj) {
     PyObject* iter = PyObject_GetIter(obj.ptr());
     if (iter == nullptr) {
         throw error_already_set();
@@ -4830,25 +5061,19 @@ inline auto Object::operator_begin(const T& obj)
 
 
 template <typename Return, typename T>
-inline auto Object::operator_end(const T& obj)
-    -> impl::Iterator<impl::GenericIter<Return>>
-{
+inline impl::Iterator<impl::GenericIter<Return>> Object::operator_end(const T& obj) {
     return {};
 }
 
 
 template <typename Return, typename T>
-inline auto Object::operator_rbegin(const T& obj)
-    -> impl::Iterator<impl::GenericIter<Return>>
-{
+inline impl::Iterator<impl::GenericIter<Return>> Object::operator_rbegin(const T& obj) {
     return {obj.template attr<"__reversed__">()()};
 }
 
 
 template <typename Return, typename T>
-inline auto Object::operator_rend(const T& obj)
-    -> impl::Iterator<impl::GenericIter<Return>>
-{
+inline impl::Iterator<impl::GenericIter<Return>> Object::operator_rend(const T& obj) {
     return {};
 }
 
@@ -4867,36 +5092,6 @@ inline auto impl::Proxy<Obj, Wrapped>::operator[](
 ////////////////////////////////
 
 
-using pybind11::print;
-
-
-/* Equivalent to Python `abs(obj)` for any object that specializes the __abs__ control
-struct. */
-template <typename T> requires (impl::python_like<T> && impl::__abs__<T>::enable)
-inline auto abs(const T& value) {
-    using Return = impl::__abs__<T>::Return;
-    static_assert(
-        std::is_base_of_v<Object, Return>,
-        "Absolute value operator must return a py::Object subclass.  Check your "
-        "specialization of __abs__ for this type and ensure the Return type is set to "
-        "a py::Object subclass."
-    );
-    PyObject* result = PyNumber_Absolute(value.ptr());
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Return>(result);
-}
-
-
-/* Equivalent to Python `abs(obj)`, except that it takes a C++ value and applies
-std::abs() for identical semantics. */
-template <typename T> requires (!impl::python_like<T>)
-inline auto abs(const T& value) {
-    return std::abs(value);
-}
-
-
 /* Equivalent to Python `import module`.  Only recognizes absolute imports. */
 template <StaticStr name>
 inline Module import() {
@@ -4906,29 +5101,6 @@ inline Module import() {
         throw error_already_set();
     }
     return reinterpret_steal<Module>(obj);
-}
-
-
-/* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
-represent C++ types using std::to_string or the stream insertion operator (<<).  If all
-else fails, falls back to typeid(obj).name(). */
-template <typename T>
-inline std::string repr(const T& obj) {
-    if constexpr (impl::has_stream_insertion<T>) {
-        std::ostringstream stream;
-        stream << obj;
-        return stream.str();
-
-    } else if constexpr (impl::has_to_string<T>) {
-        return std::to_string(obj);
-
-    } else {
-        try {
-            return pybind11::repr(obj).template cast<std::string>();
-        } catch (...) {
-            return typeid(obj).name();
-        }
-    }
 }
 
 
@@ -4944,9 +5116,30 @@ inline std::string repr(const T& obj) {
 namespace pybind11 {
 namespace detail {
 
+template <typename T> requires(std::is_base_of_v<bertrand::py::Object, T>)
+struct type_caster<T> {
+    PYBIND11_TYPE_CASTER(T, const_name("Object"));
+
+    /* Convert Python object to a C++ Object. */
+    inline bool load(handle src, bool convert) {
+        if (!convert) {
+            return false;
+        }
+        value = reinterpret_borrow<bertrand::py::Object>(src);
+        return true;
+    }
+
+    /* Convert a C++ Object into its wrapped object. */
+    inline static handle cast(const T& src, return_value_policy policy, handle parent) {
+        return Py_XNewRef(src.ptr());
+    }
+
+};
+
+
 template <bertrand::py::impl::proxy_like T>
 struct type_caster<T> {
-    PYBIND11_TYPE_CASTER(T, const_name("proxy"));
+    PYBIND11_TYPE_CASTER(T, const_name("Proxy"));
 
     /* Convert Python object to a C++ Proxy. */
     inline bool load(handle src, bool convert) {
@@ -4955,7 +5148,7 @@ struct type_caster<T> {
 
     /* Convert a C++ Proxy into its wrapped object. */
     inline static handle cast(const T& src, return_value_policy policy, handle parent) {
-        return src.value();
+        return Py_XNewRef(src.value().ptr());
     }
 
 };

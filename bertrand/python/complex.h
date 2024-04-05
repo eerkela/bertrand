@@ -249,7 +249,7 @@ struct type_caster<bertrand::py::Complex> {
     /* Convert a Python object into a py::Complex value. */
     bool load(handle src, bool convert) {
         if (PyComplex_Check(src.ptr())) {
-            value = reinterpret_borrow<bertrand::py::Complex>(src.ptr());
+            value = bertrand::py::reinterpret_borrow<bertrand::py::Complex>(src.ptr());
             return true;
         }
 

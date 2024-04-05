@@ -275,6 +275,11 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
+    /* Implicitly convert to a pybind11::str. */
+    inline operator pybind11::str() const {
+        return reinterpret_borrow<pybind11::str>(m_ptr);
+    }
+
     /* Explicitly convert a py::Str into a C-style UTF8 byte array.  Note that Python
     caches the result in the string itself, making this operation unsafe for
     rvalue-qualified objects. */

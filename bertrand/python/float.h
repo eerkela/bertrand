@@ -219,6 +219,11 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
+    /* Implicitly convert to pybind11::float_. */
+    inline operator pybind11::float_() const {
+        return reinterpret_borrow<pybind11::float_>(m_ptr);
+    }
+
     /* Implicitly convert a Python float into a C++ float. */
     inline operator double() const {
         return PyFloat_AS_DOUBLE(this->ptr());

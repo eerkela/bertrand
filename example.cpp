@@ -104,38 +104,26 @@ static const py::Module np = py::import<"numpy">();
 static const py::Function array = np.attr<"array">();
 
 
-struct Foo {
-    PyObject* m_ptr;
-
-    Foo(int i) : m_ptr(PyList_New(i)) {}
-
-    ~Foo() {
-        Py_XDECREF(m_ptr);
-    }
-
-};
-
-
-struct Bar : public Foo {
-    using Foo::Foo;
-
-    ~Bar() {
-        if (!Py_IsInitialized()) {
-            m_ptr = nullptr;
-        }
-    }
-};
-
-
 
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    for (size_t i = 0; i < 1000000; ++i) {
-        volatile Bar f(10);
-    }
+    // py::List list = {1, 2, 3, 4};
+    // py::Int x = 1;
+    // py::Str y = "abc";
+    // py::print(++x);
+    // py::print(x);
+
+
+    py::Int x = 1;
+    py::Str y = "abc";
+    py::print(x + y);
+
+
+
+
 
 
 

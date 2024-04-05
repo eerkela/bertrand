@@ -339,17 +339,17 @@ namespace impl {
     template <typename T> requires (bytes_like<T> || bytearray_like<T>)
     struct __add__<Bytes, T>                                    : Returns<Bytes> {};
     template <>
-    struct __iadd__<Bytes, Object>                              : Returns<Bytes> {};
+    struct __iadd__<Bytes, Object>                              : Returns<Bytes&> {};
     template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __iadd__<Bytes, T>                                   : Returns<Bytes> {};
+    struct __iadd__<Bytes, T>                                   : Returns<Bytes&> {};
     template <>
     struct __mul__<Bytes, Object>                               : Returns<Bytes> {};
     template <int_like T>
     struct __mul__<Bytes, T>                                    : Returns<Bytes> {};
     template <>
-    struct __imul__<Bytes, Object>                              : Returns<Bytes> {};
+    struct __imul__<Bytes, Object>                              : Returns<Bytes&> {};
     template <int_like T>
-    struct __imul__<Bytes, T>                                   : Returns<Bytes> {};
+    struct __imul__<Bytes, T>                                   : Returns<Bytes&> {};
 
     template <>
     struct __len__<ByteArray>                                   : Returns<size_t> {};
@@ -390,17 +390,17 @@ namespace impl {
     template <typename T> requires (bytes_like<T> || bytearray_like<T>)
     struct __add__<ByteArray, T>                                : Returns<ByteArray> {};
     template <>
-    struct __iadd__<ByteArray, Object>                          : Returns<ByteArray> {};
+    struct __iadd__<ByteArray, Object>                          : Returns<ByteArray&> {};
     template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __iadd__<ByteArray, T>                               : Returns<ByteArray> {};
+    struct __iadd__<ByteArray, T>                               : Returns<ByteArray&> {};
     template <>
     struct __mul__<ByteArray, Object>                           : Returns<ByteArray> {};
     template <int_like T>
     struct __mul__<ByteArray, T>                                : Returns<ByteArray> {};
     template <>
-    struct __imul__<ByteArray, Object>                          : Returns<ByteArray> {};
+    struct __imul__<ByteArray, Object>                          : Returns<ByteArray&> {};
     template <int_like T>
-    struct __imul__<ByteArray, T>                               : Returns<ByteArray> {};
+    struct __imul__<ByteArray, T>                               : Returns<ByteArray&> {};
 
 }
 
@@ -473,6 +473,11 @@ public:
     /////////////////////////////
     ////    C++ INTERFACE    ////
     /////////////////////////////
+
+    /* Implicitly convert to pybind11::bytes. */
+    inline operator pybind11::bytes() const {
+        return reinterpret_borrow<pybind11::bytes>(m_ptr);
+    }
 
     /* Access the internal buffer of the bytes object.  Note that this implicitly
     includes an extra null byte at the end of the buffer, regardless of any nulls that
@@ -604,6 +609,11 @@ public:
     /////////////////////////////
     ////    C++ INTERFACE    ////
     /////////////////////////////
+
+    /* Implicitly convert to pybind11::bytearray. */
+    inline operator pybind11::bytearray() const {
+        return reinterpret_borrow<pybind11::bytearray>(m_ptr);
+    }
 
     /* Access the internal buffer of the bytearray object.  The data can be modified
     in-place, but should never be deallocated. */

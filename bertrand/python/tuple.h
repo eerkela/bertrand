@@ -257,6 +257,11 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
+    /* Implicitly convert to pybind11::tuple. */
+    inline operator pybind11::tuple() const {
+        return reinterpret_borrow<pybind11::tuple>(m_ptr);
+    }
+
     /* Implicitly convert a py::Tuple into a C++ std::pair.  Throws an error if the
     tuple is not of length 2. */
     template <typename First, typename Second>

@@ -475,6 +475,11 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
+    /* Implicitly convert to pybind11::int_. */
+    inline operator pybind11::int_() const {
+        return reinterpret_borrow<pybind11::int_>(m_ptr);
+    }
+
     /* Implicitly convert a Python int into a C++ integer. */
     template <typename T> requires (!impl::python_like<T> && impl::int_like<T>)
     inline operator T() const {

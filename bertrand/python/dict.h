@@ -109,9 +109,9 @@ struct __or__<Dict, Object>                                 : Returns<Dict> {};
 template <dict_like T>
 struct __or__<Dict, T>                                      : Returns<Dict> {};
 template <>
-struct __ior__<Dict, Object>                                : Returns<Dict> {};
+struct __ior__<Dict, Object>                                : Returns<Dict&> {};
 template <dict_like T>
-struct __ior__<Dict, T>                                     : Returns<Dict> {};
+struct __ior__<Dict, T>                                     : Returns<Dict&> {};
 
 template <>
 struct __len__<MappingProxy>                                : Returns<size_t> {};
@@ -187,37 +187,55 @@ public:
         return static_cast<bool>(attr<"isdisjoint">()(Set(other)));
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    inline Set operator|(
-        const std::initializer_list<impl::HashInitializer>& other
-    ) const {
-        // TODO: use PyNumber_Or here?  <-- benchmark and test
-        return Set(attr<"__or__">()(Set(other)));
-    }
-
-    inline Set operator&(
-        const std::initializer_list<impl::HashInitializer>& other
-    ) const {
-        // TODO: same with PyNumber_And
-        return Set(attr<"__and__">()(Set(other)));
-    }
-
-    inline Set operator-(
-        const std::initializer_list<impl::HashInitializer>& other
-    ) const {
-        return Set(attr<"__sub__">()(Set(other)));
-    }
-
-    inline Set operator^(
-        const std::initializer_list<impl::HashInitializer>& other
-    ) const {
-        return Set(attr<"__xor__">()(Set(other)));
-    }
-
 };
+
+
+inline Set operator|(
+    const KeysView& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    PyObject* result = PyNumber_Or(self.ptr(), Set(other).ptr());
+    if (result == nullptr) {
+        throw error_already_set();
+    }
+    return reinterpret_steal<Set>(result);
+}
+
+
+inline Set operator&(
+    const KeysView& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    PyObject* result = PyNumber_And(self.ptr(), Set(other).ptr());
+    if (result == nullptr) {
+        throw error_already_set();
+    }
+    return reinterpret_steal<Set>(result);
+}
+
+
+inline Set operator-(
+    const KeysView& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    PyObject* result = PyNumber_Subtract(self.ptr(), Set(other).ptr());
+    if (result == nullptr) {
+        throw error_already_set();
+    }
+    return reinterpret_steal<Set>(result);
+}
+
+
+inline Set operator^(
+    const KeysView& self,
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    PyObject* result = PyNumber_Xor(self.ptr(), Set(other).ptr());
+    if (result == nullptr) {
+        throw error_already_set();
+    }
+    return reinterpret_steal<Set>(result);
+}
 
 
 /* New subclass of pybind11::object representing a view into the values of a dictionary
@@ -412,6 +430,11 @@ public:
     /////////////////////////////
     ////    C++ INTERFACE    ////
     /////////////////////////////
+
+    /* Implicitly convert to a pybind11::dict. */
+    inline operator pybind11::dict() const {
+        return reinterpret_borrow<pybind11::dict>(m_ptr);
+    }
 
     /* Implicitly convert to a C++ dict type. */
     template <typename T> requires (!impl::python_like<T> && impl::dict_like<T>)
@@ -735,24 +758,6 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    inline auto begin() const { return Object::begin(); }
-    inline auto end() const { return Object::end(); }
-
-    inline Dict operator|(
-        const std::initializer_list<impl::DictInitializer>& other
-    ) const {
-        Dict result = copy();
-        result.update(other);
-        return result;
-    }
-
-    inline Dict& operator|=(
-        const std::initializer_list<impl::DictInitializer>& other
-    ) {
-        update(other);
-        return *this;
-    }
-
 protected:
 
     template <typename Return, typename T>
@@ -773,6 +778,25 @@ protected:
     }
 
 };
+
+
+inline Dict operator|(
+    const Dict& self,
+    const std::initializer_list<impl::DictInitializer>& other
+) {
+    Dict result = self.copy();
+    result.update(other);
+    return result;
+}
+
+
+inline Dict& operator|=(
+    Dict& self,
+    const std::initializer_list<impl::DictInitializer>& other
+) {
+    self.update(other);
+    return self;
+}
 
 
 /* New subclass of pybind11::object representing a read-only proxy for a Python
@@ -848,19 +872,17 @@ public:
         return reinterpret_steal<ItemsView>(attr<"items">()().release());
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    inline Dict operator|(
-        const std::initializer_list<impl::DictInitializer>& other
-    ) const {
-        Dict result = copy();
-        result |= other;
-        return result;
-    }
-
 };
+
+
+inline Dict operator|(
+    const MappingProxy& self,
+    const std::initializer_list<impl::DictInitializer>& other
+) {
+    Dict result = self.copy();
+    result |= other;
+    return result;
+}
 
 
 // TODO: figure out how to return a type-safe AttrProxy here

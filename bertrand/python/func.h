@@ -26,7 +26,7 @@ namespace py {
 
 namespace impl {
 
-    static const Static<Type> PyProperty = reinterpret_borrow<Type>(
+    static const Type PyProperty = reinterpret_borrow<Type>(
         reinterpret_cast<PyObject*>(&PyProperty_Type)
     );
 
@@ -286,13 +286,6 @@ public:
     /* Parse and compile a source string into a Python code object. */
     static Code compile(const std::string_view& path) {
         return compile(std::string{path.data(), path.size()});
-    }
-
-    /* Destructor allows Code objects to be stored with static duration. */
-    ~Code() noexcept {
-        if (!Py_IsInitialized()) {
-            m_ptr = nullptr;  // avoid calling XDECREF if Python is shutting down
-        }
     }
 
     /////////////////////////////
@@ -604,6 +597,11 @@ public:
     /////////////////////////////
     ////    C++ INTERFACE    ////
     /////////////////////////////
+
+    /* Implicitly convert to pybind11::function. */
+    inline operator pybind11::function() const {
+        return reinterpret_borrow<pybind11::function>(m_ptr);
+    }
 
     /* Get the module in which this function was defined. */
     inline Module module_() const {
@@ -990,7 +988,7 @@ class Property : public Object {
     static constexpr bool comptime_check = std::is_base_of_v<Property, T>;
 
     inline static bool runtime_check(PyObject* obj) {
-        int result = PyObject_IsInstance(obj, impl::PyProperty->ptr());
+        int result = PyObject_IsInstance(obj, impl::PyProperty.ptr());
         if (result == -1) {
             throw error_already_set();
         }

@@ -495,7 +495,7 @@ inline void exec(const Str& source, Dict& globals, Dict& locals) {
 
 /* Equivalent to Python `exec()` with a precompiled code object. */
 inline void exec(const Code& code) {
-    pybind11::exec(code, globals(), locals());
+    code(globals() | locals());
 }
 
 

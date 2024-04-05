@@ -249,6 +249,11 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
+    /* Implicitly convert to pybind11::list. */
+    inline operator pybind11::list() const {
+        return reinterpret_borrow<pybind11::list>(m_ptr);
+    }
+
     /* Implicitly convert a py::List into a C++ std::array.  Throws an error if the
     list does not have the expected length. */
     template <typename T, size_t N>
@@ -275,7 +280,7 @@ public:
             result.reserve(size());
         }
         for (auto&& item : *this) {
-            result.push_back(item.template cast<typename T::value_type>());
+            result.push_back(static_cast<typename T::value_type>(item));
         }
         return result;
     }

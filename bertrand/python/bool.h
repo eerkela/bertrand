@@ -343,7 +343,12 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
-    /* implicitly convert a py::Bool into a C++ boolean. */
+    /* Implicitly convert to a pybind11::bool. */
+    inline operator pybind11::bool_() const {
+        return reinterpret_borrow<pybind11::bool_>(m_ptr);
+    }
+
+    /* Implicitly convert to a C++ boolean. */
     inline operator bool() const {
         return Base::operator bool();
     }

@@ -231,6 +231,11 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
+    /* Implicitly convert to pybind11::type. */
+    inline operator pybind11::type() const {
+        return reinterpret_borrow<pybind11::type>(m_ptr);
+    }
+
     /* A proxy for the type's PyTypeObject* struct. */
     struct Slots {
         PyTypeObject* type_obj;
