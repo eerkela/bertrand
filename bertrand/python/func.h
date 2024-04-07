@@ -32,8 +32,129 @@ namespace impl {
         reinterpret_cast<PyObject*>(&PyProperty_Type)
     );
 
+template <>
+struct __getattr__<Code, "co_name">                             : Returns<Str> {};
+template <>
+struct __getattr__<Code, "co_qualname">                         : Returns<Str> {};
+template <>
+struct __getattr__<Code, "co_argcount">                         : Returns<Int> {};
+template <>
+struct __getattr__<Code, "co_posonlyargcount">                  : Returns<Int> {};
+template <>
+struct __getattr__<Code, "co_kwonlyargcount">                   : Returns<Int> {};
+template <>
+struct __getattr__<Code, "co_nlocals">                          : Returns<Int> {};
+template <>
+struct __getattr__<Code, "co_varnames">                         : Returns<Tuple> {};
+template <>
+struct __getattr__<Code, "co_cellvars">                         : Returns<Tuple> {};
+template <>
+struct __getattr__<Code, "co_freevars">                         : Returns<Tuple> {};
+template <>
+struct __getattr__<Code, "co_code">                             : Returns<Bytes> {};
+template <>
+struct __getattr__<Code, "co_consts">                           : Returns<Tuple> {};
+template <>
+struct __getattr__<Code, "co_names">                            : Returns<Tuple> {};
+template <>
+struct __getattr__<Code, "co_filename">                         : Returns<Str> {};
+template <>
+struct __getattr__<Code, "co_firstlineno">                      : Returns<Int> {};
+template <>
+struct __getattr__<Code, "co_stacksize">                        : Returns<Int> {};
+template <>
+struct __getattr__<Code, "co_flags">                            : Returns<Int> {};
+template <>
+struct __getattr__<Code, "co_positions">                        : Returns<Function> {};
+template <>
+struct __getattr__<Code, "co_lines">                            : Returns<Function> {};
+template <>
+struct __getattr__<Code, "replace">                             : Returns<Function> {};
+
+template <>
+struct __getattr__<Frame, "f_back">                             : Returns<Frame> {};
+template <>
+struct __getattr__<Frame, "f_code">                             : Returns<Code> {};
+template <>
+struct __getattr__<Frame, "f_locals">                           : Returns<Dict> {};
+template <>
+struct __getattr__<Frame, "f_globals">                          : Returns<Dict> {};
+template <>
+struct __getattr__<Frame, "f_builtins">                         : Returns<Dict> {};
+template <>
+struct __getattr__<Frame, "f_lasti">                            : Returns<Int> {};
+template <>
+struct __getattr__<Frame, "f_trace">                            : Returns<Function> {};
+template <>
+struct __setattr__<Frame, "f_trace", Function>                  : Returns<void> {};
+template <>
+struct __delattr__<Frame, "f_trace">                            : Returns<void> {};
+template <>
+struct __getattr__<Frame, "f_trace_lines">                      : Returns<Bool> {};
+template <>
+struct __setattr__<Frame, "f_trace_lines", Bool>                : Returns<void> {};
+template <>
+struct __getattr__<Frame, "f_trace_opcodes">                    : Returns<Bool> {};
+template <>
+struct __setattr__<Frame, "f_trace_opcodes", Bool>              : Returns<void> {};
+template <>
+struct __getattr__<Frame, "f_lineno">                           : Returns<Bool> {};
+template <>
+struct __setattr__<Frame, "f_lineno", Int>                      : Returns<void> {};
+template <>
+struct __getattr__<Frame, "clear">                              : Returns<Function> {};
+
 template <typename... Args>
 struct __call__<Function, Args...>                              : Returns<Object> {};
+template <>
+struct __getattr__<Function, "__globals__">                     : Returns<Dict> {};
+template <>
+struct __getattr__<Function, "__closure__">                     : Returns<Tuple> {};
+template <>
+struct __getattr__<Function, "__doc__">                         : Returns<Str> {};
+template <>
+struct __getattr__<Function, "__name__">                        : Returns<Str> {};
+template <>
+struct __getattr__<Function, "__qualname__">                    : Returns<Str> {};
+template <>
+struct __getattr__<Function, "__module__">                      : Returns<Str> {};
+template <>
+struct __getattr__<Function, "__defaults__">                    : Returns<Tuple> {};
+template <>
+struct __getattr__<Function, "__code__">                        : Returns<Code> {};
+template <>
+struct __getattr__<Function, "__annotations__">                 : Returns<Dict> {};
+template <>
+struct __getattr__<Function, "__kwdefaults__">                  : Returns<Dict> {};
+template <>
+struct __getattr__<Function, "__type_params__">                 : Returns<Tuple> {};
+template <>
+struct __getattr__<Function, "__self__">                        : Returns<Object> {};
+template <>
+struct __getattr__<Function, "__func__">                        : Returns<Function> {};
+
+template <>
+struct __getattr__<ClassMethod, "__func__">                     : Returns<Function> {};
+template <>
+struct __getattr__<ClassMethod, "__wrapped__">                  : Returns<Function> {};
+
+template <>
+struct __getattr__<StaticMethod, "__func__">                    : Returns<Function> {};
+template <>
+struct __getattr__<StaticMethod, "__wrapped__">                 : Returns<Function> {};
+
+template <>
+struct __getattr__<Property, "fget">                            : Returns<Function> {};
+template <>
+struct __getattr__<Property, "fset">                            : Returns<Function> {};
+template <>
+struct __getattr__<Property, "fdel">                            : Returns<Function> {};
+template <>
+struct __getattr__<Property, "getter">                          : Returns<Function> {};
+template <>
+struct __getattr__<Property, "setter">                          : Returns<Function> {};
+template <>
+struct __getattr__<Property, "deleter">                         : Returns<Function> {};
 
 }
 

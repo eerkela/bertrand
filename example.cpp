@@ -121,12 +121,13 @@ void run() {
     // py::Object x = 1;
     // py::print(py::repr(x));
 
-    py::Object arr = array(py::List{1, 2, 3}, dtype("float16"));
-    py::print(py::repr(arr[{py::None, 2}]));
-
-    py::print(py::True);
+    // py::Object arr = array(py::List{1, 2, 3}, dtype("float16"));
+    // py::print(py::repr(arr[{py::None, 2}]));
 
 
+    py::Dict d = {{"a", 1}, {"b", 2}, {"c", 3}};
+    py::KeysView keys = d.keys();
+    py::print(py::repr(keys.mapping()));
 
 
 
