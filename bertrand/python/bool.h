@@ -356,6 +356,10 @@ public:
 };
 
 
+static const Bool True = reinterpret_borrow<Bool>(Py_True);
+static const Bool False = reinterpret_borrow<Bool>(Py_False);
+
+
 }  // namespace py
 }  // namespace bertrand
 

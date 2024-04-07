@@ -13,6 +13,8 @@
 #include "set.h"
 #include "dict.h"
 
+#include "func.h"
+
 
 namespace bertrand {
 namespace py {
@@ -20,15 +22,17 @@ namespace py {
 
 namespace impl {
 
+    struct IBytesTag {};
+
     template <typename Derived>
-    class IBytes : public Object {
+    class IBytes : public Object, public IBytesTag {
         using Base = Object;
 
     public:
         using Base::Base;
 
         /* Equivalent to Python `bytes.capitalize()`. */
-        inline Derived captialize() const {
+        inline Derived capitalize() const {
             return reinterpret_steal<Derived>(attr<"capitalize">()().release());
         }
 
@@ -298,109 +302,136 @@ namespace impl {
 
     };
 
-    template <>
-    struct __len__<Bytes>                                       : Returns<size_t> {};
-    template <>
-    struct __hash__<Bytes>                                      : Returns<size_t> {};
-    template <>
-    struct __iter__<Bytes>                                      : Returns<Int> {};
-    template <>
-    struct __reversed__<Bytes>                                  : Returns<Int> {};
-    template <>
-    struct __contains__<Bytes, Object>                          : Returns<bool> {};
-    template <int_like T>
-    struct __contains__<Bytes, T>                               : Returns<bool> {};
-    template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __contains__<Bytes, T>                               : Returns<bool> {};
-    template <>
-    struct __getitem__<Bytes, Object>                           : Returns<Object> {};
-    template <int_like T>
-    struct __getitem__<Bytes, T>                                : Returns<Int> {};
-    template <>
-    struct __getitem__<Bytes, Slice>                            : Returns<Bytes> {};
-    template <>
-    struct __lt__<Bytes, Object>                                : Returns<bool> {};
-    template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __lt__<Bytes, T>                                     : Returns<bool> {};
-    template <>
-    struct __le__<Bytes, Object>                                : Returns<bool> {};
-    template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __le__<Bytes, T>                                     : Returns<bool> {};
-    template <>
-    struct __gt__<Bytes, Object>                                : Returns<bool> {};
-    template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __gt__<Bytes, T>                                     : Returns<bool> {};
-    template <>
-    struct __ge__<Bytes, Object>                                : Returns<bool> {};
-    template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __ge__<Bytes, T>                                     : Returns<bool> {};
-    template <>
-    struct __add__<Bytes, Object>                               : Returns<Bytes> {};
-    template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __add__<Bytes, T>                                    : Returns<Bytes> {};
-    template <>
-    struct __iadd__<Bytes, Object>                              : Returns<Bytes&> {};
-    template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __iadd__<Bytes, T>                                   : Returns<Bytes&> {};
-    template <>
-    struct __mul__<Bytes, Object>                               : Returns<Bytes> {};
-    template <int_like T>
-    struct __mul__<Bytes, T>                                    : Returns<Bytes> {};
-    template <>
-    struct __imul__<Bytes, Object>                              : Returns<Bytes&> {};
-    template <int_like T>
-    struct __imul__<Bytes, T>                                   : Returns<Bytes&> {};
+    template <typename T>
+    concept ibytes = std::is_base_of_v<IBytesTag, T>;
 
-    template <>
-    struct __len__<ByteArray>                                   : Returns<size_t> {};
-    template <>
-    struct __iter__<ByteArray>                                  : Returns<Int> {};
-    template <>
-    struct __reversed__<ByteArray>                              : Returns<Int> {};
-    template <>
-    struct __contains__<ByteArray, Object>                      : Returns<bool> {};
-    template <int_like T>
-    struct __contains__<ByteArray, T>                           : Returns<bool> {};
-    template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __contains__<ByteArray, T>                           : Returns<bool> {};
-    template <>
-    struct __getitem__<ByteArray, Object>                       : Returns<Object> {};
-    template <int_like T>
-    struct __getitem__<ByteArray, T>                            : Returns<Int> {};
-    template <>
-    struct __getitem__<ByteArray, Slice>                        : Returns<ByteArray> {};
-    template <>
-    struct __lt__<ByteArray, Object>                            : Returns<bool> {};
-    template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __lt__<ByteArray, T>                                 : Returns<bool> {};
-    template <>
-    struct __le__<ByteArray, Object>                            : Returns<bool> {};
-    template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __le__<ByteArray, T>                                 : Returns<bool> {};
-    template <>
-    struct __gt__<ByteArray, Object>                            : Returns<bool> {};
-    template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __gt__<ByteArray, T>                                 : Returns<bool> {};
-    template <>
-    struct __ge__<ByteArray, Object>                            : Returns<bool> {};
-    template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __ge__<ByteArray, T>                                 : Returns<bool> {};
-    template <>
-    struct __add__<ByteArray, Object>                           : Returns<ByteArray> {};
-    template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __add__<ByteArray, T>                                : Returns<ByteArray> {};
-    template <>
-    struct __iadd__<ByteArray, Object>                          : Returns<ByteArray&> {};
-    template <typename T> requires (bytes_like<T> || bytearray_like<T>)
-    struct __iadd__<ByteArray, T>                               : Returns<ByteArray&> {};
-    template <>
-    struct __mul__<ByteArray, Object>                           : Returns<ByteArray> {};
-    template <int_like T>
-    struct __mul__<ByteArray, T>                                : Returns<ByteArray> {};
-    template <>
-    struct __imul__<ByteArray, Object>                          : Returns<ByteArray&> {};
-    template <int_like T>
-    struct __imul__<ByteArray, T>                               : Returns<ByteArray&> {};
+    template <ibytes T>
+    struct __len__<T>                                           : Returns<size_t> {};
+    template <typename T> requires(std::is_base_of_v<Bytes, T>)
+    struct __hash__<T>                                          : Returns<size_t> {};
+    template <ibytes T>
+    struct __iter__<T>                                          : Returns<Int> {};
+    template <ibytes T>
+    struct __reversed__<T>                                      : Returns<Int> {};
+    template <ibytes T>
+    struct __contains__<T, Object>                              : Returns<bool> {};
+    template <ibytes T, int_like Key>
+    struct __contains__<T, Key>                                 : Returns<bool> {};
+    template <ibytes T, anybytes_like Key>
+    struct __contains__<T, Key>                                 : Returns<bool> {};
+    template <ibytes T>
+    struct __getitem__<T, Object>                               : Returns<Object> {};
+    template <ibytes T, int_like Key>
+    struct __getitem__<T, Key>                                  : Returns<Int> {};
+    template <ibytes T>
+    struct __getitem__<T, Slice>                                : Returns<T> {};
+    template <ibytes L>
+    struct __lt__<L, Object>                                    : Returns<bool> {};
+    template <ibytes L, anybytes_like R>
+    struct __lt__<L, R>                                         : Returns<bool> {};
+    template <ibytes L>
+    struct __le__<L, Object>                                    : Returns<bool> {};
+    template <ibytes L, anybytes_like R>
+    struct __le__<L, R>                                         : Returns<bool> {};
+    template <ibytes L>
+    struct __gt__<L, Object>                                    : Returns<bool> {};
+    template <ibytes L, anybytes_like R>
+    struct __gt__<L, R>                                         : Returns<bool> {};
+    template <ibytes L>
+    struct __ge__<L, Object>                                    : Returns<bool> {};
+    template <ibytes L, anybytes_like R>
+    struct __ge__<L, R>                                         : Returns<bool> {};
+    template <ibytes L>
+    struct __add__<L, Object>                                   : Returns<L> {};
+    template <ibytes L, anybytes_like R>
+    struct __add__<L, R>                                        : Returns<L> {};
+    template <ibytes L>
+    struct __iadd__<L, Object>                                  : Returns<L&> {};
+    template <ibytes L, anybytes_like R>
+    struct __iadd__<L, R>                                       : Returns<L&> {};
+    template <ibytes L>
+    struct __mul__<L, Object>                                   : Returns<L> {};
+    template <ibytes L, int_like R>
+    struct __mul__<L, R>                                        : Returns<L> {};
+    template <ibytes L>
+    struct __imul__<L, Object>                                  : Returns<L&> {};
+    template <ibytes L, int_like R>
+    struct __imul__<L, R>                                       : Returns<L&> {};
+
+    template <ibytes T>
+    struct __getattr__<T, "capitalize">                         : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "center">                             : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "count">                              : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "decode">                             : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "endswith">                           : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "expandtabs">                         : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "find">                               : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "hex">                                : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "index">                              : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "isalnum">                            : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "isalpha">                            : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "isascii">                            : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "isdigit">                            : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "islower">                            : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "isspace">                            : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "istitle">                            : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "isupper">                            : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "maketrans">                          : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "partition">                          : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "removeprefix">                       : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "removesuffix">                       : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "replace">                            : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "rfind">                              : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "rindex">                             : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "rjust">                              : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "rpartition">                         : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "rsplit">                             : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "rstrip">                             : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "split">                              : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "splitlines">                         : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "startswith">                         : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "strip">                              : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "swapcase">                           : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "title">                              : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "translate">                          : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "upper">                              : Returns<Function> {};
+    template <ibytes T>
+    struct __getattr__<T, "zfill">                              : Returns<Function> {};
 
 }
 

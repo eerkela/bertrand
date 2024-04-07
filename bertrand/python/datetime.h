@@ -1230,7 +1230,7 @@ class Time : public impl::Ops {
     using Base = impl::Ops;
 
     static Object _localize(Handle obj, Handle tz) {
-        if (obj.attr("tzinfo").is_none()) {
+        if (obj.attr("tzinfo").is(None)) {
             return obj.attr("replace")(py::arg("tzinfo") = tz);
         }
         return obj.attr("astimezone")(tz);
@@ -1371,7 +1371,7 @@ public:
     /* Get the timezone associated with this time or nullopt if the time is naive. */
     inline std::optional<Timezone> timezone() const {
         Object tz = this->attr("tzinfo");
-        if (tz.is_none()) {
+        if (tz.is(None)) {
             return std::nullopt;
         }
         return std::make_optional(reinterpret_steal<Timezone>(tz.release()));
@@ -1384,7 +1384,7 @@ public:
     inline void localize(std::optional<Timezone> tz) {
         if (tz.has_value()) {
             *this = _localize(this->ptr(), tz.value().ptr());
-        } else if (!this->attr("tzinfo").is_none()) {
+        } else if (!this->attr("tzinfo").is(None)) {
             *this = this->attr("replace")(py::arg("tzinfo") = None);
         }
     }
@@ -1467,7 +1467,7 @@ class Datetime : public impl::Ops {
     using Base = impl::Ops;
 
     static Object _localize(Handle obj, Handle tz) {
-        if (obj.attr("tzinfo").is_none()) {
+        if (obj.attr("tzinfo").is(None)) {
             return obj.attr("replace")(py::arg("tzinfo") = tz);
         }
         return obj.attr("astimezone")(tz);
@@ -1740,7 +1740,7 @@ public:
     naive. */
     inline std::optional<Timezone> timezone() const {
         Object tz = this->attr("tzinfo");
-        if (tz.is_none()) {
+        if (tz.is(None)) {
             return std::nullopt;
         }
         return std::make_optional(reinterpret_steal<Timezone>(tz.release()));
@@ -1753,7 +1753,7 @@ public:
     inline void localize(std::optional<Timezone> tz) {
         if (tz.has_value()) {
             *this = _localize(this->ptr(), tz.value().ptr());
-        } else if (!this->attr("tzinfo").is_none()) {
+        } else if (!this->attr("tzinfo").is(None)) {
             *this = this->attr("replace")(py::arg("tzinfo") = None);
         }
     }

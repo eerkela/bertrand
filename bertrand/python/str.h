@@ -38,54 +38,154 @@ namespace py {
 
 namespace impl {
 
-template <>
-struct __len__<Str>                                             : Returns<size_t> {};
-template <>
-struct __iter__<Str>                                            : Returns<Str> {};
-template <>
-struct __reversed__<Str>                                        : Returns<Str> {};
-template <>
-struct __contains__<Str, Object>                                : Returns<bool> {};
-template <str_like T>
-struct __contains__<Str, T>                                     : Returns<bool> {};
-template <>
-struct __getitem__<Str, Object>                                 : Returns<Str> {};
-template <int_like T>
-struct __getitem__<Str, T>                                      : Returns<Str> {};
-template <>
-struct __getitem__<Str, Slice>                                  : Returns<Str> {};
-template <>
-struct __lt__<Str, Object>                                      : Returns<bool> {};
-template <str_like T>
-struct __lt__<Str, T>                                           : Returns<bool> {};
-template <>
-struct __le__<Str, Object>                                      : Returns<bool> {};
-template <str_like T>
-struct __le__<Str, T>                                           : Returns<bool> {};
-template <>
-struct __ge__<Str, Object>                                      : Returns<bool> {};
-template <str_like T>
-struct __ge__<Str, T>                                           : Returns<bool> {};
-template <>
-struct __gt__<Str, Object>                                      : Returns<bool> {};
-template <str_like T>
-struct __gt__<Str, T>                                           : Returns<bool> {};
-template <>
-struct __add__<Str, Object>                                     : Returns<Str> {};
-template <str_like T>
-struct __add__<Str, T>                                          : Returns<Str> {};
-template <>
-struct __iadd__<Str, Object>                                    : Returns<Str> {};
-template <str_like T>
-struct __iadd__<Str, T>                                         : Returns<Str> {};
-template <>
-struct __mul__<Str, Object>                                     : Returns<Str> {};
-template <int_like T>
-struct __mul__<Str, T>                                          : Returns<Str> {};
-template <>
-struct __imul__<Str, Object>                                    : Returns<Str> {};
-template <int_like T>
-struct __imul__<Str, T>                                         : Returns<Str> {};
+template <typename T>
+concept istr = std::is_base_of_v<Str, T>;
+
+template <istr T>
+struct __len__<T>                                               : Returns<size_t> {};
+template <istr T>
+struct __iter__<T>                                              : Returns<Str> {};
+template <istr T>
+struct __reversed__<T>                                          : Returns<Str> {};
+template <istr T>
+struct __contains__<T, Object>                                  : Returns<bool> {};
+template <istr T, str_like Key>
+struct __contains__<T, Key>                                     : Returns<bool> {};
+template <istr T>
+struct __getitem__<T, Object>                                   : Returns<Str> {};
+template <istr T, int_like Key>
+struct __getitem__<T, Key>                                      : Returns<Str> {};
+template <istr T>
+struct __getitem__<T, Slice>                                    : Returns<Str> {};
+template <istr L>
+struct __lt__<L, Object>                                        : Returns<bool> {};
+template <istr L, str_like R>
+struct __lt__<L, R>                                             : Returns<bool> {};
+template <istr L>
+struct __le__<L, Object>                                        : Returns<bool> {};
+template <istr L, str_like R>
+struct __le__<L, R>                                             : Returns<bool> {};
+template <istr L>
+struct __ge__<L, Object>                                        : Returns<bool> {};
+template <istr L, str_like R>
+struct __ge__<L, R>                                             : Returns<bool> {};
+template <istr L>
+struct __gt__<L, Object>                                        : Returns<bool> {};
+template <istr L, str_like R>
+struct __gt__<L, R>                                             : Returns<bool> {};
+template <istr L>
+struct __add__<L, Object>                                       : Returns<Str> {};
+template <istr L, str_like R>
+struct __add__<L, R>                                            : Returns<Str> {};
+template <istr L>
+struct __iadd__<L, Object>                                      : Returns<Str> {};
+template <istr L, str_like R>
+struct __iadd__<L, R>                                           : Returns<Str> {};
+template <istr L>
+struct __mul__<L, Object>                                       : Returns<Str> {};
+template <istr L, int_like R>
+struct __mul__<L, R>                                            : Returns<Str> {};
+template <istr L>
+struct __imul__<L, Object>                                      : Returns<Str> {};
+template <istr L, int_like R>
+struct __imul__<L, R>                                           : Returns<Str> {};
+
+template <istr T>
+struct __getattr__<T, "capitalize">                             : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "casefold">                               : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "center">                                 : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "copy">                                   : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "count">                                  : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "encode">                                 : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "endswith">                               : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "expandtabs">                             : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "find">                                   : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "format">                                 : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "format_map">                             : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "index">                                  : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "isalnum">                                : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "isalpha">                                : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "isascii">                                : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "isdecimal">                              : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "isdigit">                                : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "isidentifier">                           : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "islower">                                : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "isnumeric">                              : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "isprintable">                            : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "isspace">                                : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "istitle">                                : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "isupper">                                : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "join">                                   : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "ljust">                                  : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "lower">                                  : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "lstrip">                                 : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "maketrans">                              : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "partition">                              : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "removeprefix">                           : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "removesuffix">                           : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "replace">                                : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "rfind">                                  : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "rindex">                                 : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "rjust">                                  : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "rpartition">                             : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "rsplit">                                 : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "rstrip">                                 : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "split">                                  : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "splitlines">                             : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "startswith">                             : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "strip">                                  : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "swapcase">                               : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "title">                                  : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "translate">                              : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "upper">                                  : Returns<Function> {};
+template <istr T>
+struct __getattr__<T, "zfill">                                  : Returns<Function> {};
 
 }
 
@@ -370,25 +470,16 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `str.capitalize()`. */
-    inline Str capitalize() const {
-        return reinterpret_steal<Str>(attr<"capitalize">()().release());
-    }
+    inline Str capitalize() const;
 
     /* Equivalent to Python `str.casefold()`. */
-    inline Str casefold() const {
-        return reinterpret_steal<Str>(attr<"casefold">()().release());
-    }
+    inline Str casefold() const;
 
     /* Equivalent to Python `str.center(width)`. */
-    inline Str center(const Int& width) const {
-        return reinterpret_steal<Str>(attr<"center">()(width).release());
-    }
+    inline Str center(const Int& width) const;
 
     /* Equivalent to Python `str.center(width, fillchar)`. */
-    template <typename T>
-    inline Str center(const Int& width, const Str& fillchar) const {
-        return reinterpret_steal<Str>(attr<"center">()(width, fillchar).release());
-    }
+    inline Str center(const Int& width, const Str& fillchar) const;
 
     /* Equivalent to Python `str.copy()`. */
     inline Str copy() const {
@@ -396,7 +487,13 @@ public:
         if (result == nullptr) {
             throw error_already_set();
         }
-        if (PyUnicode_CopyCharacters(result, 0, this->ptr(), 0, size())) {
+        if (PyUnicode_CopyCharacters(
+            result,
+            0,
+            this->ptr(),
+            0,
+            size()
+        )) {
             Py_DECREF(result);
             throw error_already_set();
         }
@@ -409,7 +506,12 @@ public:
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        Py_ssize_t result = PyUnicode_Count(this->ptr(), sub.ptr(), start, stop);
+        Py_ssize_t result = PyUnicode_Count(
+            this->ptr(),
+            sub.ptr(),
+            start,
+            stop
+        );
         if (result < 0) {
             throw error_already_set();
         }
@@ -428,7 +530,13 @@ public:
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        int result = PyUnicode_Tailmatch(this->ptr(), suffix.ptr(), start, stop, 1);
+        int result = PyUnicode_Tailmatch(
+            this->ptr(),
+            suffix.ptr(),
+            start,
+            stop,
+            1
+        );
         if (result == -1) {
             throw error_already_set();
         }
@@ -436,9 +544,7 @@ public:
     }
 
     /* Equivalent to Python `str.expandtabs()`. */
-    inline Str expandtabs(const Int& tabsize = 8) const {
-        return reinterpret_steal<Str>(attr<"expandtabs">()(tabsize).release());
-    }
+    inline Str expandtabs(const Int& tabsize = 8) const;
 
     /* Equivalent to Python `str.find(sub[, start[, stop]])`. */
     inline Py_ssize_t find(
@@ -446,7 +552,13 @@ public:
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        return PyUnicode_Find(this->ptr(), sub.ptr(), start, stop, 1);
+        return PyUnicode_Find(
+            this->ptr(),
+            sub.ptr(),
+            start,
+            stop,
+            1
+        );
     }
 
     /* Equivalent to Python `str.find(sub[, start[, stop]])`, except that the substring
@@ -461,19 +573,11 @@ public:
 
     /* Equivalent to Python `str.format(*args, **kwargs)`. */
     template <typename... Args>
-    inline Str format(Args&&... args) const {
-        return reinterpret_steal<Str>(attr<"format">()(
-            detail::object_or_cast(std::forward<Args>(args))...
-        ).release());
-    }
+    inline Str format(Args&&... args) const;
 
     /* Equivalent to Python `str.format_map(mapping)`. */
     template <impl::dict_like T>
-    inline Str format_map(const T& mapping) const {
-        return reinterpret_steal<Str>(
-            attr<"format_map">()(detail::object_or_cast(mapping)).release()
-        );
-    }
+    inline Str format_map(const T& mapping) const;
 
     /* Equivalent to Python `str.index(sub[, start[, end]])`. */
     template <typename T>
@@ -482,7 +586,13 @@ public:
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        Py_ssize_t result = PyUnicode_Find(this->ptr(), sub.ptr(), start, stop, 1);
+        Py_ssize_t result = PyUnicode_Find(
+            this->ptr(),
+            sub.ptr(),
+            start,
+            stop,
+            1
+        );
         if (result == -1) {
             throw ValueError("substring not found");
         }
@@ -496,7 +606,13 @@ public:
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        Py_ssize_t result = PyUnicode_FindChar(this->ptr(), ch, start, stop, 1);
+        Py_ssize_t result = PyUnicode_FindChar(
+            this->ptr(),
+            ch,
+            start,
+            stop,
+            1
+        );
         if (result == -1) {
             throw ValueError("substring not found");
         }
@@ -504,64 +620,40 @@ public:
     }
 
     /* Equivalent to Python `str.isalnum()`. */
-    inline bool isalnum() const {
-        return static_cast<bool>(attr<"isalnum">()());
-    }
+    inline bool isalnum() const;
 
     /* Equivalent to Python `str.isalpha()`. */
-    inline bool isalpha() const {
-        return static_cast<bool>(attr<"isalpha">()());
-    }
+    inline bool isalpha() const;
 
     /* Equivalent to Python `str.isascii()`. */
-    inline bool isascii() const {
-        return static_cast<bool>(attr<"isascii">()());
-    }
+    inline bool isascii() const;
 
     /* Equivalent to Python `str.isdecimal()`. */
-    inline bool isdecimal() const {
-        return static_cast<bool>(attr<"isdecimal">()());
-    }
+    inline bool isdecimal() const;
 
     /* Equivalent to Python `str.isdigit()`. */
-    inline bool isdigit() const {
-        return static_cast<bool>(attr<"isdigit">()());
-    }
+    inline bool isdigit() const;
 
     /* Equivalent to Python `str.isidentifier()`. */
-    inline bool isidentifier() const {
-        return static_cast<bool>(attr<"isidentifier">()());
-    }
+    inline bool isidentifier() const;
 
     /* Equivalent to Python `str.islower()`. */
-    inline bool islower() const {
-        return static_cast<bool>(attr<"islower">()());
-    }
+    inline bool islower() const;
 
     /* Equivalent to Python `str.isnumeric()`. */
-    inline bool isnumeric() const {
-        return static_cast<bool>(attr<"isnumeric">()());
-    }
+    inline bool isnumeric() const;
 
     /* Equivalent to Python `str.isprintable()`. */
-    inline bool isprintable() const {
-        return static_cast<bool>(attr<"isprintable">()());
-    }
+    inline bool isprintable() const;
 
     /* Equivalent to Python `str.isspace()`. */
-    inline bool isspace() const {
-        return static_cast<bool>(attr<"isspace">()());
-    }
+    inline bool isspace() const;
 
     /* Equivalent to Python `str.istitle()`. */
-    inline bool istitle() const {
-        return static_cast<bool>(attr<"istitle">()());
-    }
+    inline bool istitle() const;
 
     /* Equivalent to Python `str.isupper()`. */
-    inline bool isupper() const {
-        return static_cast<bool>(attr<"isupper">()());
-    }
+    inline bool isupper() const;
 
     /* Equivalent of Python `str.join(iterable)`. */
     template <impl::is_iterable T>
@@ -585,29 +677,19 @@ public:
     }
 
     /* Equivalent to Python `str.ljust(width)`. */
-    inline Str ljust(const Int& width) const {
-        return reinterpret_steal<Str>(attr<"ljust">()(width).release());
-    }
+    inline Str ljust(const Int& width) const;
 
     /* Equivalent to Python `str.ljust(width, fillchar)`. */
-    inline Str ljust(const Int& width, const Str& fillchar) const {
-        return reinterpret_steal<Str>(attr<"ljust">()(width, fillchar).release());
-    }
+    inline Str ljust(const Int& width, const Str& fillchar) const;
 
     /* Equivalent to Python `str.lower()`. */
-    inline Str lower() const {
-        return reinterpret_steal<Str>(attr<"lower">()().release());
-    }
+    inline Str lower() const;
 
     /* Equivalent to Python `str.lstrip()`. */
-    inline Str lstrip() const {
-        return reinterpret_steal<Str>(attr<"lstrip">()().release());
-    }
+    inline Str lstrip() const;
 
     /* Equivalent to Python `str.lstrip(chars)`. */
-    inline Str lstrip(const Str& chars) const {
-        return reinterpret_steal<Str>(attr<"lstrip">()(chars).release());
-    }
+    inline Str lstrip(const Str& chars) const;
 
     /* Equivalent to Python (static) `str.maketrans(x)`. */
     template <typename T>
@@ -622,19 +704,13 @@ public:
     inline static Dict maketrans(const T& x, const U& y, const V& z);
 
     /* Equivalent to Python `str.partition(sep)`. */
-    inline Tuple partition(const Str& sep) const {
-        return reinterpret_steal<Tuple>(attr<"partition">()(sep).release());
-    }
+    inline Tuple partition(const Str& sep) const;
 
     /* Equivalent to Python `str.removeprefix(prefix)`. */
-    inline Str removeprefix(const Str& prefix) const {
-        return reinterpret_steal<Str>(attr<"removeprefix">()(prefix).release());
-    }
+    inline Str removeprefix(const Str& prefix) const;
 
     /* Equivalent to Python `str.removesuffix(suffix)`. */
-    inline Str removesuffix(const Str& suffix) const {
-        return reinterpret_steal<Str>(attr<"removesuffix">()(suffix).release());
-    }
+    inline Str removesuffix(const Str& suffix) const;
 
     /* Equivalent to Python `str.replace(old, new, count)`. */
     inline Str replace(const Str& sub, const Str& repl, Py_ssize_t maxcount = -1) const {
@@ -656,7 +732,13 @@ public:
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        return PyUnicode_Find(this->ptr(), sub.ptr(), start, stop, -1);
+        return PyUnicode_Find(
+            this->ptr(),
+            sub.ptr(),
+            start,
+            stop,
+            -1
+        );
     }
 
     /* Equivalent to Python `str.rfind(sub[, start[, stop]])`, except that the
@@ -675,7 +757,13 @@ public:
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        Py_ssize_t result = PyUnicode_Find(this->ptr(), sub.ptr(), start, stop, -1);
+        Py_ssize_t result = PyUnicode_Find(
+            this->ptr(),
+            sub.ptr(),
+            start,
+            stop,
+            -1
+        );
         if (result == -1) {
             throw ValueError("substring not found");
         }
@@ -689,7 +777,13 @@ public:
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        Py_ssize_t result = PyUnicode_FindChar(this->ptr(), ch, start, stop, -1);
+        Py_ssize_t result = PyUnicode_FindChar(
+            this->ptr(),
+            ch,
+            start,
+            stop,
+            -1
+        );
         if (result == -1) {
             throw ValueError("substring not found");
         }
@@ -697,39 +791,25 @@ public:
     }
 
     /* Equivalent to Python `str.rjust(width)`. */
-    inline Str rjust(const Int& width) const {
-        return reinterpret_steal<Str>(attr<"rjust">()(width).release());
-    }
+    inline Str rjust(const Int& width) const;
 
     /* Equivalent to Python `str.rjust(width, fillchar)`. */
-    inline Str rjust(const Int& width, const Str& fillchar) const {
-        return reinterpret_steal<Str>(attr<"rjust">()(width, fillchar).release());
-    }
+    inline Str rjust(const Int& width, const Str& fillchar) const;
 
     /* Equivalent to Python `str.rpartition(sep)`. */
-    inline Tuple rpartition(const Str& sep) const {
-        return reinterpret_steal<Tuple>(attr<"rpartition">()(sep).release());
-    }
+    inline Tuple rpartition(const Str& sep) const;
 
     /* Equivalent to Python `str.rsplit()`. */
-    inline List rsplit() const {
-        return reinterpret_steal<List>(attr<"rsplit">()().release());
-    }
+    inline List rsplit() const;
 
     /* Equivalent to Python `str.rsplit(sep[, maxsplit])`. */
-    inline List rsplit(const Str& sep, const Int& maxsplit = -1) const {
-        return reinterpret_steal<List>(attr<"rsplit">()(sep, maxsplit).release());
-    }
+    inline List rsplit(const Str& sep, const Int& maxsplit = -1) const;
 
     /* Equivalent to Python `str.rstrip()`. */
-    inline Str rstrip() const {
-        return reinterpret_steal<Str>(attr<"rstrip">()().release());
-    }
+    inline Str rstrip() const;
 
     /* Equivalent to Python `str.rstrip(chars)`. */
-    inline Str rstrip(const Str& chars) const {
-        return reinterpret_steal<Str>(attr<"rstrip">()(chars).release());
-    }
+    inline Str rstrip(const Str& chars) const;
 
     /* Equivalent to Python `str.split()`. */
     inline List split() const {
@@ -764,7 +844,13 @@ public:
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
     ) const {
-        int result = PyUnicode_Tailmatch(this->ptr(), prefix.ptr(), start, stop, -1);
+        int result = PyUnicode_Tailmatch(
+            this->ptr(),
+            prefix.ptr(),
+            start,
+            stop,
+            -1
+        );
         if (result == -1) {
             throw error_already_set();
         }
@@ -772,42 +858,26 @@ public:
     }
 
     /* Equivalent to Python `str.strip()`. */
-    inline Str strip() const {
-        return reinterpret_steal<Str>(attr<"strip">()().release());
-    }
+    inline Str strip() const;
 
     /* Equivalent to Python `str.strip(chars)`. */
-    inline Str strip(const Str& chars) const {
-        return reinterpret_steal<Str>(attr<"strip">()(chars).release());
-    }
+    inline Str strip(const Str& chars) const;
 
     /* Equivalent to Python `str.swapcase()`. */
-    inline Str swapcase() const {
-        return reinterpret_steal<Str>(attr<"swapcase">()().release());
-    }
+    inline Str swapcase() const;
 
     /* Equivalent to Python `str.title()`. */
-    inline Str title() const {
-        return reinterpret_steal<Str>(attr<"title">()().release());
-    }
+    inline Str title() const;
 
     /* Equivalent to Python `str.translate(table)`. */
     template <typename T>
-    inline Str translate(const T& table) const {
-        return reinterpret_steal<Str>(
-            attr<"translate">()(detail::object_or_cast(table)).release()
-        );
-    }
+    inline Str translate(const T& table) const;
 
     /* Equivalent to Python `str.upper()`. */
-    inline Str upper() const {
-        return reinterpret_steal<Str>(attr<"upper">()().release());
-    }
+    inline Str upper() const;
 
     /* Equivalent to Python `str.zfill(width)`. */
-    inline Str zfill(const Int& width) const {
-        return reinterpret_steal<Str>(attr<"zfill">()(width).release());
-    }
+    inline Str zfill(const Int& width) const;
 
     /////////////////////////
     ////    OPERATORS    ////

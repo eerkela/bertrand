@@ -31,6 +31,16 @@ template <int_like T>
 struct __getitem__<Range, T>                                : Returns<Int> {};
 template <>
 struct __getitem__<Range, Slice>                            : Returns<Range> {};
+template <typename T> requires (std::is_base_of_v<Range, T>)
+struct __getattr__<T, "count">                              : Returns<Function> {};
+template <typename T> requires (std::is_base_of_v<Range, T>)
+struct __getattr__<T, "index">                              : Returns<Function> {};
+template <typename T> requires (std::is_base_of_v<Range, T>)
+struct __getattr__<T, "start">                              : Returns<Int> {};
+template <typename T> requires (std::is_base_of_v<Range, T>)
+struct __getattr__<T, "stop">                               : Returns<Int> {};
+template <typename T> requires (std::is_base_of_v<Range, T>)
+struct __getattr__<T, "step">                               : Returns<Int> {};
 
 }
 
@@ -91,6 +101,52 @@ public:
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
+
+    /* Get the number of occurrences of a given number within the range. */
+    inline size_t count(Py_ssize_t value) const {
+        Py_ssize_t result = PySequence_Count(this->ptr(), Int(value).ptr());
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return static_cast<size_t>(result);
+    }
+
+    /* Get the number of occurrences of a given number within the range. */
+    inline size_t count(Py_ssize_t value, Py_ssize_t start, Py_ssize_t stop = -1) const {
+        PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
+        if (slice == nullptr) {
+            throw error_already_set();
+        }
+        Py_ssize_t result = PySequence_Count(slice, Int(value).ptr());
+        Py_DECREF(slice);
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return static_cast<size_t>(result);
+    }
+
+    /* Get the index of a given number within the range. */
+    inline Py_ssize_t index(Py_ssize_t value) const {
+        Py_ssize_t result = PySequence_Index(this->ptr(), Int(value).ptr());
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
+
+    /* Get the index of a given number within the range. */
+    inline Py_ssize_t index(Py_ssize_t value, Py_ssize_t start, Py_ssize_t stop = -1) const {
+        PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
+        if (slice == nullptr) {
+            throw error_already_set();
+        }
+        Py_ssize_t result = PySequence_Index(slice, Int(value).ptr());
+        Py_DECREF(slice);
+        if (result == -1) {
+            throw error_already_set();
+        }
+        return result;
+    }
 
     /* Get the start index of the Range sequence. */
     inline Py_ssize_t start() const {

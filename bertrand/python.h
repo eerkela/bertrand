@@ -3,6 +3,8 @@
 #define BERTRAND_PYTHON_INCLUDED
 #define PYBIND11_DETAILED_ERROR_MESSAGES
 
+#include <numeric>
+
 #include "python/common.h"
 
 #include "python/bool.h"
@@ -152,8 +154,372 @@ inline Type::Type(const Str& name, const Tuple& bases, const Dict& dict) {
 }
 
 
+template <impl::is_iterable T>
+inline void List::extend(const T& items) {
+    if constexpr (impl::python_like<T>) {
+        attr<"extend">()(detail::object_or_cast(items));
+    } else {
+        for (auto&& item : items) {
+            append(std::forward<decltype(item)>(item));
+        }
+    }
+}
+
+
+template <typename T>
+inline void List::remove(const T& value) {
+    attr<"remove">()(detail::object_or_cast(value));
+}
+
+
+inline Object List::pop(Py_ssize_t index) {
+    return attr<"pop">()(index);
+}
+
+
+inline void List::sort(const Bool& reverse) {
+    attr<"sort">()(py::arg("reverse") = reverse);
+}
+
+
 inline void List::sort(const Function& key, const Bool& reverse) {
     attr<"sort">()(py::arg("key") = key, py::arg("reverse") = reverse);
+}
+
+
+template <typename Derived>
+template <impl::is_iterable T>
+inline bool impl::ISet<Derived>::isdisjoint(const T& other) const {
+    if constexpr (impl::python_like<T>) {
+        return static_cast<bool>(
+            self()->template attr<"isdisjoint">()(other)
+        );
+    } else {
+        for (auto&& item : other) {
+            if (contains(std::forward<decltype(item)>(item))) {
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
+
+template <typename Derived>
+template <impl::is_iterable T>
+inline bool impl::ISet<Derived>::issuperset(const T& other) const {
+    if constexpr (impl::python_like<T>) {
+        return static_cast<bool>(
+            self()->template attr<"issuperset">()(other)
+        );
+    } else {
+        for (auto&& item : other) {
+            if (!contains(std::forward<decltype(item)>(item))) {
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
+
+template <typename Derived>
+template <impl::is_iterable T>
+inline bool impl::ISet<Derived>::issubset(const T& other) const {
+    return static_cast<bool>(self()->template attr<"issubset">()(
+        detail::object_or_cast(other)
+    ));
+}
+
+
+template <typename Derived>
+inline bool impl::ISet<Derived>::issubset(
+    const std::initializer_list<impl::HashInitializer>& other
+) const {
+    return static_cast<bool>(
+        self()->template attr<"issubset">()(Derived(other))
+    );
+}
+
+
+template <typename Derived>
+template <impl::is_iterable... Args>
+inline Derived impl::ISet<Derived>::union_(const Args&... others) const {
+    return self()->template attr<"union">()(
+        detail::object_or_cast(std::forward<Args>(others))...
+    );
+}
+
+
+template <typename Derived>
+template <impl::is_iterable... Args>
+inline Derived impl::ISet<Derived>::intersection(const Args&... others) const {
+    return self()->template attr<"intersection">()(
+        detail::object_or_cast(std::forward<Args>(others))...
+    );
+}
+
+
+template <typename Derived>
+template <impl::is_iterable... Args>
+inline Derived impl::ISet<Derived>::difference(const Args&... others) const {
+    return self()->template attr<"difference">()(
+        detail::object_or_cast(std::forward<Args>(others))...
+    );
+}
+
+
+template <typename Derived>
+template <impl::is_iterable T>
+inline Derived impl::ISet<Derived>::symmetric_difference(const T& other) const {
+    return self()->template attr<"symmetric_difference">()(
+        detail::object_or_cast(other)
+    );
+}
+
+
+template <impl::is_iterable... Args>
+inline void Set::update(const Args&... others) {
+    attr<"update">()(detail::object_or_cast(std::forward<Args>(others))...);
+}
+
+
+template <impl::is_iterable... Args>
+inline void Set::intersection_update(const Args&... others) {
+    attr<"intersection_update">()(
+        detail::object_or_cast(std::forward<Args>(others))...
+    );
+}
+
+
+inline void Set::intersection_update(
+    const std::initializer_list<impl::HashInitializer>& other
+) {
+    attr<"intersection_update">()(Set(other));
+}
+
+
+template <impl::is_iterable... Args>
+inline void Set::difference_update(const Args&... others) {
+    attr<"difference_update">()(
+        detail::object_or_cast(std::forward<Args>(others))...
+    );
+}
+
+
+template <impl::is_iterable T>
+inline void Set::symmetric_difference_update(const T& other) {
+    attr<"symmetric_difference_update">()(detail::object_or_cast(other));
+}
+
+
+template <impl::is_iterable T>
+inline bool KeysView::isdisjoint(const T& other) const {
+    return static_cast<bool>(attr<"isdisjoint">()(detail::object_or_cast(other)));
+}
+
+
+inline bool KeysView::isdisjoint(
+    const std::initializer_list<impl::HashInitializer>& other
+) const {
+    return static_cast<bool>(attr<"isdisjoint">()(Set(other)));
+}
+
+
+inline Object Dict::popitem() {
+    return attr<"popitem">()();
+}
+
+
+KeysView::KeysView(const Dict& dict) {
+    m_ptr = dict.template attr<"keys">()().release().ptr();
+}
+
+
+inline KeysView Dict::keys() const {
+    return reinterpret_steal<KeysView>(attr<"keys">()().release());
+}
+
+
+ValuesView::ValuesView(const Dict& dict) {
+    m_ptr = dict.template attr<"values">()().release().ptr();
+}
+
+
+inline ValuesView Dict::values() const {
+    return reinterpret_steal<ValuesView>(attr<"values">()().release());
+}
+
+
+ItemsView::ItemsView(const Dict& dict) {
+    m_ptr = dict.template attr<"items">()().release().ptr();
+}
+
+
+inline ItemsView Dict::items() const {
+    return reinterpret_steal<ItemsView>(attr<"items">()().release());
+}
+
+
+inline Dict MappingProxy::copy() const {
+    return reinterpret_steal<Dict>(attr<"copy">()().release());
+}
+
+
+template <impl::is_hashable K>
+inline Object MappingProxy::get(const K& key) const {
+    return attr<"get">()(detail::object_or_cast(key), py::None);
+}
+
+
+template <impl::is_hashable K, typename V>
+inline Object MappingProxy::get(const K& key, const V& default_value) const {
+    return attr<"get">()(
+        detail::object_or_cast(key),
+        detail::object_or_cast(default_value)
+    );
+}
+
+
+inline KeysView MappingProxy::keys() const {
+    return reinterpret_steal<KeysView>(attr<"keys">()().release());
+}
+
+
+
+inline ValuesView MappingProxy::values() const {
+    return reinterpret_steal<ValuesView>(attr<"values">()().release());
+}
+
+
+inline ItemsView MappingProxy::items() const {
+    return reinterpret_steal<ItemsView>(attr<"items">()().release());
+}
+
+
+inline Str Str::capitalize() const {
+    return reinterpret_steal<Str>(attr<"capitalize">()().release());
+}
+
+
+inline Str Str::casefold() const {
+    return reinterpret_steal<Str>(attr<"casefold">()().release());
+}
+
+
+inline Str Str::center(const Int& width) const {
+    return reinterpret_steal<Str>(attr<"center">()(width).release());
+}
+
+
+inline Str Str::center(const Int& width, const Str& fillchar) const {
+    return reinterpret_steal<Str>(attr<"center">()(width, fillchar).release());
+}
+
+
+inline Str Str::expandtabs(const Int& tabsize) const {
+    return reinterpret_steal<Str>(attr<"expandtabs">()(tabsize).release());
+}
+
+
+template <typename... Args>
+inline Str Str::format(Args&&... args) const {
+    return reinterpret_steal<Str>(attr<"format">()(
+        detail::object_or_cast(std::forward<Args>(args))...
+    ).release());
+}
+
+
+template <impl::dict_like T>
+inline Str Str::format_map(const T& mapping) const {
+    return reinterpret_steal<Str>(
+        attr<"format_map">()(detail::object_or_cast(mapping)).release()
+    );
+}
+
+
+inline bool Str::isalnum() const {
+    return static_cast<bool>(attr<"isalnum">()());
+}
+
+
+inline bool Str::isalpha() const {
+    return static_cast<bool>(attr<"isalpha">()());
+}
+
+
+inline bool Str::isascii() const {
+    return static_cast<bool>(attr<"isascii">()());
+}
+
+
+inline bool Str::isdecimal() const {
+    return static_cast<bool>(attr<"isdecimal">()());
+}
+
+
+inline bool Str::isdigit() const {
+    return static_cast<bool>(attr<"isdigit">()());
+}
+
+
+inline bool Str::isidentifier() const {
+    return static_cast<bool>(attr<"isidentifier">()());
+}
+
+
+inline bool Str::islower() const {
+    return static_cast<bool>(attr<"islower">()());
+}
+
+
+inline bool Str::isnumeric() const {
+    return static_cast<bool>(attr<"isnumeric">()());
+}
+
+
+inline bool Str::isprintable() const {
+    return static_cast<bool>(attr<"isprintable">()());
+}
+
+
+inline bool Str::isspace() const {
+    return static_cast<bool>(attr<"isspace">()());
+}
+
+
+inline bool Str::istitle() const {
+    return static_cast<bool>(attr<"istitle">()());
+}
+
+
+inline bool Str::isupper() const {
+    return static_cast<bool>(attr<"isupper">()());
+}
+
+
+inline Str Str::ljust(const Int& width) const {
+    return reinterpret_steal<Str>(attr<"ljust">()(width).release());
+}
+
+
+inline Str Str::ljust(const Int& width, const Str& fillchar) const {
+    return reinterpret_steal<Str>(attr<"ljust">()(width, fillchar).release());
+}
+
+
+inline Str Str::lower() const {
+    return reinterpret_steal<Str>(attr<"lower">()().release());
+}
+
+
+inline Str Str::lstrip() const {
+    return reinterpret_steal<Str>(attr<"lstrip">()().release());
+}
+
+
+inline Str Str::lstrip(const Str& chars) const {
+    return reinterpret_steal<Str>(attr<"lstrip">()(chars).release());
 }
 
 
@@ -177,6 +543,94 @@ inline Dict Str::maketrans(const T& x, const U& y, const V& z) {
     return reinterpret_steal<Dict>(
         type.template attr<"maketrans">()(x, y, z).release()
     );
+}
+
+
+inline Tuple Str::partition(const Str& sep) const {
+    return reinterpret_steal<Tuple>(attr<"partition">()(sep).release());
+}
+
+
+inline Str Str::removeprefix(const Str& prefix) const {
+    return reinterpret_steal<Str>(attr<"removeprefix">()(prefix).release());
+}
+
+
+inline Str Str::removesuffix(const Str& suffix) const {
+    return reinterpret_steal<Str>(attr<"removesuffix">()(suffix).release());
+}
+
+
+inline Str Str::rjust(const Int& width) const {
+    return reinterpret_steal<Str>(attr<"rjust">()(width).release());
+}
+
+
+inline Str Str::rjust(const Int& width, const Str& fillchar) const {
+    return reinterpret_steal<Str>(attr<"rjust">()(width, fillchar).release());
+}
+
+
+inline Tuple Str::rpartition(const Str& sep) const {
+    return reinterpret_steal<Tuple>(attr<"rpartition">()(sep).release());
+}
+
+
+inline List Str::rsplit() const {
+    return reinterpret_steal<List>(attr<"rsplit">()().release());
+}
+
+
+inline List Str::rsplit(const Str& sep, const Int& maxsplit) const {
+    return reinterpret_steal<List>(attr<"rsplit">()(sep, maxsplit).release());
+}
+
+
+inline Str Str::rstrip() const {
+    return reinterpret_steal<Str>(attr<"rstrip">()().release());
+}
+
+
+inline Str Str::rstrip(const Str& chars) const {
+    return reinterpret_steal<Str>(attr<"rstrip">()(chars).release());
+}
+
+
+inline Str Str::strip() const {
+    return reinterpret_steal<Str>(attr<"strip">()().release());
+}
+
+
+inline Str Str::strip(const Str& chars) const {
+    return reinterpret_steal<Str>(attr<"strip">()(chars).release());
+}
+
+
+inline Str Str::swapcase() const {
+    return reinterpret_steal<Str>(attr<"swapcase">()().release());
+}
+
+
+inline Str Str::title() const {
+    return reinterpret_steal<Str>(attr<"title">()().release());
+}
+
+
+template <typename T>
+inline Str Str::translate(const T& table) const {
+    return reinterpret_steal<Str>(
+        attr<"translate">()(detail::object_or_cast(table)).release()
+    );
+}
+
+
+inline Str Str::upper() const {
+    return reinterpret_steal<Str>(attr<"upper">()().release());
+}
+
+
+inline Str Str::zfill(const Int& width) const {
+    return reinterpret_steal<Str>(attr<"zfill">()(width).release());
 }
 
 
@@ -623,28 +1077,17 @@ inline bool issubclass(const Type& derived) {
 }
 
 
-// TODO: iter() is more complicated after making iterators type-safe by default.  This
-// should always return a py::Iterator specialized to the type of the input, but doing
-// this is difficult because we need to know the dereference type at compile time.
-
-// TODO: iter() should also be lifted to python.h, along with len(), right?
-
-
-// /* Equivalent to Python `iter(obj)` except that it can also accept C++ containers and
-// generate Python iterators over them.  Note that C++ types as rvalues are not allowed,
-// and will trigger a compiler error. */
-// template <impl::is_iterable T>
-// inline Iterator iter(T&& obj) {
-//     if constexpr (impl::pybind11_iterable<std::decay_t<T>>) {
-//         return pybind11::iter(obj);
-//     } else {
-//         static_assert(
-//             !std::is_rvalue_reference_v<decltype(obj)>,
-//             "passing an rvalue to py::iter() is unsafe"
-//         );
-//         return pybind11::make_iterator(obj.begin(), obj.end());
-//     }
-// }
+/* Equivalent to Python `iter(obj)` except that it can also accept C++ containers and
+generate Python iterators over them.  Note that requesting an iterator over an rvalue
+is not allowed, and will trigger a compiler error. */
+template <impl::is_iterable T>
+inline pybind11::iterator iter(T&& obj) {
+    static_assert(
+        !std::is_rvalue_reference_v<T>,
+        "passing an rvalue to py::iter() is unsafe"
+    );
+    return pybind11::make_iterator(obj.begin(), obj.end());
+}
 
 
 /* Equivalent to Python `len(obj)`, but also accepts C++ types implementing a .size()
@@ -718,33 +1161,23 @@ inline Int ord(const Handle& obj) {
 }
 
 
-// TODO: these are also complicated by the typed iterator refactor
-
-
-// /* Equivalent to Python `reversed(obj)` except that it can also accept C++ containers
-// and generate Python iterators over them.  Note that C++ types as rvalues are not
-// allowed, and will trigger a compile-time error. */
-// template <typename T>
-// inline Iterator reversed(T&& obj) {
-//     if constexpr (impl::python_like<std::decay_t<T>>) {
-//         return obj.template attr<"reversed">()();
-//     } else {
-//         static_assert(
-//             !std::is_rvalue_reference_v<decltype(obj)>,
-//             "passing an rvalue to py::reversed() is unsafe"
-//         );
-//         return pybind11::make_iterator(obj.rbegin(), obj.rend());
-//     }
-// }
-
-
-// /* Specialization of `reversed()` for Tuple and List objects that use direct array
-// access rather than going through the Python API. */
-// template <typename T, std::enable_if_t<impl::is_reverse_iterable<T>, int> = 0>
-// inline Iterator reversed(const T& obj) {
-//     using Iter = typename T::ReverseIterator;
-//     return pybind11::make_iterator(Iter(obj.data(), obj.size() - 1), Iter(-1));
-// }
+/* Equivalent to Python `reversed(obj)` except that it can also accept C++ containers
+and generate Python iterators over them.  Note that requesting an iterator over an
+rvalue is not allowed, and will trigger a compiler error. */
+template <typename T>
+inline pybind11::iterator reversed(T&& obj) {
+    static_assert(
+        !std::is_rvalue_reference_v<T>,
+        "passing an rvalue to py::reversed() is unsafe"
+    );
+    if constexpr (std::is_base_of_v<pybind11::object, std::decay_t<T>>) {
+        return reinterpret_steal<pybind11::iterator>(
+            obj.attr("__reversed__")().release()
+        );
+    } else {
+        return pybind11::make_iterator(obj.rbegin(), obj.rend());
+    }
+}
 
 
 /* Equivalent to Python `setattr(obj, name, value)`. */
@@ -801,14 +1234,6 @@ inline Dict vars(const Object& object) {
 }  // namespace py
 }  // namespace bertrand
 
-
-////////////////////////////
-////    TYPE CASTERS    ////
-////////////////////////////
-
-
-// TODO: implement type casters for range, MappingProxy, KeysView, ValuesView,
-// ItemsView, Method, ClassMethod, StaticMethod, Property
 
 #undef PYBIND11_DETAILED_ERROR_MESSAGES
 #undef BERTRAND_PYTHON_INCLUDED

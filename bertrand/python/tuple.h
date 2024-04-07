@@ -12,9 +12,6 @@ namespace bertrand {
 namespace py {
 
 
-// TODO: write an optimized iterator for tuples using PyTuple_GET_ITEM()
-
-
 namespace impl {
 
 template <>
@@ -65,6 +62,11 @@ template <>
 struct __imul__<Tuple, Object>                                  : Returns<Tuple&> {};
 template <int_like T>
 struct __imul__<Tuple, T>                                       : Returns<Tuple&> {};
+
+template <>
+struct __getattr__<Tuple, "count">                              : Returns<Function> {};
+template <>
+struct __getattr__<Tuple, "index">                              : Returns<Function> {};
 
 }
 
@@ -340,8 +342,11 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    inline Tuple operator+(const std::initializer_list<impl::Initializer>& items) const {
-        return concat(items);
+    inline friend Tuple operator+(
+        const Tuple& self,
+        const std::initializer_list<impl::Initializer>& items
+    ) {
+        return self.concat(items);
     }
 
     inline friend Tuple operator+(
@@ -351,9 +356,12 @@ public:
         return self.concat(items);
     }
 
-    inline Tuple& operator+=(const std::initializer_list<impl::Initializer>& items) {
-        *this = concat(items);
-        return *this;
+    inline friend Tuple& operator+=(
+        Tuple& self,
+        const std::initializer_list<impl::Initializer>& items
+    ) {
+        self = self.concat(items);
+        return self;
     }
 
 protected:

@@ -69,6 +69,29 @@ struct __imul__<List, Object>                               : Returns<List&> {};
 template <int_like T>
 struct __imul__<List, T>                                    : Returns<List&> {};
 
+template <>
+struct __getattr__<List, "append">                          : Returns<Function> {};
+template <>
+struct __getattr__<List, "extend">                          : Returns<Function> {};
+template <>
+struct __getattr__<List, "insert">                          : Returns<Function> {};
+template <>
+struct __getattr__<List, "copy">                            : Returns<Function> {};
+template <>
+struct __getattr__<List, "clear">                           : Returns<Function> {};
+template <>
+struct __getattr__<List, "remove">                          : Returns<Function> {};
+template <>
+struct __getattr__<List, "pop">                             : Returns<Function> {};
+template <>
+struct __getattr__<List, "reverse">                         : Returns<Function> {};
+template <>
+struct __getattr__<List, "sort">                            : Returns<Function> {};
+template <>
+struct __getattr__<List, "count">                           : Returns<Function> {};
+template <>
+struct __getattr__<List, "index">                           : Returns<Function> {};
+
 }
 
 
@@ -319,15 +342,7 @@ public:
 
     /* Equivalent to Python `list.extend(items)`. */
     template <impl::is_iterable T>
-    inline void extend(const T& items) {
-        if constexpr (impl::python_like<T>) {
-            attr<"extend">()(detail::object_or_cast(items));
-        } else {
-            for (auto&& item : items) {
-                append(std::forward<decltype(item)>(item));
-            }
-        }
-    }
+    inline void extend(const T& items);
 
     /* Equivalent to Python `list.extend(items)`, where items are given as a braced
     initializer list. */
@@ -363,14 +378,10 @@ public:
 
     /* Equivalent to Python `list.remove(value)`. */
     template <typename T>
-    inline void remove(const T& value) {
-        attr<"remove">()(detail::object_or_cast(value));
-    }
+    inline void remove(const T& value);
 
     /* Equivalent to Python `list.pop([index])`. */
-    inline Object pop(Py_ssize_t index = -1) {
-        return attr<"pop">()(index);
-    }
+    inline Object pop(Py_ssize_t index = -1);
 
     /* Equivalent to Python `list.reverse()`. */
     inline void reverse() {
@@ -387,9 +398,7 @@ public:
     }
 
     /* Equivalent to Python `list.sort(reverse=reverse)`. */
-    inline void sort(const Bool& reverse) {
-        attr<"sort">()(py::arg("reverse") = reverse);
-    }
+    inline void sort(const Bool& reverse);
 
     /* Equivalent to Python `list.sort(key=key[, reverse=reverse])`.  The key function
     can be given as any C++ function-like object, but users should note that pybind11
@@ -401,20 +410,26 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    inline List operator+(const std::initializer_list<impl::Initializer>& items) const {
-        return concat(items);
+    inline friend List operator+(
+        const List& self,
+        const std::initializer_list<impl::Initializer>& items
+    ) {
+        return self.concat(items);
     }
 
     inline friend List operator+(
         const std::initializer_list<impl::Initializer>& items,
-        const List& list
+        const List& self
     ) {
-        return list.concat(items);
+        return self.concat(items);
     }
 
-    inline List& operator+=(const std::initializer_list<impl::Initializer>& items) {
-        extend(items);
-        return *this;
+    inline friend List& operator+=(
+        List& self,
+        const std::initializer_list<impl::Initializer>& items
+    ) {
+        self.extend(items);
+        return self;
     }
 
 protected:

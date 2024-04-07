@@ -6,6 +6,8 @@
 #ifndef BERTRAND_PYTHON_FUNC_H
 #define BERTRAND_PYTHON_FUNC_H
 
+#include <fstream>
+
 #include "common.h"
 #include "dict.h"
 #include "str.h"

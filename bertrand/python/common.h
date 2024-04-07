@@ -8,15 +8,23 @@
 #include <algorithm>
 #include <cstddef>
 #include <chrono>
-#include <fstream>
+#include <complex>
+#include <deque>
 #include <initializer_list>
 #include <iterator>
+#include <list>
+#include <map>
 #include <optional>
+#include <ostream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include <Python.h>
 #include <pybind11/pybind11.h>
@@ -24,22 +32,10 @@
 #include <pybind11/eval.h>
 #include <pybind11/functional.h>
 #include <pybind11/iostream.h>
-#include <pybind11/numpy.h>
+// #include <pybind11/numpy.h>
 #include <pybind11/pytypes.h>
-#include <pybind11/stl.h>
-// #include <pybind11/stl_bind.h>  // complicates error messages for operator overloads
 
 #include "bertrand/static_str.h"
-
-
-// TODO: refactor Object to contain a PyObject* directly and decouple from pybind11.
-// This means I don't need to worry about inheriting unwanted behaviors from pybind11,
-// and get the best possible error messages from the compiler.  It also allows me to
-// bypass the pybind11 destructor, which means all objects can be statically allocated
-// by default.  These are huge wins for developer experience.
-
-
-
 
 
 /* NOTES ON PERFORMANCE:
@@ -127,9 +123,6 @@ namespace py {
 // binding functions
 using pybind11::implicitly_convertible;
 using pybind11::args_are_all_keyword_or_ds;
-using pybind11::make_iterator;  // TODO: roll into Iterator() constructor
-using pybind11::make_key_iterator;  // offer as static Iterator::keys() method
-using pybind11::make_value_iterator;  // same as above for Iterator::values()
 using pybind11::initialize_interpreter;
 using pybind11::scoped_interpreter;
 // PYBIND11_MODULE                      <- macros don't respect namespaces
@@ -600,6 +593,9 @@ namespace impl {
     );
 
     template <typename T>
+    concept anybytes_like = bytes_like<T> || bytearray_like<T>;
+
+    template <typename T>
     concept timedelta_like = (
         categories::Traits<std::remove_cvref_t<T>>::timedeltalike ||
         std::is_base_of_v<Timedelta, std::remove_cvref_t<T>>
@@ -936,16 +932,6 @@ namespace impl {
     * overloads, this will compile and work as expected.  Note that specific overloads
     * will always take precedence over generic ones, and any ambiguities between
     * templates will result in compile errors when used.
-    *
-    * There are several benefits to this architecture.  First, it significantly reduces
-    * the number of runtime type checks that must be performed to ensure strict type
-    * safety, and promotes those checks to compile time instead, which is always
-    * preferable.  Second, it enables syntactically correct implicit conversions
-    * between C++ and Python types, which is a huge win for usability.  Third, it
-    * allows us to follow traditional Python naming conventions for its operator
-    * special methods, which makes it easier to remember and use them in practice.
-    * Finally, it disambiguates the internal behavior of these operators, reducing the
-    * number of gotchas and making the code more idiomatic and easier to reason about.
     */
 
     template <typename T, typename... Args>
@@ -966,7 +952,7 @@ namespace impl {
     struct __delitem__ { static constexpr bool enable = false; };
     template <typename T, StaticStr name>
     struct __getattr__ { static constexpr bool enable = false; };
-    template <typename T, StaticStr name>
+    template <typename T, StaticStr name, typename Value>
     struct __setattr__ { static constexpr bool enable = false; };
     template <typename T, StaticStr name>
     struct __delattr__ { static constexpr bool enable = false; };
@@ -1055,8 +1041,8 @@ namespace impl {
     struct __delitem__<T, Key> : public __delitem__<typename T::Wrapped, Key> {};
     template <proxy_like T, StaticStr name>
     struct __getattr__<T, name> : public __getattr__<typename T::Wrapped, name> {};
-    template <proxy_like T, StaticStr name>
-    struct __setattr__<T, name> : public __setattr__<typename T::Wrapped, name> {};
+    template <proxy_like T, StaticStr name, typename Value>
+    struct __setattr__<T, name, Value> : public __setattr__<typename T::Wrapped, name, Value> {};
     template <proxy_like T, StaticStr name>
     struct __delattr__<T, name> : public __delattr__<typename T::Wrapped, name> {};
     template <proxy_like T>
@@ -1237,6 +1223,159 @@ namespace impl {
         static constexpr bool enable = true;
         using Return = T;
     };
+
+    template <>
+    struct __hash__<Handle>                                 : Returns<size_t> {};
+    template <>
+    struct __hash__<Capsule>                                : Returns<size_t> {};
+    template <>
+    struct __hash__<WeakRef>                                : Returns<size_t> {};
+
+    template <typename ... Args>
+    struct __call__<Object, Args...>                        : Returns<Object> {};
+    template <>
+    struct __len__<Object>                                  : Returns<size_t> {};
+    template <typename T>
+    struct __contains__<Object, T>                          : Returns<bool> {};
+    template <>
+    struct __iter__<Object>                                 : Returns<Object> {};
+    template <>
+    struct __reversed__<Object>                             : Returns<Object> {};
+    template <typename Key>
+    struct __getitem__<Object, Key>                         : Returns<Object> {};
+    template <typename Key, typename Value>
+    struct __setitem__<Object, Key, Value>                  : Returns<void> {};
+    template <typename Key>
+    struct __delitem__<Object, Key>                         : Returns<void> {};
+    template <StaticStr name>
+    struct __getattr__<Object, name>                        : Returns<Object> {};
+    template <StaticStr name, typename Value>
+    struct __setattr__<Object, name, Value>                 : Returns<void> {};
+    template <StaticStr name>
+    struct __delattr__<Object, name>                        : Returns<void> {};
+    template <>
+    struct __pos__<Object>                                  : Returns<Object> {};
+    template <>
+    struct __neg__<Object>                                  : Returns<Object> {};
+    template <>
+    struct __abs__<Object>                                  : Returns<Object> {};
+    template <>
+    struct __invert__<Object>                               : Returns<Object> {};
+    template <>
+    struct __increment__<Object>                            : Returns<Object> {};
+    template <>
+    struct __decrement__<Object>                            : Returns<Object> {};
+    template <>
+    struct __hash__<Object>                                 : Returns<size_t> {};
+    template <typename T>
+    struct __lt__<Object, T>                                : Returns<bool> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __lt__<T, Object>                                : Returns<bool> {};
+    template <typename T>
+    struct __le__<Object, T>                                : Returns<bool> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __le__<T, Object>                                : Returns<bool> {};
+    template <typename T>
+    struct __eq__<Object, T>                                : Returns<bool> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __eq__<T, Object>                                : Returns<bool> {};
+    template <typename T>
+    struct __ne__<Object, T>                                : Returns<bool> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __ne__<T, Object>                                : Returns<bool> {};
+    template <typename T>
+    struct __ge__<Object, T>                                : Returns<bool> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __ge__<T, Object>                                : Returns<bool> {};
+    template <typename T>
+    struct __gt__<Object, T>                                : Returns<bool> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __gt__<T, Object>                                : Returns<bool> {};
+    template <typename T>
+    struct __add__<Object, T>                               : Returns<Object> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __add__<T, Object>                               : Returns<Object> {};
+    template <typename T>
+    struct __iadd__<Object, T>                              : Returns<Object&> {};
+    template <typename T>
+    struct __sub__<Object, T>                               : Returns<Object> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __sub__<T, Object>                               : Returns<Object> {};
+    template <typename T>
+    struct __isub__<Object, T>                              : Returns<Object&> {};
+    template <typename T>
+    struct __mul__<Object, T>                               : Returns<Object> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __mul__<T, Object>                               : Returns<Object> {};
+    template <typename T>
+    struct __imul__<Object, T>                              : Returns<Object&> {};
+    template <typename T>
+    struct __truediv__<Object, T>                           : Returns<Object> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __truediv__<T, Object>                           : Returns<Object> {};
+    template <typename T>
+    struct __itruediv__<Object, T>                          : Returns<Object&> {};
+    template <typename T>
+    struct __mod__<Object, T>                               : Returns<Object> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __mod__<T, Object>                               : Returns<Object> {};
+    template <typename T>
+    struct __imod__<Object, T>                              : Returns<Object&> {};
+    template <typename T>
+    struct __lshift__<Object, T>                            : Returns<Object> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __lshift__<T, Object>                            : Returns<Object> {};
+    template <typename T>
+    struct __ilshift__<Object, T>                           : Returns<Object&> {};
+    template <typename T>
+    struct __rshift__<Object, T>                            : Returns<Object> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __rshift__<T, Object>                            : Returns<Object> {};
+    template <typename T>
+    struct __irshift__<Object, T>                           : Returns<Object&> {};
+    template <typename T>
+    struct __and__<Object, T>                               : Returns<Object> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __and__<T, Object>                               : Returns<Object> {};
+    template <typename T>
+    struct __iand__<Object, T>                              : Returns<Object&> {};
+    template <typename T>
+    struct __or__<Object, T>                                : Returns<Object> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __or__<T, Object>                                : Returns<Object> {};
+    template <typename T>
+    struct __ior__<Object, T>                               : Returns<Object&> {};
+    template <typename T>
+    struct __xor__<Object, T>                               : Returns<Object> {};
+    template <typename T> requires (!std::is_same_v<T, Object>)
+    struct __xor__<T, Object>                               : Returns<Object> {};
+    template <typename T>
+    struct __ixor__<Object, T>                              : Returns<Object&> {};
+
+    template <>
+    struct __hash__<NoneType>                               : Returns<size_t> {};
+    template <>
+    struct __hash__<NotImplementedType>                     : Returns<size_t> {};
+    template <>
+    struct __hash__<EllipsisType>                           : Returns<size_t> {};
+
+    template <typename T> requires (std::is_base_of_v<Slice, T>)
+    struct __getattr__<T, "indices">                        : Returns<Function> {};
+    template <typename T> requires (std::is_base_of_v<Slice, T>)
+    struct __getattr__<T, "start">                          : Returns<Object> {};
+    template <typename T> requires (std::is_base_of_v<Slice, T>)
+    struct __getattr__<T, "stop">                           : Returns<Object> {};
+    template <typename T> requires (std::is_base_of_v<Slice, T>)
+    struct __getattr__<T, "step">                           : Returns<Object> {};
+
+    template <>
+    struct __hash__<Module>                                 : Returns<size_t> {};
+    template <StaticStr name>
+    struct __getattr__<Module, name>                        : Returns<Object> {};
+    template <StaticStr name, typename Value>
+    struct __setattr__<Module, name, Value>                 : Returns<void> {};
+    template <StaticStr name>
+    struct __delattr__<Module, name>                        : Returns<void> {};
 
     #define BERTRAND_OBJECT_OPERATORS(cls)                                              \
         template <typename... Args> requires (impl::__call__<cls, Args...>::enable)     \
@@ -1454,146 +1593,102 @@ namespace impl {
                                                                                         \
     public:                                                                             \
 
-    template <typename ... Args>
-    struct __call__<Object, Args...>                        : Returns<Object> {};
-    template <>
-    struct __len__<Object>                                  : Returns<size_t> {};
-    template <typename T>
-    struct __contains__<Object, T>                          : Returns<bool> {};
-    template <>
-    struct __iter__<Object>                                 : Returns<Object> {};
-    template <>
-    struct __reversed__<Object>                             : Returns<Object> {};
-    template <typename Key>
-    struct __getitem__<Object, Key>                         : Returns<Object> {};
-    template <typename Key, typename Value>
-    struct __setitem__<Object, Key, Value>                  : Returns<void> {};
-    template <typename Key>
-    struct __delitem__<Object, Key>                         : Returns<void> {};
-    template <StaticStr name>
-    struct __getattr__<Object, name>                        : Returns<Object> {};
-    template <StaticStr name>
-    struct __setattr__<Object, name>                        : Returns<void> {};
-    template <StaticStr name>
-    struct __delattr__<Object, name>                        : Returns<void> {};
-    template <>
-    struct __pos__<Object>                                  : Returns<Object> {};
-    template <>
-    struct __neg__<Object>                                  : Returns<Object> {};
-    template <>
-    struct __abs__<Object>                                  : Returns<Object> {};
-    template <>
-    struct __invert__<Object>                               : Returns<Object> {};
-    template <>
-    struct __increment__<Object>                            : Returns<Object> {};
-    template <>
-    struct __decrement__<Object>                            : Returns<Object> {};
-    template <>
-    struct __hash__<Object>                                 : Returns<size_t> {};
-    template <typename T>
-    struct __lt__<Object, T>                                : Returns<bool> {};
-    template <typename T> requires (!std::is_base_of_v<Object, T>)
-    struct __lt__<T, Object>                                : Returns<bool> {};
-    template <typename T>
-    struct __le__<Object, T>                                : Returns<bool> {};
-    template <typename T> requires (!std::is_base_of_v<Object, T>)
-    struct __le__<T, Object>                                : Returns<bool> {};
-    template <typename T1, typename T2> requires (std::is_base_of_v<Object, T1>)
-    struct __eq__<T1, T2>                                   : Returns<bool> {};
-    template <typename T1, typename T2> requires (!std::is_base_of_v<Object, T1> && std::is_base_of_v<Object, T2>)
-    struct __eq__<T1, T2>                                   : Returns<bool> {};
-    template <typename T1, typename T2> requires (std::is_base_of_v<Object, T1>)
-    struct __ne__<T1, T2>                                   : Returns<bool> {};
-    template <typename T1, typename T2> requires (!std::is_base_of_v<Object, T1> && std::is_base_of_v<Object, T2>)
-    struct __ne__<T1, T2>                                   : Returns<bool> {};
-    template <typename T>
-    struct __ge__<Object, T>                                : Returns<bool> {};
-    template <typename T> requires (!std::is_base_of_v<Object, T>)
-    struct __ge__<T, Object>                                : Returns<bool> {};
-    template <typename T>
-    struct __gt__<Object, T>                                : Returns<bool> {};
-    template <typename T> requires (!std::is_base_of_v<Object, T>)
-    struct __gt__<T, Object>                                : Returns<bool> {};
-    template <typename T>
-    struct __add__<Object, T>                               : Returns<Object> {};
-    template <typename T> requires (!std::is_base_of_v<Object, T>)
-    struct __add__<T, Object>                               : Returns<Object> {};
-    template <typename T>
-    struct __sub__<Object, T>                               : Returns<Object> {};
-    template <typename T> requires (!std::is_base_of_v<Object, T>)
-    struct __sub__<T, Object>                               : Returns<Object> {};
-    template <typename T>
-    struct __mul__<Object, T>                               : Returns<Object> {};
-    template <typename T> requires (!std::is_base_of_v<Object, T>)
-    struct __mul__<T, Object>                               : Returns<Object> {};
-    template <typename T>
-    struct __truediv__<Object, T>                           : Returns<Object> {};
-    template <typename T> requires (!std::is_base_of_v<Object, T>)
-    struct __truediv__<T, Object>                           : Returns<Object> {};
-    template <typename T>
-    struct __mod__<Object, T>                               : Returns<Object> {};
-    template <typename T> requires (!std::is_base_of_v<Object, T>)
-    struct __mod__<T, Object>                               : Returns<Object> {};
-    template <typename T>
-    struct __lshift__<Object, T>                            : Returns<Object> {};
-    template <typename T> requires (!std::is_base_of_v<Object, T>)
-    struct __lshift__<T, Object>                            : Returns<Object> {};
-    template <typename T>
-    struct __rshift__<Object, T>                            : Returns<Object> {};
-    template <typename T> requires (!std::is_base_of_v<Object, T>)
-    struct __rshift__<T, Object>                            : Returns<Object> {};
-    template <typename T>
-    struct __and__<Object, T>                               : Returns<Object> {};
-    template <typename T> requires (!std::is_base_of_v<Object, T>)
-    struct __and__<T, Object>                               : Returns<Object> {};
-    template <typename T>
-    struct __or__<Object, T>                                : Returns<Object> {};
-    template <typename T> requires (!std::is_base_of_v<Object, T>)
-    struct __or__<T, Object>                                : Returns<Object> {};
-    template <typename T>
-    struct __xor__<Object, T>                               : Returns<Object> {};
-    template <typename T> requires (!std::is_base_of_v<Object, T>)
-    struct __xor__<T, Object>                               : Returns<Object> {};
-    template <typename T>
-    struct __iadd__<Object, T>                              : Returns<Object> {};
-    template <typename T>
-    struct __isub__<Object, T>                              : Returns<Object> {};
-    template <typename T>
-    struct __imul__<Object, T>                              : Returns<Object> {};
-    template <typename T>
-    struct __itruediv__<Object, T>                          : Returns<Object> {};
-    template <typename T>
-    struct __imod__<Object, T>                              : Returns<Object> {};
-    template <typename T>
-    struct __ilshift__<Object, T>                           : Returns<Object> {};
-    template <typename T>
-    struct __irshift__<Object, T>                           : Returns<Object> {};
-    template <typename T>
-    struct __iand__<Object, T>                              : Returns<Object> {};
-    template <typename T>
-    struct __ior__<Object, T>                               : Returns<Object> {};
-    template <typename T>
-    struct __ixor__<Object, T>                              : Returns<Object> {};
+    /* All subclasses of py::Object must define these constructors, which are taken
+    directly from PYBIND11_OBJECT_COMMON and cover the basic object creation and
+    conversion logic.
 
-    template <>
-    struct __hash__<Handle>                                     : Returns<size_t> {};
-    template <>
-    struct __hash__<Capsule>                                    : Returns<size_t> {};
-    template <>
-    struct __hash__<WeakRef>                                    : Returns<size_t> {};
-    template <>
-    struct __hash__<NoneType>                                   : Returns<size_t> {};
-    template <>
-    struct __hash__<NotImplementedType>                         : Returns<size_t> {};
-    template <>
-    struct __hash__<EllipsisType>                               : Returns<size_t> {};
-    template <>
-    struct __hash__<Module>                                     : Returns<size_t> {};
+    The check() function will be called whenever a generic Object wrapper is implicitly
+    converted to this type.  It should return true if and only if the object has a
+    compatible type, and it will never be passed a null pointer.  If it returns false,
+    a TypeError will be raised during the assignment.
+
+    Also included are generic copy and move constructors that work with any object type
+    that is like this one.  It depends on each type implementing the `like` trait
+    before invoking this macro.
+
+    Lastly, a generic assignment operator is provided that triggers implicit
+    conversions to this type for any inputs that support them.  This is especially
+    nice for initializer-list syntax, enabling containers to be assigned to like this:
+
+        py::List list = {1, 2, 3, 4, 5};
+        list = {5, 4, 3, 2, 1};
+    */
+    #define BERTRAND_OBJECT_COMMON(parent, cls, comptime_check, runtime_check)          \
+        /* Implement check() for compile-time C++ types. */                             \
+        template <typename T>                                                           \
+        static consteval bool check() { return comptime_check<T>; }                     \
+                                                                                        \
+        /* Implement check() for runtime C++ values. */                                 \
+        template <typename T> requires (!impl::python_like<T>)                          \
+        static consteval bool check(const T&) {                                         \
+            return check<T>();                                                          \
+        }                                                                               \
+                                                                                        \
+        /* Implement check() for runtime Python values. */                              \
+        template <typename T> requires (impl::python_like<T>)                           \
+        static bool check(const T& obj) {                                               \
+            return obj.ptr() != nullptr && runtime_check(obj.ptr());                    \
+        }                                                                               \
+                                                                                        \
+        /* pybind11 expects check_ internally, but the idea is the same. */             \
+        template <typename T> requires (impl::python_like<T>)                           \
+        static constexpr bool check_(const T& value) { return check(value); }           \
+        template <typename T> requires (!impl::python_like<T>)                          \
+        static constexpr bool check_(const T& value) { return check(value); }           \
+                                                                                        \
+        /* Inherit tagged borrow/steal constructors. */                                 \
+        cls(Handle h, const borrowed_t& t) : parent(h, t) {}                            \
+        cls(Handle h, const stolen_t& t) : parent(h, t) {}                              \
+                                                                                        \
+        /* Convert a pybind11 accessor into this type. */                               \
+        template <typename Policy>                                                      \
+        cls(const detail::accessor<Policy>& accessor) {                                 \
+            pybind11::object obj(accessor);                                             \
+            if (check(obj)) {                                                           \
+                m_ptr = obj.release().ptr();                                            \
+            } else {                                                                    \
+                throw impl::noconvert<cls>(obj.ptr());                                  \
+            }                                                                           \
+        }                                                                               \
+                                                                                        \
+        /* Trigger implicit conversions to this type via the assignment operator. */    \
+        template <typename T> requires (std::is_convertible_v<T, cls>)                  \
+        cls& operator=(T&& value) {                                                     \
+            if constexpr (std::is_same_v<cls, std::decay_t<T>>) {                       \
+                if (this != &value) {                                                   \
+                    parent::operator=(std::forward<T>(value));                          \
+                }                                                                       \
+            } else if constexpr (impl::has_conversion_operator<std::decay_t<T>, cls>) { \
+                parent::operator=(value.operator cls());                                \
+            } else {                                                                    \
+                parent::operator=(cls(std::forward<T>(value)));                         \
+            }                                                                           \
+            return *this;                                                               \
+        }                                                                               \
+                                                                                        \
+        /* Convert to a pybind11 handle. */                                             \
+        inline operator pybind11::handle() const {                                      \
+            return pybind11::handle(m_ptr);                                             \
+        }                                                                               \
+                                                                                        \
+        /* Convert to a pybind11 object. */                                             \
+        inline operator pybind11::object() const {                                      \
+            return pybind11::reinterpret_borrow<pybind11::object>(m_ptr);               \
+        }                                                                               \
+                                                                                        \
+        /* Delete type narrowing operator inherited from Object. */                     \
+        template <typename T> requires (std::is_base_of_v<Object, T>)                   \
+        operator T() const = delete;                                                    \
+                                                                                        \
+        template <StaticStr name>                                                       \
+        inline impl::Attr<cls, name> attr() const {                                     \
+            return impl::Attr<cls, name>(*this);                                        \
+        }                                                                               \
 
     template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
     class Item;
-    template <typename Obj>
-    class AttrProxy;
+    template <typename Obj, StaticStr name> requires (__getattr__<Obj, name>::enable)
+    class Attr;
     template <typename Policy>
     class Iterator;
     template <typename Policy>
@@ -2097,7 +2192,9 @@ inline L& operator%=(L& lhs, const R& rhs) {
 }
 
 
-template <typename L, typename R> requires (impl::__lshift__<L, R>::enable)
+template <typename L, typename R> requires (
+    impl::__lshift__<L, R>::enable && !std::is_base_of_v<std::ostream, L>
+)
 inline auto operator<<(const L& lhs, const R& rhs) {
     using Return = typename impl::__lshift__<L, R>::Return;
     static_assert(
@@ -3032,13 +3129,15 @@ public:
 
     BERTRAND_OBJECT_OPERATORS(Object)
 
-    template <StaticStr key>
-    inline impl::AttrProxy<Object> attr() const;
+    template <StaticStr name>
+    inline impl::Attr<Object, name> attr() const;
 
 };
 
 
-inline std::ostream& operator<<(std::ostream& os, const Object& obj) {
+template <typename L, typename R>
+    requires (std::is_base_of_v<std::ostream, L> && std::is_base_of_v<Object, R>)
+inline L& operator<<(L& os, const R& obj) {
     PyObject* repr = PyObject_Repr(obj.ptr());
     if (repr == nullptr) {
         throw error_already_set();
@@ -3055,11 +3154,37 @@ inline std::ostream& operator<<(std::ostream& os, const Object& obj) {
 }
 
 
-template <impl::proxy_like T>
-inline std::ostream& operator<<(std::ostream& os, const T& proxy) {
+template <typename L, impl::proxy_like T> requires (std::is_base_of_v<std::ostream, L>)
+inline L& operator<<(L& os, const T& proxy) {
     os << proxy.value();
     return os;
 }
+
+
+/* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
+represent C++ types using std::to_string or the stream insertion operator (<<).  If all
+else fails, falls back to typeid(obj).name(). */
+template <typename T>
+inline std::string repr(const T& obj) {
+    if constexpr (impl::has_stream_insertion<T>) {
+        std::ostringstream stream;
+        stream << obj;
+        return stream.str();
+
+    } else if constexpr (impl::has_to_string<T>) {
+        return std::to_string(obj);
+
+    } else {
+        try {
+            return pybind11::repr(obj).template cast<std::string>();
+        } catch (...) {
+            return typeid(obj).name();
+        }
+    }
+}
+
+
+using pybind11::print;
 
 
 /* Borrow a reference to a raw Python handle. */
@@ -3121,120 +3246,7 @@ inline auto abs(const T& value) {
 }
 
 
-using pybind11::print;
-
-
-/* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
-represent C++ types using std::to_string or the stream insertion operator (<<).  If all
-else fails, falls back to typeid(obj).name(). */
-template <typename T>
-inline std::string repr(const T& obj) {
-    if constexpr (impl::has_stream_insertion<T>) {
-        std::ostringstream stream;
-        stream << obj;
-        return stream.str();
-
-    } else if constexpr (impl::has_to_string<T>) {
-        return std::to_string(obj);
-
-    } else {
-        try {
-            return pybind11::repr(obj).template cast<std::string>();
-        } catch (...) {
-            return typeid(obj).name();
-        }
-    }
-}
-
-
 namespace impl {
-
-    /* All subclasses of py::Object must define these constructors, which are taken
-    directly from PYBIND11_OBJECT_COMMON and cover the basic object creation and
-    conversion logic.
-
-    The check() function will be called whenever a generic Object wrapper is implicitly
-    converted to this type.  It should return true if and only if the object has a
-    compatible type, and it will never be passed a null pointer.  If it returns false,
-    a TypeError will be raised during the assignment.
-
-    Also included are generic copy and move constructors that work with any object type
-    that is like this one.  It depends on each type implementing the `like` trait
-    before invoking this macro.
-
-    Lastly, a generic assignment operator is provided that triggers implicit
-    conversions to this type for any inputs that support them.  This is especially
-    nice for initializer-list syntax, enabling containers to be assigned to like this:
-
-        py::List list = {1, 2, 3, 4, 5};
-        list = {5, 4, 3, 2, 1};
-    */
-    #define BERTRAND_OBJECT_COMMON(parent, cls, comptime_check, runtime_check)          \
-        /* Implement check() for compile-time C++ types. */                             \
-        template <typename T>                                                           \
-        static consteval bool check() { return comptime_check<T>; }                     \
-                                                                                        \
-        /* Implement check() for runtime C++ values. */                                 \
-        template <typename T> requires (!impl::python_like<T>)                          \
-        static consteval bool check(const T&) {                                         \
-            return check<T>();                                                          \
-        }                                                                               \
-                                                                                        \
-        /* Implement check() for runtime Python values. */                              \
-        template <typename T> requires (impl::python_like<T>)                           \
-        static bool check(const T& obj) {                                               \
-            return obj.ptr() != nullptr && runtime_check(obj.ptr());                    \
-        }                                                                               \
-                                                                                        \
-        /* pybind11 expects check_ internally, but the idea is the same. */             \
-        template <typename T> requires (impl::python_like<T>)                           \
-        static constexpr bool check_(const T& value) { return check(value); }           \
-        template <typename T> requires (!impl::python_like<T>)                          \
-        static constexpr bool check_(const T& value) { return check(value); }           \
-                                                                                        \
-        /* Inherit tagged borrow/steal constructors. */                                 \
-        cls(Handle h, const borrowed_t& t) : parent(h, t) {}                            \
-        cls(Handle h, const stolen_t& t) : parent(h, t) {}                              \
-                                                                                        \
-        /* Convert a pybind11 accessor into this type. */                               \
-        template <typename Policy>                                                      \
-        cls(const detail::accessor<Policy>& accessor) {                                 \
-            pybind11::object obj(accessor);                                             \
-            if (check(obj)) {                                                           \
-                m_ptr = obj.release().ptr();                                            \
-            } else {                                                                    \
-                throw impl::noconvert<cls>(obj.ptr());                                  \
-            }                                                                           \
-        }                                                                               \
-                                                                                        \
-        /* Trigger implicit conversions to this type via the assignment operator. */    \
-        template <typename T> requires (std::is_convertible_v<T, cls>)                  \
-        cls& operator=(T&& value) {                                                     \
-            if constexpr (std::is_same_v<cls, std::decay_t<T>>) {                       \
-                if (this != &value) {                                                   \
-                    parent::operator=(std::forward<T>(value));                          \
-                }                                                                       \
-            } else if constexpr (impl::has_conversion_operator<std::decay_t<T>, cls>) { \
-                parent::operator=(value.operator cls());                                \
-            } else {                                                                    \
-                parent::operator=(cls(std::forward<T>(value)));                         \
-            }                                                                           \
-            return *this;                                                               \
-        }                                                                               \
-                                                                                        \
-        /* Convert to a pybind11 handle. */                                             \
-        inline operator pybind11::handle() const {                                      \
-            return pybind11::handle(m_ptr);                                             \
-        }                                                                               \
-                                                                                        \
-        /* Convert to a pybind11 object. */                                             \
-        inline operator pybind11::object() const {                                      \
-            return pybind11::reinterpret_borrow<pybind11::object>(m_ptr);               \
-        }                                                                               \
-                                                                                        \
-        /* Delete type narrowing operator inherited from Object. */                     \
-        template <typename T> requires (std::is_base_of_v<Object, T>)                   \
-        operator T() const = delete;                                                    \
 
     /* Base class for all accessor proxies.  Stores an arbitrary object in a buffer and
     forwards its interface using pointer semantics. */
@@ -3249,8 +3261,13 @@ namespace impl {
 
     private:
 
-        Wrapped& deref() { return static_cast<Derived&>(*this).value(); }
-        const Wrapped& deref() const { return static_cast<const Derived&>(*this).value(); }
+        Wrapped& get_value() {
+            return static_cast<Derived&>(*this).value();
+        }
+
+        const Wrapped& get_value() const {
+            return static_cast<const Derived&>(*this).value();
+        }
 
     public:
 
@@ -3381,39 +3398,39 @@ namespace impl {
         ////////////////////////////////////
 
         inline auto operator*() {
-            return *deref();
+            return *get_value();
         }
 
         // all attributes of wrapped type are forwarded using the arrow operator.  Just
         // replace all instances of `.` with `->`
         inline Wrapped* operator->() {
-            return &deref();
+            return &get_value();
         };
 
         inline const Wrapped* operator->() const {
-            return &deref();
+            return &get_value();
         };
 
         // TODO: make sure that converting proxy to wrapped object does not create a copy.
         // -> This matters when modifying kwonly defaults in func.h
 
         inline operator Wrapped&() {
-            return deref();
+            return get_value();
         }
 
         inline operator const Wrapped&() const {
-            return deref();
+            return get_value();
         }
 
         template <typename T>
             requires (!std::is_same_v<T, Wrapped> && std::is_convertible_v<Wrapped, T>)
         inline operator T() const {
-            return implicit_cast<T>(deref());
+            return implicit_cast<T>(get_value());
         }
 
         template <typename T> requires (!std::is_convertible_v<Wrapped, T>)
         inline explicit operator T() const {
-            return static_cast<T>(deref());
+            return static_cast<T>(get_value());
         }
 
         /////////////////////////
@@ -3422,46 +3439,52 @@ namespace impl {
 
         template <typename... Args>
         inline auto operator()(Args&&... args) const {
-            return deref()(std::forward<Args>(args)...);
+            return get_value()(std::forward<Args>(args)...);
         }
 
         template <typename T>
         inline auto operator[](T&& key) const {
-            return deref()[std::forward<T>(key)];
+            return get_value()[std::forward<T>(key)];
         }
 
         template <typename T = Wrapped> requires (impl::__getitem__<T, Slice>::enable)
         inline auto operator[](std::initializer_list<impl::SliceInitializer> slice) const;
 
         template <typename T>
-        inline auto contains(const T& key) const { return deref().contains(key); }
-        inline auto size() const { return deref().size(); }
-        inline auto begin() const { return deref().begin(); }
-        inline auto end() const { return deref().end(); }
-        inline auto rbegin() const { return deref().rbegin(); }
-        inline auto rend() const { return deref().rend(); }
+        inline auto contains(const T& key) const { return get_value().contains(key); }
+        inline auto size() const { return get_value().size(); }
+        inline auto begin() const { return get_value().begin(); }
+        inline auto end() const { return get_value().end(); }
+        inline auto rbegin() const { return get_value().rbegin(); }
+        inline auto rend() const { return get_value().rend(); }
 
     };
 
-    // TODO: add an attribute name for strong typing.
-    // NOTE: there has to be a generic and a templated version of this to account for
-    // runtime vs compile-time attribute naming.  Maybe .attr() is only used for
-    // compile-time names, and getattr() is only used for attributes whose names may be
-    // determined at runtime.
-    // -> There still has to be a distinction between runtime names and compile-time
-    // ones.  Perhaps Attr<Obj, name> vs GenericAttr<Obj>?  Maybe I can unify them but
-    // reserve the empty string for dynamic attributes?  Separating them allows me to
-    // explicitly disallow empty strings in the compile-time version, which is a good
-    // thing.
-
     /* A subclass of Proxy that replaces the result of pybind11's `.attr()` method.
-    This does not (and can not) enforce any strict typing rules, but it brings the
-    syntax more in line with the rest of bertrand's other operator overloads. */
-    template <typename Obj>
-    class AttrProxy : public Proxy<Obj, AttrProxy<Obj>> {
-        using Base = Proxy<Obj, AttrProxy>;
+    These attributes accept the attribute name as a compile-time template parameter,
+    allowing them to enforce strict type safety through the __getattr__, __setattr__,
+    and __delattr__ control structs.  If no specialization of these control structs
+    exist for a given attribute name, then attempting to access it will result in a
+    compile-time error. */
+    template <typename Obj, StaticStr name> requires (__getattr__<Obj, name>::enable)
+    class Attr : public Proxy<typename __getattr__<Obj, name>::Return, Attr<Obj, name>> {
+    public:
+        using Wrapped = typename __getattr__<Obj, name>::Return;
+        static_assert(
+            std::is_base_of_v<Object, Wrapped>,
+            "Attribute accessor must return a py::Object subclass.  Check your "
+            "specialization of __getattr__ for this type and ensure the Return type is "
+            "set to a subclass of py::Object."
+        );
+
+    private:
+        using Base = Proxy<Wrapped, Attr>;
         Object obj;
-        Object key;
+
+        inline static const pybind11::str key() {
+            static const pybind11::str result = static_cast<std::string>(name);
+            return result;
+        }
 
         void get_attr() const {
             if (obj.ptr() == nullptr) {
@@ -3470,69 +3493,19 @@ namespace impl {
                     "accessor was moved from or not properly constructed to begin with."
                 );
             }
-            PyObject* result = PyObject_GetAttr(obj.ptr(), key.ptr());
+            PyObject* result = PyObject_GetAttr(obj.ptr(), key().ptr());
             if (result == nullptr) {
                 throw error_already_set();
             }
-            new (Base::buffer) Obj(reinterpret_steal<Obj>(result));
+            new (Base::buffer) Wrapped(reinterpret_steal<Wrapped>(result));
             Base::initialized = true;
         }
 
     public:
 
-        template <typename T> requires (str_like<T> && python_like<T>)
-        explicit AttrProxy(const Object& obj, T&& key) :
-            obj(obj), key(std::forward<T>(key))
-        {}
-
-        template <size_t N>
-        explicit AttrProxy(const Object& obj, const char(&key)[N]) :
-            obj(obj), key(reinterpret_steal<Object>(
-                PyUnicode_FromStringAndSize(key, N - 1))
-            )
-        {
-            if (this->key.ptr() == nullptr) {
-                throw error_already_set();
-            }
-        }
-
-        template <typename T> requires (std::is_convertible_v<T, const char*>)
-        explicit AttrProxy(const Object& obj, const T& key) :
-            obj(obj), key(reinterpret_steal<Object>(PyUnicode_FromString(key)))
-        {
-            if (this->key.ptr() == nullptr) {
-                throw error_already_set();
-            }
-        }
-
-        explicit AttrProxy(const Object& obj, const std::string& key) :
-            obj(obj), key(reinterpret_steal<Object>(
-                PyUnicode_FromStringAndSize(key.c_str(), key.size())
-            ))
-        {
-            if (this->key.ptr() == nullptr) {
-                throw error_already_set();
-            }
-        }
-
-        explicit AttrProxy(const Object& obj, const std::string_view& key) :
-            obj(obj), key(reinterpret_steal<Object>(
-                PyUnicode_FromStringAndSize(key.data(), key.size())
-            ))
-        {
-            if (this->key.ptr() == nullptr) {
-                throw error_already_set();
-            }
-        }
-
-        AttrProxy(const AttrProxy& other) :
-            Base(other), obj(other.obj), key(other.key)
-        {}
-
-        AttrProxy(AttrProxy&& other) :
-            Base(std::move(other)), obj(std::move(other.obj)),
-            key(std::move(other.key))
-        {}
+        explicit Attr(const Object& obj) : obj(obj) {}
+        Attr(const Attr& other) : Base(other), obj(other.obj) {}
+        Attr(Attr&& other) : Base(std::move(other)), obj(std::move(other.obj)) {}
 
         /* pybind11's attribute accessors only perform the lookup when the accessor is
          * converted to a value, which we hook to provide string type safety.  In this
@@ -3556,18 +3529,18 @@ namespace impl {
          *      py::Int i = reinterpret_steal<py::Int>(obj.attr<"some_int">().release());
          */
 
-        inline Obj& value() {
+        inline Wrapped& value() {
             if (!Base::initialized) {
                 get_attr();
             }
-            return reinterpret_cast<Obj&>(Base::buffer);
+            return reinterpret_cast<Wrapped&>(Base::buffer);
         }
 
-        inline const Obj& value() const {
+        inline const Wrapped& value() const {
             if (!Base::initialized) {
                 get_attr();
             }
-            return reinterpret_cast<Obj&>(Base::buffer);
+            return reinterpret_cast<Wrapped&>(Base::buffer);
         }
 
         /* Similarly, assigning to a pybind11 wrapper corresponds to a Python
@@ -3579,23 +3552,28 @@ namespace impl {
          *      obj.attr<"some_int">() = 5;  // valid: translates to Python.
          */
 
-        template <typename T> requires (!proxy_like<std::decay_t<T>>)
-        inline AttrProxy& operator=(T&& value) {
-            new (Base::buffer) Obj(std::forward<T>(value));
-            Base::initialized = true;
-            if (PyObject_SetAttr(
-                obj.ptr(),
-                key.ptr(),
-                reinterpret_cast<Obj&>(Base::buffer).ptr()
-            ) < 0) {
-                throw error_already_set();
+        template <typename T> requires (__setattr__<Obj, name, std::remove_cvref_t<T>>::enable)
+        inline Attr& operator=(T&& value) {
+            using Return = typename __setattr__<Obj, name, std::remove_cvref_t<T>>::Return;
+            static_assert(
+                std::is_void_v<Return>,
+                "attribute assignment operator must return void.  Check your "
+                "specialization of __setattr__ for these types and ensure the Return "
+                "type is set to void."
+            );
+            if constexpr (proxy_like<T>) {
+                *this = value.value();
+            } else {
+                new (Base::buffer) Wrapped(std::forward<T>(value));
+                Base::initialized = true;
+                if (PyObject_SetAttr(
+                    obj.ptr(),
+                    key().ptr(),
+                    reinterpret_cast<Wrapped&>(Base::buffer).ptr()
+                ) < 0) {
+                    throw error_already_set();
+                }
             }
-            return *this;
-        }
-
-        template <typename T> requires (proxy_like<std::decay_t<T>>)
-        inline AttrProxy& operator=(T&& value) {
-            operator=(value.value());
             return *this;
         }
 
@@ -3607,12 +3585,20 @@ namespace impl {
          *      obj.attr<"some_int">().del();  // Equivalent to Python `del obj.some_int`
          */
 
+        template <typename T = Obj> requires (__delattr__<T, name>::enable) 
         inline void del() {
-            if (PyObject_DelAttr(obj.ptr(), key.ptr()) < 0) {
+            using Return = typename __delattr__<T, name>::Return;
+            static_assert(
+                std::is_void_v<Return>,
+                "attribute deletion operator must return void.  Check your "
+                "specialization of __delattr__ for these types and ensure the Return "
+                "type is set to void."
+            );
+            if (PyObject_DelAttr(obj.ptr(), key().ptr()) < 0) {
                 throw error_already_set();
             }
             if (Base::initialized) {
-                reinterpret_cast<Obj&>(Base::buffer).~Obj();
+                reinterpret_cast<Wrapped&>(Base::buffer).~Wrapped();
                 Base::initialized = false;
             }
         }
@@ -3733,9 +3719,7 @@ namespace impl {
     to selectively enable/disable these operations for particular types, and to assign
     a corresponding return type to which the proxy can be converted. */
     template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
-    class Item :
-        public Proxy<typename __getitem__<Obj, Key>::Return, Item<Obj, Key>>
-    {
+    class Item : public Proxy<typename __getitem__<Obj, Key>::Return, Item<Obj, Key>> {
     public:
         using Wrapped = typename __getitem__<Obj, Key>::Return;
         static_assert(
@@ -3810,23 +3794,22 @@ namespace impl {
          *      list[{1, 3}] = 5;  // compile error, int is not list-like
          */
 
-        template <typename T> requires (__setitem__<Obj, Key, T>::enable && !proxy_like<T>)
+        template <typename T> requires (__setitem__<Obj, Key, std::remove_cvref_t<T>>::enable)
         inline Item& operator=(T&& value) {
+            using Return = typename __setitem__<Obj, Key, std::remove_cvref_t<T>>::Return;
             static_assert(
-                std::is_void_v<typename __setitem__<Obj, Key, T>::Return>,
+                std::is_void_v<Return>,
                 "index assignment operator must return void.  Check your "
                 "specialization of __setitem__ for these types and ensure the Return "
                 "type is set to void."
             );
-            new (Base::buffer) Wrapped(std::forward<T>(value));
-            Base::initialized = true;
-            policy.set(reinterpret_cast<Wrapped&>(Base::buffer).ptr());
-            return *this;
-        }
-
-        template <typename T> requires (proxy_like<T>)
-        inline Item& operator=(T&& value) {
-            operator=(value.value());
+            if constexpr (proxy_like<T>) {
+                *this = value.value();
+            } else {
+                new (Base::buffer) Wrapped(std::forward<T>(value));
+                Base::initialized = true;
+                policy.set(reinterpret_cast<Wrapped&>(Base::buffer).ptr());
+            }
             return *this;
         }
 
@@ -3849,10 +3832,11 @@ namespace impl {
          * be deleted from the container.
          */
 
-        template <typename T = Key> requires (__delitem__<Obj, T>::enable)
+        template <typename T = Obj> requires (__delitem__<T, Key>::enable)
         inline void del() {
+            using Return = typename __delitem__<T, Key>::Return;
             static_assert(
-                std::is_void_v<typename __delitem__<Obj, T>::Return>,
+                std::is_void_v<Return>,
                 "index deletion operator must return void.  Check your specialization "
                 "of __delitem__ for these types and ensure the Return type is set to "
                 "void."
@@ -4559,6 +4543,7 @@ namespace impl {
         template <typename T>
             requires (
                 impl::int_like<std::decay_t<T>> ||
+                std::is_same_v<std::decay_t<T>, std::nullopt_t> ||
                 std::is_same_v<std::decay_t<T>, NoneType>
             )
         SliceInitializer(T&& value) : Initializer(std::forward<T>(value)) {}
@@ -5020,10 +5005,9 @@ public:
 ////////////////////////////////////
 
 
-template <bertrand::StaticStr key>
-inline impl::AttrProxy<Object> Object::attr() const {
-    static const pybind11::str lookup = static_cast<std::string>(key);
-    return impl::AttrProxy<Object>(*this, lookup);
+template <bertrand::StaticStr name>
+inline impl::Attr<Object, name> Object::attr() const {
+    return impl::Attr<Object, name>(*this);
 }
 
 
@@ -5038,15 +5022,7 @@ inline impl::Item<T, Slice> Object::operator_getitem(
     const T& obj,
     std::initializer_list<impl::SliceInitializer> slice
 ) {
-    if (slice.size() > 3) {
-        throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
-    }
-    std::array<Object, 3> params {None, None, None};
-    size_t i = 0;
-    for (const impl::SliceInitializer& item : slice) {
-        params[i++] = item.first;
-    }
-    return impl::Item<T, Slice>(obj, Slice(params[0], params[1], params[2]));
+    return impl::Item<T, Slice>(obj, Slice(slice));
 }
 
 
@@ -5083,7 +5059,7 @@ template <typename T> requires (impl::__getitem__<T, Slice>::enable)
 inline auto impl::Proxy<Obj, Wrapped>::operator[](
     std::initializer_list<impl::SliceInitializer> slice
 ) const {
-    return deref()[slice];
+    return get_value()[slice];
 }
 
 

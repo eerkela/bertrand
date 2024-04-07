@@ -17,13 +17,19 @@ namespace py {
 namespace impl {
 
 template <typename... Args>
-struct __call__<Type, Args...>                                  : Returns<Object> {};
+struct __call__<Type, Args...>                              : Returns<Object> {};
 template <typename T>
-struct __getitem__<Type, T>                                     : Returns<Object> {};
+struct __getitem__<Type, T>                                 : Returns<Object> {};
 template <>
-struct __hash__<Type>                                           : Returns<size_t> {};
+struct __hash__<Type>                                       : Returns<size_t> {};
 template <typename T>
-struct __or__<Type, T>                                          : Returns<Object> {};
+struct __or__<Type, T>                                      : Returns<Object> {};
+template <StaticStr name>
+struct __getattr__<Type, name>                              : Returns<Object> {};
+template <StaticStr name, typename Value>
+struct __setattr__<Type, name, Value>                       : Returns<void> {};
+template <StaticStr name>
+struct __delattr__<Type, name>                              : Returns<void> {};
 
 template <typename ... Args>
 struct __call__<Super, Args...>                             : Returns<Object> {};
@@ -129,6 +135,12 @@ template <typename T>
 struct __ior__<Super, T>                                    : Returns<Object> {};
 template <typename T>
 struct __ixor__<Super, T>                                   : Returns<Object> {};
+template <StaticStr name>
+struct __getattr__<Super, name>                             : Returns<Object> {};
+template <StaticStr name, typename Value>
+struct __setattr__<Super, name, Value>                      : Returns<void> {};
+template <StaticStr name>
+struct __delattr__<Super, name>                             : Returns<void> {};
 
 }
 

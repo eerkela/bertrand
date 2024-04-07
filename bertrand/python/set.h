@@ -14,8 +14,10 @@ namespace py {
 
 namespace impl {
 
+    struct ISetTag {};
+
     template <typename Derived>
-    class ISet : public Object {
+    class ISet : public Object, public ISetTag {
         using Base = Object;
 
         inline Derived* self() { return static_cast<Derived*>(this); }
@@ -70,20 +72,7 @@ namespace impl {
 
         /* Equivalent to Python `set.isdisjoint(other)`. */
         template <impl::is_iterable T>
-        inline bool isdisjoint(const T& other) const {
-            if constexpr (impl::python_like<T>) {
-                return static_cast<bool>(
-                    self()->template attr<"isdisjoint">()(other)
-                );
-            } else {
-                for (auto&& item : other) {
-                    if (contains(std::forward<decltype(item)>(item))) {
-                        return false;
-                    }
-                }
-                return true;
-            }
-        }
+        inline bool isdisjoint(const T& other) const;
 
         /* Equivalent to Python `set.isdisjoint(other)`, where other is given as a
         braced initializer list. */
@@ -100,38 +89,17 @@ namespace impl {
 
         /* Equivalent to Python `set.issubset(other)`. */
         template <impl::is_iterable T>
-        inline bool issubset(const T& other) const {
-            return static_cast<bool>(self()->template attr<"issubset">()(
-                detail::object_or_cast(other)
-            ));
-        }
+        inline bool issubset(const T& other) const;
 
         /* Equivalent to Python `set.issubset(other)`, where other is given as a
         braced initializer list. */
         inline bool issubset(
             const std::initializer_list<impl::HashInitializer>& other
-        ) const {
-            return static_cast<bool>(
-                self()->template attr<"issubset">()(Derived(other))
-            );
-        }
+        ) const;
 
         /* Equivalent to Python `set.issuperset(other)`. */
         template <impl::is_iterable T>
-        inline bool issuperset(const T& other) const {
-            if constexpr (impl::python_like<T>) {
-                return static_cast<bool>(
-                    self()->template attr<"issuperset">()(other)
-                );
-            } else {
-                for (auto&& item : other) {
-                    if (!contains(std::forward<decltype(item)>(item))) {
-                        return false;
-                    }
-                }
-                return true;
-            }
-        }
+        inline bool issuperset(const T& other) const;
 
         /* Equivalent to Python `set.issuperset(other)`, where other is given as a
         braced initializer list. */
@@ -148,11 +116,7 @@ namespace impl {
 
         /* Equivalent to Python `set.union(*others)`. */
         template <impl::is_iterable... Args>
-        inline Derived union_(const Args&... others) const {
-            return self()->template attr<"union">()(
-                detail::object_or_cast(std::forward<Args>(others))...
-            );
-        }
+        inline Derived union_(const Args&... others) const;
 
         /* Equivalent to Python `set.union(other)`, where other is given as a braced
         initializer list. */
@@ -176,11 +140,7 @@ namespace impl {
 
         /* Equivalent to Python `set.intersection(other)`. */
         template <impl::is_iterable... Args>
-        inline Derived intersection(const Args&... others) const {
-            return self()->template attr<"intersection">()(
-                detail::object_or_cast(std::forward<Args>(others))...
-            );
-        }
+        inline Derived intersection(const Args&... others) const;
 
         /* Equivalent to Python `set.intersection(other)`, where other is given as a
         braced initializer list. */
@@ -208,11 +168,7 @@ namespace impl {
 
         /* Equivalent to Python `set.difference(other)`. */
         template <impl::is_iterable... Args>
-        inline Derived difference(const Args&... others) const {
-            return self()->template attr<"difference">()(
-                detail::object_or_cast(std::forward<Args>(others))...
-            );
-        }
+        inline Derived difference(const Args&... others) const;
 
         /* Equivalent to Python `set.difference(other)`, where other is given as a
         braced initializer list. */
@@ -238,11 +194,7 @@ namespace impl {
 
         /* Equivalent to Python `set.symmetric_difference(other)`. */
         template <impl::is_iterable T>
-        inline Derived symmetric_difference(const T& other) const {
-            return self()->template attr<"symmetric_difference">()(
-                detail::object_or_cast(other)
-            );
-        }
+        inline Derived symmetric_difference(const T& other) const;
 
         /* Equivalent to Python `set.symmetric_difference(other)`, where other is given
         as a braced initializer list. */
@@ -276,6 +228,34 @@ namespace impl {
         ////    OPERATORS    ////
         /////////////////////////
 
+        inline friend Derived operator|(
+            const ISet& self,
+            const std::initializer_list<impl::HashInitializer>& other
+        ) {
+            return self.union_(other);
+        }
+
+        inline friend Derived operator&(
+            const ISet& self,
+            const std::initializer_list<impl::HashInitializer>& other
+        ) {
+            return self.intersection(other);
+        }
+
+        inline friend Derived operator-(
+            const ISet& self,
+            const std::initializer_list<impl::HashInitializer>& other
+        ) {
+            return self.difference(other);
+        }
+
+        inline friend Derived operator^(
+            const ISet& self,
+            const std::initializer_list<impl::HashInitializer>& other
+        ) {
+            return self.symmetric_difference(other);
+        }
+
     protected:
 
         template <typename Return, typename T>
@@ -297,159 +277,106 @@ namespace impl {
 
     };
 
-template <>
-struct __len__<FrozenSet>                                       : Returns<size_t> {};
-template <>
-struct __hash__<FrozenSet>                                      : Returns<size_t> {};
-template <>
-struct __iter__<FrozenSet>                                      : Returns<Object> {};
-template <>
-struct __reversed__<FrozenSet>                                  : Returns<Object> {};
-template <is_hashable T>
-struct __contains__<FrozenSet, T>                               : Returns<bool> {};
-template <>
-struct __lt__<FrozenSet, Object>                                : Returns<bool> {};
-template <anyset_like T>
-struct __lt__<FrozenSet, T>                                     : Returns<bool> {};
-template <>
-struct __le__<FrozenSet, Object>                                : Returns<bool> {};
-template <anyset_like T>
-struct __le__<FrozenSet, T>                                     : Returns<bool> {};
-template <>
-struct __ge__<FrozenSet, Object>                                : Returns<bool> {};
-template <anyset_like T>
-struct __ge__<FrozenSet, T>                                     : Returns<bool> {};
-template <>
-struct __gt__<FrozenSet, Object>                                : Returns<bool> {};
-template <anyset_like T>
-struct __gt__<FrozenSet, T>                                     : Returns<bool> {};
-template <>
-struct __or__<FrozenSet, Object>                                : Returns<FrozenSet> {};
-template <anyset_like T>
-struct __or__<FrozenSet, T>                                     : Returns<FrozenSet> {};
-template <>
-struct __and__<FrozenSet, Object>                               : Returns<FrozenSet> {};
-template <anyset_like T>
-struct __and__<FrozenSet, T>                                    : Returns<FrozenSet> {};
-template <>
-struct __sub__<FrozenSet, Object>                               : Returns<FrozenSet> {};
-template <anyset_like T>
-struct __sub__<FrozenSet, T>                                    : Returns<FrozenSet> {};
-template <>
-struct __xor__<FrozenSet, Object>                               : Returns<FrozenSet> {};
-template <anyset_like T>
-struct __xor__<FrozenSet, T>                                    : Returns<FrozenSet> {};
-template <>
-struct __ior__<FrozenSet, Object>                               : Returns<FrozenSet&> {};
-template <anyset_like T>
-struct __ior__<FrozenSet, T>                                    : Returns<FrozenSet&> {};
-template <>
-struct __iand__<FrozenSet, Object>                              : Returns<FrozenSet&> {};
-template <anyset_like T>
-struct __iand__<FrozenSet, T>                                   : Returns<FrozenSet&> {};
-template <>
-struct __isub__<FrozenSet, Object>                              : Returns<FrozenSet&> {};
-template <anyset_like T>
-struct __isub__<FrozenSet, T>                                   : Returns<FrozenSet&> {};
-template <>
-struct __ixor__<FrozenSet, Object>                              : Returns<FrozenSet&> {};
-template <anyset_like T>
-struct __ixor__<FrozenSet, T>                                   : Returns<FrozenSet&> {};
+    template <typename T>
+    concept iset = std::is_base_of_v<ISetTag, T>;
 
-template <>
-struct __len__<Set>                                             : Returns<size_t> {};
-template <>
-struct __iter__<Set>                                            : Returns<Object> {};
-template <>
-struct __reversed__<Set>                                        : Returns<Object> {};
-template <is_hashable T>
-struct __contains__<Set, T>                                     : Returns<bool> {};
-template <>
-struct __lt__<Set, Object>                                      : Returns<bool> {};
-template <anyset_like T>
-struct __lt__<Set, T>                                           : Returns<bool> {};
-template <>
-struct __le__<Set, Object>                                      : Returns<bool> {};
-template <anyset_like T>
-struct __le__<Set, T>                                           : Returns<bool> {};
-template <>
-struct __ge__<Set, Object>                                      : Returns<bool> {};
-template <anyset_like T>
-struct __ge__<Set, T>                                           : Returns<bool> {};
-template <>
-struct __gt__<Set, Object>                                      : Returns<bool> {};
-template <anyset_like T>
-struct __gt__<Set, T>                                           : Returns<bool> {};
-template <>
-struct __or__<Set, Object>                                      : Returns<Set> {};
-template <anyset_like T>
-struct __or__<Set, T>                                           : Returns<Set> {};
-template <>
-struct __and__<Set, Object>                                     : Returns<Set> {};
-template <anyset_like T>
-struct __and__<Set, T>                                          : Returns<Set> {};
-template <>
-struct __sub__<Set, Object>                                     : Returns<Set> {};
-template <anyset_like T>
-struct __sub__<Set, T>                                          : Returns<Set> {};
-template <>
-struct __xor__<Set, Object>                                     : Returns<Set> {};
-template <anyset_like T>
-struct __xor__<Set, T>                                          : Returns<Set> {};
-template <>
-struct __ior__<Set, Object>                                     : Returns<Set&> {};
-template <anyset_like T>
-struct __ior__<Set, T>                                          : Returns<Set&> {};
-template <>
-struct __iand__<Set, Object>                                    : Returns<Set&> {};
-template <anyset_like T>
-struct __iand__<Set, T>                                         : Returns<Set&> {};
-template <>
-struct __isub__<Set, Object>                                    : Returns<Set&> {};
-template <anyset_like T>
-struct __isub__<Set, T>                                         : Returns<Set&> {};
-template <>
-struct __ixor__<Set, Object>                                    : Returns<Set&> {};
-template <anyset_like T>
-struct __ixor__<Set, T>                                         : Returns<Set&> {};
+    template <iset T>
+    struct __len__<T>                                           : Returns<size_t> {};
+    template <>
+    struct __hash__<FrozenSet>                                  : Returns<size_t> {};
+    template <iset T>
+    struct __iter__<T>                                          : Returns<Object> {};
+    template <iset T>
+    struct __reversed__<T>                                      : Returns<Object> {};
+    template <iset T, is_hashable Key>
+    struct __contains__<T, Key>                                 : Returns<bool> {};
+    template <iset L>
+    struct __lt__<L, Object>                                    : Returns<bool> {};
+    template <iset L, anyset_like R>
+    struct __lt__<L, R>                                         : Returns<bool> {};
+    template <iset L>
+    struct __le__<L, Object>                                    : Returns<bool> {};
+    template <iset L, anyset_like R>
+    struct __le__<L, R>                                         : Returns<bool> {};
+    template <iset L>
+    struct __ge__<L, Object>                                    : Returns<bool> {};
+    template <iset L, anyset_like R>
+    struct __ge__<L, R>                                         : Returns<bool> {};
+    template <iset L>
+    struct __gt__<L, Object>                                    : Returns<bool> {};
+    template <iset L, anyset_like R>
+    struct __gt__<L, R>                                         : Returns<bool> {};
+    template <iset L>
+    struct __or__<L, Object>                                    : Returns<L> {};
+    template <iset L, anyset_like R>
+    struct __or__<L, R>                                         : Returns<L> {};
+    template <iset L>
+    struct __ior__<L, Object>                                   : Returns<L&> {};
+    template <iset L, anyset_like R>
+    struct __ior__<L, R>                                        : Returns<L&> {};
+    template <iset L>
+    struct __and__<L, Object>                                   : Returns<L> {};
+    template <iset L, anyset_like R>
+    struct __and__<L, R>                                        : Returns<L> {};
+    template <iset L>
+    struct __iand__<L, Object>                                  : Returns<L&> {};
+    template <iset L, anyset_like R>
+    struct __iand__<L, R>                                       : Returns<L&> {};
+    template <iset L>
+    struct __sub__<L, Object>                                   : Returns<L> {};
+    template <iset L, anyset_like R>
+    struct __sub__<L, R>                                        : Returns<L> {};
+    template <iset L>
+    struct __isub__<L, Object>                                  : Returns<L&> {};
+    template <iset L, anyset_like R>
+    struct __isub__<L, R>                                       : Returns<L&> {};
+    template <iset L>
+    struct __xor__<L, Object>                                   : Returns<L> {};
+    template <iset L, anyset_like R>
+    struct __xor__<L, R>                                        : Returns<L> {};
+    template <iset L>
+    struct __ixor__<L, Object>                                  : Returns<L&> {};
+    template <iset L, anyset_like R>
+    struct __ixor__<L, R>                                       : Returns<L&> {};
+
+    template <iset T>
+    struct __getattr__<T, "copy">                               : Returns<Function> {};
+    template <iset T>
+    struct __getattr__<T, "isdisjoint">                         : Returns<Function> {};
+    template <iset T>
+    struct __getattr__<T, "issubset">                           : Returns<Function> {};
+    template <iset T>
+    struct __getattr__<T, "issuperset">                         : Returns<Function> {};
+    template <iset T>
+    struct __getattr__<T, "union">                              : Returns<Function> {};
+    template <iset T>
+    struct __getattr__<T, "intersection">                       : Returns<Function> {};
+    template <iset T>
+    struct __getattr__<T, "difference">                         : Returns<Function> {};
+    template <iset T>
+    struct __getattr__<T, "symmetric_difference">               : Returns<Function> {};
+
+    template <typename T> requires (std::is_base_of_v<Set, T>)
+    struct __getattr__<T, "add">                                : Returns<Function> {};
+    template <typename T> requires (std::is_base_of_v<Set, T>)
+    struct __getattr__<T, "remove">                             : Returns<Function> {};
+    template <typename T> requires (std::is_base_of_v<Set, T>)
+    struct __getattr__<T, "discard">                            : Returns<Function> {};
+    template <typename T> requires (std::is_base_of_v<Set, T>)
+    struct __getattr__<T, "pop">                                : Returns<Function> {};
+    template <typename T> requires (std::is_base_of_v<Set, T>)
+    struct __getattr__<T, "clear">                              : Returns<Function> {};
+    template <typename T> requires (std::is_base_of_v<Set, T>)
+    struct __getattr__<T, "update">                             : Returns<Function> {};
+    template <typename T> requires (std::is_base_of_v<Set, T>)
+    struct __getattr__<T, "intersection_update">                : Returns<Function> {};
+    template <typename T> requires (std::is_base_of_v<Set, T>)
+    struct __getattr__<T, "difference_update">                  : Returns<Function> {};
+    template <typename T> requires (std::is_base_of_v<Set, T>)
+    struct __getattr__<T, "symmetric_difference_update">        : Returns<Function> {};
+
 
 }  // namespace impl
-
-
-template <typename Derived>
-inline Derived operator|(
-    const impl::ISet<Derived>& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    return self.union_(other);
-}
-
-
-template <typename Derived>
-inline Derived operator&(
-    const impl::ISet<Derived>& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    return self.intersection(other);
-}
-
-
-template <typename Derived>
-inline Derived operator-(
-    const impl::ISet<Derived>& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    return self.difference(other);
-}
-
-
-template <typename Derived>
-inline Derived operator^(
-    const impl::ISet<Derived>& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    return self.symmetric_difference(other);
-}
 
 
 /* Wrapper around pybind11::frozenset that allows it to be directly initialized using
@@ -588,43 +515,43 @@ public:
         return reinterpret_borrow<pybind11::frozenset>(m_ptr);
     }
 
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    inline friend FrozenSet& operator|=(
+        FrozenSet& self,
+        const std::initializer_list<impl::HashInitializer>& other
+    ) {
+        self = self.union_(other);
+        return self;
+    }
+
+    inline friend FrozenSet& operator&=(
+        FrozenSet& self,
+        const std::initializer_list<impl::HashInitializer>& other
+    ) {
+        self = self.intersection(other);
+        return self;
+    }
+
+    inline friend FrozenSet& operator-=(
+        FrozenSet& self,
+        const std::initializer_list<impl::HashInitializer>& other
+    ) {
+        self = self.difference(other);
+        return self;
+    }
+
+    inline friend FrozenSet& operator^=(
+        FrozenSet& self,
+        const std::initializer_list<impl::HashInitializer>& other
+    ) {
+        self = self.symmetric_difference(other);
+        return self;
+    }
+
 };
-
-
-inline FrozenSet& operator|=(
-    FrozenSet& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    self = self.union_(other);
-    return self;
-}
-
-
-inline FrozenSet& operator&=(
-    FrozenSet& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    self = self.intersection(other);
-    return self;
-}
-
-
-inline FrozenSet& operator-=(
-    FrozenSet& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    self = self.difference(other);
-    return self;
-}
-
-
-inline FrozenSet& operator^=(
-    FrozenSet& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    self = self.symmetric_difference(other);
-    return self;
-}
 
 
 /* Wrapper around pybind11::set that allows it to be directly initialized using
@@ -812,9 +739,7 @@ public:
 
     /* Equivalent to Python `set.update(*others)`. */
     template <impl::is_iterable... Args>
-    inline void update(const Args&... others) {
-        attr<"update">()(detail::object_or_cast(std::forward<Args>(others))...);
-    }
+    inline void update(const Args&... others);
 
     /* Equivalent to Python `set.update(<braced initializer list>)`. */
     inline void update(const std::initializer_list<impl::HashInitializer>& other) {
@@ -825,26 +750,16 @@ public:
 
     /* Equivalent to Python `set.intersection_update(*others)`. */
     template <impl::is_iterable... Args>
-    inline void intersection_update(const Args&... others) {
-        attr<"intersection_update">()(
-            detail::object_or_cast(std::forward<Args>(others))...
-        );
-    }
+    inline void intersection_update(const Args&... others);
 
     /* Equivalent to Python `set.intersection_update(<braced initializer list>)`. */
     inline void intersection_update(
         const std::initializer_list<impl::HashInitializer>& other
-    ) {
-        attr<"intersection_update">()(Set(other));
-    }
+    );
 
     /* Equivalent to Python `set.difference_update(*others)`. */
     template <impl::is_iterable... Args>
-    inline void difference_update(const Args&... others) {
-        attr<"difference_update">()(
-            detail::object_or_cast(std::forward<Args>(others))...
-        );
-    }
+    inline void difference_update(const Args&... others);
 
     /* Equivalent to Python `set.difference_update(<braced initializer list>)`. */
     inline void difference_update(
@@ -857,9 +772,7 @@ public:
 
     /* Equivalent to Python `set.symmetric_difference_update(other)`. */
     template <impl::is_iterable T>
-    inline void symmetric_difference_update(const T& other) {
-        attr<"symmetric_difference_update">()(detail::object_or_cast(other));
-    }
+    inline void symmetric_difference_update(const T& other);
 
     /* Equivalent to Python `set.symmetric_difference_update(<braced initializer list>)`. */
     inline void symmetric_difference_update(
@@ -874,43 +787,46 @@ public:
         }
     }
 
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    inline friend Set& operator|=(
+        Set& self,
+        const std::initializer_list<impl::HashInitializer>& other
+    ) {
+        self.update(other);
+        return self;
+    }
+
+
+    inline friend Set& operator&=(
+        Set& self,
+        const std::initializer_list<impl::HashInitializer>& other
+    ) {
+        self.intersection_update(other);
+        return self;
+    }
+
+
+    inline friend Set& operator-=(
+        Set& self,
+        const std::initializer_list<impl::HashInitializer>& other
+    ) {
+        self.difference_update(other);
+        return self;
+    }
+
+
+    inline friend Set& operator^=(
+        Set& self,
+        const std::initializer_list<impl::HashInitializer>& other
+    ) {
+        self.symmetric_difference_update(other);
+        return self;
+    }
+
 };
-
-
-inline Set& operator|=(
-    Set& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    self.update(other);
-    return self;
-}
-
-
-inline Set& operator&=(
-    Set& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    self.intersection_update(other);
-    return self;
-}
-
-
-inline Set& operator-=(
-    Set& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    self.difference_update(other);
-    return self;
-}
-
-
-inline Set& operator^=(
-    Set& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    self.symmetric_difference_update(other);
-    return self;
-}
 
 
 }  // namespace py

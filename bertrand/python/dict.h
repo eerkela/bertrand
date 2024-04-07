@@ -73,6 +73,11 @@ template <anyset_like T>
 struct __xor__<KeysView, T>                                 : Returns<Set> {};
 
 template <>
+struct __getattr__<KeysView, "mapping">                     : Returns<MappingProxy> {};
+template <>
+struct __getattr__<KeysView, "isdisjoint">                  : Returns<Function> {};
+
+template <>
 struct __len__<ValuesView>                                  : Returns<size_t> {};
 template <>
 struct __iter__<ValuesView>                                 : Returns<Object> {};
@@ -82,6 +87,9 @@ template <typename T>
 struct __contains__<ValuesView, T>                          : Returns<bool> {};
 
 template <>
+struct __getattr__<ValuesView, "mapping">                   : Returns<MappingProxy> {};
+
+template <>
 struct __len__<ItemsView>                                   : Returns<size_t> {};
 template <>
 struct __iter__<ItemsView>                                  : Returns<Tuple> {};
@@ -89,6 +97,9 @@ template <>
 struct __reversed__<ItemsView>                              : Returns<Tuple> {};
 template <impl::tuple_like T>
 struct __contains__<ItemsView, T>                           : Returns<bool> {};
+
+template <>
+struct __getattr__<ItemsView, "mapping">                    : Returns<MappingProxy> {};
 
 template <>
 struct __len__<Dict>                                        : Returns<size_t> {};
@@ -114,6 +125,29 @@ template <dict_like T>
 struct __ior__<Dict, T>                                     : Returns<Dict&> {};
 
 template <>
+struct __getattr__<Dict, "fromkeys">                        : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "copy">                            : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "clear">                           : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "get">                             : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "pop">                             : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "popitem">                         : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "setdefault">                      : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "update">                          : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "keys">                            : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "values">                          : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "items">                           : Returns<Function> {};
+
+template <>
 struct __len__<MappingProxy>                                : Returns<size_t> {};
 template <>
 struct __iter__<MappingProxy>                               : Returns<Object> {};
@@ -128,7 +162,18 @@ struct __or__<MappingProxy, Object>                         : Returns<Dict> {};
 template <dict_like T>
 struct __or__<MappingProxy, T>                              : Returns<Dict> {};
 
-}
+template <>
+struct __getattr__<MappingProxy, "copy">                    : Returns<Function> {};
+template <>
+struct __getattr__<MappingProxy, "get">                     : Returns<Function> {};
+template <>
+struct __getattr__<MappingProxy, "keys">                    : Returns<Function> {};
+template <>
+struct __getattr__<MappingProxy, "values">                  : Returns<Function> {};
+template <>
+struct __getattr__<MappingProxy, "items">                   : Returns<Function> {};
+
+}  // namespace impl
 
 
 /* New subclass of pybind11::object representing a view into the keys of a dictionary
@@ -162,80 +207,79 @@ public:
     KeysView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a keys view on an existing dictionary. */
-    template <typename T> requires (impl::dict_like<T> && impl::python_like<T>)
-    explicit KeysView(const T& dict) {
-        m_ptr = dict.template attr<"keys">()().release().ptr();
+    explicit KeysView(const pybind11::dict& dict) {
+        static const pybind11::str lookup = "keys";
+        m_ptr = dict.attr(lookup)().release().ptr();
     }
+
+    /* Explicitly create a keys view on an existing dictionary. */
+    explicit KeysView(const Dict& dict);
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
     /* Equivalent to Python `dict.keys().mapping`. */
-    inline impl::AttrProxy<MappingProxy> mapping() const;
+    inline MappingProxy mapping() const;
 
     /* Equivalent to Python `dict.keys().isdisjoint(other)`. */
     template <impl::is_iterable T>
-    inline bool isdisjoint(const T& other) const {
-        return static_cast<bool>(attr<"isdisjoint">()(detail::object_or_cast(other)));
-    }
+    inline bool isdisjoint(const T& other) const;
 
     /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
     inline bool isdisjoint(
         const std::initializer_list<impl::HashInitializer>& other
-    ) const {
-        return static_cast<bool>(attr<"isdisjoint">()(Set(other)));
+    ) const;
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    inline friend Set operator|(
+        const KeysView& self,
+        const std::initializer_list<impl::HashInitializer>& other
+    ) {
+        PyObject* result = PyNumber_Or(self.ptr(), Set(other).ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Set>(result);
+    }
+
+    inline friend Set operator&(
+        const KeysView& self,
+        const std::initializer_list<impl::HashInitializer>& other
+    ) {
+        PyObject* result = PyNumber_And(self.ptr(), Set(other).ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Set>(result);
+    }
+
+    inline friend Set operator-(
+        const KeysView& self,
+        const std::initializer_list<impl::HashInitializer>& other
+    ) {
+        PyObject* result = PyNumber_Subtract(self.ptr(), Set(other).ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Set>(result);
+    }
+
+    inline friend Set operator^(
+        const KeysView& self,
+        const std::initializer_list<impl::HashInitializer>& other
+    ) {
+        PyObject* result = PyNumber_Xor(self.ptr(), Set(other).ptr());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Set>(result);
     }
 
 };
-
-
-inline Set operator|(
-    const KeysView& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    PyObject* result = PyNumber_Or(self.ptr(), Set(other).ptr());
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Set>(result);
-}
-
-
-inline Set operator&(
-    const KeysView& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    PyObject* result = PyNumber_And(self.ptr(), Set(other).ptr());
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Set>(result);
-}
-
-
-inline Set operator-(
-    const KeysView& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    PyObject* result = PyNumber_Subtract(self.ptr(), Set(other).ptr());
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Set>(result);
-}
-
-
-inline Set operator^(
-    const KeysView& self,
-    const std::initializer_list<impl::HashInitializer>& other
-) {
-    PyObject* result = PyNumber_Xor(self.ptr(), Set(other).ptr());
-    if (result == nullptr) {
-        throw error_already_set();
-    }
-    return reinterpret_steal<Set>(result);
-}
 
 
 /* New subclass of pybind11::object representing a view into the values of a dictionary
@@ -269,10 +313,13 @@ public:
     ValuesView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a values view on an existing dictionary. */
-    template <typename T> requires (impl::dict_like<T> && impl::python_like<T>)
-    explicit ValuesView(const T& dict) {
-        m_ptr = dict.template attr<"values">()().release().ptr();
+    explicit ValuesView(const pybind11::dict& dict) {
+        static const pybind11::str lookup = "values";
+        m_ptr = dict.attr(lookup)().release().ptr();
     }
+
+    /* Explicitly create a values view on an existing dictionary. */
+    explicit ValuesView(const Dict& dict);
 
     ///////////////////////////////
     ////   PYTHON INTERFACE    ////
@@ -315,10 +362,13 @@ public:
     ItemsView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create an items view on an existing dictionary. */
-    template <typename T> requires (impl::dict_like<T> && impl::python_like<T>)
-    explicit ItemsView(const T& dict) {
-        m_ptr = dict.template attr<"items">()().release().ptr();
+    explicit ItemsView(const pybind11::dict& dict) {
+        static const pybind11::str lookup = "items";
+        m_ptr = dict.attr(lookup)().release().ptr();
     }
+
+    /* Explicitly create an items view on an existing dictionary. */
+    explicit ItemsView(const Dict& dict);
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
@@ -666,9 +716,7 @@ public:
     }
 
     /* Equivalent to Python `dict.popitem()`. */
-    inline Object popitem() {
-        return attr<"popitem">()();
-    }
+    inline Object popitem();
 
     /* Equivalent to Python `dict.setdefault(key)`. */
     template <impl::is_hashable K>
@@ -740,23 +788,35 @@ public:
     }
 
     /* Equivalent to Python `dict.keys()`. */
-    inline KeysView keys() const {
-        return reinterpret_steal<KeysView>(attr<"keys">()().release());
-    }
+    inline KeysView keys() const;
 
     /* Equivalent to Python `dict.values()`. */
-    inline ValuesView values() const {
-        return reinterpret_steal<ValuesView>(attr<"values">()().release());
-    }
+    inline ValuesView values() const;
 
     /* Equivalent to Python `dict.items()`. */
-    inline ItemsView items() const {
-        return reinterpret_steal<ItemsView>(attr<"items">()().release());
-    }
+    inline ItemsView items() const;
 
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
+
+    inline friend Dict operator|(
+        const Dict& self,
+        const std::initializer_list<impl::DictInitializer>& other
+    ) {
+        Dict result = self.copy();
+        result.update(other);
+        return result;
+    }
+
+
+    inline friend Dict& operator|=(
+        Dict& self,
+        const std::initializer_list<impl::DictInitializer>& other
+    ) {
+        self.update(other);
+        return self;
+    }
 
 protected:
 
@@ -778,25 +838,6 @@ protected:
     }
 
 };
-
-
-inline Dict operator|(
-    const Dict& self,
-    const std::initializer_list<impl::DictInitializer>& other
-) {
-    Dict result = self.copy();
-    result.update(other);
-    return result;
-}
-
-
-inline Dict& operator|=(
-    Dict& self,
-    const std::initializer_list<impl::DictInitializer>& other
-) {
-    self.update(other);
-    return self;
-}
 
 
 /* New subclass of pybind11::object representing a read-only proxy for a Python
@@ -838,63 +879,43 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `mappingproxy.copy()`. */
-    inline Dict copy() const {
-        return reinterpret_steal<Dict>(attr<"copy">()().release());
-    }
+    inline Dict copy() const;
 
     /* Equivalent to Python `mappingproxy.get(key)`. */
     template <impl::is_hashable K>
-    inline Object get(const K& key) const {
-        return attr<"get">()(detail::object_or_cast(key), py::None);
-    }
+    inline Object get(const K& key) const;
 
     /* Equivalent to Python `mappingproxy.get(key, default)`. */
     template <impl::is_hashable K, typename V>
-    inline Object get(const K& key, const V& default_value) const {
-        return attr<"get">()(
-            detail::object_or_cast(key),
-            detail::object_or_cast(default_value)
-        );
-    }
+    inline Object get(const K& key, const V& default_value) const;
 
     /* Equivalent to Python `mappingproxy.keys()`. */
-    inline KeysView keys() const {
-        return reinterpret_steal<KeysView>(attr<"keys">()().release());
-    }
+    inline KeysView keys() const;
 
     /* Equivalent to Python `mappingproxy.values()`. */
-    inline ValuesView values() const {
-        return reinterpret_steal<ValuesView>(attr<"values">()().release());
-    }
+    inline ValuesView values() const;
 
     /* Equivalent to Python `mappingproxy.items()`. */
-    inline ItemsView items() const {
-        return reinterpret_steal<ItemsView>(attr<"items">()().release());
+    inline ItemsView items() const;
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+    inline friend Dict operator|(
+        const MappingProxy& self,
+        const std::initializer_list<impl::DictInitializer>& other
+    ) {
+        Dict result = self.copy();
+        result |= other;
+        return result;
     }
 
 };
 
 
-inline Dict operator|(
-    const MappingProxy& self,
-    const std::initializer_list<impl::DictInitializer>& other
-) {
-    Dict result = self.copy();
-    result |= other;
-    return result;
-}
-
-
-// TODO: figure out how to return a type-safe AttrProxy here
-// -> just return the attribute directly.  The proxy's copy/move constructors should
-// be able to handle it.
-// -> same idea should apply to access policies (readable, writable, deletable), which
-// can be used to make the AttrProxy type-safe during read/write/delete operations.
-
-
-inline impl::AttrProxy<MappingProxy> KeysView::mapping() const {
-    static const pybind11::str method = "mapping";
-    return impl::AttrProxy<MappingProxy>(*this, method);
+inline MappingProxy KeysView::mapping() const {
+    return attr<"mapping">();
 }
 
 
@@ -906,10 +927,6 @@ inline MappingProxy ValuesView::mapping() const {
 inline MappingProxy ItemsView::mapping() const {
     return attr<"mapping">();
 }
-
-
-
-// impl::AttrProxy<Object, impl::get | impl::set | impl::del>
 
 
 }  // namespace py

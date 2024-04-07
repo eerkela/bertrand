@@ -102,6 +102,7 @@ void func() {
 
 static const py::Module np = py::import<"numpy">();
 static const py::Function array = np.attr<"array">();
+static const py::Type dtype = np.attr<"dtype">();
 
 
 
@@ -117,11 +118,13 @@ void run() {
     // py::print(x);
 
 
-    py::Int x = 1;
-    py::Str y = "abc";
-    py::print(x + y);
+    // py::Object x = 1;
+    // py::print(py::repr(x));
 
+    py::Object arr = array(py::List{1, 2, 3}, dtype("float16"));
+    py::print(py::repr(arr[{py::None, 2}]));
 
+    py::print(py::True);
 
 
 

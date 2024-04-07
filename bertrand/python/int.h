@@ -12,6 +12,10 @@ namespace bertrand {
 namespace py {
 
 
+// NOTE: Python ints have extra operations like as_integer_ratio, from_bytes, to_bytes,
+// etc.
+
+
 namespace impl {
 
 template <>
