@@ -16,12 +16,6 @@
 #include "type.h"
 
 
-// TODO: move callable() proxy up to start of file and have Function use it for its
-// like<> template.  Can then remove it from common.h
-// -> or place the zero-arg callable<> check in common.h and hook into it here.  That
-// would allow us to define it in python.h and decouple it here.
-
-
 namespace bertrand {
 namespace py {
 
@@ -32,129 +26,117 @@ namespace impl {
         reinterpret_cast<PyObject*>(&PyProperty_Type)
     );
 
-template <>
-struct __getattr__<Code, "co_name">                             : Returns<Str> {};
-template <>
-struct __getattr__<Code, "co_qualname">                         : Returns<Str> {};
-template <>
-struct __getattr__<Code, "co_argcount">                         : Returns<Int> {};
-template <>
-struct __getattr__<Code, "co_posonlyargcount">                  : Returns<Int> {};
-template <>
-struct __getattr__<Code, "co_kwonlyargcount">                   : Returns<Int> {};
-template <>
-struct __getattr__<Code, "co_nlocals">                          : Returns<Int> {};
-template <>
-struct __getattr__<Code, "co_varnames">                         : Returns<Tuple> {};
-template <>
-struct __getattr__<Code, "co_cellvars">                         : Returns<Tuple> {};
-template <>
-struct __getattr__<Code, "co_freevars">                         : Returns<Tuple> {};
-template <>
-struct __getattr__<Code, "co_code">                             : Returns<Bytes> {};
-template <>
-struct __getattr__<Code, "co_consts">                           : Returns<Tuple> {};
-template <>
-struct __getattr__<Code, "co_names">                            : Returns<Tuple> {};
-template <>
-struct __getattr__<Code, "co_filename">                         : Returns<Str> {};
-template <>
-struct __getattr__<Code, "co_firstlineno">                      : Returns<Int> {};
-template <>
-struct __getattr__<Code, "co_stacksize">                        : Returns<Int> {};
-template <>
-struct __getattr__<Code, "co_flags">                            : Returns<Int> {};
-template <>
-struct __getattr__<Code, "co_positions">                        : Returns<Function> {};
-template <>
-struct __getattr__<Code, "co_lines">                            : Returns<Function> {};
-template <>
-struct __getattr__<Code, "replace">                             : Returns<Function> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_name">                                : Returns<Str> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_qualname">                            : Returns<Str> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_argcount">                            : Returns<Int> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_posonlyargcount">                     : Returns<Int> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_kwonlyargcount">                      : Returns<Int> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_nlocals">                             : Returns<Int> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_varnames">                            : Returns<Tuple> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_cellvars">                            : Returns<Tuple> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_freevars">                            : Returns<Tuple> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_code">                                : Returns<Bytes> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_consts">                              : Returns<Tuple> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_names">                               : Returns<Tuple> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_filename">                            : Returns<Str> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_firstlineno">                         : Returns<Int> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_stacksize">                           : Returns<Int> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_flags">                               : Returns<Int> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_positions">                           : Returns<Function> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "co_lines">                               : Returns<Function> {};
+template <std::derived_from<Code> T>
+struct __getattr__<T, "replace">                                : Returns<Function> {};
 
-template <>
-struct __getattr__<Frame, "f_back">                             : Returns<Frame> {};
-template <>
-struct __getattr__<Frame, "f_code">                             : Returns<Code> {};
-template <>
-struct __getattr__<Frame, "f_locals">                           : Returns<Dict> {};
-template <>
-struct __getattr__<Frame, "f_globals">                          : Returns<Dict> {};
-template <>
-struct __getattr__<Frame, "f_builtins">                         : Returns<Dict> {};
-template <>
-struct __getattr__<Frame, "f_lasti">                            : Returns<Int> {};
-template <>
-struct __getattr__<Frame, "f_trace">                            : Returns<Function> {};
-template <>
-struct __setattr__<Frame, "f_trace", Function>                  : Returns<void> {};
-template <>
-struct __delattr__<Frame, "f_trace">                            : Returns<void> {};
-template <>
-struct __getattr__<Frame, "f_trace_lines">                      : Returns<Bool> {};
-template <>
-struct __setattr__<Frame, "f_trace_lines", Bool>                : Returns<void> {};
-template <>
-struct __getattr__<Frame, "f_trace_opcodes">                    : Returns<Bool> {};
-template <>
-struct __setattr__<Frame, "f_trace_opcodes", Bool>              : Returns<void> {};
-template <>
-struct __getattr__<Frame, "f_lineno">                           : Returns<Bool> {};
-template <>
-struct __setattr__<Frame, "f_lineno", Int>                      : Returns<void> {};
-template <>
-struct __getattr__<Frame, "clear">                              : Returns<Function> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_back">                                 : Returns<Frame> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_code">                                 : Returns<Code> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_locals">                               : Returns<Dict> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_globals">                              : Returns<Dict> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_builtins">                             : Returns<Dict> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_lasti">                                : Returns<Int> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_trace">                                : Returns<Function> {};
+template <std::derived_from<Frame> T>
+struct __setattr__<T, "f_trace", Function>                      : Returns<void> {};
+template <std::derived_from<Frame> T>
+struct __delattr__<T, "f_trace">                                : Returns<void> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_trace_lines">                          : Returns<Bool> {};
+template <std::derived_from<Frame> T>
+struct __setattr__<T, "f_trace_lines", Bool>                    : Returns<void> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_trace_opcodes">                        : Returns<Bool> {};
+template <std::derived_from<Frame> T>
+struct __setattr__<T, "f_trace_opcodes", Bool>                  : Returns<void> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_lineno">                               : Returns<Bool> {};
+template <std::derived_from<Frame> T>
+struct __setattr__<T, "f_lineno", Int>                          : Returns<void> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "clear">                                  : Returns<Function> {};
 
 template <typename... Args>
 struct __call__<Function, Args...>                              : Returns<Object> {};
-template <>
-struct __getattr__<Function, "__globals__">                     : Returns<Dict> {};
-template <>
-struct __getattr__<Function, "__closure__">                     : Returns<Tuple> {};
-template <>
-struct __getattr__<Function, "__doc__">                         : Returns<Str> {};
-template <>
-struct __getattr__<Function, "__name__">                        : Returns<Str> {};
-template <>
-struct __getattr__<Function, "__qualname__">                    : Returns<Str> {};
-template <>
-struct __getattr__<Function, "__module__">                      : Returns<Str> {};
-template <>
-struct __getattr__<Function, "__defaults__">                    : Returns<Tuple> {};
-template <>
-struct __getattr__<Function, "__code__">                        : Returns<Code> {};
-template <>
-struct __getattr__<Function, "__annotations__">                 : Returns<Dict> {};
-template <>
-struct __getattr__<Function, "__kwdefaults__">                  : Returns<Dict> {};
-template <>
-struct __getattr__<Function, "__type_params__">                 : Returns<Tuple> {};
-template <>
-struct __getattr__<Function, "__self__">                        : Returns<Object> {};
-template <>
-struct __getattr__<Function, "__func__">                        : Returns<Function> {};
+template <std::derived_from<Function> T>
+struct __getattr__<T, "__globals__">                            : Returns<Dict> {};
+template <std::derived_from<Function> T>
+struct __getattr__<T, "__closure__">                            : Returns<Tuple> {};
+template <std::derived_from<Function> T>
+struct __getattr__<T, "__defaults__">                           : Returns<Tuple> {};
+template <std::derived_from<Function> T>
+struct __getattr__<T, "__code__">                               : Returns<Code> {};
+template <std::derived_from<Function> T>
+struct __getattr__<T, "__annotations__">                        : Returns<Dict> {};
+template <std::derived_from<Function> T>
+struct __getattr__<T, "__kwdefaults__">                         : Returns<Dict> {};
+template <std::derived_from<Function> T>
+struct __getattr__<T, "__func__">                               : Returns<Function> {};
 
-template <>
-struct __getattr__<ClassMethod, "__func__">                     : Returns<Function> {};
-template <>
-struct __getattr__<ClassMethod, "__wrapped__">                  : Returns<Function> {};
+template <std::derived_from<ClassMethod> T>
+struct __getattr__<T, "__func__">                               : Returns<Function> {};
+template <std::derived_from<ClassMethod> T>
+struct __getattr__<T, "__wrapped__">                            : Returns<Function> {};
 
-template <>
-struct __getattr__<StaticMethod, "__func__">                    : Returns<Function> {};
-template <>
-struct __getattr__<StaticMethod, "__wrapped__">                 : Returns<Function> {};
+template <std::derived_from<StaticMethod> T>
+struct __getattr__<T, "__func__">                               : Returns<Function> {};
+template <std::derived_from<StaticMethod> T>
+struct __getattr__<T, "__wrapped__">                            : Returns<Function> {};
 
-template <>
-struct __getattr__<Property, "fget">                            : Returns<Function> {};
-template <>
-struct __getattr__<Property, "fset">                            : Returns<Function> {};
-template <>
-struct __getattr__<Property, "fdel">                            : Returns<Function> {};
-template <>
-struct __getattr__<Property, "getter">                          : Returns<Function> {};
-template <>
-struct __getattr__<Property, "setter">                          : Returns<Function> {};
-template <>
-struct __getattr__<Property, "deleter">                         : Returns<Function> {};
+template <std::derived_from<Property> T>
+struct __getattr__<T, "fget">                                   : Returns<Function> {};
+template <std::derived_from<Property> T>
+struct __getattr__<T, "fset">                                   : Returns<Function> {};
+template <std::derived_from<Property> T>
+struct __getattr__<T, "fdel">                                   : Returns<Function> {};
+template <std::derived_from<Property> T>
+struct __getattr__<T, "getter">                                 : Returns<Function> {};
+template <std::derived_from<Property> T>
+struct __getattr__<T, "setter">                                 : Returns<Function> {};
+template <std::derived_from<Property> T>
+struct __getattr__<T, "deleter">                                : Returns<Function> {};
 
 }
 

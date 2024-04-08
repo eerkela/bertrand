@@ -122,6 +122,25 @@ inline Type Property::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*
 ////////////////////////////////////
 
 
+Module Module::def_submodule(const char* name, const char* doc) {
+    const char* this_name = PyModule_GetName(m_ptr);
+    if (this_name == nullptr) {
+        throw error_already_set();
+    }
+    std::string full_name = std::string(this_name) + '.' + name;
+    Handle submodule = PyImport_AddModule(full_name.c_str());
+    if (!submodule) {
+        throw error_already_set();
+    }
+    auto result = reinterpret_borrow<Module>(submodule);
+    if (doc && pybind11::options::show_user_defined_docstrings()) {
+        result.template attr<"__doc__">() = pybind11::str(doc);
+    }
+    pybind11::setattr(*this, name, result);
+    return result;
+}
+
+
 template <typename T>
     requires (impl::python_like<T> && impl::str_like<T>)
 inline Int::Int(const T& str, int base) :

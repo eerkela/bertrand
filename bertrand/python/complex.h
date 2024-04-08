@@ -14,101 +14,98 @@ namespace py {
 
 namespace impl {
 
-template <typename T>
-concept icomplex = std::is_base_of_v<Complex, T>;
-
-template <icomplex T>
+template <std::derived_from<Complex> T>
 struct __pos__<T>                                               : Returns<Complex> {};
-template <icomplex T>
+template <std::derived_from<Complex> T>
 struct __neg__<T>                                               : Returns<Complex> {};
-template <icomplex T>
+template <std::derived_from<Complex> T>
 struct __abs__<T>                                               : Returns<Complex> {};
-template <icomplex T>
+template <std::derived_from<Complex> T>
 struct __invert__<T>                                            : Returns<Complex> {};
-template <icomplex T>
+template <std::derived_from<Complex> T>
 struct __increment__<T>                                         : Returns<Complex> {};
-template <icomplex T>
+template <std::derived_from<Complex> T>
 struct __decrement__<T>                                         : Returns<Complex> {};
-template <icomplex T>
+template <std::derived_from<Complex> T>
 struct __hash__<T>                                              : Returns<size_t> {};
-template <icomplex L>
+template <std::derived_from<Complex> L>
 struct __add__<L, Object>                                       : Returns<Object> {};
-template <icomplex L, bool_like R>
+template <std::derived_from<Complex> L, bool_like R>
 struct __add__<L, R>                                            : Returns<Complex> {};
-template <icomplex L, int_like R>
+template <std::derived_from<Complex> L, int_like R>
 struct __add__<L, R>                                            : Returns<Complex> {};
-template <icomplex L, float_like R>
+template <std::derived_from<Complex> L, float_like R>
 struct __add__<L, R>                                            : Returns<Complex> {};
-template <icomplex L, complex_like R>
+template <std::derived_from<Complex> L, complex_like R>
 struct __add__<L, R>                                            : Returns<Complex> {};
-template <icomplex L, bool_like R>
+template <std::derived_from<Complex> L, bool_like R>
 struct __iadd__<L, R>                                           : Returns<L&> {};
-template <icomplex L, int_like R>
+template <std::derived_from<Complex> L, int_like R>
 struct __iadd__<L, R>                                           : Returns<L&> {};
-template <icomplex L, float_like R>
+template <std::derived_from<Complex> L, float_like R>
 struct __iadd__<L, R>                                           : Returns<L&> {};
-template <icomplex L, complex_like R>
+template <std::derived_from<Complex> L, complex_like R>
 struct __iadd__<L, R>                                           : Returns<L&> {};
-template <icomplex L>
+template <std::derived_from<Complex> L>
 struct __sub__<L, Object>                                       : Returns<Object> {};
-template <icomplex L, bool_like R>
+template <std::derived_from<Complex> L, bool_like R>
 struct __sub__<L, R>                                            : Returns<Complex> {};
-template <icomplex L, int_like R>
+template <std::derived_from<Complex> L, int_like R>
 struct __sub__<L, R>                                            : Returns<Complex> {};
-template <icomplex L, float_like R>
+template <std::derived_from<Complex> L, float_like R>
 struct __sub__<L, R>                                            : Returns<Complex> {};
-template <icomplex L, complex_like R>
+template <std::derived_from<Complex> L, complex_like R>
 struct __sub__<L, R>                                            : Returns<Complex> {};
-template <icomplex L, bool_like R>
+template <std::derived_from<Complex> L, bool_like R>
 struct __isub__<L, R>                                           : Returns<L&> {};
-template <icomplex L, int_like R>
+template <std::derived_from<Complex> L, int_like R>
 struct __isub__<L, R>                                           : Returns<L&> {};
-template <icomplex L, float_like R>
+template <std::derived_from<Complex> L, float_like R>
 struct __isub__<L, R>                                           : Returns<L&> {};
-template <icomplex L, complex_like R>
+template <std::derived_from<Complex> L, complex_like R>
 struct __isub__<L, R>                                           : Returns<L&> {};
-template <icomplex L>
+template <std::derived_from<Complex> L>
 struct __mul__<L, Object>                                       : Returns<Object> {};
-template <icomplex L, bool_like R>
+template <std::derived_from<Complex> L, bool_like R>
 struct __mul__<L, R>                                            : Returns<Complex> {};
-template <icomplex L, int_like R>
+template <std::derived_from<Complex> L, int_like R>
 struct __mul__<L, R>                                            : Returns<Complex> {};
-template <icomplex L, float_like R>
+template <std::derived_from<Complex> L, float_like R>
 struct __mul__<L, R>                                            : Returns<Complex> {};
-template <icomplex L, complex_like R>
+template <std::derived_from<Complex> L, complex_like R>
 struct __mul__<L, R>                                            : Returns<Complex> {};
-template <icomplex L, bool_like R>
+template <std::derived_from<Complex> L, bool_like R>
 struct __imul__<L, R>                                           : Returns<L&> {};
-template <icomplex L, int_like R>
+template <std::derived_from<Complex> L, int_like R>
 struct __imul__<L, R>                                           : Returns<L&> {};
-template <icomplex L, float_like R>
+template <std::derived_from<Complex> L, float_like R>
 struct __imul__<L, R>                                           : Returns<L&> {};
-template <icomplex L, complex_like R>
+template <std::derived_from<Complex> L, complex_like R>
 struct __imul__<L, R>                                           : Returns<L&> {};
-template <icomplex L>
+template <std::derived_from<Complex> L>
 struct __truediv__<L, Object>                                   : Returns<Object> {};
-template <icomplex L, bool_like R>
+template <std::derived_from<Complex> L, bool_like R>
 struct __truediv__<L, R>                                        : Returns<Complex> {};
-template <icomplex L, int_like R>
+template <std::derived_from<Complex> L, int_like R>
 struct __truediv__<L, R>                                        : Returns<Complex> {};
-template <icomplex L, float_like R>
+template <std::derived_from<Complex> L, float_like R>
 struct __truediv__<L, R>                                        : Returns<Complex> {};
-template <icomplex L, complex_like R>
+template <std::derived_from<Complex> L, complex_like R>
 struct __truediv__<L, R>                                        : Returns<Complex> {};
-template <icomplex L, bool_like R>
+template <std::derived_from<Complex> L, bool_like R>
 struct __itruediv__<L, R>                                       : Returns<L&> {};
-template <icomplex L, int_like R>
+template <std::derived_from<Complex> L, int_like R>
 struct __itruediv__<L, R>                                       : Returns<L&> {};
-template <icomplex L, float_like R>
+template <std::derived_from<Complex> L, float_like R>
 struct __itruediv__<L, R>                                       : Returns<L&> {};
-template <icomplex L, complex_like R>
+template <std::derived_from<Complex> L, complex_like R>
 struct __itruediv__<L, R>                                       : Returns<L&> {};
 
-template <icomplex T>
+template <std::derived_from<Complex> T>
 struct __getattr__<T, "conjugate">                              : Returns<Function> {};
-template <icomplex T>
+template <std::derived_from<Complex> T>
 struct __getattr__<T, "real">                                   : Returns<Float> {};
-template <icomplex T>
+template <std::derived_from<Complex> T>
 struct __getattr__<T, "imag">                                   : Returns<Float> {};
 
 }

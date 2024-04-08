@@ -106,6 +106,19 @@ static const py::Type dtype = np.attr<"dtype">();
 
 
 
+namespace bertrand {
+namespace py {
+
+    class Foo : public Bool {
+        using Bool::Bool;
+
+    };
+
+}
+}
+
+
+
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
@@ -125,9 +138,27 @@ void run() {
     // py::print(py::repr(arr[{py::None, 2}]));
 
 
-    py::Dict d = {{"a", 1}, {"b", 2}, {"c", 3}};
-    py::KeysView keys = d.keys();
-    py::print(py::repr(keys.mapping()));
+    // py::Bool x = true;
+    // py::Bool y = false;
+    // // py::print(x < y);
+
+    py::Object a = 1;
+    py::Bool b = false;
+    py::print(b < a);
+
+    // py::print(array.attr<"__doc__">());
+
+
+
+    // for (size_t i = 0; i < 1000000; ++i) {
+    //     volatile py::Int z = x + y;
+    // }
+
+
+    // py::Foo z = true;
+    // py::print(z + y);
+
+
 
 
 

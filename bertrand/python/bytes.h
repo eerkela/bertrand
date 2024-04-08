@@ -307,7 +307,7 @@ namespace impl {
 
     template <ibytes T>
     struct __len__<T>                                           : Returns<size_t> {};
-    template <typename T> requires(std::is_base_of_v<Bytes, T>)
+    template <std::derived_from<Bytes> T>
     struct __hash__<T>                                          : Returns<size_t> {};
     template <ibytes T>
     struct __iter__<T>                                          : Returns<Int> {};

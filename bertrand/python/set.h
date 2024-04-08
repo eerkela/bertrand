@@ -356,23 +356,23 @@ namespace impl {
     template <iset T>
     struct __getattr__<T, "symmetric_difference">               : Returns<Function> {};
 
-    template <typename T> requires (std::is_base_of_v<Set, T>)
+    template <std::derived_from<Set> T>
     struct __getattr__<T, "add">                                : Returns<Function> {};
-    template <typename T> requires (std::is_base_of_v<Set, T>)
+    template <std::derived_from<Set> T>
     struct __getattr__<T, "remove">                             : Returns<Function> {};
-    template <typename T> requires (std::is_base_of_v<Set, T>)
+    template <std::derived_from<Set> T>
     struct __getattr__<T, "discard">                            : Returns<Function> {};
-    template <typename T> requires (std::is_base_of_v<Set, T>)
+    template <std::derived_from<Set> T>
     struct __getattr__<T, "pop">                                : Returns<Function> {};
-    template <typename T> requires (std::is_base_of_v<Set, T>)
+    template <std::derived_from<Set> T>
     struct __getattr__<T, "clear">                              : Returns<Function> {};
-    template <typename T> requires (std::is_base_of_v<Set, T>)
+    template <std::derived_from<Set> T>
     struct __getattr__<T, "update">                             : Returns<Function> {};
-    template <typename T> requires (std::is_base_of_v<Set, T>)
+    template <std::derived_from<Set> T>
     struct __getattr__<T, "intersection_update">                : Returns<Function> {};
-    template <typename T> requires (std::is_base_of_v<Set, T>)
+    template <std::derived_from<Set> T>
     struct __getattr__<T, "difference_update">                  : Returns<Function> {};
-    template <typename T> requires (std::is_base_of_v<Set, T>)
+    template <std::derived_from<Set> T>
     struct __getattr__<T, "symmetric_difference_update">        : Returns<Function> {};
 
 

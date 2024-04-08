@@ -31,15 +31,15 @@ template <int_like T>
 struct __getitem__<Range, T>                                : Returns<Int> {};
 template <>
 struct __getitem__<Range, Slice>                            : Returns<Range> {};
-template <typename T> requires (std::is_base_of_v<Range, T>)
+template <std::derived_from<Range> T>
 struct __getattr__<T, "count">                              : Returns<Function> {};
-template <typename T> requires (std::is_base_of_v<Range, T>)
+template <std::derived_from<Range> T>
 struct __getattr__<T, "index">                              : Returns<Function> {};
-template <typename T> requires (std::is_base_of_v<Range, T>)
+template <std::derived_from<Range> T>
 struct __getattr__<T, "start">                              : Returns<Int> {};
-template <typename T> requires (std::is_base_of_v<Range, T>)
+template <std::derived_from<Range> T>
 struct __getattr__<T, "stop">                               : Returns<Int> {};
-template <typename T> requires (std::is_base_of_v<Range, T>)
+template <std::derived_from<Range> T>
 struct __getattr__<T, "step">                               : Returns<Int> {};
 
 }

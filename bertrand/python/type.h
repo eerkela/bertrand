@@ -24,11 +24,11 @@ template <>
 struct __hash__<Type>                                       : Returns<size_t> {};
 template <typename T>
 struct __or__<Type, T>                                      : Returns<Object> {};
-template <StaticStr name>
+template <StaticStr name> requires (!built_in::getattr_helper<name>::enable)
 struct __getattr__<Type, name>                              : Returns<Object> {};
-template <StaticStr name, typename Value>
+template <StaticStr name, typename Value> requires (!built_in::setattr_helper<name>::enable)
 struct __setattr__<Type, name, Value>                       : Returns<void> {};
-template <StaticStr name>
+template <StaticStr name> requires (!built_in::delattr_helper<name>::enable)
 struct __delattr__<Type, name>                              : Returns<void> {};
 
 template <typename ... Args>
@@ -135,11 +135,11 @@ template <typename T>
 struct __ior__<Super, T>                                    : Returns<Object> {};
 template <typename T>
 struct __ixor__<Super, T>                                   : Returns<Object> {};
-template <StaticStr name>
+template <StaticStr name> requires (!built_in::getattr_helper<name>::enable)
 struct __getattr__<Super, name>                             : Returns<Object> {};
-template <StaticStr name, typename Value>
+template <StaticStr name, typename Value> requires (!built_in::setattr_helper<name>::enable)
 struct __setattr__<Super, name, Value>                      : Returns<void> {};
-template <StaticStr name>
+template <StaticStr name> requires (!built_in::delattr_helper<name>::enable)
 struct __delattr__<Super, name>                             : Returns<void> {};
 
 }

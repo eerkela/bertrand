@@ -14,27 +14,26 @@ namespace py {
 
 namespace impl {
 
-template <>
-struct __pos__<Bool>                                            : Returns<Int> {};
-template <>
-struct __neg__<Bool>                                            : Returns<Int> {};
-template <>
-struct __abs__<Bool>                                            : Returns<Int> {};
-template <>
-struct __invert__<Bool>                                         : Returns<Int> {};
-template <>
-struct __increment__<Bool>                                      : Returns<Int> {};
-template <>
-struct __decrement__<Bool>                                      : Returns<Int> {};
-template <>
-struct __hash__<Bool>                                           : Returns<size_t> {};
-template <>
-struct __lt__<Bool, Object>                                     : Returns<bool> {};
-template <>
-struct __lt__<Object, Bool>                                     : Returns<bool> {};
+template <std::derived_from<Bool> T>
+struct __pos__<T>                                               : Returns<Int> {};
+template <std::derived_from<Bool> T>
+struct __neg__<T>                                               : Returns<Int> {};
+template <std::derived_from<Bool> T>
+struct __abs__<T>                                               : Returns<Int> {};
+template <std::derived_from<Bool> T>
+struct __invert__<T>                                            : Returns<Int> {};
+template <std::derived_from<Bool> T>
+struct __hash__<T>                                              : Returns<size_t> {};
+// NOTE: since py::Bool is implicitly convertible to bool, we technically don't need to
+// define any of the comparison operators on the Python side.  This would improve
+// performance and allow the compiler to catch more detailed syntax errors.
+template <std::derived_from<Bool> L>
+struct __lt__<L, Object>                                        : Returns<bool> {};
+template <std::derived_from<Bool> R>
+struct __lt__<Object, R>                                        : Returns<bool> {};
 template <bool_like T>
 struct __lt__<Bool, T>                                          : Returns<bool> {};
-template <bool_like T> requires (!std::is_same_v<T, Bool>)
+template <bool_like T> requires (!std::derived_from<T, Object>)
 struct __lt__<T, Bool>                                          : Returns<bool> {};
 template <int_like T>
 struct __lt__<Bool, T>                                          : Returns<bool> {};

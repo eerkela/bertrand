@@ -1,3 +1,4 @@
+#include <sys/types.h>
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -965,9 +966,9 @@ namespace impl {
     template <typename T>
     struct __invert__ { static constexpr bool enable = false; };
     template <typename T>
-    struct __increment__ { static constexpr bool enable = false; };
+    struct __increment__ { static constexpr bool enable = false; };  // TODO: this can be implied by __iadd__?
     template <typename T>
-    struct __decrement__ { static constexpr bool enable = false; };
+    struct __decrement__ { static constexpr bool enable = false; };  // TODO: this can be implied by __isub__?
     template <typename T>
     struct __hash__ { static constexpr bool enable = false; };
     template <typename L, typename R>
@@ -985,236 +986,239 @@ namespace impl {
     template <typename L, typename R>
     struct __add__ { static constexpr bool enable = false; };
     template <typename L, typename R>
-    struct __sub__ { static constexpr bool enable = false; };
-    template <typename L, typename R>
-    struct __mul__ { static constexpr bool enable = false; };
-    template <typename L, typename R>
-    struct __truediv__ { static constexpr bool enable = false; };
-    template <typename L, typename R>
-    struct __mod__ { static constexpr bool enable = false; };
-    template <typename L, typename R>
-    struct __lshift__ { static constexpr bool enable = false; };
-    template <typename L, typename R>
-    struct __rshift__ { static constexpr bool enable = false; };
-    template <typename L, typename R>
-    struct __and__ { static constexpr bool enable = false; };
-    template <typename L, typename R>
-    struct __or__ { static constexpr bool enable = false; };
-    template <typename L, typename R>
-    struct __xor__ { static constexpr bool enable = false; };
-    template <typename L, typename R>
     struct __iadd__ { static constexpr bool enable = false; };
+    template <typename L, typename R>
+    struct __sub__ { static constexpr bool enable = false; };
     template <typename L, typename R>
     struct __isub__ { static constexpr bool enable = false; };
     template <typename L, typename R>
+    struct __mul__ { static constexpr bool enable = false; };
+    template <typename L, typename R>
     struct __imul__ { static constexpr bool enable = false; };
+    template <typename L, typename R>
+    struct __truediv__ { static constexpr bool enable = false; };
     template <typename L, typename R>
     struct __itruediv__ { static constexpr bool enable = false; };
     template <typename L, typename R>
+    struct __mod__ { static constexpr bool enable = false; };
+    template <typename L, typename R>
     struct __imod__ { static constexpr bool enable = false; };
+    template <typename L, typename R>
+    struct __lshift__ { static constexpr bool enable = false; };
     template <typename L, typename R>
     struct __ilshift__ { static constexpr bool enable = false; };
     template <typename L, typename R>
+    struct __rshift__ { static constexpr bool enable = false; };
+    template <typename L, typename R>
     struct __irshift__ { static constexpr bool enable = false; };
+    template <typename L, typename R>
+    struct __and__ { static constexpr bool enable = false; };
     template <typename L, typename R>
     struct __iand__ { static constexpr bool enable = false; };
     template <typename L, typename R>
+    struct __or__ { static constexpr bool enable = false; };
+    template <typename L, typename R>
     struct __ior__ { static constexpr bool enable = false; };
+    template <typename L, typename R>
+    struct __xor__ { static constexpr bool enable = false; };
     template <typename L, typename R>
     struct __ixor__ { static constexpr bool enable = false; };
 
+    // NOTE: proxies use the control structs of their wrapped types, so they don't
+    // need to be considered separately.  The operator overloads handle this internally
+    // through a recursive constexpr branch.
     template <proxy_like T, typename... Args>
-    struct __call__<T, Args...> : public __call__<typename T::Wrapped, Args...> {};
+    struct __call__<T, Args...> : __call__<typename T::Wrapped, Args...> {};
     template <proxy_like T>
-    struct __len__<T> : public __len__<typename T::Wrapped> {};
+    struct __len__<T> : __len__<typename T::Wrapped> {};
     template <proxy_like T>
-    struct __iter__<T> : public __iter__<typename T::Wrapped> {};
+    struct __iter__<T> : __iter__<typename T::Wrapped> {};
     template <proxy_like T>
-    struct __reversed__<T> : public __reversed__<typename T::Wrapped> {};
+    struct __reversed__<T> : __reversed__<typename T::Wrapped> {};
     template <proxy_like T, typename Key>
-    struct __contains__<T, Key> : public __contains__<typename T::Wrapped, Key> {};
+    struct __contains__<T, Key> : __contains__<typename T::Wrapped, Key> {};
     template <proxy_like T, typename Key>
-    struct __getitem__<T, Key> : public __getitem__<typename T::Wrapped, Key> {};
+    struct __getitem__<T, Key> : __getitem__<typename T::Wrapped, Key> {};
     template <proxy_like T, typename Key, typename Value>
-    struct __setitem__<T, Key, Value> : public __setitem__<typename T::Wrapped, Key, Value> {};
+    struct __setitem__<T, Key, Value> : __setitem__<typename T::Wrapped, Key, Value> {};
     template <proxy_like T, typename Key>
-    struct __delitem__<T, Key> : public __delitem__<typename T::Wrapped, Key> {};
+    struct __delitem__<T, Key> : __delitem__<typename T::Wrapped, Key> {};
     template <proxy_like T, StaticStr name>
-    struct __getattr__<T, name> : public __getattr__<typename T::Wrapped, name> {};
+    struct __getattr__<T, name>         : __getattr__<typename T::Wrapped, name> {};
     template <proxy_like T, StaticStr name, typename Value>
-    struct __setattr__<T, name, Value> : public __setattr__<typename T::Wrapped, name, Value> {};
+    struct __setattr__<T, name, Value>  : __setattr__<typename T::Wrapped, name, Value> {};
     template <proxy_like T, StaticStr name>
-    struct __delattr__<T, name> : public __delattr__<typename T::Wrapped, name> {};
+    struct __delattr__<T, name> : __delattr__<typename T::Wrapped, name> {};
     template <proxy_like T>
-    struct __pos__<T> : public __pos__<typename T::Wrapped> {};
+    struct __pos__<T> : __pos__<typename T::Wrapped> {};
     template <proxy_like T>
-    struct __neg__<T> : public __neg__<typename T::Wrapped> {};
+    struct __neg__<T> : __neg__<typename T::Wrapped> {};
     template <proxy_like T>
-    struct __abs__<T> : public __abs__<typename T::Wrapped> {};
+    struct __abs__<T> : __abs__<typename T::Wrapped> {};
     template <proxy_like T>
-    struct __invert__<T> : public __invert__<typename T::Wrapped> {};
+    struct __invert__<T> : __invert__<typename T::Wrapped> {};
     template <proxy_like T>
-    struct __increment__<T> : public __increment__<typename T::Wrapped> {};
+    struct __increment__<T> : __increment__<typename T::Wrapped> {};
     template <proxy_like T>
-    struct __decrement__<T> : public __decrement__<typename T::Wrapped> {};
+    struct __decrement__<T> : __decrement__<typename T::Wrapped> {};
     template <proxy_like T>
-    struct __hash__<T> : public __hash__<typename T::Wrapped> {};
+    struct __hash__<T> : __hash__<typename T::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __lt__<L, R> : public __lt__<typename L::Wrapped, R> {};
+    struct __lt__<L, R> : __lt__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __lt__<L, R> : public __lt__<L, typename R::Wrapped> {};
+    struct __lt__<L, R> : __lt__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __lt__<L, R> : public __lt__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __lt__<L, R> : __lt__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __le__<L, R> : public __le__<typename L::Wrapped, R> {};
+    struct __le__<L, R> : __le__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __le__<L, R> : public __le__<L, typename R::Wrapped> {};
+    struct __le__<L, R> : __le__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __le__<L, R> : public __le__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __le__<L, R> : __le__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __eq__<L, R> : public __eq__<typename L::Wrapped, R> {};
+    struct __eq__<L, R> : __eq__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __eq__<L, R> : public __eq__<L, typename R::Wrapped> {};
+    struct __eq__<L, R> : __eq__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __eq__<L, R> : public __eq__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __eq__<L, R> : __eq__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __ne__<L, R> : public __ne__<typename L::Wrapped, R> {};
+    struct __ne__<L, R> : __ne__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __ne__<L, R> : public __ne__<L, typename R::Wrapped> {};
+    struct __ne__<L, R> : __ne__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __ne__<L, R> : public __ne__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __ne__<L, R> : __ne__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __ge__<L, R> : public __ge__<typename L::Wrapped, R> {};
+    struct __ge__<L, R> : __ge__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __ge__<L, R> : public __ge__<L, typename R::Wrapped> {};
+    struct __ge__<L, R> : __ge__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __ge__<L, R> : public __ge__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __ge__<L, R> : __ge__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __gt__<L, R> : public __gt__<typename L::Wrapped, R> {};
+    struct __gt__<L, R> : __gt__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __gt__<L, R> : public __gt__<L, typename R::Wrapped> {};
+    struct __gt__<L, R> : __gt__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __gt__<L, R> : public __gt__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __gt__<L, R> : __gt__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __add__<L, R> : public __add__<typename L::Wrapped, R> {};
+    struct __add__<L, R> : __add__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __add__<L, R> : public __add__<L, typename R::Wrapped> {};
+    struct __add__<L, R> : __add__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __add__<L, R> : public __add__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __add__<L, R> : __add__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __sub__<L, R> : public __sub__<typename L::Wrapped, R> {};
+    struct __iadd__<L, R> : __iadd__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __sub__<L, R> : public __sub__<L, typename R::Wrapped> {};
+    struct __iadd__<L, R> : __iadd__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __sub__<L, R> : public __sub__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __iadd__<L, R> : __iadd__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __mul__<L, R> : public __mul__<typename L::Wrapped, R> {};
+    struct __sub__<L, R> : __sub__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __mul__<L, R> : public __mul__<L, typename R::Wrapped> {};
+    struct __sub__<L, R> : __sub__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __mul__<L, R> : public __mul__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __sub__<L, R> : __sub__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __truediv__<L, R> : public __truediv__<typename L::Wrapped, R> {};
+    struct __isub__<L, R> : __isub__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __truediv__<L, R> : public __truediv__<L, typename R::Wrapped> {};
+    struct __isub__<L, R> : __isub__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __truediv__<L, R> : public __truediv__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __isub__<L, R> : __isub__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __mod__<L, R> : public __mod__<typename L::Wrapped, R> {};
+    struct __mul__<L, R> : __mul__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __mod__<L, R> : public __mod__<L, typename R::Wrapped> {};
+    struct __mul__<L, R> : __mul__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __mod__<L, R> : public __mod__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __mul__<L, R> : __mul__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __lshift__<L, R> : public __lshift__<typename L::Wrapped, R> {};
+    struct __imul__<L, R> : __imul__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __lshift__<L, R> : public __lshift__<L, typename R::Wrapped> {};
+    struct __imul__<L, R> : __imul__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __lshift__<L, R> : public __lshift__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __imul__<L, R> : __imul__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __rshift__<L, R> : public __rshift__<typename L::Wrapped, R> {};
+    struct __truediv__<L, R> : __truediv__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __rshift__<L, R> : public __rshift__<L, typename R::Wrapped> {};
+    struct __truediv__<L, R> : __truediv__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __rshift__<L, R> : public __rshift__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __truediv__<L, R> : __truediv__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __and__<L, R> : public __and__<typename L::Wrapped, R> {};
+    struct __itruediv__<L, R> : __itruediv__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __and__<L, R> : public __and__<L, typename R::Wrapped> {};
+    struct __itruediv__<L, R> : __itruediv__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __and__<L, R> : public __and__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __itruediv__<L, R> : __itruediv__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __or__<L, R> : public __or__<typename L::Wrapped, R> {};
+    struct __mod__<L, R> : __mod__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __or__<L, R> : public __or__<L, typename R::Wrapped> {};
+    struct __mod__<L, R> : __mod__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __or__<L, R> : public __or__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __mod__<L, R> : __mod__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __xor__<L, R> : public __xor__<typename L::Wrapped, R> {};
+    struct __imod__<L, R> : __imod__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __xor__<L, R> : public __xor__<L, typename R::Wrapped> {};
+    struct __imod__<L, R> : __imod__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __xor__<L, R> : public __xor__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __imod__<L, R> : __imod__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __iadd__<L, R> : public __iadd__<typename L::Wrapped, R> {};
+    struct __lshift__<L, R> : __lshift__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __iadd__<L, R> : public __iadd__<L, typename R::Wrapped> {};
+    struct __lshift__<L, R> : __lshift__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __iadd__<L, R> : public __iadd__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __lshift__<L, R> : __lshift__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __isub__<L, R> : public __isub__<typename L::Wrapped, R> {};
+    struct __ilshift__<L, R> : __ilshift__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __isub__<L, R> : public __isub__<L, typename R::Wrapped> {};
+    struct __ilshift__<L, R> : __ilshift__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __isub__<L, R> : public __isub__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __ilshift__<L, R> : __ilshift__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __imul__<L, R> : public __imul__<typename L::Wrapped, R> {};
+    struct __rshift__<L, R> : __rshift__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __imul__<L, R> : public __imul__<L, typename R::Wrapped> {};
+    struct __rshift__<L, R> : __rshift__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __imul__<L, R> : public __imul__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __rshift__<L, R> : __rshift__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __itruediv__<L, R> : public __itruediv__<typename L::Wrapped, R> {};
+    struct __irshift__<L, R> : __irshift__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __itruediv__<L, R> : public __itruediv__<L, typename R::Wrapped> {};
+    struct __irshift__<L, R> : __irshift__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __itruediv__<L, R> : public __itruediv__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __irshift__<L, R> : __irshift__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __imod__<L, R> : public __imod__<typename L::Wrapped, R> {};
+    struct __and__<L, R> : __and__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __imod__<L, R> : public __imod__<L, typename R::Wrapped> {};
+    struct __and__<L, R> : __and__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __imod__<L, R> : public __imod__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __and__<L, R> : __and__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __ilshift__<L, R> : public __ilshift__<typename L::Wrapped, R> {};
+    struct __iand__<L, R> : __iand__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __ilshift__<L, R> : public __ilshift__<L, typename R::Wrapped> {};
+    struct __iand__<L, R> : __iand__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __ilshift__<L, R> : public __ilshift__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __iand__<L, R> : __iand__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __irshift__<L, R> : public __irshift__<typename L::Wrapped, R> {};
+    struct __or__<L, R> : __or__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __irshift__<L, R> : public __irshift__<L, typename R::Wrapped> {};
+    struct __or__<L, R> : __or__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __irshift__<L, R> : public __irshift__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __or__<L, R> : __or__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __iand__<L, R> : public __iand__<typename L::Wrapped, R> {};
+    struct __ior__<L, R> : __ior__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __iand__<L, R> : public __iand__<L, typename R::Wrapped> {};
+    struct __ior__<L, R> : __ior__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __iand__<L, R> : public __iand__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __ior__<L, R> : __ior__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __ior__<L, R> : public __ior__<typename L::Wrapped, R> {};
+    struct __xor__<L, R> : __xor__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __ior__<L, R> : public __ior__<L, typename R::Wrapped> {};
+    struct __xor__<L, R> : __xor__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __ior__<L, R> : public __ior__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __xor__<L, R> : __xor__<typename L::Wrapped, typename R::Wrapped> {};
     template <proxy_like L, typename R> requires (!proxy_like<R>)
-    struct __ixor__<L, R> : public __ixor__<typename L::Wrapped, R> {};
+    struct __ixor__<L, R> : __ixor__<typename L::Wrapped, R> {};
     template <typename L, proxy_like R> requires (!proxy_like<L>)
-    struct __ixor__<L, R> : public __ixor__<L, typename R::Wrapped> {};
+    struct __ixor__<L, R> : __ixor__<L, typename R::Wrapped> {};
     template <proxy_like L, proxy_like R>
-    struct __ixor__<L, R> : public __ixor__<typename L::Wrapped, typename R::Wrapped> {};
+    struct __ixor__<L, R> : __ixor__<typename L::Wrapped, typename R::Wrapped> {};
 
     /* Base class for enabled operators.  Encodes the return type as a template
     parameter. */
@@ -1231,6 +1235,401 @@ namespace impl {
     template <>
     struct __hash__<WeakRef>                                : Returns<size_t> {};
 
+    // TODO: setattr_helper has to account for Value type?
+
+    namespace built_in {
+
+        template <StaticStr name>
+        struct getattr_helper {
+            static constexpr bool enable = false;
+        };
+
+        template <StaticStr name>
+        struct setattr_helper {
+            static constexpr bool enable = false;
+        };
+
+        template <StaticStr name>
+        struct delattr_helper {
+            static constexpr bool enable = false;
+        };
+
+        template <> struct getattr_helper<"__dict__">           : Returns<Dict> {};
+        template <> struct setattr_helper<"__dict__">           : Returns<void> {};
+        template <> struct delattr_helper<"__dict__">           : Returns<void> {};
+        template <> struct getattr_helper<"__class__">          : Returns<Type> {};
+        template <> struct setattr_helper<"__class__">          : Returns<void> {};
+        template <> struct delattr_helper<"__class__">          : Returns<void> {};
+        template <> struct getattr_helper<"__bases__">          : Returns<Tuple> {};
+        template <> struct setattr_helper<"__bases__">          : Returns<void> {};
+        template <> struct delattr_helper<"__bases__">          : Returns<void> {};
+        template <> struct getattr_helper<"__name__">           : Returns<Str> {};
+        template <> struct setattr_helper<"__name__">           : Returns<void> {};
+        template <> struct delattr_helper<"__name__">           : Returns<void> {};
+        template <> struct getattr_helper<"__qualname__">       : Returns<Str> {};
+        template <> struct setattr_helper<"__qualname__">       : Returns<void> {};
+        template <> struct delattr_helper<"__qualname__">       : Returns<void> {};
+        template <> struct getattr_helper<"__type_params__">    : Returns<Object> {};  // type?
+        template <> struct setattr_helper<"__type_params__">    : Returns<void> {};
+        template <> struct delattr_helper<"__type_params__">    : Returns<void> {};
+        template <> struct getattr_helper<"__mro__">            : Returns<Tuple> {};
+        template <> struct setattr_helper<"__mro__">            : Returns<void> {};
+        template <> struct delattr_helper<"__mro__">            : Returns<void> {};
+        template <> struct getattr_helper<"__subclasses__">     : Returns<Function> {};
+        template <> struct setattr_helper<"__subclasses__">     : Returns<void> {};
+        template <> struct delattr_helper<"__subclasses__">     : Returns<void> {};
+        template <> struct getattr_helper<"__doc__">            : Returns<Str> {};
+        template <> struct setattr_helper<"__doc__">            : Returns<void> {};
+        template <> struct delattr_helper<"__doc__">            : Returns<void> {};
+        template <> struct getattr_helper<"__module__">         : Returns<Str> {};
+        template <> struct setattr_helper<"__module__">         : Returns<void> {};
+        template <> struct delattr_helper<"__module__">         : Returns<void> {};
+        template <> struct getattr_helper<"__new__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__new__">            : Returns<void> {};
+        template <> struct delattr_helper<"__new__">            : Returns<void> {};
+        template <> struct getattr_helper<"__init__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__init__">           : Returns<void> {};
+        template <> struct delattr_helper<"__init__">           : Returns<void> {};
+        template <> struct getattr_helper<"__del__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__del__">            : Returns<void> {};
+        template <> struct delattr_helper<"__del__">            : Returns<void> {};
+        template <> struct getattr_helper<"__repr__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__repr__">           : Returns<void> {};
+        template <> struct delattr_helper<"__repr__">           : Returns<void> {};
+        template <> struct getattr_helper<"__str__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__str__">            : Returns<void> {};
+        template <> struct delattr_helper<"__str__">            : Returns<void> {};
+        template <> struct getattr_helper<"__bytes__">          : Returns<Function> {};
+        template <> struct setattr_helper<"__bytes__">          : Returns<void> {};
+        template <> struct delattr_helper<"__bytes__">          : Returns<void> {};
+        template <> struct getattr_helper<"__format__">         : Returns<Function> {};
+        template <> struct setattr_helper<"__format__">         : Returns<void> {};
+        template <> struct delattr_helper<"__format__">         : Returns<void> {};
+        template <> struct getattr_helper<"__lt__">             : Returns<Function> {};
+        template <> struct setattr_helper<"__lt__">             : Returns<void> {};
+        template <> struct delattr_helper<"__lt__">             : Returns<void> {};
+        template <> struct getattr_helper<"__le__">             : Returns<Function> {};
+        template <> struct setattr_helper<"__le__">             : Returns<void> {};
+        template <> struct delattr_helper<"__le__">             : Returns<void> {};
+        template <> struct getattr_helper<"__eq__">             : Returns<Function> {};
+        template <> struct setattr_helper<"__eq__">             : Returns<void> {};
+        template <> struct delattr_helper<"__eq__">             : Returns<void> {};
+        template <> struct getattr_helper<"__ne__">             : Returns<Function> {};
+        template <> struct setattr_helper<"__ne__">             : Returns<void> {};
+        template <> struct delattr_helper<"__ne__">             : Returns<void> {};
+        template <> struct getattr_helper<"__ge__">             : Returns<Function> {};
+        template <> struct setattr_helper<"__ge__">             : Returns<void> {};
+        template <> struct delattr_helper<"__ge__">             : Returns<void> {};
+        template <> struct getattr_helper<"__gt__">             : Returns<Function> {};
+        template <> struct setattr_helper<"__gt__">             : Returns<void> {};
+        template <> struct delattr_helper<"__gt__">             : Returns<void> {};
+        template <> struct getattr_helper<"__hash__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__hash__">           : Returns<void> {};
+        template <> struct delattr_helper<"__hash__">           : Returns<void> {};
+        template <> struct getattr_helper<"__bool__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__bool__">           : Returns<void> {};
+        template <> struct delattr_helper<"__bool__">           : Returns<void> {};
+        template <> struct getattr_helper<"__getattr__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__getattr__">        : Returns<void> {};
+        template <> struct delattr_helper<"__getattr__">        : Returns<void> {};
+        template <> struct getattr_helper<"__getattribute__">   : Returns<Function> {};
+        template <> struct setattr_helper<"__getattribute__">   : Returns<void> {};
+        template <> struct delattr_helper<"__getattribute__">   : Returns<void> {};
+        template <> struct getattr_helper<"__setattr__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__setattr__">        : Returns<void> {};
+        template <> struct delattr_helper<"__setattr__">        : Returns<void> {};
+        template <> struct getattr_helper<"__delattr__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__delattr__">        : Returns<void> {};
+        template <> struct delattr_helper<"__delattr__">        : Returns<void> {};
+        template <> struct getattr_helper<"__dir__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__dir__">            : Returns<void> {};
+        template <> struct delattr_helper<"__dir__">            : Returns<void> {};
+        template <> struct getattr_helper<"__get__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__get__">            : Returns<void> {};
+        template <> struct delattr_helper<"__get__">            : Returns<void> {};
+        template <> struct getattr_helper<"__set__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__set__">            : Returns<void> {};
+        template <> struct delattr_helper<"__set__">            : Returns<void> {};
+        template <> struct getattr_helper<"__delete__">         : Returns<Function> {};
+        template <> struct setattr_helper<"__delete__">         : Returns<void> {};
+        template <> struct delattr_helper<"__delete__">         : Returns<void> {};
+        template <> struct getattr_helper<"__self__">           : Returns<Object> {};
+        template <> struct setattr_helper<"__self__">           : Returns<void> {};
+        template <> struct delattr_helper<"__self__">           : Returns<void> {};
+        template <> struct getattr_helper<"__wrapped__">        : Returns<Object> {};
+        template <> struct setattr_helper<"__wrapped__">        : Returns<void> {};
+        template <> struct delattr_helper<"__wrapped__">        : Returns<void> {};
+        template <> struct getattr_helper<"__objclass__">       : Returns<Object> {};
+        template <> struct setattr_helper<"__objclass__">       : Returns<void> {};
+        template <> struct delattr_helper<"__objclass__">       : Returns<void> {};
+        template <> struct getattr_helper<"__slots__">          : Returns<Object> {};
+        template <> struct setattr_helper<"__slots__">          : Returns<void> {};
+        template <> struct delattr_helper<"__slots__">          : Returns<void> {};
+        template <> struct getattr_helper<"__init_subclass__">  : Returns<Function> {};
+        template <> struct setattr_helper<"__init_subclass__">  : Returns<void> {};
+        template <> struct delattr_helper<"__init_subclass__">  : Returns<void> {};
+        template <> struct getattr_helper<"__set_name__">       : Returns<Function> {};
+        template <> struct setattr_helper<"__set_name__">       : Returns<void> {};
+        template <> struct delattr_helper<"__set_name__">       : Returns<void> {};
+        template <> struct getattr_helper<"__instancecheck__">  : Returns<Function> {};
+        template <> struct setattr_helper<"__instancecheck__">  : Returns<void> {};
+        template <> struct delattr_helper<"__instancecheck__">  : Returns<void> {};
+        template <> struct getattr_helper<"__subclasscheck__">  : Returns<Function> {};
+        template <> struct setattr_helper<"__subclasscheck__">  : Returns<void> {};
+        template <> struct delattr_helper<"__subclasscheck__">  : Returns<void> {};
+        template <> struct getattr_helper<"__class_getitem__">  : Returns<Function> {};
+        template <> struct setattr_helper<"__class_getitem__">  : Returns<void> {};
+        template <> struct delattr_helper<"__class_getitem__">  : Returns<void> {};
+        template <> struct getattr_helper<"__call__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__call__">           : Returns<void> {};
+        template <> struct delattr_helper<"__call__">           : Returns<void> {};
+        template <> struct getattr_helper<"__len__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__len__">            : Returns<void> {};
+        template <> struct delattr_helper<"__len__">            : Returns<void> {};
+        template <> struct getattr_helper<"__length_hint__">    : Returns<Function> {};
+        template <> struct setattr_helper<"__length_hint__">    : Returns<void> {};
+        template <> struct delattr_helper<"__length_hint__">    : Returns<void> {};
+        template <> struct getattr_helper<"__getitem__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__getitem__">        : Returns<void> {};
+        template <> struct delattr_helper<"__getitem__">        : Returns<void> {};
+        template <> struct getattr_helper<"__setitem__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__setitem__">        : Returns<void> {};
+        template <> struct delattr_helper<"__setitem__">        : Returns<void> {};
+        template <> struct getattr_helper<"__delitem__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__delitem__">        : Returns<void> {};
+        template <> struct delattr_helper<"__delitem__">        : Returns<void> {};
+        template <> struct getattr_helper<"__missing__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__missing__">        : Returns<void> {};
+        template <> struct delattr_helper<"__missing__">        : Returns<void> {};
+        template <> struct getattr_helper<"__iter__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__iter__">           : Returns<void> {};
+        template <> struct delattr_helper<"__iter__">           : Returns<void> {};
+        template <> struct getattr_helper<"__next__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__next__">           : Returns<void> {};
+        template <> struct delattr_helper<"__next__">           : Returns<void> {};
+        template <> struct getattr_helper<"__reversed__">       : Returns<Function> {};
+        template <> struct setattr_helper<"__reversed__">       : Returns<void> {};
+        template <> struct delattr_helper<"__reversed__">       : Returns<void> {};
+        template <> struct getattr_helper<"__contains__">       : Returns<Function> {};
+        template <> struct setattr_helper<"__contains__">       : Returns<void> {};
+        template <> struct delattr_helper<"__contains__">       : Returns<void> {};
+        template <> struct getattr_helper<"__add__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__add__">            : Returns<void> {};
+        template <> struct delattr_helper<"__add__">            : Returns<void> {};
+        template <> struct getattr_helper<"__sub__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__sub__">            : Returns<void> {};
+        template <> struct delattr_helper<"__sub__">            : Returns<void> {};
+        template <> struct getattr_helper<"__mul__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__mul__">            : Returns<void> {};
+        template <> struct delattr_helper<"__mul__">            : Returns<void> {};
+        template <> struct getattr_helper<"__matmul__">         : Returns<Function> {};
+        template <> struct setattr_helper<"__matmul__">         : Returns<void> {};
+        template <> struct delattr_helper<"__matmul__">         : Returns<void> {};
+        template <> struct getattr_helper<"__truediv__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__truediv__">        : Returns<void> {};
+        template <> struct delattr_helper<"__truediv__">        : Returns<void> {};
+        template <> struct getattr_helper<"__floordiv__">       : Returns<Function> {};
+        template <> struct setattr_helper<"__floordiv__">       : Returns<void> {};
+        template <> struct delattr_helper<"__floordiv__">       : Returns<void> {};
+        template <> struct getattr_helper<"__mod__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__mod__">            : Returns<void> {};
+        template <> struct delattr_helper<"__mod__">            : Returns<void> {};
+        template <> struct getattr_helper<"__divmod__">         : Returns<Function> {};
+        template <> struct setattr_helper<"__divmod__">         : Returns<void> {};
+        template <> struct delattr_helper<"__divmod__">         : Returns<void> {};
+        template <> struct getattr_helper<"__pow__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__pow__">            : Returns<void> {};
+        template <> struct delattr_helper<"__pow__">            : Returns<void> {};
+        template <> struct getattr_helper<"__lshift__">         : Returns<Function> {};
+        template <> struct setattr_helper<"__lshift__">         : Returns<void> {};
+        template <> struct delattr_helper<"__lshift__">         : Returns<void> {};
+        template <> struct getattr_helper<"__rshift__">         : Returns<Function> {};
+        template <> struct setattr_helper<"__rshift__">         : Returns<void> {};
+        template <> struct delattr_helper<"__rshift__">         : Returns<void> {};
+        template <> struct getattr_helper<"__and__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__and__">            : Returns<void> {};
+        template <> struct delattr_helper<"__and__">            : Returns<void> {};
+        template <> struct getattr_helper<"__or__">             : Returns<Function> {};
+        template <> struct setattr_helper<"__or__">             : Returns<void> {};
+        template <> struct delattr_helper<"__or__">             : Returns<void> {};
+        template <> struct getattr_helper<"__xor__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__xor__">            : Returns<void> {};
+        template <> struct delattr_helper<"__xor__">            : Returns<void> {};
+        template <> struct getattr_helper<"__radd__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__radd__">           : Returns<void> {};
+        template <> struct delattr_helper<"__radd__">           : Returns<void> {};
+        template <> struct getattr_helper<"__rsub__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__rsub__">           : Returns<void> {};
+        template <> struct delattr_helper<"__rsub__">           : Returns<void> {};
+        template <> struct getattr_helper<"__rmul__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__rmul__">           : Returns<void> {};
+        template <> struct delattr_helper<"__rmul__">           : Returns<void> {};
+        template <> struct getattr_helper<"__rmatmul__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__rmatmul__">        : Returns<void> {};
+        template <> struct delattr_helper<"__rmatmul__">        : Returns<void> {};
+        template <> struct getattr_helper<"__rtruediv__">       : Returns<Function> {};
+        template <> struct setattr_helper<"__rtruediv__">       : Returns<void> {};
+        template <> struct delattr_helper<"__rtruediv__">       : Returns<void> {};
+        template <> struct getattr_helper<"__rfloordiv__">      : Returns<Function> {};
+        template <> struct setattr_helper<"__rfloordiv__">      : Returns<void> {};
+        template <> struct delattr_helper<"__rfloordiv__">      : Returns<void> {};
+        template <> struct getattr_helper<"__rmod__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__rmod__">           : Returns<void> {};
+        template <> struct delattr_helper<"__rmod__">           : Returns<void> {};
+        template <> struct getattr_helper<"__rdivmod__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__rdivmod__">        : Returns<void> {};
+        template <> struct delattr_helper<"__rdivmod__">        : Returns<void> {};
+        template <> struct getattr_helper<"__rpow__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__rpow__">           : Returns<void> {};
+        template <> struct delattr_helper<"__rpow__">           : Returns<void> {};
+        template <> struct getattr_helper<"__rlshift__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__rlshift__">        : Returns<void> {};
+        template <> struct delattr_helper<"__rlshift__">        : Returns<void> {};
+        template <> struct getattr_helper<"__rrshift__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__rrshift__">        : Returns<void> {};
+        template <> struct delattr_helper<"__rrshift__">        : Returns<void> {};
+        template <> struct getattr_helper<"__rand__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__rand__">           : Returns<void> {};
+        template <> struct delattr_helper<"__rand__">           : Returns<void> {};
+        template <> struct getattr_helper<"__ror__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__ror__">            : Returns<void> {};
+        template <> struct delattr_helper<"__ror__">            : Returns<void> {};
+        template <> struct getattr_helper<"__rxor__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__rxor__">           : Returns<void> {};
+        template <> struct delattr_helper<"__rxor__">           : Returns<void> {};
+        template <> struct getattr_helper<"__iadd__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__iadd__">           : Returns<void> {};
+        template <> struct delattr_helper<"__iadd__">           : Returns<void> {};
+        template <> struct getattr_helper<"__isub__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__isub__">           : Returns<void> {};
+        template <> struct delattr_helper<"__isub__">           : Returns<void> {};
+        template <> struct getattr_helper<"__imul__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__imul__">           : Returns<void> {};
+        template <> struct delattr_helper<"__imul__">           : Returns<void> {};
+        template <> struct getattr_helper<"__imatmul__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__imatmul__">        : Returns<void> {};
+        template <> struct delattr_helper<"__imatmul__">        : Returns<void> {};
+        template <> struct getattr_helper<"__itruediv__">       : Returns<Function> {};
+        template <> struct setattr_helper<"__itruediv__">       : Returns<void> {};
+        template <> struct delattr_helper<"__itruediv__">       : Returns<void> {};
+        template <> struct getattr_helper<"__ifloordiv__">      : Returns<Function> {};
+        template <> struct setattr_helper<"__ifloordiv__">      : Returns<void> {};
+        template <> struct delattr_helper<"__ifloordiv__">      : Returns<void> {};
+        template <> struct getattr_helper<"__imod__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__imod__">           : Returns<void> {};
+        template <> struct delattr_helper<"__imod__">           : Returns<void> {};
+        template <> struct getattr_helper<"__idivmod__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__idivmod__">        : Returns<void> {};
+        template <> struct delattr_helper<"__idivmod__">        : Returns<void> {};
+        template <> struct getattr_helper<"__ipow__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__ipow__">           : Returns<void> {};
+        template <> struct delattr_helper<"__ipow__">           : Returns<void> {};
+        template <> struct getattr_helper<"__ilshift__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__ilshift__">        : Returns<void> {};
+        template <> struct delattr_helper<"__ilshift__">        : Returns<void> {};
+        template <> struct getattr_helper<"__irshift__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__irshift__">        : Returns<void> {};
+        template <> struct delattr_helper<"__irshift__">        : Returns<void> {};
+        template <> struct getattr_helper<"__iand__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__iand__">           : Returns<void> {};
+        template <> struct delattr_helper<"__iand__">           : Returns<void> {};
+        template <> struct getattr_helper<"__ior__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__ior__">            : Returns<void> {};
+        template <> struct delattr_helper<"__ior__">            : Returns<void> {};
+        template <> struct getattr_helper<"__ixor__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__ixor__">           : Returns<void> {};
+        template <> struct delattr_helper<"__ixor__">           : Returns<void> {};
+        template <> struct getattr_helper<"__neg__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__neg__">            : Returns<void> {};
+        template <> struct delattr_helper<"__neg__">            : Returns<void> {};
+        template <> struct getattr_helper<"__pos__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__pos__">            : Returns<void> {};
+        template <> struct delattr_helper<"__pos__">            : Returns<void> {};
+        template <> struct getattr_helper<"__abs__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__abs__">            : Returns<void> {};
+        template <> struct delattr_helper<"__abs__">            : Returns<void> {};
+        template <> struct getattr_helper<"__invert__">         : Returns<Function> {};
+        template <> struct setattr_helper<"__invert__">         : Returns<void> {};
+        template <> struct delattr_helper<"__invert__">         : Returns<void> {};
+        template <> struct getattr_helper<"__complex__">        : Returns<Function> {};
+        template <> struct setattr_helper<"__complex__">        : Returns<void> {};
+        template <> struct delattr_helper<"__complex__">        : Returns<void> {};
+        template <> struct getattr_helper<"__int__">            : Returns<Function> {};
+        template <> struct setattr_helper<"__int__">            : Returns<void> {};
+        template <> struct delattr_helper<"__int__">            : Returns<void> {};
+        template <> struct getattr_helper<"__float__">          : Returns<Function> {};
+        template <> struct setattr_helper<"__float__">          : Returns<void> {};
+        template <> struct delattr_helper<"__float__">          : Returns<void> {};
+        template <> struct getattr_helper<"__index__">          : Returns<Function> {};
+        template <> struct setattr_helper<"__index__">          : Returns<void> {};
+        template <> struct delattr_helper<"__index__">          : Returns<void> {};
+        template <> struct getattr_helper<"__round__">          : Returns<Function> {};
+        template <> struct setattr_helper<"__round__">          : Returns<void> {};
+        template <> struct delattr_helper<"__round__">          : Returns<void> {};
+        template <> struct getattr_helper<"__trunc__">          : Returns<Function> {};
+        template <> struct setattr_helper<"__trunc__">          : Returns<void> {};
+        template <> struct delattr_helper<"__trunc__">          : Returns<void> {};
+        template <> struct getattr_helper<"__floor__">          : Returns<Function> {};
+        template <> struct setattr_helper<"__floor__">          : Returns<void> {};
+        template <> struct delattr_helper<"__floor__">          : Returns<void> {};
+        template <> struct getattr_helper<"__ceil__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__ceil__">           : Returns<void> {};
+        template <> struct delattr_helper<"__ceil__">           : Returns<void> {};
+        template <> struct getattr_helper<"__enter__">          : Returns<Function> {};
+        template <> struct setattr_helper<"__enter__">          : Returns<void> {};
+        template <> struct delattr_helper<"__enter__">          : Returns<void> {};
+        template <> struct getattr_helper<"__exit__">           : Returns<Function> {};
+        template <> struct setattr_helper<"__exit__">           : Returns<void> {};
+        template <> struct delattr_helper<"__exit__">           : Returns<void> {};
+        template <> struct getattr_helper<"__match_args__">     : Returns<Tuple> {};
+        template <> struct setattr_helper<"__match_args__">     : Returns<void> {};
+        template <> struct delattr_helper<"__match_args__">     : Returns<void> {};
+        template <> struct getattr_helper<"__buffer__">         : Returns<Function> {};
+        template <> struct setattr_helper<"__buffer__">         : Returns<void> {};
+        template <> struct delattr_helper<"__buffer__">         : Returns<void> {};
+        template <> struct getattr_helper<"__release_buffer__"> : Returns<Function> {};
+        template <> struct setattr_helper<"__release_buffer__"> : Returns<void> {};
+        template <> struct delattr_helper<"__release_buffer__"> : Returns<void> {};
+        template <> struct getattr_helper<"__await__">          : Returns<Function> {};
+        template <> struct setattr_helper<"__await__">          : Returns<void> {};
+        template <> struct delattr_helper<"__await__">          : Returns<void> {};
+        template <> struct getattr_helper<"__aiter__">          : Returns<Function> {};
+        template <> struct setattr_helper<"__aiter__">          : Returns<void> {};
+        template <> struct delattr_helper<"__aiter__">          : Returns<void> {};
+        template <> struct getattr_helper<"__anext__">          : Returns<Function> {};
+        template <> struct setattr_helper<"__anext__">          : Returns<void> {};
+        template <> struct delattr_helper<"__anext__">          : Returns<void> {};
+        template <> struct getattr_helper<"__aenter__">         : Returns<Function> {};
+        template <> struct setattr_helper<"__aenter__">         : Returns<void> {};
+        template <> struct delattr_helper<"__aenter__">         : Returns<void> {};
+        template <> struct getattr_helper<"__aexit__">          : Returns<Function> {};
+        template <> struct setattr_helper<"__aexit__">          : Returns<void> {};
+        template <> struct delattr_helper<"__aexit__">          : Returns<void> {};
+
+    }
+
+    // NOTE: using a secondary helper struct to handle double underscore attributes
+    // delays template instantiation enough to prevent ambiguities with specializations
+    // that may be generic on either the object type and/or attribute name.
+    template <std::derived_from<Object> T, StaticStr name>
+        requires (built_in::getattr_helper<name>::enable)
+    struct __getattr__<T, name> :
+        Returns<typename built_in::getattr_helper<name>::Return>
+    {};
+    template <std::derived_from<Object> T, StaticStr name, typename Value>
+        requires (built_in::setattr_helper<name>::enable)
+    struct __setattr__<T, name, Value> :
+        Returns<typename built_in::setattr_helper<name>::Return>
+    {};
+    template <std::derived_from<Object> T, StaticStr name>
+        requires (built_in::delattr_helper<name>::enable)
+    struct __delattr__<T, name> :
+        Returns<typename built_in::delattr_helper<name>::Return>
+    {};
+
+    // NOTE: Object implicitly allows all operators, but will defer to a subclass if
+    // combined with one in a binary operation.  This reduces the need to treat Object
+    // as a special case in the operator overloads.
     template <typename ... Args>
     struct __call__<Object, Args...>                        : Returns<Object> {};
     template <>
@@ -1247,11 +1646,11 @@ namespace impl {
     struct __setitem__<Object, Key, Value>                  : Returns<void> {};
     template <typename Key>
     struct __delitem__<Object, Key>                         : Returns<void> {};
-    template <StaticStr name>
+    template <StaticStr name> requires (!built_in::getattr_helper<name>::enable)
     struct __getattr__<Object, name>                        : Returns<Object> {};
-    template <StaticStr name, typename Value>
+    template <StaticStr name, typename Value> requires (!built_in::setattr_helper<name>::enable)
     struct __setattr__<Object, name, Value>                 : Returns<void> {};
-    template <StaticStr name>
+    template <StaticStr name> requires (!built_in::delattr_helper<name>::enable)
     struct __delattr__<Object, name>                        : Returns<void> {};
     template <>
     struct __pos__<Object>                                  : Returns<Object> {};
@@ -1267,90 +1666,106 @@ namespace impl {
     struct __decrement__<Object>                            : Returns<Object> {};
     template <>
     struct __hash__<Object>                                 : Returns<size_t> {};
-    template <typename T>
-    struct __lt__<Object, T>                                : Returns<bool> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __lt__<T, Object>                                : Returns<bool> {};
-    template <typename T>
-    struct __le__<Object, T>                                : Returns<bool> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __le__<T, Object>                                : Returns<bool> {};
-    template <typename T>
-    struct __eq__<Object, T>                                : Returns<bool> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __eq__<T, Object>                                : Returns<bool> {};
-    template <typename T>
-    struct __ne__<Object, T>                                : Returns<bool> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __ne__<T, Object>                                : Returns<bool> {};
-    template <typename T>
-    struct __ge__<Object, T>                                : Returns<bool> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __ge__<T, Object>                                : Returns<bool> {};
-    template <typename T>
-    struct __gt__<Object, T>                                : Returns<bool> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __gt__<T, Object>                                : Returns<bool> {};
-    template <typename T>
-    struct __add__<Object, T>                               : Returns<Object> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __add__<T, Object>                               : Returns<Object> {};
-    template <typename T>
-    struct __iadd__<Object, T>                              : Returns<Object&> {};
-    template <typename T>
-    struct __sub__<Object, T>                               : Returns<Object> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __sub__<T, Object>                               : Returns<Object> {};
-    template <typename T>
-    struct __isub__<Object, T>                              : Returns<Object&> {};
-    template <typename T>
-    struct __mul__<Object, T>                               : Returns<Object> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __mul__<T, Object>                               : Returns<Object> {};
-    template <typename T>
-    struct __imul__<Object, T>                              : Returns<Object&> {};
-    template <typename T>
-    struct __truediv__<Object, T>                           : Returns<Object> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __truediv__<T, Object>                           : Returns<Object> {};
-    template <typename T>
-    struct __itruediv__<Object, T>                          : Returns<Object&> {};
-    template <typename T>
-    struct __mod__<Object, T>                               : Returns<Object> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __mod__<T, Object>                               : Returns<Object> {};
-    template <typename T>
-    struct __imod__<Object, T>                              : Returns<Object&> {};
-    template <typename T>
-    struct __lshift__<Object, T>                            : Returns<Object> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __lshift__<T, Object>                            : Returns<Object> {};
-    template <typename T>
-    struct __ilshift__<Object, T>                           : Returns<Object&> {};
-    template <typename T>
-    struct __rshift__<Object, T>                            : Returns<Object> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __rshift__<T, Object>                            : Returns<Object> {};
-    template <typename T>
-    struct __irshift__<Object, T>                           : Returns<Object&> {};
-    template <typename T>
-    struct __and__<Object, T>                               : Returns<Object> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __and__<T, Object>                               : Returns<Object> {};
-    template <typename T>
-    struct __iand__<Object, T>                              : Returns<Object&> {};
-    template <typename T>
-    struct __or__<Object, T>                                : Returns<Object> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __or__<T, Object>                                : Returns<Object> {};
-    template <typename T>
-    struct __ior__<Object, T>                               : Returns<Object&> {};
-    template <typename T>
-    struct __xor__<Object, T>                               : Returns<Object> {};
-    template <typename T> requires (!std::is_same_v<T, Object>)
-    struct __xor__<T, Object>                               : Returns<Object> {};
-    template <typename T>
-    struct __ixor__<Object, T>                              : Returns<Object&> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __lt__<L, R>                                     : Returns<bool> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __lt__<L, R>                                     : Returns<bool> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __le__<L, R>                                     : Returns<bool> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __le__<L, R>                                     : Returns<bool> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __eq__<L, R>                                     : Returns<bool> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __eq__<L, R>                                     : Returns<bool> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __ne__<L, R>                                     : Returns<bool> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __ne__<L, R>                                     : Returns<bool> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __ge__<L, R>                                     : Returns<bool> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __ge__<L, R>                                     : Returns<bool> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __gt__<L, R>                                     : Returns<bool> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __gt__<L, R>                                     : Returns<bool> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __add__<L, R>                                    : Returns<Object> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __add__<L, R>                                    : Returns<Object> {};
+    template <std::convertible_to<Object> R>
+    struct __iadd__<Object, R>                              : Returns<Object&> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __sub__<L, R>                                    : Returns<Object> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __sub__<L, R>                                    : Returns<Object> {};
+    template <std::convertible_to<Object> R>
+    struct __isub__<Object, R>                              : Returns<Object&> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __mul__<L, R>                                    : Returns<Object> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __mul__<L, R>                                    : Returns<Object> {};
+    template <std::convertible_to<Object> R>
+    struct __imul__<Object, R>                              : Returns<Object&> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __truediv__<L, R>                                : Returns<Object> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __truediv__<L, R>                                : Returns<Object> {};
+    template <std::convertible_to<Object> R>
+    struct __itruediv__<Object, R>                          : Returns<Object&> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __mod__<L, R>                                    : Returns<Object> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __mod__<L, R>                                    : Returns<Object> {};
+    template <std::convertible_to<Object> R>
+    struct __imod__<Object, R>                              : Returns<Object&> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __lshift__<L, R>                                 : Returns<Object> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __lshift__<L, R>                                 : Returns<Object> {};
+    template <std::convertible_to<Object> R>
+    struct __ilshift__<Object, R>                           : Returns<Object&> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __rshift__<L, R>                                 : Returns<Object> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __rshift__<L, R>                                 : Returns<Object> {};
+    template <std::convertible_to<Object> R>
+    struct __irshift__<Object, R>                           : Returns<Object&> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __and__<L, R>                                    : Returns<Object> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __and__<L, R>                                    : Returns<Object> {};
+    template <std::convertible_to<Object> R>
+    struct __iand__<Object, R>                              : Returns<Object&> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __or__<L, R>                                     : Returns<Object> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __or__<L, R>                                     : Returns<Object> {};
+    template <std::convertible_to<Object> R>
+    struct __ior__<Object, R>                               : Returns<Object&> {};
+    template <std::same_as<Object> L, std::convertible_to<Object> R>
+    struct __xor__<L, R>                                    : Returns<Object> {};
+    template <std::convertible_to<Object> L, std::same_as<Object> R>
+        requires (!std::same_as<L, Object>)
+    struct __xor__<L, R>                                    : Returns<Object> {};
+    template <std::convertible_to<Object> R>
+    struct __ixor__<Object, R>                              : Returns<Object&> {};
 
     template <>
     struct __hash__<NoneType>                               : Returns<size_t> {};
@@ -1359,22 +1774,22 @@ namespace impl {
     template <>
     struct __hash__<EllipsisType>                           : Returns<size_t> {};
 
-    template <typename T> requires (std::is_base_of_v<Slice, T>)
+    template <std::derived_from<Slice> T>
     struct __getattr__<T, "indices">                        : Returns<Function> {};
-    template <typename T> requires (std::is_base_of_v<Slice, T>)
+    template <std::derived_from<Slice> T>
     struct __getattr__<T, "start">                          : Returns<Object> {};
-    template <typename T> requires (std::is_base_of_v<Slice, T>)
+    template <std::derived_from<Slice> T>
     struct __getattr__<T, "stop">                           : Returns<Object> {};
-    template <typename T> requires (std::is_base_of_v<Slice, T>)
+    template <std::derived_from<Slice> T>
     struct __getattr__<T, "step">                           : Returns<Object> {};
 
     template <>
     struct __hash__<Module>                                 : Returns<size_t> {};
-    template <StaticStr name>
+    template <StaticStr name> requires (!built_in::getattr_helper<name>::enable)
     struct __getattr__<Module, name>                        : Returns<Object> {};
-    template <StaticStr name, typename Value>
+    template <StaticStr name, typename Value> requires (!built_in::setattr_helper<name>::enable)
     struct __setattr__<Module, name, Value>                 : Returns<void> {};
-    template <StaticStr name>
+    template <StaticStr name> requires (!built_in::delattr_helper<name>::enable)
     struct __delattr__<Module, name>                        : Returns<void> {};
 
     #define BERTRAND_OBJECT_OPERATORS(cls)                                              \
@@ -1593,6 +2008,19 @@ namespace impl {
                                                                                         \
     public:                                                                             \
 
+    /* Standardized error message for type narrowing via pybind11 accessors or the
+    generic Object wrapper. */
+    template <typename Derived>
+    TypeError noconvert(PyObject* obj) {
+        std::ostringstream msg;
+        msg << "cannot convert python object from type '"
+            << Py_TYPE(obj)->tp_name
+            << "' to type '"
+            << reinterpret_cast<PyTypeObject*>(Derived::type.ptr())->tp_name
+            << "'";
+        return TypeError(msg.str());
+    }
+
     /* All subclasses of py::Object must define these constructors, which are taken
     directly from PYBIND11_OBJECT_COMMON and cover the basic object creation and
     conversion logic.
@@ -1697,19 +2125,6 @@ namespace impl {
     class GenericIter;
 
     struct SliceInitializer;
-
-    /* Standardized error message for type narrowing via pybind11 accessors or the
-    generic Object wrapper. */
-    template <typename Derived>
-    TypeError noconvert(PyObject* obj) {
-        std::ostringstream msg;
-        msg << "cannot convert python object from type '"
-            << Py_TYPE(obj)->tp_name
-            << "' to type '"
-            << reinterpret_cast<PyTypeObject*>(Derived::type.ptr())->tp_name
-            << "'";
-        return TypeError(msg.str());
-    }
 
 }  // namespace impl
 
@@ -2409,9 +2824,9 @@ inline L& operator^=(L& lhs, const R& rhs) {
 }
 
 
-template <typename T> requires (std::is_base_of_v<Object, T>)
+template <std::derived_from<Object> T>
 inline T reinterpret_borrow(Handle obj);
-template <typename T> requires (std::is_base_of_v<Object, T>)
+template <std::derived_from<Object> T>
 inline T reinterpret_steal(Handle obj);
 
 
@@ -2432,9 +2847,9 @@ protected:
     struct borrowed_t {};
     struct stolen_t {};
 
-    template <typename T> requires (std::is_base_of_v<Object, T>)
+    template <std::derived_from<Object> T>
     friend T reinterpret_borrow(Handle);
-    template <typename T> requires (std::is_base_of_v<Object, T>)
+    template <std::derived_from<Object> T>
     friend T reinterpret_steal(Handle);
 
     template <typename Return, typename T, typename... Args>
@@ -3048,7 +3463,7 @@ public:
 
     /* Narrow an Object into one of its subclasses, applying a runtime type check
     against its value. */
-    template <typename T> requires (std::is_base_of_v<Object, T>)
+    template <std::derived_from<Object> T>
     inline operator T() const {
         if (!T::check(*this)) {
             throw impl::noconvert<T>(m_ptr);
@@ -3135,8 +3550,7 @@ public:
 };
 
 
-template <typename L, typename R>
-    requires (std::is_base_of_v<std::ostream, L> && std::is_base_of_v<Object, R>)
+template <std::derived_from<std::ostream> L, std::derived_from<Object> R>
 inline L& operator<<(L& os, const R& obj) {
     PyObject* repr = PyObject_Repr(obj.ptr());
     if (repr == nullptr) {
@@ -3154,7 +3568,7 @@ inline L& operator<<(L& os, const R& obj) {
 }
 
 
-template <typename L, impl::proxy_like T> requires (std::is_base_of_v<std::ostream, L>)
+template <std::derived_from<std::ostream> L, impl::proxy_like T>
 inline L& operator<<(L& os, const T& proxy) {
     os << proxy.value();
     return os;
@@ -3188,28 +3602,28 @@ using pybind11::print;
 
 
 /* Borrow a reference to a raw Python handle. */
-template <typename T> requires (std::is_base_of_v<Object, T>)
+template <std::derived_from<Object> T>
 inline T reinterpret_borrow(Handle obj) {
     return T(obj, Object::borrowed_t{});
 }
 
 
 /* Borrow a reference to a raw Python handle. */
-template <typename T> requires (std::is_base_of_v<pybind11::object, T>)
+template <std::derived_from<pybind11::object> T>
 inline T reinterpret_borrow(Handle obj) {
     return pybind11::reinterpret_borrow<T>(obj);
 }
 
 
 /* Steal a reference to a raw Python handle. */
-template <typename T> requires (std::is_base_of_v<Object, T>)
+template <std::derived_from<Object> T>
 inline T reinterpret_steal(Handle obj) {
     return T(obj, Object::stolen_t{});
 }
 
 
 /* Steal a reference to a raw Python handle. */
-template <typename T> requires (std::is_base_of_v<pybind11::object, T>)
+template <std::derived_from<pybind11::object> T>
 inline T reinterpret_steal(Handle obj) {
     return pybind11::reinterpret_steal<T>(obj);
 }
@@ -3643,8 +4057,7 @@ namespace impl {
 
     /* A specialization of ItemPolicy that is specifically optimized for integer
     indices into Python tuple objects. */
-    template <typename Obj, typename Key>
-        requires (std::is_base_of_v<Tuple, Obj> && std::is_integral_v<Key>)
+    template <std::derived_from<Tuple> Obj, std::integral Key>
     struct ItemPolicy<Obj, Key> {
         Handle obj;
         Py_ssize_t key;
@@ -3670,8 +4083,7 @@ namespace impl {
 
     /* A specialization of ItemPolicy that is specifically optimized for integer
     indices into Python list objects. */
-    template <typename Obj, typename Key>
-        requires (std::is_base_of_v<List, Obj> && std::is_integral_v<Key>)
+    template <std::derived_from<List> Obj, std::integral Key>
     struct ItemPolicy<Obj, Key> {
         Handle obj;
         Py_ssize_t key;
@@ -4412,7 +4824,271 @@ namespace impl {
 
     };
 
-    // TODO: KeyIter, ValueIter, ItemIter using PyDict_Next
+    /* An iterator policy that extracts keys from a dictionary using PyDict_Next(). */
+    template <typename Deref>
+    class KeyIter {
+        Object dict;
+        PyObject* curr;
+        Py_ssize_t pos;
+
+    public:
+        using iterator_category         = std::input_iterator_tag;
+        using difference_type           = std::ptrdiff_t;
+        using value_type                = Deref;
+        using pointer                   = Deref*;
+        using reference                 = Deref&;
+
+        /* Default constructor.  Initializes to a sentinel iterator. */
+        KeyIter() :
+            dict(reinterpret_steal<Object>(nullptr)), curr(nullptr), pos(0)
+        {}
+
+        /* Construct an iterator from a dictionary. */
+        KeyIter(const Object& dict) : dict(dict), pos(0) {
+            if (!PyDict_Next(dict.ptr(), &pos, &curr, nullptr)) {
+                curr = nullptr;
+            }
+        }
+
+        /* Copy constructor. */
+        KeyIter(const KeyIter& other) :
+            dict(other.dict), curr(other.curr), pos(other.pos)
+        {}
+
+        /* Move constructor. */
+        KeyIter(KeyIter&& other) :
+            dict(std::move(other.dict)), curr(other.curr), pos(other.pos)
+        {
+            other.curr = nullptr;
+        }
+
+        /* Copy assignment operator. */
+        KeyIter& operator=(const KeyIter& other) {
+            if (&other != this) {
+                dict = other.dict;
+                curr = other.curr;
+                pos = other.pos;
+            }
+            return *this;
+        }
+
+        /* Move assignment operator. */
+        KeyIter& operator=(KeyIter&& other) {
+            if (&other != this) {
+                dict = other.dict;
+                curr = other.curr;
+                pos = other.pos;
+                other.curr = nullptr;
+            }
+            return *this;
+        }
+
+        /* Dereference the iterator. */
+        inline Deref deref() const {
+            if (curr == nullptr) {
+                throw StopIteration("end of dictionary keys");
+            }
+            return reinterpret_borrow<Deref>(curr);
+        }
+
+        /* Advance the iterator. */
+        inline void advance() {
+            if (!PyDict_Next(dict.ptr(), &pos, &curr, nullptr)) {
+                curr = nullptr;
+            }
+        }
+
+        /* Compare two iterators for equality. */
+        inline bool compare(const KeyIter& other) const {
+            return curr == other.curr;
+        }
+
+        inline explicit operator bool() const {
+            return curr != nullptr;
+        }
+
+    };
+
+    /* An iterator policy that extracts values from a dictionary using PyDict_Next(). */
+    template <typename Deref>
+    class ValueIter {
+        Object dict;
+        PyObject* curr;
+        Py_ssize_t pos;
+
+    public:
+        using iterator_category         = std::input_iterator_tag;
+        using difference_type           = std::ptrdiff_t;
+        using value_type                = Deref;
+        using pointer                   = Deref*;
+        using reference                 = Deref&;
+
+        /* Default constructor.  Initializes to a sentinel iterator. */
+        ValueIter() :
+            dict(reinterpret_steal<Object>(nullptr)), curr(nullptr), pos(0)
+        {}
+
+        /* Construct an iterator from a dictionary. */
+        ValueIter(const Object& dict) : dict(dict), pos(0) {
+            if (!PyDict_Next(dict.ptr(), &pos, nullptr, &curr)) {
+                curr = nullptr;
+            }
+        }
+
+        /* Copy constructor. */
+        ValueIter(const ValueIter& other) :
+            dict(other.dict), curr(other.curr), pos(other.pos)
+        {}
+
+        /* Move constructor. */
+        ValueIter(ValueIter&& other) :
+            dict(std::move(other.dict)), curr(other.curr), pos(other.pos)
+        {
+            other.curr = nullptr;
+        }
+
+        /* Copy assignment operator. */
+        ValueIter& operator=(const ValueIter& other) {
+            if (&other != this) {
+                dict = other.dict;
+                curr = other.curr;
+                pos = other.pos;
+            }
+            return *this;
+        }
+
+        /* Move assignment operator. */
+        ValueIter& operator=(ValueIter&& other) {
+            if (&other != this) {
+                dict = other.dict;
+                curr = other.curr;
+                pos = other.pos;
+                other.curr = nullptr;
+            }
+            return *this;
+        }
+
+        /* Dereference the iterator. */
+        inline Deref deref() const {
+            if (curr == nullptr) {
+                throw StopIteration("end of dictionary values");
+            }
+            return reinterpret_borrow<Deref>(curr);
+        }
+
+        /* Advance the iterator. */
+        inline void advance() {
+            if (!PyDict_Next(dict.ptr(), &pos, nullptr, &curr)) {
+                curr = nullptr;
+            }
+        }
+
+        /* Compare two iterators for equality. */
+        inline bool compare(const ValueIter& other) const {
+            return curr == other.curr;
+        }
+
+        inline explicit operator bool() const {
+            return curr != nullptr;
+        }
+
+    };
+
+    /* An iterator policy that extracts key-value pairs from a dictionary using
+    PyDict_Next(). */
+    template <typename Deref>
+    class ItemIter {
+        Object dict;
+        PyObject* key;
+        PyObject* value;
+        Py_ssize_t pos;
+
+    public:
+        using iterator_category         = std::input_iterator_tag;
+        using difference_type           = std::ptrdiff_t;
+        using value_type                = Deref;
+        using pointer                   = Deref*;
+        using reference                 = Deref&;
+
+        /* Default constructor.  Initializes to a sentinel iterator. */
+        ItemIter() :
+            dict(reinterpret_steal<Object>(nullptr)),
+            key(nullptr),
+            value(nullptr),
+            pos(0)
+        {}
+
+        /* Construct an iterator from a dictionary. */
+        ItemIter(const Object& dict) : dict(dict), pos(0) {
+            if (!PyDict_Next(dict.ptr(), &pos, &key, &value)) {
+                key = nullptr;
+                value = nullptr;
+            }
+        }
+
+        /* Copy constructor. */
+        ItemIter(const ItemIter& other) :
+            dict(other.dict), key(other.key), value(other.value), pos(other.pos)
+        {}
+
+        /* Move constructor. */
+        ItemIter(ItemIter&& other) :
+            dict(std::move(other.dict)), key(other.key), value(other.value), pos(other.pos)
+        {
+            other.key = nullptr;
+            other.value = nullptr;
+        }
+
+        /* Copy assignment operator. */
+        ItemIter& operator=(const ItemIter& other) {
+            if (&other != this) {
+                dict = other.dict;
+                key = other.key;
+                value = other.value;
+                pos = other.pos;
+            }
+            return *this;
+        }
+
+        /* Move assignment operator. */
+        ItemIter& operator=(ItemIter&& other) {
+            if (&other != this) {
+                dict = other.dict;
+                key = other.key;
+                value = other.value;
+                pos = other.pos;
+                other.key = nullptr;
+                other.value = nullptr;
+            }
+            return *this;
+        }
+
+        /* Dereference the iterator. */
+        inline Deref deref() const {
+            if (key == nullptr || value == nullptr) {
+                throw StopIteration("end of dictionary items");
+            }
+            return Deref(key, value);
+        }
+
+        /* Advance the iterator. */
+        inline void advance() {
+            if (!PyDict_Next(dict.ptr(), &pos, &key, &value)) {
+                key = nullptr;
+                value = nullptr;
+            }
+        }
+
+        /* Compare two iterators for equality. */
+        inline bool compare(const ItemIter& other) const {
+            return key == other.key && value == other.value;
+        }
+
+        inline explicit operator bool() const {
+            return key != nullptr && value != nullptr;
+        }
+
+    };
 
 }  // namespace impl
 
@@ -4956,23 +5632,7 @@ public:
     }
 
     /* Equivalent to pybind11::module_::def_submodule(). */
-    Module def_submodule(const char* name, const char* doc = nullptr) {
-        const char* this_name = PyModule_GetName(m_ptr);
-        if (this_name == nullptr) {
-            throw error_already_set();
-        }
-        std::string full_name = std::string(this_name) + '.' + name;
-        Handle submodule = PyImport_AddModule(full_name.c_str());
-        if (!submodule) {
-            throw error_already_set();
-        }
-        auto result = reinterpret_borrow<Module>(submodule);
-        if (doc && pybind11::options::show_user_defined_docstrings()) {
-            result.template attr<"__doc__">() = pybind11::str(doc);
-        }
-        pybind11::setattr(*this, name, result);
-        return result;
-    }
+    Module def_submodule(const char* name, const char* doc = nullptr);
 
     /* Reload the module or throws `error_already_set`. */
     inline void reload() {
@@ -5092,7 +5752,7 @@ inline Module import() {
 namespace pybind11 {
 namespace detail {
 
-template <typename T> requires(std::is_base_of_v<bertrand::py::Object, T>)
+template <std::derived_from<bertrand::py::Object> T>
 struct type_caster<T> {
     PYBIND11_TYPE_CASTER(T, const_name("Object"));
 
