@@ -38,153 +38,150 @@ namespace py {
 
 namespace impl {
 
-template <typename T>
-concept istr = std::is_base_of_v<Str, T>;
-
-template <istr T>
+template <std::derived_from<Str> T>
 struct __len__<T>                                               : Returns<size_t> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __iter__<T>                                              : Returns<Str> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __reversed__<T>                                          : Returns<Str> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __contains__<T, Object>                                  : Returns<bool> {};
-template <istr T, str_like Key>
+template <std::derived_from<Str> T, str_like Key>
 struct __contains__<T, Key>                                     : Returns<bool> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getitem__<T, Object>                                   : Returns<Str> {};
-template <istr T, int_like Key>
+template <std::derived_from<Str> T, int_like Key>
 struct __getitem__<T, Key>                                      : Returns<Str> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getitem__<T, Slice>                                    : Returns<Str> {};
-template <istr L>
+template <std::derived_from<Str> L>
 struct __lt__<L, Object>                                        : Returns<bool> {};
-template <istr L, str_like R>
+template <std::derived_from<Str> L, str_like R>
 struct __lt__<L, R>                                             : Returns<bool> {};
-template <istr L>
+template <std::derived_from<Str> L>
 struct __le__<L, Object>                                        : Returns<bool> {};
-template <istr L, str_like R>
+template <std::derived_from<Str> L, str_like R>
 struct __le__<L, R>                                             : Returns<bool> {};
-template <istr L>
+template <std::derived_from<Str> L>
 struct __ge__<L, Object>                                        : Returns<bool> {};
-template <istr L, str_like R>
+template <std::derived_from<Str> L, str_like R>
 struct __ge__<L, R>                                             : Returns<bool> {};
-template <istr L>
+template <std::derived_from<Str> L>
 struct __gt__<L, Object>                                        : Returns<bool> {};
-template <istr L, str_like R>
+template <std::derived_from<Str> L, str_like R>
 struct __gt__<L, R>                                             : Returns<bool> {};
-template <istr L>
+template <std::derived_from<Str> L>
 struct __add__<L, Object>                                       : Returns<Str> {};
-template <istr L, str_like R>
+template <std::derived_from<Str> L, str_like R>
 struct __add__<L, R>                                            : Returns<Str> {};
-template <istr L>
+template <std::derived_from<Str> L>
 struct __iadd__<L, Object>                                      : Returns<Str> {};
-template <istr L, str_like R>
+template <std::derived_from<Str> L, str_like R>
 struct __iadd__<L, R>                                           : Returns<Str> {};
-template <istr L>
+template <std::derived_from<Str> L>
 struct __mul__<L, Object>                                       : Returns<Str> {};
-template <istr L, int_like R>
+template <std::derived_from<Str> L, int_like R>
 struct __mul__<L, R>                                            : Returns<Str> {};
-template <istr L>
+template <std::derived_from<Str> L>
 struct __imul__<L, Object>                                      : Returns<Str> {};
-template <istr L, int_like R>
+template <std::derived_from<Str> L, int_like R>
 struct __imul__<L, R>                                           : Returns<Str> {};
 
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "capitalize">                             : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "casefold">                               : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "center">                                 : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "copy">                                   : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "count">                                  : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "encode">                                 : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "endswith">                               : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "expandtabs">                             : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "find">                                   : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "format">                                 : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "format_map">                             : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "index">                                  : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "isalnum">                                : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "isalpha">                                : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "isascii">                                : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "isdecimal">                              : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "isdigit">                                : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "isidentifier">                           : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "islower">                                : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "isnumeric">                              : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "isprintable">                            : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "isspace">                                : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "istitle">                                : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "isupper">                                : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "join">                                   : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "ljust">                                  : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "lower">                                  : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "lstrip">                                 : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "maketrans">                              : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "partition">                              : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "removeprefix">                           : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "removesuffix">                           : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "replace">                                : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "rfind">                                  : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "rindex">                                 : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "rjust">                                  : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "rpartition">                             : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "rsplit">                                 : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "rstrip">                                 : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "split">                                  : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "splitlines">                             : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "startswith">                             : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "strip">                                  : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "swapcase">                               : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "title">                                  : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "translate">                              : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "upper">                                  : Returns<Function> {};
-template <istr T>
+template <std::derived_from<Str> T>
 struct __getattr__<T, "zfill">                                  : Returns<Function> {};
 
 }

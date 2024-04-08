@@ -144,7 +144,8 @@ void run() {
 
     py::Object a = 1;
     py::Bool b = false;
-    py::print(b < a);
+    py::print(py::Str("abc") < "def");
+    // py::print(py::impl::str_like<py::Bool>);
 
     // py::print(array.attr<"__doc__">());
 

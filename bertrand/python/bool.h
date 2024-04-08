@@ -14,247 +14,279 @@ namespace py {
 
 namespace impl {
 
-template <std::derived_from<Bool> T>
-struct __pos__<T>                                               : Returns<Int> {};
-template <std::derived_from<Bool> T>
-struct __neg__<T>                                               : Returns<Int> {};
-template <std::derived_from<Bool> T>
-struct __abs__<T>                                               : Returns<Int> {};
-template <std::derived_from<Bool> T>
-struct __invert__<T>                                            : Returns<Int> {};
-template <std::derived_from<Bool> T>
-struct __hash__<T>                                              : Returns<size_t> {};
-// NOTE: since py::Bool is implicitly convertible to bool, we technically don't need to
-// define any of the comparison operators on the Python side.  This would improve
-// performance and allow the compiler to catch more detailed syntax errors.
-template <std::derived_from<Bool> L>
-struct __lt__<L, Object>                                        : Returns<bool> {};
-template <std::derived_from<Bool> R>
-struct __lt__<Object, R>                                        : Returns<bool> {};
-template <bool_like T>
-struct __lt__<Bool, T>                                          : Returns<bool> {};
-template <bool_like T> requires (!std::derived_from<T, Object>)
-struct __lt__<T, Bool>                                          : Returns<bool> {};
-template <int_like T>
-struct __lt__<Bool, T>                                          : Returns<bool> {};
-template <int_like T>
-struct __lt__<T, Bool>                                          : Returns<bool> {};
-template <float_like T>
-struct __lt__<Bool, T>                                          : Returns<bool> {};
-template <float_like T>
-struct __lt__<T, Bool>                                          : Returns<bool> {};
-template <>
-struct __le__<Bool, Object>                                     : Returns<bool> {};
-template <>
-struct __le__<Object, Bool>                                     : Returns<bool> {};
-template <bool_like T>
-struct __le__<Bool, T>                                          : Returns<bool> {};
-template <bool_like T> requires (!std::is_same_v<T, Bool>)
-struct __le__<T, Bool>                                          : Returns<bool> {};
-template <int_like T>
-struct __le__<Bool, T>                                          : Returns<bool> {};
-template <int_like T>
-struct __le__<T, Bool>                                          : Returns<bool> {};
-template <float_like T>
-struct __le__<Bool, T>                                          : Returns<bool> {};
-template <float_like T>
-struct __le__<T, Bool>                                          : Returns<bool> {};
-template <>
-struct __ge__<Bool, Object>                                     : Returns<bool> {};
-template <>
-struct __ge__<Object, Bool>                                     : Returns<bool> {};
-template <bool_like T>
-struct __ge__<Bool, T>                                          : Returns<bool> {};
-template <bool_like T> requires (!std::is_same_v<T, Bool>)
-struct __ge__<T, Bool>                                          : Returns<bool> {};
-template <int_like T>
-struct __ge__<Bool, T>                                          : Returns<bool> {};
-template <int_like T>
-struct __ge__<T, Bool>                                          : Returns<bool> {};
-template <float_like T>
-struct __ge__<Bool, T>                                          : Returns<bool> {};
-template <float_like T>
-struct __ge__<T, Bool>                                          : Returns<bool> {};
-template <>
-struct __gt__<Bool, Object>                                     : Returns<bool> {};
-template <>
-struct __gt__<Object, Bool>                                     : Returns<bool> {};
-template <bool_like T>
-struct __gt__<Bool, T>                                          : Returns<bool> {};
-template <bool_like T> requires (!std::is_same_v<T, Bool>)
-struct __gt__<T, Bool>                                          : Returns<bool> {};
-template <int_like T>
-struct __gt__<Bool, T>                                          : Returns<bool> {};
-template <int_like T>
-struct __gt__<T, Bool>                                          : Returns<bool> {};
-template <float_like T>
-struct __gt__<Bool, T>                                          : Returns<bool> {};
-template <float_like T>
-struct __gt__<T, Bool>                                          : Returns<bool> {};
-template <>
-struct __add__<Bool, Object>                                    : Returns<Object> {};
-template <>
-struct __add__<Object, Bool>                                    : Returns<Object> {};
-template <bool_like T>
-struct __add__<Bool, T>                                         : Returns<Int> {};
-template <bool_like T> requires (!std::is_same_v<T, Bool>)
-struct __add__<T, Bool>                                         : Returns<Int> {};
-template <int_like T>
-struct __add__<Bool, T>                                         : Returns<Int> {};
-template <int_like T>
-struct __add__<T, Bool>                                         : Returns<Int> {};
-template <float_like T>
-struct __add__<Bool, T>                                         : Returns<Float> {};
-template <float_like T>
-struct __add__<T, Bool>                                         : Returns<Float> {};
-template <complex_like T>
-struct __add__<Bool, T>                                         : Returns<Complex> {};
-template <complex_like T>
-struct __add__<T, Bool>                                         : Returns<Complex> {};
-template <>
-struct __sub__<Bool, Object>                                    : Returns<Object> {};
-template <>
-struct __sub__<Object, Bool>                                    : Returns<Object> {};
-template <bool_like T>
-struct __sub__<Bool, T>                                         : Returns<Int> {};
-template <bool_like T> requires (!std::is_same_v<T, Bool>)
-struct __sub__<T, Bool>                                         : Returns<Int> {};
-template <int_like T>
-struct __sub__<Bool, T>                                         : Returns<Int> {};
-template <int_like T>
-struct __sub__<T, Bool>                                         : Returns<Int> {};
-template <float_like T>
-struct __sub__<Bool, T>                                         : Returns<Float> {};
-template <float_like T>
-struct __sub__<T, Bool>                                         : Returns<Float> {};
-template <complex_like T>
-struct __sub__<Bool, T>                                         : Returns<Complex> {};
-template <complex_like T>
-struct __sub__<T, Bool>                                         : Returns<Complex> {};
-template <>
-struct __mul__<Bool, Object>                                    : Returns<Object> {};
-template <>
-struct __mul__<Object, Bool>                                    : Returns<Object> {};
-template <bool_like T>
-struct __mul__<Bool, T>                                         : Returns<Int> {};
-template <bool_like T> requires (!std::is_same_v<T, Bool>)
-struct __mul__<T, Bool>                                         : Returns<Int> {};
-template <int_like T>
-struct __mul__<Bool, T>                                         : Returns<Int> {};
-template <int_like T>
-struct __mul__<T, Bool>                                         : Returns<Int> {};
-template <float_like T>
-struct __mul__<Bool, T>                                         : Returns<Float> {};
-template <float_like T>
-struct __mul__<T, Bool>                                         : Returns<Float> {};
-template <complex_like T>
-struct __mul__<Bool, T>                                         : Returns<Complex> {};
-template <complex_like T>
-struct __mul__<T, Bool>                                         : Returns<Complex> {};
-template <>
-struct __truediv__<Bool, Object>                                : Returns<Object> {};
-template <>
-struct __truediv__<Object, Bool>                                : Returns<Object> {};
-template <bool_like T>
-struct __truediv__<Bool, T>                                     : Returns<Float> {};
-template <bool_like T> requires (!std::is_same_v<T, Bool>)
-struct __truediv__<T, Bool>                                     : Returns<Float> {};
-template <int_like T>
-struct __truediv__<Bool, T>                                     : Returns<Float> {};
-template <int_like T>
-struct __truediv__<T, Bool>                                     : Returns<Float> {};
-template <float_like T>
-struct __truediv__<Bool, T>                                     : Returns<Float> {};
-template <float_like T>
-struct __truediv__<T, Bool>                                     : Returns<Float> {};
-template <complex_like T>
-struct __truediv__<Bool, T>                                     : Returns<Complex> {};
-template <complex_like T>
-struct __truediv__<T, Bool>                                     : Returns<Complex> {};
-template <>
-struct __mod__<Bool, Object>                                    : Returns<Object> {};
-template <>
-struct __mod__<Object, Bool>                                    : Returns<Object> {};
-template <bool_like T>
-struct __mod__<Bool, T>                                         : Returns<Int> {};
-template <bool_like T> requires (!std::is_same_v<T, Bool>)
-struct __mod__<T, Bool>                                         : Returns<Int> {};
-template <int_like T>
-struct __mod__<Bool, T>                                         : Returns<Int> {};
-template <int_like T>
-struct __mod__<T, Bool>                                         : Returns<Int> {};
-template <float_like T>
-struct __mod__<Bool, T>                                         : Returns<Float> {};
-template <float_like T>
-struct __mod__<T, Bool>                                         : Returns<Float> {};
-// template <complex_like T>    <-- Disabled in Python
-// struct __mod__<Bool, T>                                      : Returns<Complex> {};
-template <>
-struct __lshift__<Bool, Object>                                 : Returns<Object> {};
-template <>
-struct __lshift__<Object, Bool>                                 : Returns<Object> {};
-template <bool_like T>
-struct __lshift__<Bool, T>                                      : Returns<Int> {};
-template <bool_like T> requires (!std::is_same_v<T, Bool>)
-struct __lshift__<T, Bool>                                      : Returns<Int> {};
-template <int_like T>
-struct __lshift__<Bool, T>                                      : Returns<Int> {};
-template <int_like T>
-struct __lshift__<T, Bool>                                      : Returns<Int> {};
-template <>
-struct __rshift__<Bool, Object>                                 : Returns<Object> {};
-template <>
-struct __rshift__<Object, Bool>                                 : Returns<Object> {};
-template <bool_like T>
-struct __rshift__<Bool, T>                                      : Returns<Int> {};
-template <bool_like T> requires (!std::is_same_v<T, Bool>)
-struct __rshift__<T, Bool>                                      : Returns<Int> {};
-template <int_like T>
-struct __rshift__<Bool, T>                                      : Returns<Int> {};
-template <int_like T>
-struct __rshift__<T, Bool>                                      : Returns<Int> {};
-template <>
-struct __and__<Bool, Object>                                    : Returns<Object> {};
-template <>
-struct __and__<Object, Bool>                                    : Returns<Object> {};
-template <bool_like T>
-struct __and__<Bool, T>                                         : Returns<Bool> {};
-template <bool_like T> requires (!std::is_same_v<T, Bool>)
-struct __and__<T, Bool>                                         : Returns<Bool> {};
-template <int_like T>
-struct __and__<Bool, T>                                         : Returns<Int> {};
-template <int_like T>
-struct __and__<T, Bool>                                         : Returns<Int> {};
-template <bool_like T>
-struct __iand__<Bool, T>                                        : Returns<Bool&> {};
-template <>
-struct __or__<Bool, Object>                                     : Returns<Object> {};
-template <>
-struct __or__<Object, Bool>                                     : Returns<Object> {};
-template <bool_like T>
-struct __or__<Bool, T>                                          : Returns<Bool> {};
-template <bool_like T> requires (!std::is_same_v<T, Bool>)
-struct __or__<T, Bool>                                          : Returns<Bool> {};
-template <int_like T>
-struct __or__<Bool, T>                                          : Returns<Int> {};
-template <int_like T>
-struct __or__<T, Bool>                                          : Returns<Int> {};
-template <bool_like T>
-struct __ior__<Bool, T>                                         : Returns<Bool&> {};
-template <>
-struct __xor__<Bool, Object>                                    : Returns<Object> {};
-template <>
-struct __xor__<Object, Bool>                                    : Returns<Object> {};
-template <bool_like T>
-struct __xor__<Bool, T>                                         : Returns<Bool> {};
-template <bool_like T> requires (!std::is_same_v<T, Bool>)
-struct __xor__<T, Bool>                                         : Returns<Bool> {};
-template <int_like T>
-struct __xor__<Bool, T>                                         : Returns<Int> {};
-template <int_like T>
-struct __xor__<T, Bool>                                         : Returns<Int> {};
-template <bool_like T>
-struct __ixor__<Bool, T>                                        : Returns<Bool&> {};
+    template <std::derived_from<Bool> T>
+    struct __pos__<T>                                           : Returns<Int> {};
+    template <std::derived_from<Bool> T>
+    struct __neg__<T>                                           : Returns<Int> {};
+    template <std::derived_from<Bool> T>
+    struct __abs__<T>                                           : Returns<Int> {};
+    template <std::derived_from<Bool> T>
+    struct __invert__<T>                                        : Returns<Int> {};
+    template <std::derived_from<Bool> T>
+    struct __hash__<T>                                          : Returns<size_t> {};
+    // TODO: since py::Bool is implicitly convertible to bool, we technically don't need to
+    // define any of the comparison operators on the Python side.  This would improve
+    // performance and allow the compiler to catch more detailed syntax errors.
+    template <std::derived_from<Bool> L>
+    struct __lt__<L, Object>                                    : Returns<bool> {};
+    template <std::derived_from<Bool> R>
+    struct __lt__<Object, R>                                    : Returns<bool> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __lt__<L, R>                                         : Returns<bool> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __lt__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __lt__<L, R>                                         : Returns<bool> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __lt__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L, float_like R>
+    struct __lt__<L, R>                                         : Returns<bool> {};
+    template <float_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __lt__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L>
+    struct __le__<L, Object>                                    : Returns<bool> {};
+    template <std::derived_from<Bool> R>
+    struct __le__<Object, R>                                    : Returns<bool> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __le__<L, R>                                         : Returns<bool> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __le__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __le__<L, R>                                         : Returns<bool> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __le__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L, float_like R>
+    struct __le__<L, R>                                         : Returns<bool> {};
+    template <float_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __le__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L>
+    struct __eq__<L, Object>                                    : Returns<bool> {};
+    template <std::derived_from<Bool> R>
+    struct __eq__<Object, R>                                    : Returns<bool> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __eq__<L, R>                                         : Returns<bool> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __eq__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __eq__<L, R>                                         : Returns<bool> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __eq__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L, float_like R>
+    struct __eq__<L, R>                                         : Returns<bool> {};
+    template <float_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __eq__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L>
+    struct __ne__<L, Object>                                    : Returns<bool> {};
+    template <std::derived_from<Bool> R>
+    struct __ne__<Object, R>                                    : Returns<bool> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __ne__<L, R>                                         : Returns<bool> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __ne__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __ne__<L, R>                                         : Returns<bool> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __ne__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L, float_like R>
+    struct __ne__<L, R>                                         : Returns<bool> {};
+    template <float_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __ne__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L>
+    struct __ge__<L, Object>                                    : Returns<bool> {};
+    template <std::derived_from<Bool> R>
+    struct __ge__<Object, R>                                    : Returns<bool> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __ge__<L, R>                                         : Returns<bool> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __ge__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __ge__<L, R>                                         : Returns<bool> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __ge__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L, float_like R>
+    struct __ge__<L, R>                                         : Returns<bool> {};
+    template <float_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __ge__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L>
+    struct __gt__<L, Object>                                    : Returns<bool> {};
+    template <std::derived_from<Bool> R>
+    struct __gt__<Object, R>                                    : Returns<bool> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __gt__<L, R>                                         : Returns<bool> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __gt__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __gt__<L, R>                                         : Returns<bool> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __gt__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L, float_like R>
+    struct __gt__<L, R>                                         : Returns<bool> {};
+    template <float_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __gt__<L, R>                                         : Returns<bool> {};
+    template <std::derived_from<Bool> L>
+    struct __add__<L, Object>                                   : Returns<Object> {};
+    template <std::derived_from<Bool> R>
+    struct __add__<Object, R>                                   : Returns<Object> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __add__<L, R>                                        : Returns<Int> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __add__<L, R>                                        : Returns<Int> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __add__<L, R>                                        : Returns<Int> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __add__<L, R>                                        : Returns<Int> {};
+    template <std::derived_from<Bool> L, float_like R>
+    struct __add__<L, R>                                        : Returns<Float> {};
+    template <float_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __add__<L, R>                                        : Returns<Float> {};
+    template <std::derived_from<Bool> L, complex_like R>
+    struct __add__<L, R>                                        : Returns<Complex> {};
+    template <complex_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __add__<L, R>                                        : Returns<Complex> {};
+    template <std::derived_from<Bool> L>
+    struct __sub__<L, Object>                                   : Returns<Object> {};
+    template <std::derived_from<Bool> R>
+    struct __sub__<Object, R>                                   : Returns<Object> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __sub__<L, R>                                        : Returns<Int> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __sub__<L, R>                                        : Returns<Int> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __sub__<L, R>                                        : Returns<Int> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __sub__<L, R>                                        : Returns<Int> {};
+    template <std::derived_from<Bool> L, float_like R>
+    struct __sub__<L, R>                                        : Returns<Float> {};
+    template <float_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __sub__<L, R>                                        : Returns<Float> {};
+    template <std::derived_from<Bool> L, complex_like R>
+    struct __sub__<L, R>                                        : Returns<Complex> {};
+    template <complex_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __sub__<L, R>                                        : Returns<Complex> {};
+    template <std::derived_from<Bool> L>
+    struct __mul__<L, Object>                                   : Returns<Object> {};
+    template <std::derived_from<Bool> R>
+    struct __mul__<Object, R>                                   : Returns<Object> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __mul__<L, R>                                        : Returns<Int> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __mul__<L, R>                                        : Returns<Int> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __mul__<L, R>                                        : Returns<Int> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __mul__<L, R>                                        : Returns<Int> {};
+    template <std::derived_from<Bool> L, float_like R>
+    struct __mul__<L, R>                                        : Returns<Float> {};
+    template <float_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __mul__<L, R>                                        : Returns<Float> {};
+    template <std::derived_from<Bool> L, complex_like R>
+    struct __mul__<L, R>                                        : Returns<Complex> {};
+    template <complex_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __mul__<L, R>                                        : Returns<Complex> {};
+    template <std::derived_from<Bool> L>
+    struct __truediv__<L, Object>                               : Returns<Object> {};
+    template <std::derived_from<Bool> R>
+    struct __truediv__<Object, R>                               : Returns<Object> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __truediv__<L, R>                                    : Returns<Float> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __truediv__<L, R>                                    : Returns<Float> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __truediv__<L, R>                                    : Returns<Float> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __truediv__<L, R>                                    : Returns<Float> {};
+    template <std::derived_from<Bool> L, float_like R>
+    struct __truediv__<L, R>                                    : Returns<Float> {};
+    template <float_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __truediv__<L, R>                                    : Returns<Float> {};
+    template <std::derived_from<Bool> L, complex_like R>
+    struct __truediv__<L, R>                                    : Returns<Complex> {};
+    template <complex_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __truediv__<L, R>                                    : Returns<Complex> {};
+    template <std::derived_from<Bool> L>
+    struct __mod__<L, Object>                                   : Returns<Object> {};
+    template <std::derived_from<Bool> R>
+    struct __mod__<Object, R>                                   : Returns<Object> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __mod__<L, R>                                        : Returns<Int> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __mod__<L, R>                                        : Returns<Int> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __mod__<L, R>                                        : Returns<Int> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __mod__<L, R>                                        : Returns<Int> {};
+    template <std::derived_from<Bool> L, float_like R>
+    struct __mod__<L, R>                                        : Returns<Float> {};
+    template <float_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __mod__<L, R>                                        : Returns<Float> {};
+    // template <std::derived_from<Bool> L, complex_like R>    <-- Disabled in Python
+    // struct __mod__<L, R>                                     : Returns<Complex> {};
+    template <std::derived_from<Bool> L>
+    struct __lshift__<L, Object>                                : Returns<Object> {};
+    template <std::derived_from<Bool> R>
+    struct __lshift__<Object, R>                                : Returns<Object> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __lshift__<L, R>                                     : Returns<Int> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __lshift__<L, R>                                     : Returns<Int> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __lshift__<L, R>                                     : Returns<Int> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __lshift__<L, R>                                     : Returns<Int> {};
+    template <std::derived_from<Bool> L>
+    struct __rshift__<L, Object>                                : Returns<Object> {};
+    template <std::derived_from<Bool> R>
+    struct __rshift__<Object, R>                                : Returns<Object> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __rshift__<L, R>                                     : Returns<Int> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __rshift__<L, R>                                     : Returns<Int> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __rshift__<L, R>                                     : Returns<Int> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __rshift__<L, R>                                     : Returns<Int> {};
+    template <std::derived_from<Bool> L>
+    struct __and__<L, Object>                                   : Returns<Object> {};
+    template <std::derived_from<Bool> R>
+    struct __and__<Object, R>                                   : Returns<Object> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __and__<L, R>                                        : Returns<Bool> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __and__<L, R>                                        : Returns<Bool> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __and__<L, R>                                        : Returns<Int> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __and__<L, R>                                        : Returns<Int> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __iand__<L, R>                                       : Returns<Bool&> {};
+    template <std::derived_from<Bool> L>
+    struct __or__<L, Object>                                    : Returns<Object> {};
+    template <std::derived_from<Bool> R>
+    struct __or__<Object, R>                                    : Returns<Object> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __or__<L, R>                                         : Returns<Bool> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __or__<L, R>                                         : Returns<Bool> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __or__<L, R>                                         : Returns<Int> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __or__<L, R>                                         : Returns<Int> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __ior__<L, R>                                        : Returns<Bool&> {};
+    template <std::derived_from<Bool> L>
+    struct __xor__<L, Object>                                   : Returns<Object> {};
+    template <std::derived_from<Bool> R>
+    struct __xor__<Object, R>                                   : Returns<Object> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __xor__<L, R>                                        : Returns<Bool> {};
+    template <bool_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __xor__<L, R>                                        : Returns<Bool> {};
+    template <std::derived_from<Bool> L, int_like R>
+    struct __xor__<L, R>                                        : Returns<Int> {};
+    template <int_like L, std::derived_from<Bool> R> requires (!std::derived_from<L, Object>)
+    struct __xor__<L, R>                                        : Returns<Int> {};
+    template <std::derived_from<Bool> L, bool_like R>
+    struct __ixor__<L, R>                                       : Returns<Bool&> {};
 
 }
 
