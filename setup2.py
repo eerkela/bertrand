@@ -27,33 +27,41 @@ class build_ext(BuildExt):
             print(f"failed to extract {tarball}:", exc)
             sys.exit(1)
 
-    def install_pcre2(self, cwd: Path) -> None:
-        """Build PCRE2 from source after extracting it.
+    def install_cpptrace(self, cwd: Path) -> None:
+        """Build cpptrace from source after extracting it.
 
         Parameters
         ----------
         cwd : Path
             A path to the directory where the tarball was extracted.
         """
-        pcre_dir = "pcre2-10.43"
-        if (cwd / pcre_dir).exists():
-            cwd = cwd / pcre_dir
+        cpptrace_dir = "cpptrace-0.5.2"
+        if (cwd / cpptrace_dir).exists():
+            cwd = cwd / cpptrace_dir
         else:
-            self.extract(cwd, f"{pcre_dir}.tar.gz")
-            cwd = cwd / pcre_dir
+            self.extract(cwd, f"{cpptrace_dir}.tar.gz")
+            subprocess.check_call(["mv", "cpptrace", cpptrace_dir], cwd=str(cwd))
+            cwd = cwd / cpptrace_dir / "build"
             cwd.mkdir(parents=True, exist_ok=True)
 
             try:
-                subprocess.check_call(["./configure", "--enable-jit=auto"], cwd=str(cwd))
+                subprocess.check_call(
+                    ["cmake", "..", "-DCMAKE_BUILD_TYPE=Release"],
+                    cwd=str(cwd)
+                )
                 subprocess.check_call(["make"], cwd=str(cwd))
             except subprocess.CalledProcessError as exc:
-                print("failed to build PCRE2:", exc)
+                print("failed to build cpptrace:", exc)
                 sys.exit(1)
 
+            cwd = cwd.parent  # back out to root dir
+
         # add headers to include path and link against binary
-        self.include_dirs.append(str(cwd / "src"))
-        self.library_dirs.append(str(cwd / ".libs"))
-        self.libraries.append("pcre2-8")
+        self.include_dirs.append(str(cwd / "include"))
+        self.library_dirs.append(str(cwd / "build"))
+        self.library_dirs.append(str(cwd / "build/_deps/libdwarf-build/src/lib/libdwarf"))
+        self.library_dirs.append(str(cwd / "build/_deps/zstd-build/lib"))
+        self.libraries.extend(["cpptrace", "dwarf", "z", "zstd", "dl"])
 
     def install_gtest(self, cwd: Path) -> None:
         """Build GoogleTest from source after extracting it.
@@ -88,6 +96,34 @@ class build_ext(BuildExt):
         self.library_dirs.append(str(cwd / "build/lib"))
         self.libraries.append("gtest")
 
+    def install_pcre2(self, cwd: Path) -> None:
+        """Build PCRE2 from source after extracting it.
+
+        Parameters
+        ----------
+        cwd : Path
+            A path to the directory where the tarball was extracted.
+        """
+        pcre_dir = "pcre2-10.43"
+        if (cwd / pcre_dir).exists():
+            cwd = cwd / pcre_dir
+        else:
+            self.extract(cwd, f"{pcre_dir}.tar.gz")
+            cwd = cwd / pcre_dir
+            cwd.mkdir(parents=True, exist_ok=True)
+
+            try:
+                subprocess.check_call(["./configure", "--enable-jit=auto"], cwd=str(cwd))
+                subprocess.check_call(["make"], cwd=str(cwd))
+            except subprocess.CalledProcessError as exc:
+                print("failed to build PCRE2:", exc)
+                sys.exit(1)
+
+        # add headers to include path and link against binary
+        self.include_dirs.append(str(cwd / "src"))
+        self.library_dirs.append(str(cwd / ".libs"))
+        self.libraries.append("pcre2-8")
+
     def run(self, *args: Any, **kwargs: Any) -> None:
         """Build third-party libraries from source before installing any extensions.
         
@@ -110,8 +146,9 @@ class build_ext(BuildExt):
 
         # install third-party C++ packages
         cwd = Path(os.getcwd()) / "third_party"
-        self.install_pcre2(cwd)
+        self.install_cpptrace(cwd)
         self.install_gtest(cwd)
+        self.install_pcre2(cwd)
 
         # compile Python extensions
         super().run(*args, **kwargs)

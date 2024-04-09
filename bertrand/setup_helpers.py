@@ -56,6 +56,7 @@ class Extension(Pybind11Extension):
                 "C++ standard must be at least C++20 to enable bertrand features"
             )
 
+        self.extra_compile_args.append("-g")
         self.clangd = clangd
         self.include_dirs.append(get_include())
         self.include_dirs.append(numpy.get_include())

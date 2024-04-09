@@ -89,6 +89,9 @@
 
 #include <limits>
 
+#include <cpptrace/cpptrace.hpp>
+
+
 namespace py = bertrand::py;
 using namespace py::literals;
 
@@ -119,9 +122,32 @@ namespace py {
 
 
 
+void throws_an_error() {
+    throw py::TypeError("test exception");
+}
+
+
+
+
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
+
+
+    // throw cpptrace::logic_error("test");
+    // cpptrace::generate_trace().print_with_snippets();
+
+
+    throws_an_error();
+
+    // py::Function f(hello);
+    // f(true);
+    // f(py::Type("foo"), py::None, py::None);
+
+
+    // py::print(py::impl::python_like<bool>);
+
+
 
 
     // py::List list = {1, 2, 3, 4};
@@ -142,9 +168,9 @@ void run() {
     // py::Bool y = false;
     // // py::print(x < y);
 
-    py::Object a = 1;
-    py::Bool b = false;
-    py::print(py::Str("abc") < "def");
+    // py::Object a = 1;
+    // py::Bool b = false;
+    // py::print(b == "abc");
     // py::print(py::impl::str_like<py::Bool>);
 
     // py::print(array.attr<"__doc__">());

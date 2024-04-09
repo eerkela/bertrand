@@ -19,6 +19,7 @@
 #include <ostream>
 #include <set>
 #include <sstream>
+#include <stack>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -28,6 +29,7 @@
 #include <vector>
 
 #include <Python.h>
+#include <cpptrace/cpptrace.hpp>
 #include <pybind11/pybind11.h>
 #include <pybind11/embed.h>
 #include <pybind11/eval.h>
@@ -35,6 +37,7 @@
 #include <pybind11/iostream.h>
 // #include <pybind11/numpy.h>
 #include <pybind11/pytypes.h>
+
 
 #include "bertrand/static_str.h"
 
@@ -104,6 +107,14 @@
 
 namespace bertrand {
 namespace py {
+
+#if defined(_MSC_VER)
+    #define BERTRAND_NOINLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+    #define BERTRAND_NOINLINE __attribute__((noinline))
+#else
+    #define BERTRAND_NOINLINE
+#endif
 
 
 /////////////////////////////////////////
@@ -240,6 +251,162 @@ class Regex;  // TODO: incorporate more fully (write pybind11 bindings so that i
  */
 
 
+/* Base exception class.  Appends a C++ stack trace that will be propagated up to
+Python for cross-language diagnostics. */
+class Exception : public pybind11::builtin_exception {
+    using Base = pybind11::builtin_exception;
+
+protected:
+    mutable cpptrace::detail::lazy_trace_holder cpp_traceback;
+    mutable std::string what_string;
+
+    /* Convert the C++ exception into an equivalent Python exception and format the
+    C++ traceback so that it can be printed in `sys.excepthook()`. */
+    void convert_to_pyerr(PyObject* exception_type) const {
+        // install excepthook to catch C++ exceptions on python side
+        static bool installed = false;
+        if (!installed) {
+            install_excepthook();
+            installed = true;
+        }
+
+        // build C++ traceback with snippets
+        std::stack<std::string> entries;
+        for (auto&& frame : cpp_traceback.get_resolved_trace()) {
+            std::string trace = frame.to_string();
+            if (
+                trace.find("usr/bin/python") != trace.npos ||
+                trace.find("pybind11::cpp_function::") != trace.npos ||
+                trace.find("__libc") != trace.npos
+            ) {
+                continue;
+            }
+            entries.push("  " + trace + '\n' + cpptrace::get_snippet(
+                frame.filename,
+                frame.line.value(),
+                1,
+                true
+            ));
+        }
+        std::string message;
+        while (!entries.empty()) {
+            message += entries.top();
+            entries.pop();
+        }
+        if (!message.empty()) {
+            message.pop_back();  // remove trailing newline
+        }
+
+        // TODO: implement a separate code path for Python 3.12+ using
+        // PyErr_SetRaisedException
+
+        // set Python exception and append C++ traceback for handling in excepthook
+        using pybind11::str;
+        static const str lookup = "cpp_traceback";
+        PyErr_SetString(exception_type, Base::what());
+        PyObject* err_type;
+        PyObject* err_value;
+        PyObject* err_traceback;
+        PyErr_Fetch(&err_type, &err_value, &err_traceback);
+        PyErr_NormalizeException(&err_type, &err_value, &err_traceback);
+        if (PyObject_SetAttr(err_value, lookup.ptr(), str(message).ptr()) == -1) {
+            Py_XDECREF(err_type);
+            Py_XDECREF(err_value);
+            Py_XDECREF(err_traceback);
+            throw pybind11::error_already_set();
+        }
+        PyErr_Restore(err_type, err_value, err_traceback);
+    }
+
+    /* Format a Python object given as a constructor argument. */
+    static std::string format_obj(const Handle& obj) {
+        PyObject* string = PyObject_Str(obj.ptr());
+        if (string == nullptr) {
+            throw pybind11::error_already_set();
+        }
+        Py_ssize_t size;
+        const char* data = PyUnicode_AsUTF8AndSize(string, &size);
+        if (data == nullptr) {
+            Py_DECREF(string);
+            throw pybind11::error_already_set();
+        }
+        std::string result(data, size);
+        Py_DECREF(string);
+        return result;
+    }
+
+    /* A custom Python `sys.excepthook()` function that appends a C++ stack trace to
+    the normal Python output.  Delegates to the original `sys.excepthook()` function if
+    an exception is raised that does not have a `.cpp_traceback` attribute. */
+    static void excepthook(
+        const py::Type& exc_type,
+        const py::Object& exc_value,
+        const py::Object& tb
+    );
+
+    /* Insert the above excepthook function for  */
+    static void install_excepthook();
+
+    /* Protected constructor avoids unnecessary noise in C++ stack trace from calling a
+    parent class constructor. */
+    Exception(const std::string& message, cpptrace::raw_trace&& trace) :
+        Base(message), cpp_traceback(std::move(trace))
+    {}
+
+public:
+
+    BERTRAND_NOINLINE
+    explicit Exception(const std::string& message, size_t skip = 0) : Exception(
+        message,
+        cpptrace::detail::get_raw_trace_and_absorb(skip + 1)
+    ) {}
+
+    BERTRAND_NOINLINE
+    explicit Exception(Handle obj, size_t skip = 0) : Exception(
+        format_obj(obj),
+        cpptrace::detail::get_raw_trace_and_absorb(skip + 1)
+    ) {}
+
+    Exception() : Exception("") {}
+    Exception(const Exception& other) :
+        Base(other), cpp_traceback(other.cpp_traceback), what_string(other.what_string)
+    {}
+
+    Exception& operator=(const Exception& other) {
+        if (&other != this) {
+            Base::operator=(other);
+            cpp_traceback = other.cpp_traceback;
+            what_string = other.what_string;
+        }
+        return *this;
+    }
+
+    const char* what() const noexcept override {
+        if (what_string.empty()) {
+            what_string = message() + std::string(":\n");
+            what_string += cpp_traceback.get_resolved_trace().to_string();
+        }
+        return what_string.c_str();
+    }
+
+    const char* message() const noexcept {
+        return Base::what();
+    }
+
+    const cpptrace::stacktrace& trace() const noexcept {
+        return cpp_traceback.get_resolved_trace();
+    }
+
+    virtual void set_error() const override {
+        convert_to_pyerr(PyExc_Exception);
+    }
+
+};
+
+
+// TODO: these custom errors need to also append the C++ traceback
+
+
 // These exceptions have no python equivalent
 using pybind11::error_already_set;
 using CastError = pybind11::cast_error;
@@ -247,30 +414,22 @@ using ReferenceCastError = pybind11::reference_cast_error;
 
 
 #define PYTHON_EXCEPTION(base, cls, exc)                                                \
-    class PYBIND11_EXPORT_EXCEPTION cls : public base {                                 \
-    public:                                                                             \
+    struct PYBIND11_EXPORT_EXCEPTION cls : public base {                                \
         using base::base;                                                               \
-        cls() : cls("") {}                                                              \
-        explicit cls(Handle obj) : base([&obj] {                                        \
-            PyObject* string = PyObject_Str(obj.ptr());                                 \
-            if (string == nullptr) {                                                    \
-                throw error_already_set();                                              \
-            }                                                                           \
-            Py_ssize_t size;                                                            \
-            const char* data = PyUnicode_AsUTF8AndSize(string, &size);                  \
-            if (data == nullptr) {                                                      \
-                Py_DECREF(string);                                                      \
-                throw error_already_set();                                              \
-            }                                                                           \
-            std::string result(data, size);                                             \
-            Py_DECREF(string);                                                          \
-            return result;                                                              \
-        }()) {}                                                                         \
-        void set_error() const override { PyErr_SetString(exc, what()); }               \
+        BERTRAND_NOINLINE                                                               \
+        explicit cls(const std::string& message, size_t skip = 0) : cls(                \
+            message,                                                                    \
+            cpptrace::detail::get_raw_trace_and_absorb(skip + 1)                        \
+        ) {}                                                                            \
+        BERTRAND_NOINLINE                                                               \
+        explicit cls(Handle obj, size_t skip = 0) : cls(                                \
+            format_obj(obj),                                                            \
+            cpptrace::detail::get_raw_trace_and_absorb(skip + 1)                        \
+        ) {}                                                                            \
+        void set_error() const override { convert_to_pyerr(exc); }                      \
     };                                                                                  \
 
 
-using Exception = pybind11::builtin_exception;
 PYTHON_EXCEPTION(Exception, ArithmeticError, PyExc_ArithmeticError)
     PYTHON_EXCEPTION(ArithmeticError, FloatingPointError, PyExc_OverflowError)
     PYTHON_EXCEPTION(ArithmeticError, OverflowError, PyExc_OverflowError)
@@ -2607,9 +2766,8 @@ inline L& operator%=(L& lhs, const R& rhs) {
 }
 
 
-template <typename L, typename R> requires (
-    impl::__lshift__<L, R>::enable && !std::is_base_of_v<std::ostream, L>
-)
+template <typename L, typename R>
+    requires (impl::__lshift__<L, R>::enable && !std::is_base_of_v<std::ostream, L>)
 inline auto operator<<(const L& lhs, const R& rhs) {
     using Return = typename impl::__lshift__<L, R>::Return;
     static_assert(
@@ -2836,11 +2994,6 @@ static_cast<>, cross-language math operators, and generalized slice/attr syntax.
 class Object {
 protected:
     PyObject* m_ptr;
-
-    /* Default constructor.  Initializes to a null object, which should always be
-    filled in before being returned to the user.  Protecting this reduces the risk of
-    null pointers being accidentally introduced in client code. */
-    Object() = default;
 
     /* Protected tags mirror pybind11::object and allow for the use of
     reinterpret_borrow<>, reinterpret_steal<> for bertrand types. */
@@ -3344,6 +3497,11 @@ public:
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    /* Default constructor.  Initializes to a null object, which should always be
+    filled in before being returned to the user. NOTE: this has to be public for
+    pybind11's type casters to work as intended. */
+    Object() = default;
 
     /* reinterpret_borrow()/reinterpret_steal() constructors.  The tags themselves are
     protected and only accessible within subclasses of pybind11::object. */
@@ -5754,14 +5912,14 @@ namespace detail {
 
 template <std::derived_from<bertrand::py::Object> T>
 struct type_caster<T> {
-    PYBIND11_TYPE_CASTER(T, const_name("Object"));
+    PYBIND11_TYPE_CASTER(T, _("Object"));
 
     /* Convert Python object to a C++ Object. */
     inline bool load(handle src, bool convert) {
         if (!convert) {
             return false;
         }
-        value = reinterpret_borrow<bertrand::py::Object>(src);
+        value = bertrand::py::reinterpret_borrow<bertrand::py::Object>(src);
         return true;
     }
 
@@ -5840,5 +5998,6 @@ BERTRAND_STD_EQUAL_TO(bertrand::py::WeakRef)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Capsule)
 
 
+#undef BERTRAND_NOINLINE
 #undef BERTRAND_STD_EQUAL_TO
 #endif // BERTRAND_PYTHON_COMMON_H
