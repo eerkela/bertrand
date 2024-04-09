@@ -1260,34 +1260,36 @@ namespace impl {
     static Module sys = py::import<"sys">();
     static Function orig_excepthook = reinterpret_borrow<Function>(nullptr);
 
-}
-
-
-void Exception::excepthook(
-    const Type& exc_type,
-    const Object& exc_value,
-    const Object& tb
-) {
-    static const Str lookup = "cpp_traceback";
-    if (hasattr(exc_value, lookup)) {
-        static const py::Module traceback = py::import<"traceback">();
-        static const Str prelude = "Traceback (most recent call last):";
-        py::print(prelude);
-        py::Object tb = traceback.attr<"print_tb">()(exc_value.attr<"__traceback__">());
-        if (!tb.is(py::None)) {
-            py::print(tb);
+    void excepthook(
+        const Type& exc_type,
+        const Object& exc_value,
+        const Object& tb
+    ) {
+        static const Str lookup = "cpp_traceback";
+        if (hasattr(exc_value, lookup)) {
+            static const py::Module traceback = py::import<"traceback">();
+            static const Str prelude = "Traceback (most recent call last):";
+            py::print(prelude);
+            py::Object tb = traceback.attr<"print_tb">()(exc_value.attr<"__traceback__">());
+            if (!tb.is(py::None)) {
+                py::print(tb);
+            }
+            py::print(exc_value.attr<"cpp_traceback">());
+            py::print(exc_type.attr<"__name__">() + ": " + py::Str(exc_value));
+        } else {
+            impl::orig_excepthook(exc_type, exc_value, tb);
         }
-        py::print(exc_value.attr<"cpp_traceback">());
-        py::print(exc_type.attr<"__name__">() + ": " + py::Str(exc_value));
-    } else {
-        impl::orig_excepthook(exc_type, exc_value, tb);
     }
-}
 
+    void install_excepthook() {
+        static bool installed = false;
+        if (!installed) {
+            impl::orig_excepthook = impl::sys.attr<"excepthook">();
+            impl::sys.attr<"excepthook">() = py::Function(excepthook);
+            installed = true;
+        }
+    }
 
-void Exception::install_excepthook() {
-    impl::orig_excepthook = impl::sys.attr<"excepthook">();
-    impl::sys.attr<"excepthook">() = py::Function(excepthook);
 }
 
 

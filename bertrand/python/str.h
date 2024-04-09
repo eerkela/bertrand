@@ -5,6 +5,8 @@
 #ifndef BERTRAND_PYTHON_STRING_H
 #define BERTRAND_PYTHON_STRING_H
 
+// TODO: place BERTRAND_HAS_STD_FORMAT in a common header at root of bertrand source
+
 // std::format is part of the C++20 standard, but was not fully implemented until GCC 
 // 13+, clang 18+, or MSVC 19.29+
 #if defined(__GNUC__) && !defined(__clang__)
