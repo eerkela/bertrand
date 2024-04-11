@@ -12,13 +12,13 @@
 #include <deque>
 #include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <list>
 #include <map>
 #include <optional>
 #include <ostream>
 #include <set>
 #include <sstream>
-#include <stack>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -26,7 +26,6 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-
 
 #include <Python.h>
 #include <cpptrace/cpptrace.hpp>
@@ -38,7 +37,7 @@
 // #include <pybind11/numpy.h>
 #include <pybind11/pytypes.h>
 
-
+#include <bertrand/common.h>
 #include "bertrand/static_str.h"
 
 
@@ -107,16 +106,6 @@
 
 namespace bertrand {
 namespace py {
-
-// TODO: place BERTRAND_NOINLINE in a common header at root of bertrand source
-
-#if defined(_MSC_VER)
-    #define BERTRAND_NOINLINE __declspec(noinline)
-#elif defined(__GNUC__) || defined(__clang__)
-    #define BERTRAND_NOINLINE __attribute__((noinline))
-#else
-    #define BERTRAND_NOINLINE
-#endif
 
 
 /////////////////////////////////////////
@@ -253,6 +242,19 @@ class Regex;  // TODO: incorporate more fully (write pybind11 bindings so that i
  */
 
 
+// TODO: maintaining correct stack traces in mixed Python/C++ code is very tricky,
+// especially with the addition of embedded Python scripts.  This can lead to
+// complicated situations where the C++ stack trace is interleaved with the Python
+// stack trace, and the two must be reconciled to provide a coherent error message.
+// Currently, the way this is handled is by simply terminating the stack when a
+// py::Code::operator() frame is encountered, which is a reasonable heuristic, but not
+// perfect.  A better solution would involve unifying the stack traces into a single
+// object that can be passed around and manipulated as needed, but this would be
+// difficult to implement.  I don't want to try this until C++23 at the earliest, since
+// that adds stack traces to the standard library, which could simplify this and make
+// it more robust.  Tracebacks are surprisingly complicated!
+
+
 namespace impl {
 
     /* Create an empty Python frame object to represent a C++ context in Python
@@ -305,13 +307,25 @@ namespace impl {
         );
     }
 
+    /* Return true if a C++ stack frame does not refer to an internal frame within the
+    Python interpreter, pybind11 bindings, or the C++ standard library. */
+    bool ignore_frame(const cpptrace::stacktrace_frame& frame) {
+        return (
+            frame.filename.find("usr/bin/python") != std::string::npos ||
+            frame.symbol.find("pybind11::cpp_function::") != std::string::npos ||
+            frame.symbol.starts_with("__")
+        );
+    }
+
     /* A struct holding a complete Python error state, to simplify traceback
     interactions. */
-    class PyErr {
-    protected:
-        struct current_t {};
+    struct PyErr {
+        PyThreadState* thread;
+        PyTypeObject* type;
+        PyBaseExceptionObject* value;
+        PyTracebackObject* traceback;
 
-        explicit PyErr(PyThreadState* thread_state, const current_t&) :
+        PyErr(PyThreadState* thread_state = nullptr) :
             thread(thread_state == nullptr ? PyThreadState_Get() : thread_state)
         {
             #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
@@ -348,37 +362,26 @@ namespace impl {
             #endif
         }
 
-        /* Return true if a C++ stack frame does not refer to an internal frame within the
-        Python interpreter, pybind11 bindings, or the C++ standard library. */
-        bool ignore(const cpptrace::stacktrace_frame& frame) {
-            return (
-                frame.filename.find("usr/bin/python") != std::string::npos ||
-                frame.symbol.find("pybind11::cpp_function::") != std::string::npos ||
-                frame.symbol.starts_with("__")
-            );
-        }
-
-    public:
-        PyThreadState* thread;
-        PyTypeObject* type;
-        PyBaseExceptionObject* value;
-        PyTracebackObject* traceback;
-
-        static PyErr current(PyThreadState* thread_state = nullptr) {
-            return PyErr(thread_state, current_t{});
-        }
-
-        // TODO: accept type, value, and traceback separately?
-
-        PyErr(PyObject* exc, PyThreadState* thread_state = nullptr) :
-            thread(thread_state == nullptr ? PyThreadState_Get() : thread_state)
+        PyErr(
+            PyTypeObject* exc_type,
+            PyBaseExceptionObject* exc_value,
+            PyTracebackObject* exc_traceback,
+            PyThreadState* thread_state = nullptr
+        ) :
+            thread(thread_state == nullptr ? PyThreadState_Get() : thread_state),
+            type(reinterpret_cast<PyTypeObject*>(Py_XNewRef(exc_type))),
+            value(reinterpret_cast<PyBaseExceptionObject*>(Py_XNewRef(exc_value))),
+            traceback(reinterpret_cast<PyTracebackObject*>(Py_XNewRef(exc_traceback)))
         {
-            if (exc != nullptr) {
-                type = reinterpret_cast<PyTypeObject*>(Py_NewRef(Py_TYPE(exc)));
-                value = reinterpret_cast<PyBaseExceptionObject*>(Py_NewRef(exc));
-                traceback = reinterpret_cast<PyTracebackObject*>(
-                    PyException_GetTraceback(exc)
-                );
+            if (value != nullptr) {
+                if (type == nullptr) {
+                    type = reinterpret_cast<PyTypeObject*>(Py_NewRef(Py_TYPE(value)));
+                }
+                if (traceback == nullptr) {
+                    traceback = reinterpret_cast<PyTracebackObject*>(
+                        PyException_GetTraceback(reinterpret_cast<PyObject*>(value))
+                    );
+                }
             }
         }
 
@@ -521,7 +524,11 @@ namespace impl {
         the C++ standard library. */
         void extend(const cpptrace::stacktrace& stack) {
             for (auto&& frame : stack) {
-                if (!ignore(frame)) {
+                // break at Code::operator() frames to allow proper interleaving of
+                // Python and C++ frames
+                if (frame.symbol.find("py::Code::operator()") != std::string::npos) {
+                    break;
+                } else if (!ignore_frame(frame)) {
                     append(frame);
                 }
             }
@@ -546,15 +553,19 @@ protected:
     mutable cpptrace::stacktrace cpp_traceback;
     mutable std::string what_string;
 
+    static constexpr size_t UNLIMITED = std::numeric_limits<size_t>::max();
+
 public:
 
     BERTRAND_NOINLINE
-    explicit error_already_set(size_t skip = 0) :
-        Base(), cpp_traceback(cpptrace::generate_trace(skip + 1))
+    explicit error_already_set(size_t skip = 0, size_t max_depth = UNLIMITED) :
+        Base(), cpp_traceback(cpptrace::generate_trace(skip + 1, max_depth))
     {
-        // TODO: create a PyErr context from the current exception, extend with C++
-        // stack trace, and overwrite the current traceback using const_cast.
-        auto err = impl::PyErr(this->value().ptr());
+        impl::PyErr err(
+            reinterpret_cast<PyTypeObject*>(this->type().ptr()),
+            reinterpret_cast<PyBaseExceptionObject*>(this->value().ptr()),
+            reinterpret_cast<PyTracebackObject*>(this->trace().ptr())
+        );
         err.extend(cpp_traceback);
         const_cast<pybind11::object&>(this->trace()) =
             pybind11::reinterpret_borrow<pybind11::object>(
@@ -671,7 +682,7 @@ public:
 
     virtual void set_error() const override {
         PyErr_SetString(PyExc_Exception, message());
-        auto err = impl::PyErr::current();
+        impl::PyErr err;
         err.extend(cpp_traceback.get_resolved_trace());
         err.restore();
     }
@@ -694,7 +705,7 @@ public:
         ) {}                                                                            \
         void set_error() const override {                                               \
             PyErr_SetString(exc, message());                                            \
-            auto err = impl::PyErr::current();                                          \
+            impl::PyErr err;                                                            \
             err.extend(cpp_traceback.get_resolved_trace());                             \
             err.restore();                                                              \
         }                                                                               \
@@ -6272,6 +6283,5 @@ BERTRAND_STD_EQUAL_TO(bertrand::py::WeakRef)
 BERTRAND_STD_EQUAL_TO(bertrand::py::Capsule)
 
 
-#undef BERTRAND_NOINLINE
 #undef BERTRAND_STD_EQUAL_TO
 #endif // BERTRAND_PYTHON_COMMON_H

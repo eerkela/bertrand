@@ -93,10 +93,39 @@ static const py::Function array = np.attr<"array">();
 static const py::Type dtype = np.attr<"dtype">();
 
 
+
+// TODO: this almost works, but I end up duplicating the C++ traceback both times I
+// cross the Python/C++ boundary.  I need to figure out how to avoid that.
+
+
+void helper() {
+    throw py::TypeError("test error");
+}
+
+
 void throws_an_error() {
-    // throw py::TypeError("Bro, you fucked up");
-    PyErr_SetString(PyExc_TypeError, "test error");
-    throw py::error_already_set();
+    // throw py::TypeError("test error");
+
+    // PyErr_SetString(PyExc_TypeError, "test error");
+    // throw py::error_already_set();
+
+    // static py::Code script = R"(
+    //     def foo():
+    //         raise TypeError("test error")
+
+    //     foo()
+    // )"_python;
+
+    // script();
+
+    static py::Code script = R"(
+        def foo():
+            func()
+
+        foo()
+    )"_python;
+
+    script({{"func", py::Function(helper)}});
 }
 
 

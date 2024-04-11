@@ -325,7 +325,7 @@ class Code : public Object {
 
         PyObject* result = Py_CompileString(
             parsed.c_str(),
-            "<embedded C++ script>",
+            "<embedded Python script>",
             Py_file_input
         );
         if (result == nullptr) {
@@ -398,29 +398,37 @@ public:
     /////////////////////////////
 
     /* Execute the code object without context. */
-    inline Dict operator()() const {
-        Dict context;
+    BERTRAND_NOINLINE
+    Dict operator()() const {
+        py::Dict context;
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            throw error_already_set(1);
         }
         Py_DECREF(result);  // always None
         return context;
     }
 
     /* Execute the code object with the given context. */
-    inline Dict& operator()(Dict& context) const {
+    BERTRAND_NOINLINE
+    Dict& operator()(Dict& context) const {
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            throw error_already_set(1);
         }
         Py_DECREF(result);  // always None
         return context;
     }
 
     /* Execute the code object with the given context. */
-    inline Dict operator()(Dict&& context) const {
-        return std::move((*this)(context));
+    BERTRAND_NOINLINE
+    Dict operator()(Dict&& context) const {
+        PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
+        if (result == nullptr) {
+            throw error_already_set(1);
+        }
+        Py_DECREF(result);  // always None
+        return std::move(context);
     }
 
     /////////////////////
