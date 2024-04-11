@@ -553,6 +553,28 @@ public:
     template <typename T> requires (check<T>() && impl::python_like<T>)
     Frame(T&& other) : Base(std::forward<T>(other)) {}
 
+    /* Construct an empty frame from a function name, file name, and line number.  This
+    is primarily used to represent C++ contexts in Python exception tracebacks, etc. */
+    Frame(
+        const char* funcname,
+        const char* filename,
+        int lineno,
+        PyThreadState* thread_state = nullptr
+    ) : Base(
+        reinterpret_cast<PyObject*>(impl::empty_frame(
+            funcname,
+            filename,
+            lineno,
+            thread_state
+        )),
+        stolen_t{}
+    ) {}
+
+    /* Construct an empty frame from a cpptrace::stacktrace_frame object. */
+    Frame(const cpptrace::stacktrace_frame& frame) :
+        Base(reinterpret_cast<PyObject*>(impl::empty_frame(frame)), stolen_t{})
+    {}
+
     /* Skip backward a number of frames on construction. */
     explicit Frame(size_t skip) :
         Base(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{})
@@ -604,7 +626,7 @@ public:
         return reinterpret_steal<Object>(result);
     }
 
-    #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
+    #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
 
         /* Get the frame's builtin namespace. */
         inline Dict builtins() const {
@@ -649,7 +671,7 @@ public:
 
     #endif
 
-    #if (Py_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
+    #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
 
         /* Get a named variable from the frame's context.  Can raise if the variable is
         not present in the frame. */

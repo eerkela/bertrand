@@ -173,6 +173,20 @@ inline Type::Type(const Str& name, const Tuple& bases, const Dict& dict) {
 }
 
 
+#if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
+
+    /* Get the type's qualified name. */
+    inline Str Type::qualname() const {
+        PyObject* result = PyType_GetQualName(self());
+        if (result == nullptr) {
+            throw error_already_set();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+
+#endif
+
+
 template <impl::is_iterable T>
 inline void List::extend(const T& items) {
     if constexpr (impl::python_like<T>) {
@@ -1247,49 +1261,6 @@ inline Dict vars() {
 inline Dict vars(const Object& object) {
     static const Str lookup = "__dict__";
     return reinterpret_steal<Dict>(getattr(object, lookup).release());
-}
-
-
-//////////////////////////
-////    EXCEPTIONS    ////
-//////////////////////////
-
-
-namespace impl {
-
-    static Module sys = py::import<"sys">();
-    static Function orig_excepthook = reinterpret_borrow<Function>(nullptr);
-
-    void excepthook(
-        const Type& exc_type,
-        const Object& exc_value,
-        const Object& tb
-    ) {
-        static const Str lookup = "cpp_traceback";
-        if (hasattr(exc_value, lookup)) {
-            static const py::Module traceback = py::import<"traceback">();
-            static const Str prelude = "Traceback (most recent call last):";
-            py::print(prelude);
-            py::Object tb = traceback.attr<"print_tb">()(exc_value.attr<"__traceback__">());
-            if (!tb.is(py::None)) {
-                py::print(tb);
-            }
-            py::print(exc_value.attr<"cpp_traceback">());
-            py::print(exc_type.attr<"__name__">() + ": " + py::Str(exc_value));
-        } else {
-            impl::orig_excepthook(exc_type, exc_value, tb);
-        }
-    }
-
-    void install_excepthook() {
-        static bool installed = false;
-        if (!installed) {
-            impl::orig_excepthook = impl::sys.attr<"excepthook">();
-            impl::sys.attr<"excepthook">() = py::Function(excepthook);
-            installed = true;
-        }
-    }
-
 }
 
 

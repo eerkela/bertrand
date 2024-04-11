@@ -81,7 +81,6 @@
 #include <iostream>
 #include <string>
 
-
 #include <cpptrace/cpptrace.hpp>
 
 
@@ -89,52 +88,35 @@ namespace py = bertrand::py;
 using namespace py::literals;
 
 
-
-template <bertrand::StaticStr str>
-void func() {
-    py::print(str);
-}
-
-
 static const py::Module np = py::import<"numpy">();
 static const py::Function array = np.attr<"array">();
 static const py::Type dtype = np.attr<"dtype">();
 
 
-
-namespace bertrand {
-namespace py {
-
-    class Foo : public Bool {
-        using Bool::Bool;
-
-    };
-
-}
-}
-
-
-
 void throws_an_error() {
-    throw py::Exception("Bro, you fucked up");
+    // throw py::TypeError("Bro, you fucked up");
+    PyErr_SetString(PyExc_TypeError, "test error");
+    throw py::error_already_set();
 }
-
-
 
 
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
-
-    // throw cpptrace::logic_error("test");
-    // cpptrace::generate_trace().print_with_snippets();
+    throws_an_error();
 
 
-    // throws_an_error();
+    
+    // py::impl::current_exception exception;
+    // std::cout << (size_t)exception.pop() << std::endl;
+    // std::cout << (size_t)exception.pop() << std::endl;
+    
 
-    PyErr_SetString(PyExc_TypeError, "manual error");
-    throw py::error_already_set();
+
+
+
+
 
 
     // py::Function f(hello);
