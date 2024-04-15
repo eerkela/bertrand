@@ -13,64 +13,10 @@ namespace bertrand {
 namespace py {
 
 
-namespace impl {
+////////////////////
+////    KEYS    ////
+////////////////////
 
-template <>
-struct __len__<KeysView>                                    : Returns<size_t> {};
-template <>
-struct __iter__<KeysView>                                   : Returns<Object> {};
-template <>
-struct __reversed__<KeysView>                               : Returns<Object> {};
-template <is_hashable Key>
-struct __contains__<KeysView, Key>                          : Returns<bool> {};
-template <>
-struct __lt__<KeysView, Object>                             : Returns<bool> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __lt__<KeysView, T>                                  : Returns<bool> {};
-template <anyset_like T>
-struct __lt__<KeysView, T>                                  : Returns<bool> {};
-template <>
-struct __le__<KeysView, Object>                             : Returns<bool> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __le__<KeysView, T>                                  : Returns<bool> {};
-template <anyset_like T>
-struct __le__<KeysView, T>                                  : Returns<bool> {};
-template <>
-struct __ge__<KeysView, Object>                             : Returns<bool> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __ge__<KeysView, T>                                  : Returns<bool> {};
-template <anyset_like T>
-struct __ge__<KeysView, T>                                  : Returns<bool> {};
-template <>
-struct __gt__<KeysView, Object>                             : Returns<bool> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __gt__<KeysView, T>                                  : Returns<bool> {};
-template <anyset_like T>
-struct __gt__<KeysView, T>                                  : Returns<bool> {};
-template <>
-struct __or__<KeysView, Object>                             : Returns<Set> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __or__<KeysView, T>                                  : Returns<Set> {};
-template <anyset_like T>
-struct __or__<KeysView, T>                                  : Returns<Set> {};
-template <>
-struct __and__<KeysView, Object>                            : Returns<Set> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __and__<KeysView, T>                                 : Returns<Set> {};
-template <anyset_like T>
-struct __and__<KeysView, T>                                 : Returns<Set> {};
-template <>
-struct __sub__<KeysView, Object>                            : Returns<Set> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __sub__<KeysView, T>                                 : Returns<Set> {};
-template <anyset_like T>
-struct __sub__<KeysView, T>                                 : Returns<Set> {};
-template <>
-struct __xor__<KeysView, Object>                            : Returns<Set> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
-struct __xor__<KeysView, T>                                 : Returns<Set> {};
-template <anyset_like T>
-struct __xor__<KeysView, T>                                 : Returns<Set> {};
 
 template <>
 struct __getattr__<KeysView, "mapping">                     : Returns<MappingProxy> {};
@@ -78,102 +24,61 @@ template <>
 struct __getattr__<KeysView, "isdisjoint">                  : Returns<Function> {};
 
 template <>
-struct __len__<ValuesView>                                  : Returns<size_t> {};
+struct __len__<KeysView>                                    : Returns<size_t> {};
 template <>
-struct __iter__<ValuesView>                                 : Returns<Object> {};
+struct __iter__<KeysView>                                   : Returns<Object> {};
 template <>
-struct __reversed__<ValuesView>                             : Returns<Object> {};
-template <typename T>
-struct __contains__<ValuesView, T>                          : Returns<bool> {};
-
+struct __reversed__<KeysView>                               : Returns<Object> {};
+template <impl::is_hashable Key>
+struct __contains__<KeysView, Key>                          : Returns<bool> {};
 template <>
-struct __getattr__<ValuesView, "mapping">                   : Returns<MappingProxy> {};
-
+struct __lt__<KeysView, Object>                             : Returns<bool> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __lt__<KeysView, T>                                  : Returns<bool> {};
+template <impl::anyset_like T>
+struct __lt__<KeysView, T>                                  : Returns<bool> {};
 template <>
-struct __len__<ItemsView>                                   : Returns<size_t> {};
+struct __le__<KeysView, Object>                             : Returns<bool> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __le__<KeysView, T>                                  : Returns<bool> {};
+template <impl::anyset_like T>
+struct __le__<KeysView, T>                                  : Returns<bool> {};
 template <>
-struct __iter__<ItemsView>                                  : Returns<Tuple> {};
+struct __ge__<KeysView, Object>                             : Returns<bool> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __ge__<KeysView, T>                                  : Returns<bool> {};
+template <impl::anyset_like T>
+struct __ge__<KeysView, T>                                  : Returns<bool> {};
 template <>
-struct __reversed__<ItemsView>                              : Returns<Tuple> {};
-template <impl::tuple_like T>
-struct __contains__<ItemsView, T>                           : Returns<bool> {};
-
+struct __gt__<KeysView, Object>                             : Returns<bool> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __gt__<KeysView, T>                                  : Returns<bool> {};
+template <impl::anyset_like T>
+struct __gt__<KeysView, T>                                  : Returns<bool> {};
 template <>
-struct __getattr__<ItemsView, "mapping">                    : Returns<MappingProxy> {};
-
+struct __or__<KeysView, Object>                             : Returns<Set> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __or__<KeysView, T>                                  : Returns<Set> {};
+template <impl::anyset_like T>
+struct __or__<KeysView, T>                                  : Returns<Set> {};
 template <>
-struct __len__<Dict>                                        : Returns<size_t> {};
+struct __and__<KeysView, Object>                            : Returns<Set> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __and__<KeysView, T>                                 : Returns<Set> {};
+template <impl::anyset_like T>
+struct __and__<KeysView, T>                                 : Returns<Set> {};
 template <>
-struct __iter__<Dict>                                       : Returns<Object> {};
+struct __sub__<KeysView, Object>                            : Returns<Set> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __sub__<KeysView, T>                                 : Returns<Set> {};
+template <impl::anyset_like T>
+struct __sub__<KeysView, T>                                 : Returns<Set> {};
 template <>
-struct __reversed__<Dict>                                   : Returns<Object> {};
-template <is_hashable Key>
-struct __contains__<Dict, Key>                              : Returns<bool> {};
-template <is_hashable Key>
-struct __getitem__<Dict, Key>                               : Returns<Object> {};
-template <is_hashable Key, typename Value>
-struct __setitem__<Dict, Key, Value>                        : Returns<void> {};
-template <is_hashable Key>
-struct __delitem__<Dict, Key>                               : Returns<void> {};
-template <>
-struct __or__<Dict, Object>                                 : Returns<Dict> {};
-template <dict_like T>
-struct __or__<Dict, T>                                      : Returns<Dict> {};
-template <>
-struct __ior__<Dict, Object>                                : Returns<Dict&> {};
-template <dict_like T>
-struct __ior__<Dict, T>                                     : Returns<Dict&> {};
-
-template <>
-struct __getattr__<Dict, "fromkeys">                        : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "copy">                            : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "clear">                           : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "get">                             : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "pop">                             : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "popitem">                         : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "setdefault">                      : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "update">                          : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "keys">                            : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "values">                          : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "items">                           : Returns<Function> {};
-
-template <>
-struct __len__<MappingProxy>                                : Returns<size_t> {};
-template <>
-struct __iter__<MappingProxy>                               : Returns<Object> {};
-template <>
-struct __reversed__<MappingProxy>                           : Returns<Object> {};
-template <is_hashable Key>
-struct __contains__<MappingProxy, Key>                      : Returns<bool> {};
-template <is_hashable Key>
-struct __getitem__<MappingProxy, Key>                       : Returns<Object> {};
-template <>
-struct __or__<MappingProxy, Object>                         : Returns<Dict> {};
-template <dict_like T>
-struct __or__<MappingProxy, T>                              : Returns<Dict> {};
-
-template <>
-struct __getattr__<MappingProxy, "copy">                    : Returns<Function> {};
-template <>
-struct __getattr__<MappingProxy, "get">                     : Returns<Function> {};
-template <>
-struct __getattr__<MappingProxy, "keys">                    : Returns<Function> {};
-template <>
-struct __getattr__<MappingProxy, "values">                  : Returns<Function> {};
-template <>
-struct __getattr__<MappingProxy, "items">                   : Returns<Function> {};
-
-}  // namespace impl
+struct __xor__<KeysView, Object>                            : Returns<Set> {};
+template <typename T> requires (std::is_base_of_v<KeysView, T>)
+struct __xor__<KeysView, T>                                 : Returns<Set> {};
+template <impl::anyset_like T>
+struct __xor__<KeysView, T>                                 : Returns<Set> {};
 
 
 /* New subclass of pybind11::object representing a view into the keys of a dictionary
@@ -282,6 +187,24 @@ public:
 };
 
 
+//////////////////////
+////    VALUES    ////
+//////////////////////
+
+
+template <>
+struct __getattr__<ValuesView, "mapping">                   : Returns<MappingProxy> {};
+
+template <>
+struct __len__<ValuesView>                                  : Returns<size_t> {};
+template <>
+struct __iter__<ValuesView>                                 : Returns<Object> {};
+template <>
+struct __reversed__<ValuesView>                             : Returns<Object> {};
+template <typename T>
+struct __contains__<ValuesView, T>                          : Returns<bool> {};
+
+
 /* New subclass of pybind11::object representing a view into the values of a dictionary
 object. */
 class ValuesView : public Object {
@@ -331,6 +254,24 @@ public:
 };
 
 
+/////////////////////
+////    ITEMS    ////
+/////////////////////
+
+
+template <>
+struct __getattr__<ItemsView, "mapping">                    : Returns<MappingProxy> {};
+
+template <>
+struct __len__<ItemsView>                                   : Returns<size_t> {};
+template <>
+struct __iter__<ItemsView>                                  : Returns<Tuple> {};
+template <>
+struct __reversed__<ItemsView>                              : Returns<Tuple> {};
+template <impl::tuple_like T>
+struct __contains__<ItemsView, T>                           : Returns<bool> {};
+
+
 /* New subclass of pybind11::object representing a view into the items of a dictionary
 object. */
 class ItemsView : public Object {
@@ -378,6 +319,58 @@ public:
     inline MappingProxy mapping() const;
 
 };
+
+
+////////////////////
+////    DICT    ////
+////////////////////
+
+
+template <>
+struct __getattr__<Dict, "fromkeys">                        : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "copy">                            : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "clear">                           : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "get">                             : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "pop">                             : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "popitem">                         : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "setdefault">                      : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "update">                          : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "keys">                            : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "values">                          : Returns<Function> {};
+template <>
+struct __getattr__<Dict, "items">                           : Returns<Function> {};
+
+template <>
+struct __len__<Dict>                                        : Returns<size_t> {};
+template <>
+struct __iter__<Dict>                                       : Returns<Object> {};
+template <>
+struct __reversed__<Dict>                                   : Returns<Object> {};
+template <impl::is_hashable Key>
+struct __contains__<Dict, Key>                              : Returns<bool> {};
+template <impl::is_hashable Key>
+struct __getitem__<Dict, Key>                               : Returns<Object> {};
+template <impl::is_hashable Key, typename Value>
+struct __setitem__<Dict, Key, Value>                        : Returns<void> {};
+template <impl::is_hashable Key>
+struct __delitem__<Dict, Key>                               : Returns<void> {};
+template <>
+struct __or__<Dict, Object>                                 : Returns<Dict> {};
+template <impl::dict_like T>
+struct __or__<Dict, T>                                      : Returns<Dict> {};
+template <>
+struct __ior__<Dict, Object>                                : Returns<Dict&> {};
+template <impl::dict_like T>
+struct __ior__<Dict, T>                                     : Returns<Dict&> {};
 
 
 /* Wrapper around pybind11::dict that allows it to be directly initialized using
@@ -839,6 +832,37 @@ protected:
 
 };
 
+
+////////////////////////////
+////    MAPPINGPROXY    ////
+////////////////////////////
+
+
+template <>
+struct __getattr__<MappingProxy, "copy">                    : Returns<Function> {};
+template <>
+struct __getattr__<MappingProxy, "get">                     : Returns<Function> {};
+template <>
+struct __getattr__<MappingProxy, "keys">                    : Returns<Function> {};
+template <>
+struct __getattr__<MappingProxy, "values">                  : Returns<Function> {};
+template <>
+struct __getattr__<MappingProxy, "items">                   : Returns<Function> {};
+
+template <>
+struct __len__<MappingProxy>                                : Returns<size_t> {};
+template <>
+struct __iter__<MappingProxy>                               : Returns<Object> {};
+template <>
+struct __reversed__<MappingProxy>                           : Returns<Object> {};
+template <impl::is_hashable Key>
+struct __contains__<MappingProxy, Key>                      : Returns<bool> {};
+template <impl::is_hashable Key>
+struct __getitem__<MappingProxy, Key>                       : Returns<Object> {};
+template <>
+struct __or__<MappingProxy, Object>                         : Returns<Dict> {};
+template <impl::dict_like T>
+struct __or__<MappingProxy, T>                              : Returns<Dict> {};
 
 /* New subclass of pybind11::object representing a read-only proxy for a Python
 dictionary or other mapping. */

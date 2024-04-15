@@ -12,8 +12,6 @@ namespace bertrand {
 namespace py {
 
 
-namespace impl {
-
 template <>
 struct __pos__<Float>                                           : Returns<Float> {};
 template <>
@@ -30,118 +28,116 @@ template <>
 struct __hash__<Float>                                          : Returns<size_t> {};
 template <>
 struct __lt__<Float, Object>                                    : Returns<bool> {};
-template <bool_like T>
+template <impl::bool_like T>
 struct __lt__<Float, T>                                         : Returns<bool> {};
-template <int_like T>
+template <impl::int_like T>
 struct __lt__<Float, T>                                         : Returns<bool> {};
-template <float_like T>
+template <impl::float_like T>
 struct __lt__<Float, T>                                         : Returns<bool> {};
 template <>
 struct __le__<Float, Object>                                    : Returns<bool> {};
-template <bool_like T>
+template <impl::bool_like T>
 struct __le__<Float, T>                                         : Returns<bool> {};
-template <int_like T>
+template <impl::int_like T>
 struct __le__<Float, T>                                         : Returns<bool> {};
-template <float_like T>
+template <impl::float_like T>
 struct __le__<Float, T>                                         : Returns<bool> {};
 template <>
 struct __ge__<Float, Object>                                    : Returns<bool> {};
-template <bool_like T>
+template <impl::bool_like T>
 struct __ge__<Float, T>                                         : Returns<bool> {};
-template <int_like T>
+template <impl::int_like T>
 struct __ge__<Float, T>                                         : Returns<bool> {};
-template <float_like T>
+template <impl::float_like T>
 struct __ge__<Float, T>                                         : Returns<bool> {};
 template <>
 struct __gt__<Float, Object>                                    : Returns<bool> {};
-template <bool_like T>
+template <impl::bool_like T>
 struct __gt__<Float, T>                                         : Returns<bool> {};
-template <int_like T>
+template <impl::int_like T>
 struct __gt__<Float, T>                                         : Returns<bool> {};
-template <float_like T>
+template <impl::float_like T>
 struct __gt__<Float, T>                                         : Returns<bool> {};
 template <>
 struct __add__<Float, Object>                                   : Returns<Object> {};
-template <bool_like T>
+template <impl::bool_like T>
 struct __add__<Float, T>                                        : Returns<Float> {};
-template <int_like T>
+template <impl::int_like T>
 struct __add__<Float, T>                                        : Returns<Float> {};
-template <float_like T>
+template <impl::float_like T>
 struct __add__<Float, T>                                        : Returns<Float> {};
-template <complex_like T>
+template <impl::complex_like T>
 struct __add__<Float, T>                                        : Returns<Complex> {};
 template <>
 struct __sub__<Float, Object>                                   : Returns<Object> {};
-template <bool_like T>
+template <impl::bool_like T>
 struct __sub__<Float, T>                                        : Returns<Float> {};
-template <int_like T>
+template <impl::int_like T>
 struct __sub__<Float, T>                                        : Returns<Float> {};
-template <float_like T>
+template <impl::float_like T>
 struct __sub__<Float, T>                                        : Returns<Float> {};
-template <complex_like T>
+template <impl::complex_like T>
 struct __sub__<Float, T>                                        : Returns<Complex> {};
 template <>
 struct __mul__<Float, Object>                                   : Returns<Object> {};
-template <bool_like T>
+template <impl::bool_like T>
 struct __mul__<Float, T>                                        : Returns<Float> {};
-template <int_like T>
+template <impl::int_like T>
 struct __mul__<Float, T>                                        : Returns<Float> {};
-template <float_like T>
+template <impl::float_like T>
 struct __mul__<Float, T>                                        : Returns<Float> {};
-template <complex_like T>
+template <impl::complex_like T>
 struct __mul__<Float, T>                                        : Returns<Complex> {};
 template <>
 struct __truediv__<Float, Object>                               : Returns<Object> {};
-template <bool_like T>
+template <impl::bool_like T>
 struct __truediv__<Float, T>                                    : Returns<Float> {};
-template <int_like T>
+template <impl::int_like T>
 struct __truediv__<Float, T>                                    : Returns<Float> {};
-template <float_like T>
+template <impl::float_like T>
 struct __truediv__<Float, T>                                    : Returns<Float> {};
-template <complex_like T>
+template <impl::complex_like T>
 struct __truediv__<Float, T>                                    : Returns<Complex> {};
 template <>
 struct __mod__<Float, Object>                                   : Returns<Object> {};
-template <bool_like T>
+template <impl::bool_like T>
 struct __mod__<Float, T>                                        : Returns<Float> {};
-template <int_like T>
+template <impl::int_like T>
 struct __mod__<Float, T>                                        : Returns<Float> {};
-template <float_like T>
+template <impl::float_like T>
 struct __mod__<Float, T>                                        : Returns<Float> {};
-// template <complex_like T>    <-- Disabled in Python
+// template <impl::complex_like T>    <-- Disabled in Python
 // struct __mod__<Float, T>                                     : Returns<Complex> {};
-template <bool_like T>
-struct __iadd__<Float, T>                                       : Returns<Float> {};
-template <int_like T>
-struct __iadd__<Float, T>                                       : Returns<Float> {};
-template <float_like T>
-struct __iadd__<Float, T>                                       : Returns<Float> {};
-template <bool_like T>
-struct __isub__<Float, T>                                       : Returns<Float> {};
-template <int_like T>
-struct __isub__<Float, T>                                       : Returns<Float> {};
-template <float_like T>
-struct __isub__<Float, T>                                       : Returns<Float> {};
-template <bool_like T>
-struct __imul__<Float, T>                                       : Returns<Float> {};
-template <int_like T>
-struct __imul__<Float, T>                                       : Returns<Float> {};
-template <float_like T>
-struct __imul__<Float, T>                                       : Returns<Float> {};
-template <bool_like T>
-struct __itruediv__<Float, T>                                   : Returns<Float> {};
-template <int_like T>
-struct __itruediv__<Float, T>                                   : Returns<Float> {};
-template <float_like T>
-struct __itruediv__<Float, T>                                   : Returns<Float> {};
-template <bool_like T>
-struct __imod__<Float, T>                                       : Returns<Float> {};
-template <int_like T>
-struct __imod__<Float, T>                                       : Returns<Float> {};
-template <float_like T>
-struct __imod__<Float, T>                                       : Returns<Float> {};
-
-}
+template <impl::bool_like T>
+struct __iadd__<Float, T>                                       : Returns<Float&> {};
+template <impl::int_like T>
+struct __iadd__<Float, T>                                       : Returns<Float&> {};
+template <impl::float_like T>
+struct __iadd__<Float, T>                                       : Returns<Float&> {};
+template <impl::bool_like T>
+struct __isub__<Float, T>                                       : Returns<Float&> {};
+template <impl::int_like T>
+struct __isub__<Float, T>                                       : Returns<Float&> {};
+template <impl::float_like T>
+struct __isub__<Float, T>                                       : Returns<Float&> {};
+template <impl::bool_like T>
+struct __imul__<Float, T>                                       : Returns<Float&> {};
+template <impl::int_like T>
+struct __imul__<Float, T>                                       : Returns<Float&> {};
+template <impl::float_like T>
+struct __imul__<Float, T>                                       : Returns<Float&> {};
+template <impl::bool_like T>
+struct __itruediv__<Float, T>                                   : Returns<Float&> {};
+template <impl::int_like T>
+struct __itruediv__<Float, T>                                   : Returns<Float&> {};
+template <impl::float_like T>
+struct __itruediv__<Float, T>                                   : Returns<Float&> {};
+template <impl::bool_like T>
+struct __imod__<Float, T>                                       : Returns<Float&> {};
+template <impl::int_like T>
+struct __imod__<Float, T>                                       : Returns<Float&> {};
+template <impl::float_like T>
+struct __imod__<Float, T>                                       : Returns<Float&> {};
 
 
 /* Wrapper around pybind11::float_ that enables conversions from strings, similar to

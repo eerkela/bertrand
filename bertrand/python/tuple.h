@@ -12,7 +12,10 @@ namespace bertrand {
 namespace py {
 
 
-namespace impl {
+template <>
+struct __getattr__<Tuple, "count">                              : Returns<Function> {};
+template <>
+struct __getattr__<Tuple, "index">                              : Returns<Function> {};
 
 template <>
 struct __len__<Tuple>                                           : Returns<size_t> {};
@@ -26,49 +29,42 @@ template <typename T>
 struct __contains__<Tuple, T>                                   : Returns<bool> {};
 template <>
 struct __getitem__<Tuple, Object>                               : Returns<Object> {};
-template <int_like T>
+template <impl::int_like T>
 struct __getitem__<Tuple, T>                                    : Returns<Object> {};
 template <>
 struct __getitem__<Tuple, Slice>                                : Returns<Tuple> {};
 template <>
 struct __lt__<Tuple, Object>                                    : Returns<bool> {};
-template <tuple_like T>
+template <impl::tuple_like T>
 struct __lt__<Tuple, T>                                         : Returns<bool> {};
 template <>
 struct __le__<Tuple, Object>                                    : Returns<bool> {};
-template <tuple_like T>
+template <impl::tuple_like T>
 struct __le__<Tuple, T>                                         : Returns<bool> {};
 template <>
 struct __ge__<Tuple, Object>                                    : Returns<bool> {};
-template <tuple_like T>
+template <impl::tuple_like T>
 struct __ge__<Tuple, T>                                         : Returns<bool> {};
 template <>
 struct __gt__<Tuple, Object>                                    : Returns<bool> {};
-template <tuple_like T>
+template <impl::tuple_like T>
 struct __gt__<Tuple, T>                                         : Returns<bool> {};
 template <>
 struct __add__<Tuple, Object>                                   : Returns<Tuple> {};
-template <tuple_like T>
+template <impl::tuple_like T>
 struct __add__<Tuple, T>                                        : Returns<Tuple> {};
 template <>
 struct __iadd__<Tuple, Object>                                  : Returns<Tuple&> {};
-template <tuple_like T>
+template <impl::tuple_like T>
 struct __iadd__<Tuple, T>                                       : Returns<Tuple&> {};
 template <>
 struct __mul__<Tuple, Object>                                   : Returns<Tuple> {};
-template <int_like T>
+template <impl::int_like T>
 struct __mul__<Tuple, T>                                        : Returns<Tuple> {};
 template <>
 struct __imul__<Tuple, Object>                                  : Returns<Tuple&> {};
-template <int_like T>
+template <impl::int_like T>
 struct __imul__<Tuple, T>                                       : Returns<Tuple&> {};
-
-template <>
-struct __getattr__<Tuple, "count">                              : Returns<Function> {};
-template <>
-struct __getattr__<Tuple, "index">                              : Returns<Function> {};
-
-}
 
 
 /* Wrapper around pybind11::tuple that allows it to be directly initialized using

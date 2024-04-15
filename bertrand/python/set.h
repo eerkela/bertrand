@@ -277,106 +277,89 @@ namespace impl {
 
     };
 
-    template <typename T>
-    concept iset = std::is_base_of_v<ISetTag, T>;
-
-    template <iset T>
-    struct __len__<T>                                           : Returns<size_t> {};
-    template <>
-    struct __hash__<FrozenSet>                                  : Returns<size_t> {};
-    template <iset T>
-    struct __iter__<T>                                          : Returns<Object> {};
-    template <iset T>
-    struct __reversed__<T>                                      : Returns<Object> {};
-    template <iset T, is_hashable Key>
-    struct __contains__<T, Key>                                 : Returns<bool> {};
-    template <iset L>
-    struct __lt__<L, Object>                                    : Returns<bool> {};
-    template <iset L, anyset_like R>
-    struct __lt__<L, R>                                         : Returns<bool> {};
-    template <iset L>
-    struct __le__<L, Object>                                    : Returns<bool> {};
-    template <iset L, anyset_like R>
-    struct __le__<L, R>                                         : Returns<bool> {};
-    template <iset L>
-    struct __ge__<L, Object>                                    : Returns<bool> {};
-    template <iset L, anyset_like R>
-    struct __ge__<L, R>                                         : Returns<bool> {};
-    template <iset L>
-    struct __gt__<L, Object>                                    : Returns<bool> {};
-    template <iset L, anyset_like R>
-    struct __gt__<L, R>                                         : Returns<bool> {};
-    template <iset L>
-    struct __or__<L, Object>                                    : Returns<L> {};
-    template <iset L, anyset_like R>
-    struct __or__<L, R>                                         : Returns<L> {};
-    template <iset L>
-    struct __ior__<L, Object>                                   : Returns<L&> {};
-    template <iset L, anyset_like R>
-    struct __ior__<L, R>                                        : Returns<L&> {};
-    template <iset L>
-    struct __and__<L, Object>                                   : Returns<L> {};
-    template <iset L, anyset_like R>
-    struct __and__<L, R>                                        : Returns<L> {};
-    template <iset L>
-    struct __iand__<L, Object>                                  : Returns<L&> {};
-    template <iset L, anyset_like R>
-    struct __iand__<L, R>                                       : Returns<L&> {};
-    template <iset L>
-    struct __sub__<L, Object>                                   : Returns<L> {};
-    template <iset L, anyset_like R>
-    struct __sub__<L, R>                                        : Returns<L> {};
-    template <iset L>
-    struct __isub__<L, Object>                                  : Returns<L&> {};
-    template <iset L, anyset_like R>
-    struct __isub__<L, R>                                       : Returns<L&> {};
-    template <iset L>
-    struct __xor__<L, Object>                                   : Returns<L> {};
-    template <iset L, anyset_like R>
-    struct __xor__<L, R>                                        : Returns<L> {};
-    template <iset L>
-    struct __ixor__<L, Object>                                  : Returns<L&> {};
-    template <iset L, anyset_like R>
-    struct __ixor__<L, R>                                       : Returns<L&> {};
-
-    template <iset T>
-    struct __getattr__<T, "copy">                               : Returns<Function> {};
-    template <iset T>
-    struct __getattr__<T, "isdisjoint">                         : Returns<Function> {};
-    template <iset T>
-    struct __getattr__<T, "issubset">                           : Returns<Function> {};
-    template <iset T>
-    struct __getattr__<T, "issuperset">                         : Returns<Function> {};
-    template <iset T>
-    struct __getattr__<T, "union">                              : Returns<Function> {};
-    template <iset T>
-    struct __getattr__<T, "intersection">                       : Returns<Function> {};
-    template <iset T>
-    struct __getattr__<T, "difference">                         : Returns<Function> {};
-    template <iset T>
-    struct __getattr__<T, "symmetric_difference">               : Returns<Function> {};
-
-    template <std::derived_from<Set> T>
-    struct __getattr__<T, "add">                                : Returns<Function> {};
-    template <std::derived_from<Set> T>
-    struct __getattr__<T, "remove">                             : Returns<Function> {};
-    template <std::derived_from<Set> T>
-    struct __getattr__<T, "discard">                            : Returns<Function> {};
-    template <std::derived_from<Set> T>
-    struct __getattr__<T, "pop">                                : Returns<Function> {};
-    template <std::derived_from<Set> T>
-    struct __getattr__<T, "clear">                              : Returns<Function> {};
-    template <std::derived_from<Set> T>
-    struct __getattr__<T, "update">                             : Returns<Function> {};
-    template <std::derived_from<Set> T>
-    struct __getattr__<T, "intersection_update">                : Returns<Function> {};
-    template <std::derived_from<Set> T>
-    struct __getattr__<T, "difference_update">                  : Returns<Function> {};
-    template <std::derived_from<Set> T>
-    struct __getattr__<T, "symmetric_difference_update">        : Returns<Function> {};
+}
 
 
-}  // namespace impl
+template <std::derived_from<impl::ISetTag> T>
+struct __getattr__<T, "copy">                                   : Returns<Function> {};
+template <std::derived_from<impl::ISetTag> T>
+struct __getattr__<T, "isdisjoint">                             : Returns<Function> {};
+template <std::derived_from<impl::ISetTag> T>
+struct __getattr__<T, "issubset">                               : Returns<Function> {};
+template <std::derived_from<impl::ISetTag> T>
+struct __getattr__<T, "issuperset">                             : Returns<Function> {};
+template <std::derived_from<impl::ISetTag> T>
+struct __getattr__<T, "union">                                  : Returns<Function> {};
+template <std::derived_from<impl::ISetTag> T>
+struct __getattr__<T, "intersection">                           : Returns<Function> {};
+template <std::derived_from<impl::ISetTag> T>
+struct __getattr__<T, "difference">                             : Returns<Function> {};
+template <std::derived_from<impl::ISetTag> T>
+struct __getattr__<T, "symmetric_difference">                   : Returns<Function> {};
+
+template <std::derived_from<impl::ISetTag> T>
+struct __len__<T>                                               : Returns<size_t> {};
+template <>
+struct __hash__<FrozenSet>                                      : Returns<size_t> {};
+template <std::derived_from<impl::ISetTag> T>
+struct __iter__<T>                                              : Returns<Object> {};
+template <std::derived_from<impl::ISetTag> T>
+struct __reversed__<T>                                          : Returns<Object> {};
+template <std::derived_from<impl::ISetTag> T, impl::is_hashable Key>
+struct __contains__<T, Key>                                     : Returns<bool> {};
+template <std::derived_from<impl::ISetTag> L>
+struct __lt__<L, Object>                                        : Returns<bool> {};
+template <std::derived_from<impl::ISetTag> L, impl::anyset_like R>
+struct __lt__<L, R>                                             : Returns<bool> {};
+template <std::derived_from<impl::ISetTag> L>
+struct __le__<L, Object>                                        : Returns<bool> {};
+template <std::derived_from<impl::ISetTag> L, impl::anyset_like R>
+struct __le__<L, R>                                             : Returns<bool> {};
+template <std::derived_from<impl::ISetTag> L>
+struct __ge__<L, Object>                                        : Returns<bool> {};
+template <std::derived_from<impl::ISetTag> L, impl::anyset_like R>
+struct __ge__<L, R>                                             : Returns<bool> {};
+template <std::derived_from<impl::ISetTag> L>
+struct __gt__<L, Object>                                        : Returns<bool> {};
+template <std::derived_from<impl::ISetTag> L, impl::anyset_like R>
+struct __gt__<L, R>                                             : Returns<bool> {};
+template <std::derived_from<impl::ISetTag> L>
+struct __or__<L, Object>                                        : Returns<L> {};
+template <std::derived_from<impl::ISetTag> L, impl::anyset_like R>
+struct __or__<L, R>                                             : Returns<L> {};
+template <std::derived_from<impl::ISetTag> L>
+struct __ior__<L, Object>                                       : Returns<L&> {};
+template <std::derived_from<impl::ISetTag> L, impl::anyset_like R>
+struct __ior__<L, R>                                            : Returns<L&> {};
+template <std::derived_from<impl::ISetTag> L>
+struct __and__<L, Object>                                       : Returns<L> {};
+template <std::derived_from<impl::ISetTag> L, impl::anyset_like R>
+struct __and__<L, R>                                            : Returns<L> {};
+template <std::derived_from<impl::ISetTag> L>
+struct __iand__<L, Object>                                      : Returns<L&> {};
+template <std::derived_from<impl::ISetTag> L, impl::anyset_like R>
+struct __iand__<L, R>                                           : Returns<L&> {};
+template <std::derived_from<impl::ISetTag> L>
+struct __sub__<L, Object>                                       : Returns<L> {};
+template <std::derived_from<impl::ISetTag> L, impl::anyset_like R>
+struct __sub__<L, R>                                            : Returns<L> {};
+template <std::derived_from<impl::ISetTag> L>
+struct __isub__<L, Object>                                      : Returns<L&> {};
+template <std::derived_from<impl::ISetTag> L, impl::anyset_like R>
+struct __isub__<L, R>                                           : Returns<L&> {};
+template <std::derived_from<impl::ISetTag> L>
+struct __xor__<L, Object>                                       : Returns<L> {};
+template <std::derived_from<impl::ISetTag> L, impl::anyset_like R>
+struct __xor__<L, R>                                            : Returns<L> {};
+template <std::derived_from<impl::ISetTag> L>
+struct __ixor__<L, Object>                                      : Returns<L&> {};
+template <std::derived_from<impl::ISetTag> L, impl::anyset_like R>
+struct __ixor__<L, R>                                           : Returns<L&> {};
+
+
+/////////////////////////
+////    FROZENSET    ////
+/////////////////////////
 
 
 /* Wrapper around pybind11::frozenset that allows it to be directly initialized using
@@ -552,6 +535,31 @@ public:
     }
 
 };
+
+
+///////////////////
+////    SET    ////
+///////////////////
+
+
+template <std::derived_from<Set> T>
+struct __getattr__<T, "add">                                    : Returns<Function> {};
+template <std::derived_from<Set> T>
+struct __getattr__<T, "remove">                                 : Returns<Function> {};
+template <std::derived_from<Set> T>
+struct __getattr__<T, "discard">                                : Returns<Function> {};
+template <std::derived_from<Set> T>
+struct __getattr__<T, "pop">                                    : Returns<Function> {};
+template <std::derived_from<Set> T>
+struct __getattr__<T, "clear">                                  : Returns<Function> {};
+template <std::derived_from<Set> T>
+struct __getattr__<T, "update">                                 : Returns<Function> {};
+template <std::derived_from<Set> T>
+struct __getattr__<T, "intersection_update">                    : Returns<Function> {};
+template <std::derived_from<Set> T>
+struct __getattr__<T, "difference_update">                      : Returns<Function> {};
+template <std::derived_from<Set> T>
+struct __getattr__<T, "symmetric_difference_update">            : Returns<Function> {};
 
 
 /* Wrapper around pybind11::set that allows it to be directly initialized using

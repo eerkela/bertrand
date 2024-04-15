@@ -126,24 +126,20 @@ void throws_an_error() {
     //     py::print(e.what());
     // }
 
-    // TODO: this yields the incorrect order of traceback frames.
-    // It should enter a C++ context, then a Python context, then back to C++.  Right
-    // now, it's putting all the C++ frames before the Python frames.
-
     static py::Code script = R"(
         import traceback
 
         def foo():
             func()
 
-        try:
-            foo()
-        except TypeError as err:
-            print("Caught a TypeError in Python!")
-            traceback.print_exception(err)
-            raise err from err
+        # try:
+        #     foo()
+        # except TypeError as err:
+        #     print("Caught a TypeError in Python!")
+        #     traceback.print_exception(err)
+        #     raise err from err
 
-        # foo()
+        foo()
     )"_python;
 
     script({{"func", py::Function(helper)}});
@@ -154,7 +150,11 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
-    throws_an_error();
+    py::Int x = 1;
+    py::print(x < "abc");
+
+
+    // throws_an_error();
     // throw py::TypeError();
 
     // throw py::Exception("test error", 0);

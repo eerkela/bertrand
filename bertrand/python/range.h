@@ -13,24 +13,6 @@ namespace bertrand {
 namespace py {
 
 
-namespace impl {
-
-template <>
-struct __len__<Range>                                       : Returns<size_t> {};
-template <>
-struct __iter__<Range>                                      : Returns<Int> {};
-template <>
-struct __reversed__<Range>                                  : Returns<Int> {};
-template <>
-struct __contains__<Range, Object>                          : Returns<bool> {};
-template <int_like T>
-struct __contains__<Range, T>                               : Returns<bool> {};
-template <>
-struct __getitem__<Range, Object>                           : Returns<Object> {};
-template <int_like T>
-struct __getitem__<Range, T>                                : Returns<Int> {};
-template <>
-struct __getitem__<Range, Slice>                            : Returns<Range> {};
 template <std::derived_from<Range> T>
 struct __getattr__<T, "count">                              : Returns<Function> {};
 template <std::derived_from<Range> T>
@@ -42,7 +24,22 @@ struct __getattr__<T, "stop">                               : Returns<Int> {};
 template <std::derived_from<Range> T>
 struct __getattr__<T, "step">                               : Returns<Int> {};
 
-}
+template <>
+struct __len__<Range>                                       : Returns<size_t> {};
+template <>
+struct __iter__<Range>                                      : Returns<Int> {};
+template <>
+struct __reversed__<Range>                                  : Returns<Int> {};
+template <>
+struct __contains__<Range, Object>                          : Returns<bool> {};
+template <impl::int_like T>
+struct __contains__<Range, T>                               : Returns<bool> {};
+template <>
+struct __getitem__<Range, Object>                           : Returns<Object> {};
+template <impl::int_like T>
+struct __getitem__<Range, T>                                : Returns<Int> {};
+template <>
+struct __getitem__<Range, Slice>                            : Returns<Range> {};
 
 
 /* New subclass of pybind11::object that represents a range object at the Python

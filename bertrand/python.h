@@ -100,12 +100,12 @@ namespace literals {
 }
 
 
-// TODO: Regex and Decimal types?
-
-
 ////////////////////////////
 ////    TYPE MEMBERS    ////
 ////////////////////////////
+
+
+// TODO: Regex and Decimal types?
 
 
 /* Every Python type has a static `Type` member that gives access to the Python type
@@ -511,6 +511,11 @@ inline Str Str::center(const Int& width, const Str& fillchar) const {
 }
 
 
+inline Bytes Str::encode(const Str& encoding, const Str& errors) const {
+    return reinterpret_steal<Bytes>(attr<"encode">()(encoding, errors).release());
+}
+
+
 inline Str Str::expandtabs(const Int& tabsize) const {
     return reinterpret_steal<Str>(attr<"expandtabs">()(tabsize).release());
 }
@@ -758,6 +763,164 @@ inline Bytes Code::bytecode() const {
 ////////////////////////////////
 ////    GLOBAL FUNCTIONS    ////
 ////////////////////////////////
+
+
+namespace impl {
+
+    /* Base class for CallTraits tags, which contain SFINAE information about a
+    callable Python/C++ object, as returned by `py::callable()`. */
+    template <typename Func>
+    class CallTraitsBase {
+    protected:
+        const Func& func;
+
+    public:
+        constexpr CallTraitsBase(const Func& func) : func(func) {}
+
+        friend std::ostream& operator<<(std::ostream& os, const CallTraitsBase& traits) {
+            if (traits) {
+                os << "True";
+            } else {
+                os << "False";
+            }
+            return os;
+        }
+
+    };
+
+    /* Return tag for `py::callable()` when one or more template parameters are
+    supplied, representing hypothetical arguments to the function. */
+    template <typename Func, typename... Args>
+    struct CallTraits : public CallTraitsBase<Func> {
+        struct NoReturn {};
+
+    private:
+        using Base = CallTraitsBase<Func>;
+
+        /* SFINAE struct gets return type if Func is callable with the given arguments.
+        Otherwise defaults to NoReturn. */
+        template <typename T, typename = void>
+        struct GetReturn { using type = NoReturn; };
+        template <typename T>
+        struct GetReturn<
+            T, std::void_t<decltype(std::declval<T>()(std::declval<Args>()...))>
+        > {
+            using type = decltype(std::declval<T>()(std::declval<Args>()...));
+        };
+
+    public:
+        using Base::Base;
+
+        /* Get the return type of the function with the given arguments.  Defaults to
+        NoReturn if the function is not callable with those arguments. */
+        using Return = typename GetReturn<Func>::type;
+
+        /* Implicitly convert the tag to a constexpr bool. */
+        template <typename T = Func> requires (!python_like<T>)
+        inline constexpr operator bool() const {
+            return std::is_invocable_v<Func, Args...>;
+        }
+
+        /* Implicitly convert to a runtime boolean by directly inspecting a Python code
+        object.  Note that the introspection is very lightweight and basic.  It first
+        checks `std::is_invocable<Func, Args...>` to see if all arguments can be
+        converted to Python objects, and then confirms that their number matches those
+        of the underlying code object.  This includes accounting for default values and
+        missing keyword-only arguments, while enforcing a C++-style calling convention.
+        Note that this check does not account for variadic arguments, which are not
+        represented in the code object itself. */
+        template <typename T = Func> requires (python_like<T>)
+        operator bool() const {
+            if constexpr(std::is_same_v<Return, NoReturn>) {
+                return false;
+            } else {
+                static constexpr Py_ssize_t expected = sizeof...(Args);
+
+                // check Python object is callable
+                if (!PyCallable_Check(this->func.ptr())) {
+                    return false;
+                }
+
+                // Get code object associated with callable (borrowed ref)
+                PyCodeObject* code = (PyCodeObject*) PyFunction_GetCode(this->func.ptr());
+                if (code == nullptr) {
+                    return false;
+                }
+
+                // get number of positional/positional-only arguments from code object
+                Py_ssize_t n_args = code->co_argcount;
+                if (expected > n_args) {
+                    return false;  // too many arguments
+                }
+
+                // get number of positional defaults from function object (borrowed ref)
+                PyObject* defaults = PyFunction_GetDefaults(this->func.ptr());
+                Py_ssize_t n_defaults = 0;
+                if (defaults != nullptr) {
+                    n_defaults = PyTuple_Size(defaults);
+                }
+                if (expected < (n_args - n_defaults)) {
+                    return false;  // too few arguments
+                }
+
+                // check for presence of unfilled keyword-only arguments
+                if (code->co_kwonlyargcount > 0) {
+                    PyObject* kwdefaults = PyObject_GetAttrString(
+                        this->func.ptr(),
+                        "__kwdefaults__"
+                    );
+                    if (kwdefaults == nullptr) {
+                        PyErr_Clear();
+                        return false;
+                    }
+                    Py_ssize_t n_kwdefaults = 0;
+                    if (kwdefaults != Py_None) {
+                        n_kwdefaults = PyDict_Size(kwdefaults);
+                    }
+                    Py_DECREF(kwdefaults);
+                    if (n_kwdefaults < code->co_kwonlyargcount) {
+                        return false;
+                    }
+                }
+
+                // NOTE: we cannot account for variadic arguments, which are not
+                // represented in the code object.  This is a limitation of the Python
+                // C API
+
+                return true;
+            }
+        }
+
+    };
+
+    /* Template specialization for wildcard callable matching.  Note that for technical
+    reasons, it is easier to swap the meaning of the void parameter in this case, so
+    that the behavior of each class is self-consistent. */
+    template <typename Func>
+    class CallTraits<Func, void> : public CallTraitsBase<Func> {
+        using Base = CallTraitsBase<Func>;
+
+    public:
+        using Base::Base;
+
+        // NOTE: Return type is not well-defined for wildcard matching.  Attempting to
+        // access it will result in a compile error.
+
+        /* Implicitly convert the tag to a constexpr bool. */
+        template <typename T = Func> requires (!python_like<T>)
+        inline constexpr operator bool() const {
+            return is_callable_any<Func>;
+        }
+
+        /* Implicitly convert the tag to a runtime bool. */
+        template <typename T = Func> requires (python_like<T>)
+        inline operator bool() const {
+            return PyCallable_Check(this->func.ptr());
+        }
+
+    };
+
+}
 
 
 // not implemented

@@ -20,11 +20,10 @@ namespace bertrand {
 namespace py {
 
 
-namespace impl {
+////////////////////
+////    CODE    ////
+////////////////////
 
-    static const Type PyProperty = reinterpret_borrow<Type>(
-        reinterpret_cast<PyObject*>(&PyProperty_Type)
-    );
 
 template <std::derived_from<Code> T>
 struct __getattr__<T, "co_name">                                : Returns<Str> {};
@@ -64,81 +63,6 @@ template <std::derived_from<Code> T>
 struct __getattr__<T, "co_lines">                               : Returns<Function> {};
 template <std::derived_from<Code> T>
 struct __getattr__<T, "replace">                                : Returns<Function> {};
-
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_back">                                 : Returns<Frame> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_code">                                 : Returns<Code> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_locals">                               : Returns<Dict> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_globals">                              : Returns<Dict> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_builtins">                             : Returns<Dict> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_lasti">                                : Returns<Int> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_trace">                                : Returns<Function> {};
-template <std::derived_from<Frame> T>
-struct __setattr__<T, "f_trace", Function>                      : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __delattr__<T, "f_trace">                                : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_trace_lines">                          : Returns<Bool> {};
-template <std::derived_from<Frame> T>
-struct __setattr__<T, "f_trace_lines", Bool>                    : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_trace_opcodes">                        : Returns<Bool> {};
-template <std::derived_from<Frame> T>
-struct __setattr__<T, "f_trace_opcodes", Bool>                  : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_lineno">                               : Returns<Bool> {};
-template <std::derived_from<Frame> T>
-struct __setattr__<T, "f_lineno", Int>                          : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "clear">                                  : Returns<Function> {};
-
-template <typename... Args>
-struct __call__<Function, Args...>                              : Returns<Object> {};
-template <std::derived_from<Function> T>
-struct __getattr__<T, "__globals__">                            : Returns<Dict> {};
-template <std::derived_from<Function> T>
-struct __getattr__<T, "__closure__">                            : Returns<Tuple> {};
-template <std::derived_from<Function> T>
-struct __getattr__<T, "__defaults__">                           : Returns<Tuple> {};
-template <std::derived_from<Function> T>
-struct __getattr__<T, "__code__">                               : Returns<Code> {};
-template <std::derived_from<Function> T>
-struct __getattr__<T, "__annotations__">                        : Returns<Dict> {};
-template <std::derived_from<Function> T>
-struct __getattr__<T, "__kwdefaults__">                         : Returns<Dict> {};
-template <std::derived_from<Function> T>
-struct __getattr__<T, "__func__">                               : Returns<Function> {};
-
-template <std::derived_from<ClassMethod> T>
-struct __getattr__<T, "__func__">                               : Returns<Function> {};
-template <std::derived_from<ClassMethod> T>
-struct __getattr__<T, "__wrapped__">                            : Returns<Function> {};
-
-template <std::derived_from<StaticMethod> T>
-struct __getattr__<T, "__func__">                               : Returns<Function> {};
-template <std::derived_from<StaticMethod> T>
-struct __getattr__<T, "__wrapped__">                            : Returns<Function> {};
-
-template <std::derived_from<Property> T>
-struct __getattr__<T, "fget">                                   : Returns<Function> {};
-template <std::derived_from<Property> T>
-struct __getattr__<T, "fset">                                   : Returns<Function> {};
-template <std::derived_from<Property> T>
-struct __getattr__<T, "fdel">                                   : Returns<Function> {};
-template <std::derived_from<Property> T>
-struct __getattr__<T, "getter">                                 : Returns<Function> {};
-template <std::derived_from<Property> T>
-struct __getattr__<T, "setter">                                 : Returns<Function> {};
-template <std::derived_from<Property> T>
-struct __getattr__<T, "deleter">                                : Returns<Function> {};
-
-}
 
 
 /* A new subclass of pybind11::object that represents a compiled Python code object,
@@ -528,6 +452,45 @@ public:
 };
 
 
+/////////////////////
+////    FRAME    ////
+/////////////////////
+
+
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_back">                                 : Returns<Frame> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_code">                                 : Returns<Code> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_locals">                               : Returns<Dict> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_globals">                              : Returns<Dict> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_builtins">                             : Returns<Dict> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_lasti">                                : Returns<Int> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_trace">                                : Returns<Function> {};
+template <std::derived_from<Frame> T>
+struct __setattr__<T, "f_trace", Function>                      : Returns<void> {};
+template <std::derived_from<Frame> T>
+struct __delattr__<T, "f_trace">                                : Returns<void> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_trace_lines">                          : Returns<Bool> {};
+template <std::derived_from<Frame> T>
+struct __setattr__<T, "f_trace_lines", Bool>                    : Returns<void> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_trace_opcodes">                        : Returns<Bool> {};
+template <std::derived_from<Frame> T>
+struct __setattr__<T, "f_trace_opcodes", Bool>                  : Returns<void> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "f_lineno">                               : Returns<Bool> {};
+template <std::derived_from<Frame> T>
+struct __setattr__<T, "f_lineno", Int>                          : Returns<void> {};
+template <std::derived_from<Frame> T>
+struct __getattr__<T, "clear">                                  : Returns<Function> {};
+
+
 /* A new subclass of pybind11::object that represents a Python interpreter frame, which
 can be used to introspect its current state. */
 class Frame : public Object {
@@ -694,6 +657,29 @@ public:
     #endif
 
 };
+
+
+////////////////////////
+////    FUNCTION    ////
+////////////////////////
+
+
+template <typename... Args>
+struct __call__<Function, Args...>                              : Returns<Object> {};
+template <std::derived_from<Function> T>
+struct __getattr__<T, "__globals__">                            : Returns<Dict> {};
+template <std::derived_from<Function> T>
+struct __getattr__<T, "__closure__">                            : Returns<Tuple> {};
+template <std::derived_from<Function> T>
+struct __getattr__<T, "__defaults__">                           : Returns<Tuple> {};
+template <std::derived_from<Function> T>
+struct __getattr__<T, "__code__">                               : Returns<Code> {};
+template <std::derived_from<Function> T>
+struct __getattr__<T, "__annotations__">                        : Returns<Dict> {};
+template <std::derived_from<Function> T>
+struct __getattr__<T, "__kwdefaults__">                         : Returns<Dict> {};
+template <std::derived_from<Function> T>
+struct __getattr__<T, "__func__">                               : Returns<Function> {};
 
 
 /* Wrapper around a pybind11::Function that allows it to be constructed from a C++
@@ -980,6 +966,16 @@ public:
 };
 
 
+//////////////////////
+////    METHOD    ////
+//////////////////////
+
+
+// TODO: what would be great is if assigning to an attribute properly invoked Python's
+// descriptor protocol, so that we could delete py::Method, which is a bit unintuitive
+// anyways.
+
+
 /* New subclass of pybind11::object that represents a bound method at the Python
 level. */
 class Method : public Object {
@@ -1018,6 +1014,17 @@ public:
     }
 
 };
+
+
+///////////////////////////
+////    CLASSMETHOD    ////
+///////////////////////////
+
+
+template <std::derived_from<ClassMethod> T>
+struct __getattr__<T, "__func__">                               : Returns<Function> {};
+template <std::derived_from<ClassMethod> T>
+struct __getattr__<T, "__wrapped__">                            : Returns<Function> {};
 
 
 /* New subclass of pybind11::object that represents a bound classmethod at the Python
@@ -1067,6 +1074,17 @@ public:
 };
 
 
+////////////////////////////
+////    STATICMETHOD    ////
+////////////////////////////
+
+
+template <std::derived_from<StaticMethod> T>
+struct __getattr__<T, "__func__">                               : Returns<Function> {};
+template <std::derived_from<StaticMethod> T>
+struct __getattr__<T, "__wrapped__">                            : Returns<Function> {};
+
+
 /* Wrapper around a pybind11::StaticMethod that allows it to be constructed from a
 C++ lambda or function pointer, and enables extra introspection via the C API. */
 class StaticMethod : public Object {
@@ -1112,6 +1130,32 @@ public:
     }
 
 };
+
+
+////////////////////////
+////    PROPERTY    ////
+////////////////////////
+
+
+namespace impl {
+    static const Type PyProperty = reinterpret_borrow<Type>(
+        reinterpret_cast<PyObject*>(&PyProperty_Type)
+    );
+}
+
+
+template <std::derived_from<Property> T>
+struct __getattr__<T, "fget">                                   : Returns<Function> {};
+template <std::derived_from<Property> T>
+struct __getattr__<T, "fset">                                   : Returns<Function> {};
+template <std::derived_from<Property> T>
+struct __getattr__<T, "fdel">                                   : Returns<Function> {};
+template <std::derived_from<Property> T>
+struct __getattr__<T, "getter">                                 : Returns<Function> {};
+template <std::derived_from<Property> T>
+struct __getattr__<T, "setter">                                 : Returns<Function> {};
+template <std::derived_from<Property> T>
+struct __getattr__<T, "deleter">                                : Returns<Function> {};
 
 
 /* New subclass of pybind11::object that represents a property descriptor at the

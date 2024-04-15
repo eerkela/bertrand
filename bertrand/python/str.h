@@ -5,24 +5,6 @@
 #ifndef BERTRAND_PYTHON_STRING_H
 #define BERTRAND_PYTHON_STRING_H
 
-// TODO: place BERTRAND_HAS_STD_FORMAT in a common header at root of bertrand source
-
-// std::format is part of the C++20 standard, but was not fully implemented until GCC 
-// 13+, clang 18+, or MSVC 19.29+
-#if defined(__GNUC__) && !defined(__clang__)
-    #if (__GNUC__ >= 13)
-        #define BERTRAND_HAS_STD_FORMAT
-    #endif
-#elif defined(__clang__)
-    #if (__clang_major__ >= 18)
-        #define BERTRAND_HAS_STD_FORMAT
-    #endif
-#elif defined(_MSC_VER)
-    #if (_MSC_VER >= 1929)
-        #define BERTRAND_HAS_STD_FORMAT
-    #endif
-#endif
-
 #include "common.h"
 #include "int.h"
 #include "list.h"
@@ -37,57 +19,6 @@
 namespace bertrand {
 namespace py {
 
-
-namespace impl {
-
-template <std::derived_from<Str> T>
-struct __len__<T>                                               : Returns<size_t> {};
-template <std::derived_from<Str> T>
-struct __iter__<T>                                              : Returns<Str> {};
-template <std::derived_from<Str> T>
-struct __reversed__<T>                                          : Returns<Str> {};
-template <std::derived_from<Str> T>
-struct __contains__<T, Object>                                  : Returns<bool> {};
-template <std::derived_from<Str> T, str_like Key>
-struct __contains__<T, Key>                                     : Returns<bool> {};
-template <std::derived_from<Str> T>
-struct __getitem__<T, Object>                                   : Returns<Str> {};
-template <std::derived_from<Str> T, int_like Key>
-struct __getitem__<T, Key>                                      : Returns<Str> {};
-template <std::derived_from<Str> T>
-struct __getitem__<T, Slice>                                    : Returns<Str> {};
-template <std::derived_from<Str> L>
-struct __lt__<L, Object>                                        : Returns<bool> {};
-template <std::derived_from<Str> L, str_like R>
-struct __lt__<L, R>                                             : Returns<bool> {};
-template <std::derived_from<Str> L>
-struct __le__<L, Object>                                        : Returns<bool> {};
-template <std::derived_from<Str> L, str_like R>
-struct __le__<L, R>                                             : Returns<bool> {};
-template <std::derived_from<Str> L>
-struct __ge__<L, Object>                                        : Returns<bool> {};
-template <std::derived_from<Str> L, str_like R>
-struct __ge__<L, R>                                             : Returns<bool> {};
-template <std::derived_from<Str> L>
-struct __gt__<L, Object>                                        : Returns<bool> {};
-template <std::derived_from<Str> L, str_like R>
-struct __gt__<L, R>                                             : Returns<bool> {};
-template <std::derived_from<Str> L>
-struct __add__<L, Object>                                       : Returns<Str> {};
-template <std::derived_from<Str> L, str_like R>
-struct __add__<L, R>                                            : Returns<Str> {};
-template <std::derived_from<Str> L>
-struct __iadd__<L, Object>                                      : Returns<Str> {};
-template <std::derived_from<Str> L, str_like R>
-struct __iadd__<L, R>                                           : Returns<Str> {};
-template <std::derived_from<Str> L>
-struct __mul__<L, Object>                                       : Returns<Str> {};
-template <std::derived_from<Str> L, int_like R>
-struct __mul__<L, R>                                            : Returns<Str> {};
-template <std::derived_from<Str> L>
-struct __imul__<L, Object>                                      : Returns<Str> {};
-template <std::derived_from<Str> L, int_like R>
-struct __imul__<L, R>                                           : Returns<Str> {};
 
 template <std::derived_from<Str> T>
 struct __getattr__<T, "capitalize">                             : Returns<Function> {};
@@ -186,7 +117,54 @@ struct __getattr__<T, "upper">                                  : Returns<Functi
 template <std::derived_from<Str> T>
 struct __getattr__<T, "zfill">                                  : Returns<Function> {};
 
-}
+template <std::derived_from<Str> T>
+struct __len__<T>                                               : Returns<size_t> {};
+template <std::derived_from<Str> T>
+struct __iter__<T>                                              : Returns<Str> {};
+template <std::derived_from<Str> T>
+struct __reversed__<T>                                          : Returns<Str> {};
+template <std::derived_from<Str> T>
+struct __contains__<T, Object>                                  : Returns<bool> {};
+template <std::derived_from<Str> T, impl::str_like Key>
+struct __contains__<T, Key>                                     : Returns<bool> {};
+template <std::derived_from<Str> T>
+struct __getitem__<T, Object>                                   : Returns<Str> {};
+template <std::derived_from<Str> T, impl::int_like Key>
+struct __getitem__<T, Key>                                      : Returns<Str> {};
+template <std::derived_from<Str> T>
+struct __getitem__<T, Slice>                                    : Returns<Str> {};
+template <std::derived_from<Str> L>
+struct __lt__<L, Object>                                        : Returns<bool> {};
+template <std::derived_from<Str> L, impl::str_like R>
+struct __lt__<L, R>                                             : Returns<bool> {};
+template <std::derived_from<Str> L>
+struct __le__<L, Object>                                        : Returns<bool> {};
+template <std::derived_from<Str> L, impl::str_like R>
+struct __le__<L, R>                                             : Returns<bool> {};
+template <std::derived_from<Str> L>
+struct __ge__<L, Object>                                        : Returns<bool> {};
+template <std::derived_from<Str> L, impl::str_like R>
+struct __ge__<L, R>                                             : Returns<bool> {};
+template <std::derived_from<Str> L>
+struct __gt__<L, Object>                                        : Returns<bool> {};
+template <std::derived_from<Str> L, impl::str_like R>
+struct __gt__<L, R>                                             : Returns<bool> {};
+template <std::derived_from<Str> L>
+struct __add__<L, Object>                                       : Returns<Str> {};
+template <std::derived_from<Str> L, impl::str_like R>
+struct __add__<L, R>                                            : Returns<Str> {};
+template <std::derived_from<Str> L>
+struct __iadd__<L, Object>                                      : Returns<Str> {};
+template <std::derived_from<Str> L, impl::str_like R>
+struct __iadd__<L, R>                                           : Returns<Str> {};
+template <std::derived_from<Str> L>
+struct __mul__<L, Object>                                       : Returns<Str> {};
+template <std::derived_from<Str> L, impl::int_like R>
+struct __mul__<L, R>                                            : Returns<Str> {};
+template <std::derived_from<Str> L>
+struct __imul__<L, Object>                                      : Returns<Str> {};
+template <std::derived_from<Str> L, impl::int_like R>
+struct __imul__<L, R>                                           : Returns<Str> {};
 
 
 /* Bertrand equivalent for pybind11::str. */
