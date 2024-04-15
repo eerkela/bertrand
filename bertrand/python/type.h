@@ -187,7 +187,7 @@ public:
     __set_name__() methods for the type or any of its bases. */
     explicit Type(PyType_Spec* spec) : Base(PyType_FromSpec(spec), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -198,7 +198,7 @@ public:
         Base(PyType_FromSpecWithBases(spec, bases.ptr()), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -211,7 +211,7 @@ public:
             Base(PyType_FromModuleAndSpec(module.ptr(), spec, bases.ptr()), stolen_t{})
         {
             if (m_ptr == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
         }
 
@@ -237,7 +237,7 @@ public:
             stolen_t{}
         ) {
             if (m_ptr == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
         }
 
@@ -260,7 +260,7 @@ public:
         inline Module module_() const {
             PyObject* result = PyType_GetModule(self());
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
             return reinterpret_steal<Module>(result);
         }
@@ -473,7 +473,7 @@ class Super : public Object {
             reinterpret_cast<PyObject*>(&PySuper_Type)
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -491,7 +491,7 @@ public:
         stolen_t{}
     ) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -510,7 +510,7 @@ public:
         ), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 

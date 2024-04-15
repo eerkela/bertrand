@@ -19,6 +19,7 @@
 #include <ostream>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -28,6 +29,7 @@
 #include <vector>
 
 #include <Python.h>
+#include <internal/pycore_frame.h>  // required to assign to frame->f_lineno
 #include <cpptrace/cpptrace.hpp>
 #include <pybind11/pybind11.h>
 #include <pybind11/embed.h>
@@ -41,69 +43,6 @@
 #include "bertrand/static_str.h"
 
 
-/* NOTES ON PERFORMANCE:
- * In general, bertrand should be as fast or faster than the equivalent Python code,
- * owing to the use of static typing, comp time, and optimized CPython API calls.  
- * There are a few things to keep in mind, however:
- *
- *  1.  A null pointer check followed by an isinstance() check is implicitly incurred
- *      whenever a generic py::Object is narrowed to a more specific type, such as
- *      py::Int or py::List.  This is necessary to ensure type safety, and is optimized
- *      for built-in types, but can become a pessimization if done frequently,
- *      especially in tight loops.  If you find yourself doing this, consider either
- *      converting to strict types earlier in the code (which eliminates runtime
- *      overhead and allows the compiler to enforce these checks at compile time) or
- *      keeping all object interactions fully generic to prevent thrashing.  Generally,
- *      the only cases where this can be a problem are when accessing a named attribute
- *      via `attr()`, calling a generic Python function using `()`, indexing into an
- *      untyped container with `[]`, or iterating over such a container in a range-based
- *      loop, all of which return py::Object instances by default.  Note that all of
- *      these can be made type-safe by using a typed container or writing a custom
- *      wrapper class that specializes the `py::impl::__call__`,
- *      `py::impl::__getitem__`, and `py::impl::__iter__` control structs.  Doing so
- *      eliminates the runtime check and promotes it to compile time.
- *  2.  For cases where the exact type of a generic object is known in advance, it is
- *      possible to bypass the runtime check by using `py::reinterpret_borrow<T>(obj)`
- *      or `py::reinterpret_steal<T>(obj.release())`.  These functions are not type
- *      safe, and should be used with caution (especially the latter, which can lead to
- *      memory leaks if used incorrectly).  However, they can be useful when working
- *      with custom types, as in most cases a method's return type and reference count
- *      will be known ahead of time, making the runtime check redundant.  In most other
- *      cases, it is not recommended to use these functions, as they can lead to subtle
- *      bugs and crashes if the assumptions they prove to be false.  Implementers
- *      seeking to write their own types should refer to the built-in types for
- *      examples of how to do this correctly.
- *  3.  There is a small penalty for copying data across the Python/C++ boundary.  This
- *      is generally tolerable (even for lists and other container types), but it can
- *      add up if done frequently.  If you find yourself repeatedly transferring large
- *      amounts of data between Python and C++, you should either reconsider your
- *      design to keep more of your operations within one language or another, or use
- *      the buffer protocol to eliminate the copy.  An easy way to do this is to use
- *      NumPy arrays, which can be accessed directly as C++ arrays without any copies.
- *  4.  Python (at least for now) does not play well with multithreaded code, and
- *      subsequently, neither does bertrand.  If you need to use Python objects in a
- *      multithreaded context, consider offloading the work to C++ and passing the
- *      results back to Python. This unlocks full native parallelism, with SIMD,
- *      OpenMP, and other tools at your disposal.  If you must use Python, first read
- *      the GIL chapter in the Python C API documentation, and then consider using the
- *      `py::gil_scoped_release` guard to release the GIL within a specific context,
- *      and automatically reacquire it using RAII before returning to Python.  This
- *      should only be attempted if you are 100% sure that your Python code is
- *      thread-safe and does not interfere with the GIL in any way.  If there is any
- *      doubt whatsoever, do not do this.
- *  5.  Additionally, Bertrand makes it possible to store arbitrary Python objects with
- *      static duration using the py::Static<> wrapper, which can reduce net
- *      allocations and further improve performance.  This is especially true for
- *      global objects like imported modules and compiled scripts, which can be cached
- *      and reused for the lifetime of the program.
- *
- * Even without these optimizations, bertrand should be quite competitive with native
- * Python code, and should trade blows with it in most cases.  If you find a case where
- * bertrand is significantly slower than Python, please file an issue on the GitHub
- * repository, and we will investigate it as soon as possible.
- */
-
-
 namespace bertrand {
 namespace py {
 
@@ -113,12 +52,7 @@ namespace py {
 /////////////////////////////////////////
 
 
-/* Pybind11 has rich support for converting between Python and C++ types, calling
- * Python functions from C++ (and vice versa), and exposing C++ types to Python.  We
- * don't change any of this behavior, meaning extensions should work with pybind11 as
- * expected.
- *
- * Pybind11 documentation:
+/* Pybind11 documentation:
  *     https://pybind11.readthedocs.io/en/stable/
  */
 
@@ -230,32 +164,18 @@ class Regex;  // TODO: incorporate more fully (write pybind11 bindings so that i
 //////////////////////////
 
 
-/* Pybind11 exposes some, but not all of the built-in Python errors.  We expand them
- * here so that users never reach for an error that doesn't exist, and we replicate the
- * standard error hierarchy so that users can use identical semantics to normal Python.
- *
- * CPython exception types:
+/* CPython exception types:
  *      https://docs.python.org/3/c-api/exceptions.html#standard-exceptions
  *
- * Hierarchy:
+ * Inheritance hierarchy:
  *      https://docs.python.org/3/library/exceptions.html#exception-hierarchy
  */
 
 
-// TODO: maintaining correct stack traces in mixed Python/C++ code is very tricky,
-// especially with the addition of embedded Python scripts.  This can lead to
-// complicated situations where the C++ stack trace is interleaved with the Python
-// stack trace, and the two must be reconciled to provide a coherent error message.
-// Currently, the way this is handled is by simply terminating the stack when a
-// py::Code::operator() frame is encountered, which is a reasonable heuristic, but not
-// perfect.  A better solution would involve unifying the stack traces into a single
-// object that can be passed around and manipulated as needed, but this would be
-// difficult to implement.  I don't want to try this until C++23 at the earliest, since
-// that adds stack traces to the standard library, which could simplify this and make
-// it more robust.  Tracebacks are surprisingly complicated!
-
-
 namespace impl {
+
+    // TODO: delete empty_frame() and have py::Frame create a StackFrame object instead,
+    // and then borrow its to_python() field.
 
     /* Create an empty Python frame object to represent a C++ context in Python
     exception tracebacks. */
@@ -285,6 +205,7 @@ namespace impl {
         if (frame == nullptr) {
             throw pybind11::error_already_set();
         }
+        frame->f_lineno = lineno;
         return frame;
     }
 
@@ -307,465 +228,872 @@ namespace impl {
         );
     }
 
-    /* Return true if a C++ stack frame does not refer to an internal frame within the
-    Python interpreter, pybind11 bindings, or the C++ standard library. */
-    bool ignore_frame(const cpptrace::stacktrace_frame& frame) {
-        return (
-            frame.filename.find("usr/bin/python") != std::string::npos ||
-            frame.symbol.find("pybind11::cpp_function::") != std::string::npos ||
-            frame.symbol.starts_with("__")
-        );
-    }
-
-    /* A struct holding a complete Python error state, to simplify traceback
-    interactions. */
-    struct PyErr {
+    /* A language-agnostic stack frame that is used when reporting mixed Python/C++
+    error tracebacks. */
+    class StackFrame {
+        mutable std::string string;
+        mutable PyFrameObject* py_frame = nullptr;
         PyThreadState* thread;
-        PyTypeObject* type;
-        PyBaseExceptionObject* value;
-        PyTracebackObject* traceback;
 
-        PyErr(PyThreadState* thread_state = nullptr) :
-            thread(thread_state == nullptr ? PyThreadState_Get() : thread_state)
-        {
-            #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
-                if (thread->current_exception != nullptr) {
-                    type = reinterpret_cast<PyTypeObject*>(
-                        Py_NewRef(Py_TYPE(thread->current_exception))
-                    );
-                    value = reinterpret_cast<PyBaseExceptionObject*>(
-                        thread->current_exception
-                    );
-                    traceback = reinterpret_cast<PyTracebackObject*>(
-                        PyException_GetTraceback(reinterpret_cast<PyObject*>(value))
-                    );
-                }
-                thread->current_exception = nullptr;
-            #else
-                if (thread->curexc_type != nullptr) {
-                    type = reinterpret_cast<PyTypeObject*>(thread->curexc_type);
-                    value = reinterpret_cast<PyBaseExceptionObject*>(
-                        thread->curexc_value
-                    );
-                    traceback = reinterpret_cast<PyTracebackObject*>(
-                        thread->curexc_traceback
-                    );
-                    if (traceback == nullptr && value != nullptr) {
-                        traceback = reinterpret_cast<PyTracebackObject*>(
-                            PyException_GetTraceback(reinterpret_cast<PyObject*>(value))
-                        );
-                    }
-                }
-                thread->curexc_type = nullptr;
-                thread->curexc_value = nullptr;
-                thread->curexc_traceback = nullptr;
-            #endif
-        }
+    public:
+        std::string filename;
+        std::string funcname;
+        int lineno = 0;
+        bool is_inline = false;
 
-        PyErr(
-            PyTypeObject* exc_type,
-            PyBaseExceptionObject* exc_value,
-            PyTracebackObject* exc_traceback,
-            PyThreadState* thread_state = nullptr
-        ) :
-            thread(thread_state == nullptr ? PyThreadState_Get() : thread_state),
-            type(reinterpret_cast<PyTypeObject*>(Py_XNewRef(exc_type))),
-            value(reinterpret_cast<PyBaseExceptionObject*>(Py_XNewRef(exc_value))),
-            traceback(reinterpret_cast<PyTracebackObject*>(Py_XNewRef(exc_traceback)))
+        StackFrame(PyFrameObject* frame = nullptr, PyThreadState* tstate = nullptr) :
+            py_frame(frame),
+            thread(tstate == nullptr ? PyThreadState_Get() : tstate)
         {
-            if (value != nullptr) {
-                if (type == nullptr) {
-                    type = reinterpret_cast<PyTypeObject*>(Py_NewRef(Py_TYPE(value)));
-                }
-                if (traceback == nullptr) {
-                    traceback = reinterpret_cast<PyTracebackObject*>(
-                        PyException_GetTraceback(reinterpret_cast<PyObject*>(value))
+            if (py_frame != nullptr) {
+                #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 9)
+                    PyCodeObject* code = PyFrame_GetCode(py_frame);
+                #else
+                    PyCodeObject* code = reinterpret_cast<PyCodeObject*>(
+                        Py_XNewRef(py_frame->f_code)
                     );
+                #endif
+
+                if (code != nullptr) {
+                    filename = PyUnicode_AsUTF8(code->co_filename);
+                    funcname = PyUnicode_AsUTF8(code->co_name);
+                    Py_DECREF(code);
                 }
+                lineno = PyFrame_GetLineNumber(frame);
             }
         }
 
-        PyErr(const PyErr& other) :
-            thread(other.thread),
-            type(reinterpret_cast<PyTypeObject*>(Py_XNewRef(other.type))),
-            value(reinterpret_cast<PyBaseExceptionObject*>(Py_XNewRef(other.value))),
-            traceback(reinterpret_cast<PyTracebackObject*>(Py_XNewRef(other.traceback)))
+        StackFrame(
+            const cpptrace::stacktrace_frame& frame,
+            PyThreadState* tstate = nullptr
+        ) :
+            thread(tstate == nullptr ? PyThreadState_Get() : tstate),
+            filename(frame.filename),
+            funcname(frame.symbol),
+            lineno(frame.line.value_or(0)),
+            is_inline(frame.is_inline)
         {}
 
-        PyErr(PyErr&& other) :
+        StackFrame(
+            const std::string& filename,
+            const std::string& funcname,
+            int lineno,
+            bool is_inline = false,
+            PyThreadState* tstate = nullptr
+        ) :
+            thread(tstate == nullptr ? PyThreadState_Get() : tstate),
+            filename(filename),
+            funcname(funcname),
+            lineno(lineno),
+            is_inline(is_inline)
+        {}
+
+        StackFrame(const StackFrame& other) :
+            string(other.string),
+            py_frame(reinterpret_cast<PyFrameObject*>(Py_XNewRef(other.py_frame))),
             thread(other.thread),
-            type(other.type),
-            value(other.value),
-            traceback(other.traceback)
+            filename(other.filename),
+            funcname(other.funcname),
+            lineno(other.lineno),
+            is_inline(other.is_inline)
+        {}
+
+        StackFrame(StackFrame&& other) :
+            string(std::move(other.string)),
+            py_frame(other.py_frame),
+            thread(other.thread),
+            filename(std::move(other.filename)),
+            funcname(std::move(other.funcname)),
+            lineno(other.lineno),
+            is_inline(other.is_inline)
         {
+            other.py_frame = nullptr;
             other.thread = nullptr;
-            other.type = nullptr;
-            other.value = nullptr;
-            other.traceback = nullptr;
         }
 
-        PyErr& operator=(const PyErr& other) {
+        StackFrame& operator=(const StackFrame& other) {
             if (&other != this) {
-                PyTypeObject* old_type = type;
-                PyBaseExceptionObject* old_value = value;
-                PyTracebackObject* old_traceback = traceback;
-
+                PyFrameObject* old_frame = py_frame;
+                string = other.string;
                 thread = other.thread;
-                type = reinterpret_cast<PyTypeObject*>(Py_XNewRef(other.type));
-                value = reinterpret_cast<PyBaseExceptionObject*>(
-                    Py_XNewRef(other.value)
-                );
-                traceback = reinterpret_cast<PyTracebackObject*>(
-                    Py_XNewRef(other.traceback))
-                ;
-
-                Py_XDECREF(old_type);
-                Py_XDECREF(old_value);
-                Py_XDECREF(old_traceback);
+                py_frame = reinterpret_cast<PyFrameObject*>(Py_XNewRef(other.py_frame));
+                filename = other.filename;
+                funcname = other.funcname;
+                lineno = other.lineno;
+                is_inline = other.is_inline;
+                Py_XDECREF(old_frame);
             }
             return *this;
         }
 
-        PyErr& operator=(PyErr&& other) {
+        StackFrame& operator=(StackFrame&& other) {
             if (&other != this) {
-                PyTypeObject* old_type = type;
-                PyBaseExceptionObject* old_value = value;
-                PyTracebackObject* old_traceback = traceback;
-
+                PyFrameObject* old_frame = py_frame;
+                string = std::move(other.string);
                 thread = other.thread;
-                type = other.type;
-                value = other.value;
-                traceback = other.traceback;
+                py_frame = other.py_frame;
+                filename = std::move(other.filename);
+                funcname = std::move(other.funcname);
+                lineno = other.lineno;
+                is_inline = other.is_inline;
+                other.py_frame = nullptr;
                 other.thread = nullptr;
-                other.type = nullptr;
-                other.value = nullptr;
-                other.traceback = nullptr;
-
-                Py_XDECREF(old_type);
-                Py_XDECREF(old_value);
-                Py_XDECREF(old_traceback);
+                Py_XDECREF(old_frame);
             }
             return *this;
         }
 
-        ~PyErr() noexcept {
-            Py_XDECREF(type);
-            Py_XDECREF(value);
-            Py_XDECREF(traceback);
+        ~StackFrame() noexcept {
+            Py_XDECREF(py_frame);
         }
 
-        /* Restore the error state to the Python interpreter. */
-        void restore() {
-            // TODO: check to see if this is being correctly handled in Python 3.12
-            #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
-                if (value != nullptr) {
-                    PyException_SetTraceback(
-                        value, traceback == nullptr ?
-                            Py_None : reinterpret_cast<PyObject*>(traceback)
+        /* Convert this stack frame into an empty Python frame object, which is
+        cached. */
+        PyFrameObject* to_python() const {
+            if (py_frame == nullptr) {
+                PyObject* globals = PyDict_New();
+                if (globals == nullptr) {
+                    throw std::runtime_error(
+                        "could not convert StackFrame into Python frame object - "
+                        "failed to create globals dictionary"
                     );
                 }
-                PyTypeObject* old_type = type;
-                thread->current_exception = reinterpret_cast<PyObject*>(value);
-                PyTraceBackObject* old_traceback = traceback;
-                type = nullptr;
-                value = nullptr;
-                traceback = nullptr;
-                Py_XDECREF(old_type);
-                Py_XDECREF(old_traceback);
-            #else
-                thread->curexc_type = reinterpret_cast<PyObject*>(type);
-                thread->curexc_value = reinterpret_cast<PyObject*>(value);
-                thread->curexc_traceback = reinterpret_cast<PyObject*>(traceback);
-                type = nullptr;
-                value = nullptr;
-                traceback = nullptr;
-            #endif
-        }
-
-        /* Append a Python frame to this error's traceback.  Note that this always
-        appends to the most recent call. */
-        void append(PyFrameObject* frame) {
-            // NOTE: This function is adapted from
-            //      Python/traceback.c :: tb_create_raw()
-            //      Python/traceback.c :: _PyTraceBack_FromFrame()
-            if (frame == nullptr) {
-                throw std::runtime_error("PyErr::append() called with a null frame");
-            }
-            PyTracebackObject* tb = PyObject_GC_New(
-                PyTracebackObject,
-                &PyTraceBack_Type
-            );
-            if (tb == nullptr) {
-                throw pybind11::error_already_set();
-            }
-            tb->tb_next = traceback;
-            tb->tb_frame = reinterpret_cast<PyFrameObject*>(Py_NewRef(frame));
-            #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
-                tb->tb_lasti = PyFrame_GetLasti(frame) * sizeof(_Py_CODEUNIT);
-                tb->tb_lineno = PyFrame_GetLineNumber(frame);
-            #else
-                tb->tb_lasti = frame->f_lasti * sizeof(_Py_CODEUNIT);
-                tb->tb_lineno = frame->f_lineno;
-            #endif
-            PyObject_GC_Track(tb);
-            traceback = tb;
-        }
-
-        /* Append a C++ frame to this error's traceback.  Note that this always appends
-        to the most recent call. */
-        void append(const cpptrace::stacktrace_frame& frame) {
-            PyFrameObject* temp = empty_frame(frame, thread);
-            append(temp);
-            Py_DECREF(temp);
-        }
-
-        /* Extend a traceback by appending all frames from a C++ stack trace, filtering
-        out frames that refer to the internals of the Python interpreter, pybind11, or
-        the C++ standard library. */
-        void extend(const cpptrace::stacktrace& stack) {
-            for (auto&& frame : stack) {
-                // break at Code::operator() frames to allow proper interleaving of
-                // Python and C++ frames
-                if (frame.symbol.find("py::Code::operator()") != std::string::npos) {
-                    break;
-                } else if (!ignore_frame(frame)) {
-                    append(frame);
+                PyCodeObject* code = PyCode_NewEmpty(
+                    filename.c_str(),
+                    funcname.c_str(),
+                    lineno
+                );
+                if (code == nullptr) {
+                    Py_DECREF(globals);
+                    throw std::runtime_error(
+                        "could not convert StackFrame into Python frame object - "
+                        "failed to create code object"
+                    );
                 }
+                py_frame = PyFrame_New(thread, code, globals, nullptr);
+                Py_DECREF(globals);
+                Py_DECREF(code);
+                if (py_frame == nullptr) {
+                    throw std::runtime_error(
+                        "Error when converting StackFrame into Python frame object - "
+                        "failed to initialize empty frame"
+                    );
+                }
+                py_frame->f_lineno = lineno;
             }
+            return py_frame;
         }
 
-        /* Check if an exception is currently set. */
-        explicit operator bool() const noexcept {
-            return type != nullptr;
+        /* Convert this stack frame into a string representation, for use in exception
+        tracebacks. */
+        const std::string& to_string() const noexcept {
+            if (string.empty()) {
+                string = "File \"" + filename + "\", line ";
+                string += std::to_string(lineno) + ", in ";
+                if (is_inline) {
+                    string += "[inline] ";
+                }
+                string += funcname;
+            }
+            return string;
+        }
+
+        /* Stream the stack frame into an output stream. */
+        friend std::ostream& operator<<(std::ostream& os, const StackFrame& self) noexcept {
+            const std::string& str = self.to_string();
+            os.write(str.c_str(), str.size());
+            return os;
         }
 
     };
 
-}
+    /* A language-agnostic stack trace that is attached to all Python/C++ errors. */
+    class StackTrace {
+        mutable std::string string;
+        mutable PyTracebackObject* py_traceback = nullptr;
+        PyThreadState* thread;
 
-
-/* Adaptation of pybind11::error_already_set() that appends a C++ stack trace to where
-the error was intercepted. */
-class error_already_set : public pybind11::error_already_set {
-    using Base = pybind11::error_already_set;
-
-protected:
-    mutable cpptrace::stacktrace cpp_traceback;
-    mutable std::string what_string;
-
-    static constexpr size_t UNLIMITED = std::numeric_limits<size_t>::max();
-
-public:
-
-    BERTRAND_NOINLINE
-    explicit error_already_set(size_t skip = 0, size_t max_depth = UNLIMITED) :
-        Base(), cpp_traceback(cpptrace::generate_trace(skip + 1, max_depth))
-    {
-        impl::PyErr err(
-            reinterpret_cast<PyTypeObject*>(this->type().ptr()),
-            reinterpret_cast<PyBaseExceptionObject*>(this->value().ptr()),
-            reinterpret_cast<PyTracebackObject*>(this->trace().ptr())
-        );
-        err.extend(cpp_traceback);
-        const_cast<pybind11::object&>(this->trace()) =
-            pybind11::reinterpret_borrow<pybind11::object>(
-                reinterpret_cast<PyObject*>(err.traceback)
+        /* Return true if a C++ stack frame does not refer to an internal frame within
+        the Python interpreter, pybind11 bindings, or the C++ standard library. */
+        static bool ignore(const cpptrace::stacktrace_frame& frame) {
+            return (
+                frame.filename.find("usr/bin/python") != std::string::npos ||
+                frame.symbol.find("pybind11::cpp_function::") != std::string::npos ||
+                frame.symbol.starts_with("__")
             );
-    }
-
-    error_already_set(const error_already_set& other) :
-        Base(other), cpp_traceback(other.cpp_traceback), what_string(other.what_string)
-    {}
-
-    error_already_set& operator=(const error_already_set& other) {
-        if (&other != this) {
-            Base::operator=(other);
-            cpp_traceback = other.cpp_traceback;
-            what_string = other.what_string;
         }
-        return *this;
-    }
 
-    const char* what() const noexcept override {
-        if (what_string.empty()) {
-            what_string = Base::what() + std::string(":\n");
-            what_string += cpp_traceback.to_string();
+    public:
+        // NOTE: the stack is stored in proper execution order
+        // (i.e. [head] most recent -> least recent [tail]).  This is reversed from
+        // both Python and cpptrace, which report tracebacks in the opposite order.
+        std::deque<StackFrame> stack;
+
+        BERTRAND_NOINLINE explicit StackTrace(
+            size_t skip = 0,
+            PyThreadState* tstate = nullptr
+        ) : StackTrace(cpptrace::generate_trace(++skip), tstate)
+        {}
+
+        explicit StackTrace(
+            const cpptrace::stacktrace& stacktrace,
+            PyThreadState* tstate = nullptr
+        ) : thread(tstate == nullptr ? PyThreadState_Get() : tstate)
+        {
+            for (auto&& frame : stacktrace) {
+                if (frame.symbol.find("py::Code::operator()") != std::string::npos) {
+                    break;
+                } else if (!ignore(frame)) {
+                    stack.emplace_front(frame, thread);
+                }
+            }
         }
-        return what_string.c_str();
+
+        explicit StackTrace(
+            PyTracebackObject* traceback,
+            const cpptrace::stacktrace& stacktrace,
+            PyThreadState* tstate = nullptr
+        ) : thread(tstate == nullptr ? PyThreadState_Get() : tstate)
+        {
+            if (traceback == nullptr) {
+                #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
+                    if (thread->current_exception != nullptr) {
+                        traceback = reinterpret_cast<PyTracebackObject*>(
+                            PyException_GetTraceback(thread->current_exception)
+                        );
+                    }
+                #else
+                    traceback = reinterpret_cast<PyTracebackObject*>(
+                        Py_XNewRef(thread->curexc_traceback)
+                    );
+                    if (traceback == nullptr && thread->curexc_value != nullptr) {
+                        traceback = reinterpret_cast<PyTracebackObject*>(
+                            PyException_GetTraceback(thread->curexc_value)
+                        );
+                    }
+                #endif
+            }
+
+            // Python tracebacks are stored least recent -> most recent, so we can
+            // insert them in the same order.
+            while (traceback != nullptr) {
+                stack.emplace_back(traceback->tb_frame, thread);
+                traceback = traceback->tb_next;
+            }
+
+            // C++ tracebacks are stored most recent -> least recent, so we need to
+            // reverse them during construction.  Since the Python frames are considered
+            // to be more recent than the C++ frames in this context, we prepend to the
+            // stack to obtain the proper execution order (from C++ -> Python).
+            for (const cpptrace::stacktrace_frame& frame : stacktrace) {
+                if (frame.symbol.find("py::Code::operator()") != std::string::npos) {
+                    break;
+                } else if (!ignore(frame)) {
+                    stack.emplace_front(frame, thread);
+                }
+            }
+        }
+
+        StackTrace(
+            std::deque<StackFrame>&& stack,
+            PyThreadState* tstate = nullptr
+        ) : thread(tstate == nullptr ? PyThreadState_Get() : tstate),
+            stack(std::move(stack))
+        {}
+
+        StackTrace(
+            const std::deque<StackFrame>& stack,
+            PyThreadState* tstate = nullptr
+        ) : thread(tstate == nullptr ? PyThreadState_Get() : tstate),
+            stack(stack)
+        {}
+
+        StackTrace(const StackTrace& other) :
+            string(other.string),
+            py_traceback(reinterpret_cast<PyTracebackObject*>(
+                Py_XNewRef(other.py_traceback))
+            ),
+            thread(other.thread),
+            stack(other.stack)
+        {}
+
+        StackTrace(StackTrace&& other) :
+            string(std::move(other.string)),
+            py_traceback(other.py_traceback),
+            thread(other.thread),
+            stack(std::move(other.stack))
+        {
+            other.py_traceback = nullptr;
+            other.thread = nullptr;
+        }
+
+        StackTrace& operator=(const StackTrace& other) {
+            if (&other != this) {
+                PyTracebackObject* old_traceback = py_traceback;
+                string = other.string;
+                py_traceback = reinterpret_cast<PyTracebackObject*>(
+                    Py_XNewRef(other.py_traceback)
+                );
+                thread = other.thread;
+                stack = other.stack;
+                Py_XDECREF(old_traceback);
+            }
+            return *this;
+        }
+
+        StackTrace& operator=(StackTrace&& other) {
+            if (&other != this) {
+                PyTracebackObject* old_traceback = py_traceback;
+                string = std::move(other.string);
+                py_traceback = other.py_traceback;
+                thread = other.thread;
+                stack = std::move(other.stack);
+                other.py_traceback = nullptr;
+                other.thread = nullptr;
+                Py_XDECREF(old_traceback);
+            }
+            return *this;
+        }
+
+        ~StackTrace() noexcept {
+            Py_XDECREF(py_traceback);
+        }
+
+        size_t size() const noexcept { return stack.size(); }
+        auto begin() const noexcept { return stack.begin(); }
+        auto end() const noexcept { return stack.end(); }
+        auto rbegin() const noexcept { return stack.rbegin(); }
+        auto rend() const noexcept { return stack.rend(); }
+
+        /* Set an active Python error with this traceback. */
+        void restore(PyObject* type, const char* value) const {
+            PyTracebackObject* tb = to_python();
+            PyErr_SetString(type, value);
+            #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
+                if (tb != nullptr) {
+                    PyException_SetTraceback(
+                        thread->current_exception,
+                        reinterpret_cast<PyObject*>(tb)
+                    );
+                }
+            #else
+                thread->curexc_traceback = Py_XNewRef(tb);
+            #endif
+        }
+
+        /* Build an equivalent Python traceback object for this stack trace.  The
+        result is cached and reused on subsequent calls. */
+        PyTracebackObject* to_python() const {
+            if (py_traceback == nullptr && !stack.empty()) {
+                auto it = stack.rbegin();
+                auto end = stack.rend();
+                while (it != end) {
+                    PyTracebackObject* tb = PyObject_GC_New(
+                        PyTracebackObject,
+                        &PyTraceBack_Type
+                    );
+                    if (tb == nullptr) {
+                        throw std::runtime_error(
+                            "could not create Python traceback object - failed to allocate "
+                            "PyTraceBackObject"
+                        );
+                    }
+                    tb->tb_next = py_traceback;
+                    tb->tb_frame = reinterpret_cast<PyFrameObject*>(
+                        Py_NewRef((*it).to_python())
+                    );
+                    #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
+                        tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
+                    #else
+                        tb->tb_lasti = tb->tb_frame->f_lasti * sizeof(_Py_CODEUNIT);
+                    #endif
+                    tb->tb_lineno = PyFrame_GetLineNumber(tb->tb_frame);
+                    PyObject_GC_Track(tb);
+                    py_traceback = tb;
+                    ++it;
+                }
+            }
+            return py_traceback;
+        }
+
+        /* Force a rebuild of the Python traceback the next time `to_python()` is
+        called. */
+        void flush_python() noexcept {
+            PyTracebackObject* tb = py_traceback;
+            py_traceback = nullptr;
+            Py_XDECREF(tb);
+        }
+
+        /* Convert the traceback into a string representation, for use in C++ error
+        messages.  These mimic the Python style even in pure C++ contexts. */
+        const std::string& to_string() const noexcept {
+            if (string.empty()) {
+                string = "Traceback (most recent call last):";
+                for (auto&& frame : stack) {
+                    string += "\n  " + frame.to_string();
+                }
+            }
+            return string;
+        }
+
+        /* Force a rebuild of the C++ traceback the next time `what()` is called. */
+        void flush_string() noexcept {
+            string = "";
+        }
+
+        /* Check whether the traceback has any entries. */
+        explicit operator bool() const noexcept {
+            return !stack.empty();
+        }
+
+        /* Stream the traceback into an output stream. */
+        friend std::ostream& operator<<(std::ostream& os, const StackTrace& self) noexcept {
+            const std::string& str = self.to_string();
+            os.write(str.c_str(), str.size());
+            return os;
+        }
+
+    };
+
+    /* A map that allows Python exception types to be perfectly reflected in C++
+    try/catch semantics.  This is automatically populated by the BERTRAND_EXCEPTION()
+    macro, and is only used when catching indeterminate Python errors from C++.  */
+    static std::unordered_map<
+        PyObject*,
+        std::function<void(PyObject*, PyObject*, PyObject*, size_t, PyThreadState*)>
+    > rethrow_exception_map;
+
+    /* Register a new exception type, populating it in the exception map.  This is
+    automatically called by the BERTRAND_EXCEPTION() macro, so that users should never
+    need to call it themselves. */
+    template <typename cpp_type>
+    bool register_exception(PyObject* py_type) {
+        auto it = rethrow_exception_map.find(py_type);
+        if (it == rethrow_exception_map.end()) {
+            rethrow_exception_map[py_type] = [](
+                PyObject* type,
+                PyObject* value,
+                PyObject* traceback,
+                size_t skip,
+                PyThreadState* thread
+            ) {
+                throw cpp_type(
+                    type,
+                    value,
+                    traceback,
+                    ++skip,
+                    thread
+                );
+            };
+        }
+        return true;
     }
 
-    const char* message() const noexcept {
-        return Base::what();
-    }
+    #define BERTRAND_EXCEPTION(cls, base, pytype)                                       \
+        static_assert(                                                                  \
+            std::is_base_of_v<Exception, base>,                                         \
+            "exception base class must derive from py::Exception"                       \
+        );                                                                              \
+        static_assert(                                                                  \
+            std::is_same_v<PyObject*, decltype(pytype)>,                                \
+            "exception type must be a PyObject* pointer"                                \
+        );                                                                              \
+                                                                                        \
+        class PYBIND11_EXPORT_EXCEPTION cls : public base {                             \
+            static bool registered;                                                     \
+                                                                                        \
+            template <typename cpp_type>                                                \
+            friend bool register_exception(PyObject* py_type);                          \
+                                                                                        \
+        public:                                                                         \
+            using base::base;                                                           \
+                                                                                        \
+            BERTRAND_NOINLINE explicit cls(                                             \
+                const std::string& message = "",                                        \
+                size_t skip = 0,                                                        \
+                PyThreadState* thread = nullptr                                         \
+            ) : base(message, get_trace(skip), thread)                                  \
+            {}                                                                          \
+                                                                                        \
+            BERTRAND_NOINLINE explicit cls(                                             \
+                const std::string& message,                                             \
+                const cpptrace::stacktrace& trace,                                      \
+                PyThreadState* thread = nullptr                                         \
+            ) : base(message, trace, thread)                                            \
+            {}                                                                          \
+                                                                                        \
+            BERTRAND_NOINLINE explicit cls(                                             \
+                PyObject* type,                                                         \
+                PyObject* value,                                                        \
+                PyObject* traceback,                                                    \
+                size_t skip = 0,                                                        \
+                PyThreadState* thread = nullptr                                         \
+            ) : base(type, value, traceback, get_trace(skip), thread)                   \
+            {}                                                                          \
+                                                                                        \
+            BERTRAND_NOINLINE explicit cls(                                             \
+                PyObject* type,                                                         \
+                PyObject* value,                                                        \
+                PyObject* traceback,                                                    \
+                const cpptrace::stacktrace& trace,                                      \
+                PyThreadState* thread = nullptr                                         \
+            ) : base(type, value, traceback, trace, thread)                             \
+            {}                                                                          \
+                                                                                        \
+            virtual const char* what() const noexcept override {                        \
+                if (what_string.empty()) {                                              \
+                    what_string += traceback.to_string();                               \
+                    what_string += "\n"#cls": ";                                        \
+                    what_string += message();                                           \
+                }                                                                       \
+                return what_string.c_str();                                             \
+            }                                                                           \
+                                                                                        \
+            virtual void set_error() const override {                                   \
+                traceback.restore(pytype, message());                                   \
+            }                                                                           \
+                                                                                        \
+            static void from_python(                                                    \
+                size_t skip = 0,                                                        \
+                PyThreadState* thread = nullptr                                         \
+            ) = delete;                                                                 \
+                                                                                        \
+            static void from_pybind11(                                                  \
+                size_t skip = 0,                                                        \
+                PyThreadState* thread = nullptr                                         \
+            ) = delete;                                                                 \
+        };                                                                              \
+                                                                                        \
+        bool cls::registered = impl::register_exception<cls>(pytype);                   \
 
-    const cpptrace::stacktrace& traceback() const noexcept {
-        return cpp_traceback;
-    }
-
-};
+}
 
 
 /* Base exception class.  Appends a C++ stack trace that will be propagated up to
 Python for cross-language diagnostics. */
 class Exception : public pybind11::builtin_exception {
     using Base = pybind11::builtin_exception;
+    static bool registered;
+
+    template <typename cpp_type>
+    friend bool register_exception(PyObject* py_type);
 
 protected:
-    mutable cpptrace::detail::lazy_trace_holder cpp_traceback;
     mutable std::string what_string;
 
-    static std::string parse_obj(const Handle& obj) {
-        PyObject* string = PyObject_Str(obj.ptr());
+    static std::string parse_value(PyObject* obj) {
+        PyObject* string = PyObject_Str(obj);
         if (string == nullptr) {
-            throw pybind11::error_already_set();
+            throw std::runtime_error(
+                "could not convert Python exception into a C++ exception - "
+                "str(exception) is ill-formed"
+            );
         }
         Py_ssize_t size;
         const char* data = PyUnicode_AsUTF8AndSize(string, &size);
         if (data == nullptr) {
             Py_DECREF(string);
-            throw pybind11::error_already_set();
+            throw std::runtime_error(
+                "could not convert Python exception into a C++ exception - "
+                "str(exception) is not a valid UTF-8 string"
+            );
         }
         std::string result(data, size);
         Py_DECREF(string);
         return result;
     }
 
-    /* Protected constructor avoids unnecessary noise in C++ stack trace from calling a
-    parent class constructor. */
-    Exception(const std::string& message, cpptrace::raw_trace&& trace) :
-        Base(message), cpp_traceback(std::move(trace))
-    {}
+    /* Protected method gets a C++ stack trace to a particular context without going
+    through inherited constructors. */
+    static cpptrace::stacktrace get_trace(size_t skip) {
+        auto result = cpptrace::generate_trace(++skip);
+        return result;
+    }
 
 public:
+    impl::StackTrace traceback;
 
-    BERTRAND_NOINLINE
-    explicit Exception(const std::string& message, size_t skip = 0) : Exception(
-        message,
-        cpptrace::detail::get_raw_trace_and_absorb(skip + 1)
-    ) {}
+    BERTRAND_NOINLINE explicit Exception(
+        const std::string& message = "",
+        size_t skip = 0,
+        PyThreadState* thread = nullptr
+    ) : Base(message), traceback(get_trace(skip), thread)
+    {}
 
-    BERTRAND_NOINLINE
-    explicit Exception(Handle obj, size_t skip = 0) : Exception(
-        parse_obj(obj),
-        cpptrace::detail::get_raw_trace_and_absorb(skip + 1)
-    ) {}
+    BERTRAND_NOINLINE explicit Exception(
+        const std::string& message,
+        const cpptrace::stacktrace& trace,
+        PyThreadState* thread = nullptr
+    ) : Base(message), traceback(trace, thread)
+    {}
 
-    Exception() : Exception("") {}
+    BERTRAND_NOINLINE explicit Exception(
+        PyObject* type,
+        PyObject* value,
+        PyObject* traceback,
+        size_t skip = 0,
+        PyThreadState* thread = nullptr
+    ) : Base(value == nullptr ? std::string() : parse_value(value)),
+        traceback(
+            reinterpret_cast<PyTracebackObject*>(traceback),
+            get_trace(skip),
+            thread
+        )
+    {
+        if (type == nullptr) {
+            throw std::logic_error(
+                "could not convert Python exception into a C++ exception - exception "
+                "type is not set."
+            );
+        }
+    }
+
+    BERTRAND_NOINLINE explicit Exception(
+        PyObject* type,
+        PyObject* value,
+        PyObject* traceback,
+        const cpptrace::stacktrace& trace,
+        PyThreadState* thread = nullptr
+    ) : Base(value == nullptr ? std::string() : parse_value(value)),
+        traceback(
+            reinterpret_cast<PyTracebackObject*>(traceback),
+            trace,
+            thread
+        )
+    {
+        if (type == nullptr) {
+            throw std::logic_error(
+                "could not convert Python exception into a C++ exception - exception "
+                "type is not set."
+            );
+        }
+    }
+
     Exception(const Exception& other) :
-        Base(other), cpp_traceback(other.cpp_traceback), what_string(other.what_string)
+        Base(other), what_string(other.what_string), traceback(other.traceback)
     {}
 
     Exception& operator=(const Exception& other) {
         if (&other != this) {
             Base::operator=(other);
-            cpp_traceback = other.cpp_traceback;
             what_string = other.what_string;
+            traceback = other.traceback;
         }
         return *this;
     }
 
-    const char* what() const noexcept override {
-        if (what_string.empty()) {
-            what_string = message() + std::string(":\n");
-            what_string += cpp_traceback.get_resolved_trace().to_string();
-        }
-        return what_string.c_str();
-    }
-
+    /* Get just the message that is associated with this error.  This corresponds to
+    the what() message of a typical C++ error, without the Python-style traceback and
+    error type. */
     const char* message() const noexcept {
         return Base::what();
     }
 
-    const cpptrace::stacktrace& traceback() const noexcept {
-        return cpp_traceback.get_resolved_trace();
+    /* Generate the message that will be printed if this error is propagated to a C++
+    context without being explicitly caught.  If debug symbols are enabled, then this
+    will include a Python-style traceback covering both the Python and C++ frames that
+    were traversed to reach the error. */
+    virtual const char* what() const noexcept override {
+        // TODO: check for debug symbols before generating traceback
+        if (what_string.empty()) {
+            what_string += traceback.to_string();
+            what_string += "\nException: ";
+            what_string += message();
+        }
+        return what_string.c_str();
     }
 
+    /* Convert this exception into an equivalent Python error, so that it can be
+    propagated to a Python context.  The resulting traceback reflects both the Python
+    and C++ frames that were traversed to reach the error.  */
     virtual void set_error() const override {
-        PyErr_SetString(PyExc_Exception, message());
-        impl::PyErr err;
-        err.extend(cpp_traceback.get_resolved_trace());
-        err.restore();
+        traceback.restore(PyExc_Exception, message());
     }
+
+    /* Retrieve an error from a Python context and re-throw it as a C++ error with a
+    matching type.  This effectively replaces `pybind11::error_already_set()` and
+    removes the special case that it represents during try/catch blocks.  Note that
+    this is a void function that always throws. */
+    [[noreturn]] BERTRAND_NOINLINE static void from_python(
+        size_t skip = 0,
+        PyThreadState* thread = nullptr
+    ) {
+        if (thread == nullptr) {
+            thread = PyThreadState_Get();
+        }
+
+        // interacting with the Python error state is rather clumsy and was recently
+        // changed in Python 3.12, so we need to handle both cases
+        #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
+            PyObject* value = thread->current_exception;
+            if (value == nullptr) {
+                throw std::logic_error(
+                    "could not convert Python exception into a C++ exception - "
+                    "exception is not set."
+                );
+            }
+            PyObject* type = Py_NewRef(Py_TYPE(value));
+            PyObject* traceback = PyException_GetTraceback(value);  // new ref
+            thread->current_exception = nullptr;
+        #else
+            PyObject* type = thread->curexc_type;
+            PyObject* value = thread->curexc_value;
+            PyObject* traceback = Py_XNewRef(thread->curexc_traceback);
+            if (type == nullptr) {
+                throw std::logic_error(
+                    "could not convert Python exception into a C++ exception - "
+                    "exception is not set."
+                );
+            } else if (traceback == nullptr && value != nullptr) {
+                traceback = PyException_GetTraceback(value);  // new ref
+            }
+            thread->curexc_type = nullptr;
+            thread->curexc_value = nullptr;
+            thread->curexc_traceback = nullptr;
+        #endif
+
+        // Re-throw the current exception as a registered bertrand exception type
+        auto it = impl::rethrow_exception_map.find(type);
+        try {
+            if (it != impl::rethrow_exception_map.end()) {
+                it->second(type, value, traceback, ++skip, thread);
+            } else {
+                throw Exception(type, value, traceback, ++skip, thread);
+            }
+        } catch (...) {
+            Py_XDECREF(type);
+            Py_XDECREF(value);
+            Py_XDECREF(traceback);
+            throw;
+        }
+
+        // This error is unreachable.  It is only here to ensure the compiler correctly
+        // respects the [[noreturn]] attribute at the call site.
+        throw std::logic_error(
+            "Control reached end of [[noreturn]] bertrand::py::Exception::from_python()"
+            "without catching an active exception"
+        );
+    }
+
+    /* Retrieve an error from a pybind11 context and re-throw it as a C++ error with a
+    matching type.  This is used to standardize all exceptions to the existing Python
+    syntax, removing any special cases related to specific pybind11 error types.  Note
+    that this is a void function that always throws. */
+    [[noreturn]] BERTRAND_NOINLINE static void from_pybind11(
+        size_t skip = 0,
+        PyThreadState* thread = nullptr
+    );
 
 };
 
 
-#define PYTHON_EXCEPTION(base, cls, exc)                                                \
-    struct PYBIND11_EXPORT_EXCEPTION cls : public base {                                \
-        using base::base;                                                               \
-        BERTRAND_NOINLINE                                                               \
-        explicit cls(const std::string& message, size_t skip = 0) : cls(                \
-            message,                                                                    \
-            cpptrace::detail::get_raw_trace_and_absorb(skip + 1)                        \
-        ) {}                                                                            \
-        BERTRAND_NOINLINE                                                               \
-        explicit cls(Handle obj, size_t skip = 0) : cls(                                \
-            parse_obj(obj),                                                             \
-            cpptrace::detail::get_raw_trace_and_absorb(skip + 1)                        \
-        ) {}                                                                            \
-        void set_error() const override {                                               \
-            PyErr_SetString(exc, message());                                            \
-            impl::PyErr err;                                                            \
-            err.extend(cpp_traceback.get_resolved_trace());                             \
-            err.restore();                                                              \
-        }                                                                               \
-    };                                                                                  \
+bool Exception::registered = impl::register_exception<Exception>(PyExc_Exception);
 
 
-PYTHON_EXCEPTION(Exception, ArithmeticError, PyExc_ArithmeticError)
-    PYTHON_EXCEPTION(ArithmeticError, FloatingPointError, PyExc_OverflowError)
-    PYTHON_EXCEPTION(ArithmeticError, OverflowError, PyExc_OverflowError)
-    PYTHON_EXCEPTION(ArithmeticError, ZeroDivisionError, PyExc_ZeroDivisionError)
-PYTHON_EXCEPTION(Exception, AssertionError, PyExc_AssertionError)
-PYTHON_EXCEPTION(Exception, AttributeError, PyExc_AttributeError)
-PYTHON_EXCEPTION(Exception, BufferError, PyExc_BufferError)
-PYTHON_EXCEPTION(Exception, EOFError, PyExc_EOFError)
-PYTHON_EXCEPTION(Exception, ImportError, PyExc_ImportError)
-    PYTHON_EXCEPTION(ImportError, ModuleNotFoundError, PyExc_ModuleNotFoundError)
-PYTHON_EXCEPTION(Exception, LookupError, PyExc_LookupError)
-    PYTHON_EXCEPTION(LookupError, IndexError, PyExc_IndexError)
-    PYTHON_EXCEPTION(LookupError, KeyError, PyExc_KeyError)
-PYTHON_EXCEPTION(Exception, MemoryError, PyExc_MemoryError)
-PYTHON_EXCEPTION(Exception, NameError, PyExc_NameError)
-    PYTHON_EXCEPTION(NameError, UnboundLocalError, PyExc_UnboundLocalError)
-PYTHON_EXCEPTION(Exception, OSError, PyExc_OSError)
-    PYTHON_EXCEPTION(OSError, BlockingIOError, PyExc_BlockingIOError)
-    PYTHON_EXCEPTION(OSError, ChildProcessError, PyExc_ChildProcessError)
-    PYTHON_EXCEPTION(OSError, ConnectionError, PyExc_ConnectionError)
-        PYTHON_EXCEPTION(ConnectionError, BrokenPipeError, PyExc_BrokenPipeError)
-        PYTHON_EXCEPTION(ConnectionError, ConnectionAbortedError, PyExc_ConnectionAbortedError)
-        PYTHON_EXCEPTION(ConnectionError, ConnectionRefusedError, PyExc_ConnectionRefusedError)
-        PYTHON_EXCEPTION(ConnectionError, ConnectionResetError, PyExc_ConnectionResetError)
-    PYTHON_EXCEPTION(OSError, FileExistsError, PyExc_FileExistsError)
-    PYTHON_EXCEPTION(OSError, FileNotFoundError, PyExc_FileNotFoundError)
-    PYTHON_EXCEPTION(OSError, InterruptedError, PyExc_InterruptedError)
-    PYTHON_EXCEPTION(OSError, IsADirectoryError, PyExc_IsADirectoryError)
-    PYTHON_EXCEPTION(OSError, NotADirectoryError, PyExc_NotADirectoryError)
-    PYTHON_EXCEPTION(OSError, PermissionError, PyExc_PermissionError)
-    PYTHON_EXCEPTION(OSError, ProcessLookupError, PyExc_ProcessLookupError)
-    PYTHON_EXCEPTION(OSError, TimeoutError, PyExc_TimeoutError)
-PYTHON_EXCEPTION(Exception, ReferenceError, PyExc_ReferenceError)
-PYTHON_EXCEPTION(Exception, RuntimeError, PyExc_RuntimeError)
-    PYTHON_EXCEPTION(RuntimeError, NotImplementedError, PyExc_NotImplementedError)
-    PYTHON_EXCEPTION(RuntimeError, RecursionError, PyExc_RecursionError)
-PYTHON_EXCEPTION(Exception, StopAsyncIteration, PyExc_StopAsyncIteration)
-PYTHON_EXCEPTION(Exception, StopIteration, PyExc_StopIteration)
-PYTHON_EXCEPTION(Exception, SyntaxError, PyExc_SyntaxError)
-    PYTHON_EXCEPTION(SyntaxError, IndentationError, PyExc_IndentationError)
-        PYTHON_EXCEPTION(IndentationError, TabError, PyExc_TabError)
-PYTHON_EXCEPTION(Exception, SystemError, PyExc_SystemError)
-PYTHON_EXCEPTION(Exception, TypeError, PyExc_TypeError)
-PYTHON_EXCEPTION(Exception, ValueError, PyExc_ValueError)
-    PYTHON_EXCEPTION(ValueError, UnicodeError, PyExc_UnicodeError)
-        PYTHON_EXCEPTION(UnicodeError, UnicodeDecodeError, PyExc_UnicodeDecodeError)
-        PYTHON_EXCEPTION(UnicodeError, UnicodeEncodeError, PyExc_UnicodeEncodeError)
-        PYTHON_EXCEPTION(UnicodeError, UnicodeTranslateError, PyExc_UnicodeTranslateError)
+BERTRAND_EXCEPTION(ArithmeticError, Exception, PyExc_ArithmeticError)
+    BERTRAND_EXCEPTION(FloatingPointError, ArithmeticError, PyExc_FloatingPointError)
+    BERTRAND_EXCEPTION(OverflowError, ArithmeticError, PyExc_OverflowError)
+    BERTRAND_EXCEPTION(ZeroDivisionError, ArithmeticError, PyExc_ZeroDivisionError)
+BERTRAND_EXCEPTION(AssertionError, Exception, PyExc_AssertionError)
+BERTRAND_EXCEPTION(AttributeError, Exception, PyExc_AttributeError)
+BERTRAND_EXCEPTION(BufferError, Exception, PyExc_BufferError)
+BERTRAND_EXCEPTION(EOFError, Exception, PyExc_EOFError)
+BERTRAND_EXCEPTION(ImportError, Exception, PyExc_ImportError)
+    BERTRAND_EXCEPTION(ModuleNotFoundError, ImportError, PyExc_ModuleNotFoundError)
+BERTRAND_EXCEPTION(LookupError, Exception, PyExc_LookupError)
+    BERTRAND_EXCEPTION(IndexError, LookupError, PyExc_IndexError)
+    BERTRAND_EXCEPTION(KeyError, LookupError, PyExc_KeyError)
+BERTRAND_EXCEPTION(MemoryError, Exception, PyExc_MemoryError)
+BERTRAND_EXCEPTION(NameError, Exception, PyExc_NameError)
+    BERTRAND_EXCEPTION(UnboundLocalError, NameError, PyExc_UnboundLocalError)
+BERTRAND_EXCEPTION(OSError, Exception, PyExc_OSError)
+    BERTRAND_EXCEPTION(BlockingIOError, OSError, PyExc_BlockingIOError)
+    BERTRAND_EXCEPTION(ChildProcessError, OSError, PyExc_ChildProcessError)
+    BERTRAND_EXCEPTION(ConnectionError, OSError, PyExc_ConnectionError)
+        BERTRAND_EXCEPTION(BrokenPipeError, ConnectionError, PyExc_BrokenPipeError)
+        BERTRAND_EXCEPTION(ConnectionAbortedError, ConnectionError, PyExc_ConnectionAbortedError)
+        BERTRAND_EXCEPTION(ConnectionRefusedError, ConnectionError, PyExc_ConnectionRefusedError)
+        BERTRAND_EXCEPTION(ConnectionResetError, ConnectionError, PyExc_ConnectionResetError)
+    BERTRAND_EXCEPTION(FileExistsError, OSError, PyExc_FileExistsError)
+    BERTRAND_EXCEPTION(FileNotFoundError, OSError, PyExc_FileNotFoundError)
+    BERTRAND_EXCEPTION(InterruptedError, OSError, PyExc_InterruptedError)
+    BERTRAND_EXCEPTION(IsADirectoryError, OSError, PyExc_IsADirectoryError)
+    BERTRAND_EXCEPTION(NotADirectoryError, OSError, PyExc_NotADirectoryError)
+    BERTRAND_EXCEPTION(PermissionError, OSError, PyExc_PermissionError)
+    BERTRAND_EXCEPTION(ProcessLookupError, OSError, PyExc_ProcessLookupError)
+    BERTRAND_EXCEPTION(TimeoutError, OSError, PyExc_TimeoutError)
+BERTRAND_EXCEPTION(ReferenceError, Exception, PyExc_ReferenceError)
+BERTRAND_EXCEPTION(RuntimeError, Exception, PyExc_RuntimeError)
+    BERTRAND_EXCEPTION(NotImplementedError, RuntimeError, PyExc_NotImplementedError)
+    BERTRAND_EXCEPTION(RecursionError, RuntimeError, PyExc_RecursionError)
+BERTRAND_EXCEPTION(StopAsyncIteration, Exception, PyExc_StopAsyncIteration)
+BERTRAND_EXCEPTION(StopIteration, Exception, PyExc_StopIteration)
+BERTRAND_EXCEPTION(SyntaxError, Exception, PyExc_SyntaxError)
+    BERTRAND_EXCEPTION(IndentationError, SyntaxError, PyExc_IndentationError)
+        BERTRAND_EXCEPTION(TabError, IndentationError, PyExc_TabError)
+BERTRAND_EXCEPTION(SystemError, Exception, PyExc_SystemError)
+BERTRAND_EXCEPTION(TypeError, Exception, PyExc_TypeError)
+    BERTRAND_EXCEPTION(CastError, TypeError, PyExc_TypeError)
+    BERTRAND_EXCEPTION(ReferenceCastError, TypeError, PyExc_TypeError)
+BERTRAND_EXCEPTION(ValueError, Exception, PyExc_ValueError)
+    BERTRAND_EXCEPTION(UnicodeError, ValueError, PyExc_UnicodeError)
+        BERTRAND_EXCEPTION(UnicodeDecodeError, UnicodeError, PyExc_UnicodeDecodeError)
+        BERTRAND_EXCEPTION(UnicodeEncodeError, UnicodeError, PyExc_UnicodeEncodeError)
+        BERTRAND_EXCEPTION(UnicodeTranslateError, UnicodeError, PyExc_UnicodeTranslateError)
 
-PYTHON_EXCEPTION(Exception, CastError, PyExc_TypeError)
-PYTHON_EXCEPTION(Exception, ReferenceCastError, PyExc_TypeError)
 
+[[noreturn]] BERTRAND_NOINLINE void Exception::from_pybind11(
+    size_t skip,
+    PyThreadState* thread
+) {
+    if (thread == nullptr) {
+        thread = PyThreadState_Get();
+    }
+    try {
+        throw;
+    } catch (const pybind11::error_already_set& err) {
+        PyObject* type = err.type().ptr();
+        PyObject* value = err.value().ptr();
+        PyObject* traceback = Py_XNewRef(err.trace().ptr());
+        if (traceback == nullptr && value != nullptr) {
+            traceback = PyException_GetTraceback(value);  // new ref
+        }
+        try {
+            auto it = impl::rethrow_exception_map.find(type);
+            if (it != impl::rethrow_exception_map.end()) {
+                it->second(type, value, traceback, ++skip, thread);
+            } else {
+                throw Exception(type, value, traceback, ++skip, thread);
+            }
+        } catch (...) {
+            Py_XDECREF(traceback);
+            throw;
+        }
+    } catch (const pybind11::stop_iteration& err) {
+        throw StopIteration(err.what(), ++skip, thread);
+    } catch (const pybind11::index_error& err) {
+        throw IndexError(err.what(), ++skip, thread);
+    } catch (const pybind11::key_error& err) {
+        throw KeyError(err.what(), ++skip, thread);
+    } catch (const pybind11::value_error& err) {
+        throw ValueError(err.what(), ++skip, thread);
+    } catch (const pybind11::type_error& err) {
+        throw TypeError(err.what(), ++skip, thread);
+    } catch (const pybind11::buffer_error& err) {
+        throw BufferError(err.what(), ++skip, thread);
+    } catch (const pybind11::import_error& err) {
+        throw ImportError(err.what(), ++skip, thread);
+    } catch (const pybind11::attribute_error& err) {
+        throw AttributeError(err.what(), ++skip, thread);
+    }
 
-#undef PYTHON_EXCEPTION
+    // This error is unreachable.  It is only here to ensure the compiler correctly
+    // respects the [[noreturn]] attribute at the call site.
+    throw std::logic_error(
+        "Control reached end of [[noreturn]] bertrand::py::Exception::from_pybind11()"
+        "without catching an active exception"
+    );
+}
 
 
 //////////////////////////////
@@ -1410,9 +1738,9 @@ namespace impl {
     template <typename T>
     struct __invert__ { static constexpr bool enable = false; };
     template <typename T>
-    struct __increment__ { static constexpr bool enable = false; };  // TODO: this can be implied by __iadd__?
+    struct __increment__ { static constexpr bool enable = false; };
     template <typename T>
-    struct __decrement__ { static constexpr bool enable = false; };  // TODO: this can be implied by __isub__?
+    struct __decrement__ { static constexpr bool enable = false; };
     template <typename T>
     struct __hash__ { static constexpr bool enable = false; };
     template <typename L, typename R>
@@ -3292,13 +3620,17 @@ protected:
 
     template <typename Return, typename T, typename... Args>
     inline static Return operator_call(const T& obj, Args&&... args) {
-        if constexpr (std::is_void_v<Return>) {
-            Handle(obj.ptr())(std::forward<Args>(args)...);
-        } else {
-            return Return(
-                Handle(obj.ptr())(std::forward<Args>(args)...).release(),
-                stolen_t{}
-            );
+        try {
+            if constexpr (std::is_void_v<Return>) {
+                Handle(obj.ptr())(std::forward<Args>(args)...);
+            } else {
+                return Return(
+                    Handle(obj.ptr())(std::forward<Args>(args)...).release(),
+                    stolen_t{}
+                );
+            }
+        } catch (...) {
+            Exception::from_pybind11(1);
         }
     }
 
@@ -3330,7 +3662,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -3339,7 +3671,7 @@ protected:
     inline static size_t operator_len(const T& obj) {
         Py_ssize_t size = PyObject_Size(obj.ptr());
         if (size < 0) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return size;
     }
@@ -3353,7 +3685,7 @@ protected:
     inline static auto operator_invert(const T& obj) {
         PyObject* result = PyNumber_Invert(detail::object_or_cast(obj).ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return Return(result, stolen_t{});
     }
@@ -3366,7 +3698,7 @@ protected:
             Py_LT
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -3379,7 +3711,7 @@ protected:
             Py_LE
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -3392,7 +3724,7 @@ protected:
             Py_EQ
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -3405,7 +3737,7 @@ protected:
             Py_NE
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -3418,7 +3750,7 @@ protected:
             Py_GE
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -3431,7 +3763,7 @@ protected:
             Py_GT
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -3440,7 +3772,7 @@ protected:
     inline static auto operator_pos(const T& obj) {
         PyObject* result = PyNumber_Positive(detail::object_or_cast(obj).ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return Return(result, stolen_t{});
     }
@@ -3453,7 +3785,7 @@ protected:
             one.ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         if (result == obj.ptr()) {
             Py_DECREF(result);
@@ -3469,7 +3801,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return Return(result, stolen_t{});
     }
@@ -3481,7 +3813,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
@@ -3493,7 +3825,7 @@ protected:
     inline static auto operator_neg(const T& obj) {
         PyObject* result = PyNumber_Negative(detail::object_or_cast(obj).ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return Return(result, stolen_t{});
     }
@@ -3506,7 +3838,7 @@ protected:
             one.ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         if (result == obj.ptr()) {
             Py_DECREF(result);
@@ -3522,7 +3854,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return Return(result, stolen_t{});
     }
@@ -3534,7 +3866,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
@@ -3549,7 +3881,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return Return(result, stolen_t{});
     }
@@ -3561,7 +3893,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
@@ -3576,7 +3908,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return Return(result, stolen_t{});
     }
@@ -3588,7 +3920,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
@@ -3603,7 +3935,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return Return(result, stolen_t{});
     }
@@ -3615,7 +3947,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
@@ -3630,7 +3962,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return Return(result, stolen_t{});
     }
@@ -3642,7 +3974,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
@@ -3657,7 +3989,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return Return(result, stolen_t{});
     }
@@ -3669,7 +4001,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
@@ -3684,7 +4016,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return Return(result, stolen_t{});
     }
@@ -3696,7 +4028,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
@@ -3711,7 +4043,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return Return(result, stolen_t{});
     }
@@ -3723,7 +4055,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
@@ -3738,7 +4070,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return Return(result, stolen_t{});
     }
@@ -3750,7 +4082,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         } else if (result == lhs.ptr()) {
             Py_DECREF(result);
         } else {
@@ -3933,7 +4265,7 @@ public:
     inline explicit operator bool() const {
         int result = PyObject_IsTrue(m_ptr);
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -3942,13 +4274,13 @@ public:
     inline explicit operator std::string() const {
         PyObject* str = PyObject_Str(m_ptr);
         if (str == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         Py_ssize_t size;
         const char* data = PyUnicode_AsUTF8AndSize(str, &size);
         if (data == nullptr) {
             Py_DECREF(str);
-            throw error_already_set();
+            Exception::from_python();
         }
         std::string result(data, size);
         Py_DECREF(str);
@@ -3997,13 +4329,13 @@ template <std::derived_from<std::ostream> L, std::derived_from<Object> R>
 inline L& operator<<(L& os, const R& obj) {
     PyObject* repr = PyObject_Repr(obj.ptr());
     if (repr == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
     Py_ssize_t size;
     const char* data = PyUnicode_AsUTF8AndSize(repr, &size);
     if (data == nullptr) {
         Py_DECREF(repr);
-        throw error_already_set();
+        Exception::from_python();
     }
     os.write(data, size);
     Py_DECREF(repr);
@@ -4088,7 +4420,7 @@ inline auto abs(const T& obj) {
     } else {
         PyObject* result = PyNumber_Absolute(obj.ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Return>(result);
     }
@@ -4352,7 +4684,7 @@ namespace impl {
             }
             PyObject* result = PyObject_GetAttr(obj.ptr(), key().ptr());
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
             new (Base::buffer) Wrapped(reinterpret_steal<Wrapped>(result));
             Base::initialized = true;
@@ -4428,7 +4760,7 @@ namespace impl {
                     key().ptr(),
                     reinterpret_cast<Wrapped&>(Base::buffer).ptr()
                 ) < 0) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
             }
             return *this;
@@ -4452,7 +4784,7 @@ namespace impl {
                 "type is set to void."
             );
             if (PyObject_DelAttr(obj.ptr(), key().ptr()) < 0) {
-                throw error_already_set();
+                Exception::from_python();
             }
             if (Base::initialized) {
                 reinterpret_cast<Wrapped&>(Base::buffer).~Wrapped();
@@ -4477,7 +4809,7 @@ namespace impl {
         inline PyObject* get() const {
             PyObject* result = PyObject_GetItem(obj.ptr(), key.ptr());
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
             return result;
         }
@@ -4485,14 +4817,14 @@ namespace impl {
         inline void set(PyObject* value) {
             int result = PyObject_SetItem(obj.ptr(), key.ptr(), value);
             if (result < 0) {
-                throw error_already_set();
+                Exception::from_python();
             }
         }
 
         inline void del() {
             int result = PyObject_DelItem(obj.ptr(), key.ptr());
             if (result < 0) {
-                throw error_already_set();
+                Exception::from_python();
             }
         }
 
@@ -4517,7 +4849,10 @@ namespace impl {
             }
             PyObject* result = PyTuple_GET_ITEM(obj.ptr(), norm);
             if (result == nullptr) {
-                throw error_already_set();
+                throw ValueError(
+                    "item at index " + std::to_string(key) +
+                    " was found to be null"
+                );
             }
             return Py_NewRef(result);
         }
@@ -4547,7 +4882,10 @@ namespace impl {
         inline PyObject* get() const {
             PyObject* result = PyList_GET_ITEM(obj.ptr(), normalize(key));
             if (result == nullptr) {
-                throw error_already_set();
+                throw ValueError(
+                    "item at index " + std::to_string(key) +
+                    " was found to be null"
+                );
             }
             return Py_NewRef(result);
         }
@@ -4562,7 +4900,7 @@ namespace impl {
         inline void del() {
             PyObject* index_obj = PyLong_FromSsize_t(normalize(key));
             if (PyObject_DelItem(obj.ptr(), index_obj) < 0) {
-                throw error_already_set();
+                Exception::from_python();
             }
             Py_DECREF(index_obj);
         }
@@ -4979,8 +5317,8 @@ namespace impl {
         /* Wrap a raw Python iterator. */
         GenericIter(Object&& iterator) : iter(std::move(iterator)) {
             curr = PyIter_Next(iter.ptr());
-            if (curr == nullptr &&PyErr_Occurred()) {
-                throw error_already_set();
+            if (curr == nullptr && PyErr_Occurred()) {
+                Exception::from_python();
             }
         }
 
@@ -5036,7 +5374,7 @@ namespace impl {
             curr = PyIter_Next(iter.ptr());
             Py_XDECREF(temp);
             if (curr == nullptr && PyErr_Occurred()) {
-                throw error_already_set();
+                Exception::from_python();
             }
         }
 
@@ -5574,7 +5912,7 @@ class NotImplementedType : public Object {
             (PyObject*) Py_TYPE(Py_NotImplemented)
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -5608,7 +5946,7 @@ class EllipsisType : public Object {
             (PyObject*) Py_TYPE(Py_Ellipsis)
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -5716,7 +6054,7 @@ namespace impl {
             if (start != 0 || stop != -1) {
                 PyObject* slice = PySequence_GetSlice(self().ptr(), start, stop);
                 if (slice == nullptr) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
                 Py_ssize_t result = PySequence_Count(
                     slice,
@@ -5724,7 +6062,7 @@ namespace impl {
                 );
                 Py_DECREF(slice);
                 if (result == -1 && PyErr_Occurred()) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
                 return result;
             } else {
@@ -5733,7 +6071,7 @@ namespace impl {
                     detail::object_or_cast(value).ptr()
                 );
                 if (result == -1 && PyErr_Occurred()) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
                 return result;
             }
@@ -5749,7 +6087,7 @@ namespace impl {
             if (start != 0 || stop != -1) {
                 PyObject* slice = PySequence_GetSlice(self().ptr(), start, stop);
                 if (slice == nullptr) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
                 Py_ssize_t result = PySequence_Index(
                     slice,
@@ -5757,7 +6095,7 @@ namespace impl {
                 );
                 Py_DECREF(slice);
                 if (result == -1 && PyErr_Occurred()) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
                 return result;
             } else {
@@ -5766,7 +6104,7 @@ namespace impl {
                     detail::object_or_cast(value).ptr()
                 );
                 if (result == -1 && PyErr_Occurred()) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
                 return result;
             }
@@ -5781,7 +6119,7 @@ namespace impl {
                 detail::object_or_cast(rhs).ptr()
             );
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
             return reinterpret_steal<Return>(result);
         }
@@ -5793,7 +6131,7 @@ namespace impl {
                 detail::object_or_cast(rhs).ptr()
             );
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             } else if (result == lhs.ptr()) {
                 Py_DECREF(result);
             } else {
@@ -5808,7 +6146,7 @@ namespace impl {
                 repetitions
             );
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
             return reinterpret_steal<Return>(result);
         }
@@ -5820,7 +6158,7 @@ namespace impl {
                 repetitions
             );
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             } else if (result == lhs.ptr()) {
                 Py_DECREF(result);
             } else {
@@ -5872,7 +6210,7 @@ public:
     /* Default constructor.  Initializes to all Nones. */
     Slice() : Base(PySlice_New(nullptr, nullptr, nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -5892,7 +6230,7 @@ public:
         }
         m_ptr = PySlice_New(params[0].ptr(), params[1].ptr(), params[2].ptr());
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -5901,7 +6239,7 @@ public:
     explicit Slice(const Stop& stop) {
         m_ptr = PySlice_New(nullptr, detail::object_or_cast(stop).ptr(), nullptr);
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -5915,7 +6253,7 @@ public:
             nullptr
         );
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -5929,7 +6267,7 @@ public:
             detail::object_or_cast(step).ptr()
         );
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -5992,7 +6330,7 @@ public:
             &step,
             &length
         )) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return {start, stop, step, length};
     }
@@ -6038,7 +6376,7 @@ public:
         m_ptr = PyModule_Create(def);
         if (m_ptr == nullptr) {
             if (PyErr_Occurred()) {
-                throw error_already_set();
+                Exception::from_python();
             }
             pybind11::pybind11_fail(
                 "Internal error in pybind11::module_::create_extension_module()"
@@ -6081,7 +6419,7 @@ public:
     inline void reload() {
         PyObject *obj = PyImport_ReloadModule(this->ptr());
         if (obj == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         *this = reinterpret_steal<Module>(obj);
     }
@@ -6133,7 +6471,7 @@ template <typename Return, typename T>
 inline impl::Iterator<impl::GenericIter<Return>> Object::operator_begin(const T& obj) {
     PyObject* iter = PyObject_GetIter(obj.ptr());
     if (iter == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
     return {reinterpret_steal<Object>(iter)};
 }
@@ -6177,7 +6515,7 @@ inline Module import() {
     static const pybind11::str lookup = static_cast<const char*>(name);
     PyObject *obj = PyImport_Import(lookup.ptr());
     if (obj == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
     return reinterpret_steal<Module>(obj);
 }

@@ -99,7 +99,7 @@ class Round {
                         denominator.ptr()
                     );
                     if (temp == nullptr) {
-                        throw error_already_set();
+                        Exception::from_python();
                     }
                     Int result = reinterpret_steal<Int>(temp);
                     if (result < 0) {
@@ -129,7 +129,7 @@ class Round {
                     detail::object_or_cast(r).ptr()
                 );
                 if (result == nullptr) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
                 const Int zero(0);
                 return (
@@ -159,7 +159,7 @@ class Round {
                     Int b = reinterpret_borrow<Int>(denominator.ptr());
                     PyObject* temp = PyNumber_FloorDivide(a.ptr(), b.ptr());
                     if (temp == nullptr) {
-                        throw error_already_set();
+                        Exception::from_python();
                     }
 
                     Object quotient = reinterpret_steal<Object>(temp);
@@ -178,7 +178,7 @@ class Round {
                         denominator.ptr()
                     );
                     if (temp == nullptr) {
-                        throw error_already_set();
+                        Exception::from_python();
                     }
                     Object remainder = (
                         reinterpret_steal<Object>(temp) *
@@ -224,7 +224,7 @@ class Round {
                     detail::object_or_cast(r).ptr()
                 );
                 if (result == nullptr) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
                 return reinterpret_steal<Object>(result);
             } else {
@@ -248,7 +248,7 @@ class Round {
                     detail::object_or_cast(r).ptr()
                 );
                 if (result == nullptr) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
                 return reinterpret_steal<Object>(result);
             } else {
@@ -273,7 +273,7 @@ class Round {
                     detail::object_or_cast(r).ptr()
                 );
                 if (result == nullptr) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
                 return std::make_pair(
                     reinterpret_borrow<Object>(PyTuple_GET_ITEM(result, 0)),
@@ -627,7 +627,7 @@ class Round {
                 );
                 PyObject* result = PyObject_CallOneArg(round.ptr(), o.ptr());
                 if (result == nullptr) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
                 return reinterpret_steal<Object>(result);
             } else if constexpr (FLOATLIKE<O>) {
@@ -762,7 +762,7 @@ auto pow(const L& base, const R& exp) {
             Py_None
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Object>(result);
     } else {
@@ -788,7 +788,7 @@ auto pow(const L& base, const R& exp, const E& mod) {
             detail::object_or_cast(mod).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Object>(result);
     } else {

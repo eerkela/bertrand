@@ -1,45 +1,41 @@
 """Run Bertrand from the command line to get include directory, version number, etc.
 """
 import argparse
-import sysconfig
 
-import numpy
-import pybind11
 
-from . import get_include, __version__
+from . import __version__
+from .setup_helpers import quick_include
+
+
+# TODO: Add linker options to `python -m bertrand -I` for pcre2, cpptrace, and googletest
 
 
 def main() -> None:
     """Run Bertrand as a command-line utility."""
     parser = argparse.ArgumentParser(description="Bertrand module utilities.")
     parser.add_argument(
-        "--version", "-v",
+        "-v", "--version",
         action="store_true",
         help="Print the installed version number."
     )
     parser.add_argument(
-        "--get-include", "--includes", "-I",
+        "-I", "--include",
         action="store_true",
         help=(
-            "List the include directories needed to compile C++ code that uses "
-            "Bertrand.  This includes the Python development headers, as well as "
-            "those of numpy, pybind11, and bertrand itself.  Users can include all of "
-            "these in a single command by adding `$(python3 -m bertrand -I)` to their "
-            "compilation options."
+            "List all the include and link symbols needed to compile a pure-C++ "
+            "project that relies on Bertrand as a dependency.  This includes the "
+            "Python development headers, numpy, pybind11, pcre2, googletest, and "
+            "cpptrace as well as those of bertrand itself.  Users can quickly include "
+            "all of these in a single command by adding `$(python3 -m bertrand -I)` "
+            "to their compilation flags."
         )
     )
 
     args = parser.parse_args()
     show_help = True
 
-    if args.get_include:
-        print(
-            "-I", sysconfig.get_path("include"),
-            "-lpython" + sysconfig.get_python_version(),
-            "-I", numpy.get_include(),
-            "-I", pybind11.get_include(),
-            "-I", get_include(),
-        )
+    if args.include:
+        print(" ".join(quick_include()))
         show_help = False
 
     if args.version:

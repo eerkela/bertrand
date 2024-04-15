@@ -187,7 +187,7 @@ class KeysView : public Object {
     inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictKeys_Type);
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -241,7 +241,7 @@ public:
     ) {
         PyObject* result = PyNumber_Or(self.ptr(), Set(other).ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Set>(result);
     }
@@ -252,7 +252,7 @@ public:
     ) {
         PyObject* result = PyNumber_And(self.ptr(), Set(other).ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Set>(result);
     }
@@ -263,7 +263,7 @@ public:
     ) {
         PyObject* result = PyNumber_Subtract(self.ptr(), Set(other).ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Set>(result);
     }
@@ -274,7 +274,7 @@ public:
     ) {
         PyObject* result = PyNumber_Xor(self.ptr(), Set(other).ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Set>(result);
     }
@@ -293,7 +293,7 @@ class ValuesView : public Object {
     inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictValues_Type);
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -342,7 +342,7 @@ class ItemsView : public Object {
     inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictItems_Type);
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -406,7 +406,7 @@ public:
     /* Default constructor.  Initializes to empty dict. */
     Dict() : Base(PyDict_New(), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -419,12 +419,12 @@ public:
         : Base(PyDict_New(), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             for (const impl::DictInitializer& item : contents) {
                 if (PyDict_SetItem(m_ptr, item.first.ptr(), item.second.ptr())) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
             }
         } catch (...) {
@@ -439,7 +439,7 @@ public:
         Base(PyObject_CallOneArg((PyObject*) &PyDict_Type, contents.ptr()), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -447,7 +447,7 @@ public:
     template <typename T> requires (cpp_unpacking_constructor<T>)
     explicit Dict(const T& container) : Base(PyDict_New(), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             for (auto&& [k, v] : container) {
@@ -456,7 +456,7 @@ public:
                     detail::object_or_cast(std::forward<decltype(k)>(k)).ptr(),
                     detail::object_or_cast(std::forward<decltype(v)>(v)).ptr()
                 )) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
             }
         } catch (...) {
@@ -511,7 +511,7 @@ public:
             detail::object_or_cast(items).ptr(),
             0
         )) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -523,7 +523,7 @@ public:
             detail::object_or_cast(items).ptr(),
             0
         )) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -540,7 +540,7 @@ public:
     inline Dict copy() const {
         PyObject* result = PyDict_Copy(this->ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Dict>(result);
     }
@@ -550,7 +550,7 @@ public:
     static inline Dict fromkeys(const K& keys) {
         PyObject* result = PyDict_New();
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             for (auto&& key : keys) {
@@ -559,7 +559,7 @@ public:
                     detail::object_or_cast(std::forward<decltype(key)>(key)).ptr(),
                     Py_None
                 )) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
             }
             return reinterpret_steal<Dict>(result);
@@ -573,7 +573,7 @@ public:
     inline Dict fromkeys(const std::initializer_list<impl::HashInitializer>& keys) {
         PyObject* result = PyDict_New();
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             for (const impl::HashInitializer& init : keys) {
@@ -582,7 +582,7 @@ public:
                     init.first.ptr(),
                     Py_None
                 )) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
             }
             return reinterpret_steal<Dict>(result);
@@ -598,7 +598,7 @@ public:
         Object converted = detail::object_or_cast(value);
         PyObject* result = PyDict_New();
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             for (auto&& key : keys) {
@@ -607,7 +607,7 @@ public:
                     detail::object_or_cast(std::forward<decltype(key)>(key)).ptr(),
                     converted.ptr()
                 )) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
             }
             return reinterpret_steal<Dict>(result);
@@ -626,7 +626,7 @@ public:
         Object converted = detail::object_or_cast(value);
         PyObject* result = PyDict_New();
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             for (const impl::HashInitializer& init : keys) {
@@ -635,7 +635,7 @@ public:
                     init.first.ptr(),
                     converted.ptr()
                 )) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
             }
             return reinterpret_steal<Dict>(result);
@@ -654,7 +654,7 @@ public:
         );
         if (result == nullptr) {
             if (PyErr_Occurred()) {
-                throw error_already_set();
+                Exception::from_python();
             }
             return reinterpret_borrow<Object>(Py_None);
         }
@@ -670,7 +670,7 @@ public:
         );
         if (result == nullptr) {
             if (PyErr_Occurred()) {
-                throw error_already_set();
+                Exception::from_python();
             }
             return detail::object_or_cast(default_value);
         }
@@ -686,12 +686,12 @@ public:
         );
         if (result == nullptr) {
             if (PyErr_Occurred()) {
-                throw error_already_set();
+                Exception::from_python();
             }
             return reinterpret_borrow<Object>(Py_None);
         }
         if (PyDict_DelItem(this->ptr(), result)) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Object>(result);
     }
@@ -705,12 +705,12 @@ public:
         );
         if (result == nullptr) {
             if (PyErr_Occurred()) {
-                throw error_already_set();
+                Exception::from_python();
             }
             return detail::object_or_cast(default_value);
         }
         if (PyDict_DelItem(this->ptr(), result)) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Object>(result);
     }
@@ -727,7 +727,7 @@ public:
             Py_None
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Object>(result);
     }
@@ -741,7 +741,7 @@ public:
             detail::object_or_cast(default_value).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Object>(result);
     }
@@ -750,7 +750,7 @@ public:
     template <impl::dict_like T>
     inline void update(const T& items) {
         if (PyDict_Merge(this->ptr(), items.ptr(), 1)) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -763,7 +763,7 @@ public:
                 detail::object_or_cast(items).ptr(),
                 1
             )) {
-                throw error_already_set();
+                Exception::from_python();
             }
         } else {
             for (auto&& [k, v] : items) {
@@ -772,7 +772,7 @@ public:
                     detail::object_or_cast(std::forward<decltype(k)>(k)).ptr(),
                     detail::object_or_cast(std::forward<decltype(v)>(v)).ptr()
                 )) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
             }
         }
@@ -782,7 +782,7 @@ public:
     inline void update(const std::initializer_list<impl::DictInitializer>& items) {
         for (const impl::DictInitializer& item : items) {
             if (PyDict_SetItem(this->ptr(), item.first.ptr(), item.second.ptr())) {
-                throw error_already_set();
+                Exception::from_python();
             }
         }
     }
@@ -832,7 +832,7 @@ protected:
             detail::object_or_cast(key).ptr()
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -848,7 +848,7 @@ class MappingProxy : public Object {
     inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictProxy_Type);
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -870,7 +870,7 @@ public:
     /* Explicitly construct a read-only view on an existing dictionary. */
     MappingProxy(const Dict& dict) : Base(PyDictProxy_New(dict.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 

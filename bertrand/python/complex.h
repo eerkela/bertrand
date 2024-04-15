@@ -143,7 +143,7 @@ public:
     /* Default constructor.  Initializes to 0+0j. */
     Complex() : Base(PyComplex_FromDoubles(0.0, 0.0), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -156,7 +156,7 @@ public:
         Base(PyComplex_FromDoubles(real, 0.0), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -166,7 +166,7 @@ public:
         Base(PyComplex_FromDoubles(real, imag), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -178,7 +178,7 @@ public:
         stolen_t{}
     ) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -187,11 +187,11 @@ public:
     explicit Complex(const T& obj) {
         Py_complex complex = PyComplex_AsCComplex(obj.ptr());
         if (complex.real == -1.0 && PyErr_Occurred()) {
-            throw error_already_set();
+            Exception::from_python();
         }
         m_ptr = PyComplex_FromDoubles(complex.real, complex.imag);
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -210,7 +210,7 @@ public:
     operator std::complex<T>() const {
         Py_complex complex = PyComplex_AsCComplex(this->ptr());
         if (complex.real == -1.0 && PyErr_Occurred()) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return std::complex<T>(complex.real, complex.imag);
     }
@@ -233,7 +233,7 @@ public:
     inline Complex conjugate() const {
         Py_complex complex = PyComplex_AsCComplex(this->ptr());
         if (complex.real == -1.0 && PyErr_Occurred()) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return Complex(complex.real, -complex.imag);
     }

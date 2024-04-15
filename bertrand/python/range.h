@@ -53,7 +53,7 @@ class Range : public Object {
     inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyRange_Type);
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -79,7 +79,7 @@ public:
     explicit Range(const Int& stop) {
         m_ptr = PyObject_CallOneArg((PyObject*) &PyRange_Type, stop.ptr());
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -94,7 +94,7 @@ public:
             nullptr
         );
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -106,7 +106,7 @@ public:
     inline size_t count(Py_ssize_t value) const {
         Py_ssize_t result = PySequence_Count(this->ptr(), Int(value).ptr());
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return static_cast<size_t>(result);
     }
@@ -115,12 +115,12 @@ public:
     inline size_t count(Py_ssize_t value, Py_ssize_t start, Py_ssize_t stop = -1) const {
         PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
         if (slice == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         Py_ssize_t result = PySequence_Count(slice, Int(value).ptr());
         Py_DECREF(slice);
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return static_cast<size_t>(result);
     }
@@ -129,7 +129,7 @@ public:
     inline Py_ssize_t index(Py_ssize_t value) const {
         Py_ssize_t result = PySequence_Index(this->ptr(), Int(value).ptr());
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -138,12 +138,12 @@ public:
     inline Py_ssize_t index(Py_ssize_t value, Py_ssize_t start, Py_ssize_t stop = -1) const {
         PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
         if (slice == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         Py_ssize_t result = PySequence_Index(slice, Int(value).ptr());
         Py_DECREF(slice);
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -152,7 +152,7 @@ public:
     inline Py_ssize_t start() const {
         Py_ssize_t result = PyLong_AsSsize_t(attr<"start">()->ptr());
         if (result == -1 && PyErr_Occurred()) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -161,7 +161,7 @@ public:
     inline Py_ssize_t stop() const {
         Py_ssize_t result = PyLong_AsSsize_t(attr<"stop">()->ptr());
         if (result == -1 && PyErr_Occurred()) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -170,7 +170,7 @@ public:
     inline Py_ssize_t step() const {
         Py_ssize_t result = PyLong_AsSsize_t(attr<"step">()->ptr());
         if (result == -1 && PyErr_Occurred()) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }

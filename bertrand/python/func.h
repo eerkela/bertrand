@@ -329,7 +329,7 @@ class Code : public Object {
             Py_file_input
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -346,7 +346,7 @@ class Code : public Object {
             Py_file_input
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -403,7 +403,7 @@ public:
         py::Dict context;
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
-            throw error_already_set(1);
+            Exception::from_python(1);
         }
         Py_DECREF(result);  // always None
         return context;
@@ -414,7 +414,7 @@ public:
     Dict& operator()(Dict& context) const {
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
-            throw error_already_set(1);
+            Exception::from_python(1);
         }
         Py_DECREF(result);  // always None
         return context;
@@ -425,7 +425,7 @@ public:
     Dict operator()(Dict&& context) const {
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
-            throw error_already_set(1);
+            Exception::from_python(1);
         }
         Py_DECREF(result);  // always None
         return std::move(context);
@@ -606,7 +606,7 @@ public:
     inline Frame back() const {
         PyFrameObject* result = PyFrame_GetBack(self());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Frame>(reinterpret_cast<PyObject*>(result));
     }
@@ -629,7 +629,7 @@ public:
     inline Object operator()() const {
         PyObject* result = PyEval_EvalFrame(self());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Object>(result);
     }
@@ -645,7 +645,7 @@ public:
         inline Dict globals() const {
             PyObject* result = PyFrame_GetGlobals(self());
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
             return reinterpret_steal<Dict>(result);
         }
@@ -654,7 +654,7 @@ public:
         inline Dict locals() const {
             PyObject* result = PyFrame_GetLocals(self());
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
             return reinterpret_steal<Dict>(result);
         }
@@ -686,7 +686,7 @@ public:
         inline Object get(const Str& name) const {
             PyObject* result = PyFrame_GetVar(self(), name.ptr());
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
             return reinterpret_steal<Object>(result);
         }
@@ -760,7 +760,7 @@ public:
     inline Dict globals() const {
         PyObject* result = PyFunction_GetGlobals(this->ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_borrow<Dict>(result);
     }
@@ -914,7 +914,7 @@ public:
     // inline void annotations(std::optional<Dict> annotations) {
     //     if (!annotations.has_value()) {  // clear all annotations
     //         if (PyFunction_SetAnnotations(this->ptr(), Py_None)) {
-    //             throw error_already_set();
+    //             Exception::from_python();
     //         }
 
     //     } else if (!annotations.value()) {  // do nothing
@@ -953,7 +953,7 @@ public:
 
     //         // push changes
     //         if (PyFunction_SetAnnotations(this->ptr(), result.ptr())) {
-    //             throw error_already_set();
+    //             Exception::from_python();
     //         }
     //     }
     // }
@@ -973,7 +973,7 @@ public:
     inline void closure(std::optional<Tuple> closure) {
         PyObject* item = closure ? closure.value().ptr() : Py_None;
         if (PyFunction_SetClosure(this->ptr(), item)) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -1004,15 +1004,15 @@ public:
     /* Wrap an existing Python function as a method descriptor. */
     Method(const Function& func) : Base(PyInstanceMethod_New(func.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
     /* Get the underlying function. */
     inline Function function() const {
-        PyObject* result = PyInstanceMethod_GET_FUNCTION(this->ptr());
+        PyObject* result = PyInstanceMethod_Function(this->ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_borrow<Function>(result);
     }
@@ -1034,7 +1034,7 @@ class ClassMethod : public Object {
             reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type)
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -1055,7 +1055,7 @@ public:
     /* Wrap an existing Python function as a classmethod descriptor. */
     ClassMethod(Function func) : Base(PyClassMethod_New(func.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -1081,7 +1081,7 @@ class StaticMethod : public Object {
             reinterpret_cast<PyObject*>(&PyStaticMethod_Type)
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -1102,7 +1102,7 @@ public:
     /* Wrap an existing Python function as a staticmethod descriptor. */
     StaticMethod(Function func) : Base(PyStaticMethod_New(func.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -1125,7 +1125,7 @@ class Property : public Object {
     inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, impl::PyProperty.ptr());
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }

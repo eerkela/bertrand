@@ -460,7 +460,7 @@ public:
         stolen_t{}
     ) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -478,7 +478,7 @@ public:
         stolen_t{}
     ) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -488,7 +488,7 @@ public:
         stolen_t{}
     ) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -497,7 +497,7 @@ public:
     template <impl::python_like T>
     explicit Bytes(const T& obj) : Base(PyBytes_FromObject(obj.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -565,7 +565,7 @@ protected:
         PyObject* result = lhs.ptr();
         PyBytes_Concat(&result, Bytes(rhs).ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -596,7 +596,7 @@ public:
         stolen_t{}
     ) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -614,7 +614,7 @@ public:
         stolen_t{}
     ) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -624,7 +624,7 @@ public:
         stolen_t{}
     ) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -633,7 +633,7 @@ public:
     template <impl::python_like T>
     explicit ByteArray(const T& obj) : Base(PyByteArray_FromObject(obj.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -690,7 +690,7 @@ protected:
             result = PyByteArray_Concat(ByteArray(lhs).ptr(), rhs.ptr());
         }
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Return>(result);
     }

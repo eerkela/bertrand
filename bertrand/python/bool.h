@@ -341,12 +341,9 @@ public:
     explicit Bool(const T& obj) {
         int result = PyObject_IsTrue(obj.ptr());
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         m_ptr = Py_NewRef(result ? Py_True : Py_False);
-        if (m_ptr == nullptr) {
-            throw error_already_set();
-        }
     }
 
     /* Trigger explicit conversion operators to bool. */

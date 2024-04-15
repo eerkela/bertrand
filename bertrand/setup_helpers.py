@@ -3,12 +3,20 @@
 # pylint: disable=unused-argument
 import json
 import os
+import sysconfig
 from pathlib import Path
 from typing import Any
 
 import numpy
+import pybind11
 from pybind11.setup_helpers import Pybind11Extension
 from pybind11.setup_helpers import build_ext as pybind11_build_ext
+
+
+# TODO: list cpptrace, pcre2, googletest version #s explicitly here?
+
+ROOT: Path = Path(__file__).absolute().parent.parent
+DEPS: Path = ROOT / "third_party"
 
 
 def get_include() -> str:
@@ -20,7 +28,43 @@ def get_include() -> str:
     str
         The path to the include directory for this package.
     """
-    return str(Path(__file__).absolute().parent.parent)
+    return str(ROOT)
+
+
+def quick_include() -> list[str]:
+    """Return the complete include and link flags necessary to build a pure-C++ project
+    with bertrand as a dependency.
+
+    Returns
+    -------
+    list
+        A list of strings containing the various include and link libraries needed to
+        build a bertrand-enabled project from the command line, as a single unit.
+    """
+    cpptrace = DEPS / "cpptrace-0.5.2"
+    gtest = DEPS / "googletest-1.14.0"
+    pcre2 = DEPS / "pcre2-10.43"
+    return [
+        f"-I{sysconfig.get_path('include')}",
+        f"-I{get_include()}",
+        f"-I{pybind11.get_include()}",
+        f"-I{numpy.get_include()}",
+        f"-I{str(cpptrace / 'include')}",
+        f"-I{str(gtest / 'googletest' / 'include')}",
+        f"-I{str(pcre2 / 'src')}",
+        f"-L{str(cpptrace / 'build')}",
+        f"-L{str(cpptrace / 'build' / '_deps' / 'libdwarf-build' / 'src' / 'lib' / 'libdwarf')}",
+        f"-L{str(cpptrace / 'build' / '_deps' / 'zstd-build' / 'lib')}",
+        f"-L{str(gtest / 'build' / 'lib')}",
+        f"-L{str(pcre2 / '.libs')}",
+        f"-lpython{sysconfig.get_python_version()}",
+        "-lcpptrace",
+        "-ldwarf",
+        "-lz",
+        "-lzstd",
+        "-ldl",
+        "-lgtest",
+    ]
 
 
 class Extension(Pybind11Extension):
@@ -45,21 +89,22 @@ class Extension(Pybind11Extension):
         *args: Any,
         cxx_std: int = 20,
         clangd: bool = True,
+        traceback: bool = True,
         **kwargs: Any
     ) -> None:
-        super().__init__(*args, **kwargs)
-
-        if cxx_std >= 20:
-            self.cxx_std = cxx_std
-        else:
+        if cxx_std < 20:
             raise ValueError(
                 "C++ standard must be at least C++20 to enable bertrand features"
             )
 
-        self.extra_compile_args.append("-g")
+        super().__init__(*args, **kwargs)
+        self.cxx_std = cxx_std
         self.clangd = clangd
         self.include_dirs.append(get_include())
         self.include_dirs.append(numpy.get_include())
+        if traceback:
+            self.extra_compile_args.extend(["-g", "-DBERTRAND_TRACEBACK"])
+            self.extra_link_args.extend(["-g", "-DBERTRAND_TRACEBACK"])
 
 
 class BuildExt(pybind11_build_ext):

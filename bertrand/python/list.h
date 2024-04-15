@@ -109,11 +109,7 @@ class List : public Object, public impl::SequenceOps<List> {
             }
             return Py_NewRef(result);
         } else {
-            PyObject* result = pybind11::cast(value).release().ptr();
-            if (result == nullptr) {
-                throw error_already_set();
-            }
-            return result;
+            return Object(value).release().ptr();
         }
     }
 
@@ -137,7 +133,7 @@ public:
     /* Default constructor.  Initializes to an empty list. */
     List() : Base(PyList_New(0), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -150,7 +146,7 @@ public:
         Base(PyList_New(contents.size()), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             size_t i = 0;
@@ -173,7 +169,7 @@ public:
         Base(PyList_New(contents.size()), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             size_t i = 0;
@@ -192,7 +188,7 @@ public:
         Base(PySequence_List(contents.ptr()), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -205,7 +201,7 @@ public:
         }
         m_ptr = PyList_New(size);
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             size_t i = 0;
@@ -228,7 +224,7 @@ public:
         Base(PyList_New(2), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             PyList_SET_ITEM(m_ptr, 0, convert_newref(pair.first));
@@ -258,7 +254,7 @@ public:
         Base(PyList_New(sizeof...(Args)), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             unpack_tuple(m_ptr, tuple, std::index_sequence_for<Args...>{});
@@ -336,7 +332,7 @@ public:
     template <typename T>
     inline void append(const T& value) {
         if (PyList_Append(this->ptr(), detail::object_or_cast(value).ptr())) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -356,7 +352,7 @@ public:
     template <typename T>
     inline void insert(Py_ssize_t index, const T& value) {
         if (PyList_Insert(this->ptr(), index, detail::object_or_cast(value).ptr())) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -364,7 +360,7 @@ public:
     inline List copy() const {
         PyObject* result = PyList_GetSlice(this->ptr(), 0, size());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<List>(result);
     }
@@ -372,7 +368,7 @@ public:
     /* Equivalent to Python `list.clear()`. */
     inline void clear() {
         if (PyList_SetSlice(this->ptr(), 0, size(), nullptr)) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -386,14 +382,14 @@ public:
     /* Equivalent to Python `list.reverse()`. */
     inline void reverse() {
         if (PyList_Reverse(this->ptr())) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
     /* Equivalent to Python `list.sort()`. */
     inline void sort() {
         if (PyList_Sort(this->ptr())) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -447,7 +443,7 @@ protected:
     inline List concat(const std::initializer_list<impl::Initializer>& items) const {
         PyObject* result = PyList_New(size() + items.size());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             size_t i = 0;

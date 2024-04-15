@@ -176,7 +176,7 @@ public:
     /* Default constructor.  Initializes to 0.0. */
     Float() : Base(PyFloat_FromDouble(0.0), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -188,7 +188,7 @@ public:
     template <typename T> requires (cpp_constructor<T>)
     Float(const T& value) : Base(PyFloat_FromDouble(value), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -198,7 +198,7 @@ public:
     template <typename T> requires (py_converting_constructor<T>)
     explicit Float(const T& value) : Base(PyNumber_Float(value.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -208,7 +208,7 @@ public:
         Base(PyFloat_FromDouble(static_cast<double>(value)), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 

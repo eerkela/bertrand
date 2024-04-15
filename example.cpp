@@ -99,15 +99,16 @@ static const py::Type dtype = np.attr<"dtype">();
 
 
 void helper() {
-    throw py::TypeError("test error");
+    throw py::TypeError("abc");
 }
+
 
 
 void throws_an_error() {
     // throw py::TypeError("test error");
 
     // PyErr_SetString(PyExc_TypeError, "test error");
-    // throw py::error_already_set();
+    // py::Exception::from_python();
 
     // static py::Code script = R"(
     //     def foo():
@@ -118,11 +119,31 @@ void throws_an_error() {
 
     // script();
 
+    // try {
+    //     script();
+    // } catch (const py::TypeError& e) {
+    //     py::print("Caught a TypeError in C++!");
+    //     py::print(e.what());
+    // }
+
+    // TODO: this yields the incorrect order of traceback frames.
+    // It should enter a C++ context, then a Python context, then back to C++.  Right
+    // now, it's putting all the C++ frames before the Python frames.
+
     static py::Code script = R"(
+        import traceback
+
         def foo():
             func()
 
-        foo()
+        try:
+            foo()
+        except TypeError as err:
+            print("Caught a TypeError in Python!")
+            traceback.print_exception(err)
+            raise err from err
+
+        # foo()
     )"_python;
 
     script({{"func", py::Function(helper)}});
@@ -134,6 +155,9 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
     throws_an_error();
+    // throw py::TypeError();
+
+    // throw py::Exception("test error", 0);
 
 
     

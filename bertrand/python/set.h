@@ -28,7 +28,7 @@ namespace impl {
         template <typename T>
         inline static void insert_from_tuple(PyObject* result, const T& item) {
             if (PySet_Add(result, detail::object_or_cast(item).ptr())) {
-                throw error_already_set();
+                Exception::from_python();
             }
         }
 
@@ -65,7 +65,7 @@ namespace impl {
         inline Derived copy() const {
             PyObject* result = self()->alloc(self()->ptr());
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
             return reinterpret_steal<Derived>(result);
         }
@@ -123,12 +123,12 @@ namespace impl {
         inline Derived union_(const std::initializer_list<impl::HashInitializer>& other) const {
             PyObject* result = self()->alloc(self()->ptr());
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
             try {
                 for (const impl::HashInitializer& item : other) {
                     if (PySet_Add(result, item.first.ptr())) {
-                        throw error_already_set();
+                        Exception::from_python();
                     }
                 }
                 return reinterpret_steal<Derived>(result);
@@ -149,13 +149,13 @@ namespace impl {
         ) const {
             PyObject* result = self()->alloc(nullptr);
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
             try {
                 for (const impl::HashInitializer& item : other) {
                     if (contains(item.first)) {
                         if (PySet_Add(result, item.first.ptr())) {
-                            throw error_already_set();
+                            Exception::from_python();
                         }
                     }
                 }
@@ -177,12 +177,12 @@ namespace impl {
         ) const {
             PyObject* result = self()->alloc(self()->ptr());
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
             try {
                 for (const impl::HashInitializer& item : other) {
                     if (PySet_Discard(result, item.first.ptr()) == -1) {
-                        throw error_already_set();
+                        Exception::from_python();
                     }
                 }
                 return reinterpret_steal<Derived>(result);
@@ -203,17 +203,17 @@ namespace impl {
         ) const {
             PyObject* result = self()->alloc(nullptr);
             if (result == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
             try {
                 for (const impl::HashInitializer& item : other) {
                     if (contains(item.first)) {
                         if (PySet_Discard(result, item.first.ptr()) == -1) {
-                            throw error_already_set();
+                            Exception::from_python();
                         }
                     } else {
                         if (PySet_Add(result, item.first.ptr())) {
-                            throw error_already_set();
+                            Exception::from_python();
                         }
                     }
                 }
@@ -270,7 +270,7 @@ namespace impl {
                 detail::object_or_cast(key).ptr()
             );
             if (result == -1) {
-                throw error_already_set();
+                Exception::from_python();
             }
             return result;
         }
@@ -410,7 +410,7 @@ public:
     /* Default constructor.  Initializes to an empty set. */
     FrozenSet() : Base(PyFrozenSet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -423,12 +423,12 @@ public:
         Base(PyFrozenSet_New(nullptr), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             for (const impl::HashInitializer& item : contents) {
                 if (PySet_Add(m_ptr, item.first.ptr())) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
             }
         } catch (...) {
@@ -443,7 +443,7 @@ public:
         Base(PyFrozenSet_New(contents.ptr()), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -452,7 +452,7 @@ public:
     explicit FrozenSet(const T& container) {
         m_ptr = PyFrozenSet_New(nullptr);
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             for (auto&& item : container) {
@@ -460,7 +460,7 @@ public:
                     m_ptr,
                     detail::object_or_cast(std::forward<decltype(item)>(item)).ptr())
                 ) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
             }
         } catch (...) {
@@ -475,14 +475,14 @@ public:
         Base(PyFrozenSet_New(nullptr), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             if (PySet_Add(m_ptr, detail::object_or_cast(pair.first).ptr())) {
-                throw error_already_set();
+                Exception::from_python();
             }
             if (PySet_Add(m_ptr, detail::object_or_cast(pair.second).ptr())) {
-                throw error_already_set();
+                Exception::from_python();
             }
         } catch (...) {
             Py_DECREF(m_ptr);
@@ -496,7 +496,7 @@ public:
         Base(PyFrozenSet_New(nullptr), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             Base::unpack_tuple(m_ptr, tuple, std::index_sequence_for<Args...>{});
@@ -585,7 +585,7 @@ public:
     /* Default constructor.  Initializes to an empty set. */
     Set() : Base(PySet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -598,12 +598,12 @@ public:
         Base(PySet_New(nullptr), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             for (const impl::HashInitializer& item : contents) {
                 if (PySet_Add(m_ptr, item.first.ptr())) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
             }
         } catch (...) {
@@ -618,7 +618,7 @@ public:
         Base(PySet_New(contents.ptr()), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -626,7 +626,7 @@ public:
     template <typename T> requires (cpp_unpacking_constructor<T>)
     explicit Set(const T& contents) : Base(PySet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             for (auto&& item : contents) {
@@ -634,7 +634,7 @@ public:
                     m_ptr,
                     detail::object_or_cast(std::forward<decltype(item)>(item)).ptr())
                 ) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
             }
         } catch (...) {
@@ -649,14 +649,14 @@ public:
         Base(PySet_New(nullptr), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             if (PySet_Add(m_ptr, detail::object_or_cast(pair.first).ptr())) {
-                throw error_already_set();
+                Exception::from_python();
             }
             if (PySet_Add(m_ptr, detail::object_or_cast(pair.second).ptr())) {
-                throw error_already_set();
+                Exception::from_python();
             }
         } catch (...) {
             Py_DECREF(m_ptr);
@@ -670,7 +670,7 @@ public:
         Base(PySet_New(nullptr), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             Base::unpack_tuple(m_ptr, tuple, std::index_sequence_for<Args...>{});
@@ -697,7 +697,7 @@ public:
     template <impl::is_hashable T>
     inline void add(const T& key) {
         if (PySet_Add(this->ptr(), detail::object_or_cast(key).ptr())) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -707,7 +707,7 @@ public:
         Object obj = detail::object_or_cast(key);
         int result = PySet_Discard(this->ptr(), obj.ptr());
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         } else if (result == 0) {
             throw KeyError(repr(obj));
         }
@@ -717,7 +717,7 @@ public:
     template <impl::is_hashable T>
     inline void discard(const T& key) {
         if (PySet_Discard(this->ptr(), detail::object_or_cast(key).ptr()) == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -725,7 +725,7 @@ public:
     inline Object pop() {
         PyObject* result = PySet_Pop(this->ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Object>(result);
     }
@@ -733,7 +733,7 @@ public:
     /* Equivalent to Python `set.clear()`. */
     inline void clear() {
         if (PySet_Clear(this->ptr())) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 

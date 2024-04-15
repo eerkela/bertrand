@@ -24,12 +24,73 @@
 #include "python/type.h"
 
 
+/* NOTES ON PERFORMANCE:
+ * In general, bertrand should be as fast or faster than the equivalent Python code,
+ * owing to the use of static typing, comp time, and optimized CPython API calls.  
+ * There are a few things to keep in mind, however:
+ *
+ *  1.  A null pointer check followed by an isinstance() check is implicitly incurred
+ *      whenever a generic py::Object is narrowed to a more specific type, such as
+ *      py::Int or py::List.  This is necessary to ensure type safety, and is optimized
+ *      for built-in types, but can become a pessimization if done frequently,
+ *      especially in tight loops.  If you find yourself doing this, consider either
+ *      converting to strict types earlier in the code (which eliminates runtime
+ *      overhead and allows the compiler to enforce these checks at compile time) or
+ *      keeping all object interactions fully generic to prevent thrashing.  Generally,
+ *      the only cases where this can be a problem are when accessing a named attribute
+ *      via `attr()`, calling a generic Python function using `()`, indexing into an
+ *      untyped container with `[]`, or iterating over such a container in a range-based
+ *      loop, all of which return py::Object instances by default.  Note that all of
+ *      these can be made type-safe by using a typed container or writing a custom
+ *      wrapper class that specializes the `py::impl::__call__`,
+ *      `py::impl::__getitem__`, and `py::impl::__iter__` control structs.  Doing so
+ *      eliminates the runtime check and promotes it to compile time.
+ *  2.  For cases where the exact type of a generic object is known in advance, it is
+ *      possible to bypass the runtime check by using `py::reinterpret_borrow<T>(obj)`
+ *      or `py::reinterpret_steal<T>(obj.release())`.  These functions are not type
+ *      safe, and should be used with caution (especially the latter, which can lead to
+ *      memory leaks if used incorrectly).  However, they can be useful when working
+ *      with custom types, as in most cases a method's return type and reference count
+ *      will be known ahead of time, making the runtime check redundant.  In most other
+ *      cases, it is not recommended to use these functions, as they can lead to subtle
+ *      bugs and crashes if the assumptions they prove to be false.  Implementers
+ *      seeking to write their own types should refer to the built-in types for
+ *      examples of how to do this correctly.
+ *  3.  There is a small penalty for copying data across the Python/C++ boundary.  This
+ *      is generally tolerable (even for lists and other container types), but it can
+ *      add up if done frequently.  If you find yourself repeatedly transferring large
+ *      amounts of data between Python and C++, you should either reconsider your
+ *      design to keep more of your operations within one language or another, or use
+ *      the buffer protocol to eliminate the copy.  An easy way to do this is to use
+ *      NumPy arrays, which can be accessed directly as C++ arrays without any copies.
+ *  4.  Python (at least for now) does not play well with multithreaded code, and
+ *      subsequently, neither does bertrand.  If you need to use Python objects in a
+ *      multithreaded context, consider offloading the work to C++ and passing the
+ *      results back to Python. This unlocks full native parallelism, with SIMD,
+ *      OpenMP, and other tools at your disposal.  If you must use Python, first read
+ *      the GIL chapter in the Python C API documentation, and then consider using the
+ *      `py::gil_scoped_release` guard to release the GIL within a specific context,
+ *      and automatically reacquire it using RAII before returning to Python.  This
+ *      should only be attempted if you are 100% sure that your Python code is
+ *      thread-safe and does not interfere with the GIL in any way.  If there is any
+ *      doubt whatsoever, do not do this.
+ *  5.  Additionally, Bertrand makes it possible to store arbitrary Python objects with
+ *      static duration using the py::Static<> wrapper, which can reduce net
+ *      allocations and further improve performance.  This is especially true for
+ *      global objects like imported modules and compiled scripts, which can be cached
+ *      and reused for the lifetime of the program.
+ *
+ * Even without these optimizations, bertrand should be quite competitive with native
+ * Python code, and should trade blows with it in most cases.  If you find a case where
+ * bertrand is significantly slower than Python, please file an issue on the GitHub
+ * repository, and we will investigate it as soon as possible.
+ */
+
+
 namespace bertrand {
 namespace py {
 
-
 namespace literals {
-
     using namespace pybind11::literals;
 
     inline Code operator ""_python(const char* source, size_t size) {
@@ -125,12 +186,12 @@ inline Type Property::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*
 Module Module::def_submodule(const char* name, const char* doc) {
     const char* this_name = PyModule_GetName(m_ptr);
     if (this_name == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
     std::string full_name = std::string(this_name) + '.' + name;
     Handle submodule = PyImport_AddModule(full_name.c_str());
     if (!submodule) {
-        throw error_already_set();
+        Exception::from_python();
     }
     auto result = reinterpret_borrow<Module>(submodule);
     if (doc && pybind11::options::show_user_defined_docstrings()) {
@@ -147,14 +208,14 @@ inline Int::Int(const T& str, int base) :
     Base(PyLong_FromUnicodeObject(str.ptr(), base), stolen_t{})
 {
     if (m_ptr == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
 }
 
 
 inline Float::Float(const Str& str) : Base(PyFloat_FromString(str.ptr()), stolen_t{}) {
     if (m_ptr == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
 }
 
@@ -168,7 +229,7 @@ inline Type::Type(const Str& name, const Tuple& bases, const Dict& dict) {
         nullptr
     );
     if (m_ptr == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
 }
 
@@ -179,7 +240,7 @@ inline Type::Type(const Str& name, const Tuple& bases, const Dict& dict) {
     inline Str Type::qualname() const {
         PyObject* result = PyType_GetQualName(self());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Str>(result);
     }
@@ -741,7 +802,7 @@ C++. */
 inline Dict builtins() {
     PyObject* result = PyEval_GetBuiltins();
     if (result == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
     return reinterpret_steal<Dict>(result);
 }
@@ -815,7 +876,7 @@ string. */
 inline Str ascii(const Handle& obj) {
     PyObject* result = PyObject_ASCII(obj.ptr());
     if (result == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
     return reinterpret_steal<Str>(result);
 }
@@ -826,7 +887,7 @@ __index__() into a binary string representation. */
 inline Str bin(const Handle& obj) {
     PyObject* string = PyNumber_ToBase(obj.ptr(), 2);
     if (string == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
     return reinterpret_steal<Str>(string);
 }
@@ -906,7 +967,7 @@ __index__() into a unicode character. */
 inline Str chr(const Handle& obj) {
     PyObject* string = PyUnicode_FromFormat("%llc", obj.cast<long long>());
     if (string == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
     return reinterpret_steal<Str>(string);
 }
@@ -915,7 +976,7 @@ inline Str chr(const Handle& obj) {
 /* Equivalent to Python `delattr(obj, name)`. */
 inline void delattr(const Object& obj, const Str& name) {
     if (PyObject_DelAttr(obj.ptr(), name.ptr()) < 0) {
-        throw error_already_set();
+        Exception::from_python();
     }
 }
 
@@ -925,7 +986,7 @@ current local scope. */
 inline List dir() {
     PyObject* result = PyObject_Dir(nullptr);
     if (result == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
     return reinterpret_steal<List>(result);
 }
@@ -938,7 +999,7 @@ inline List dir(const Handle& obj) {
     }
     PyObject* result = PyObject_Dir(obj.ptr());
     if (result == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
     return reinterpret_steal<List>(result);
 }
@@ -990,7 +1051,7 @@ inline void exec(const Code& code) {
 inline Object getattr(const Handle& obj, const Str& name) {
     PyObject* result = PyObject_GetAttr(obj.ptr(), name.ptr());
     if (result == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
     return reinterpret_steal<Object>(result);
 }
@@ -1032,7 +1093,7 @@ __index__() into a hexadecimal string representation. */
 inline Str hex(const Handle& obj) {
     PyObject* string = PyNumber_ToBase(obj.ptr(), 16);
     if (string == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
     return reinterpret_steal<Str>(string);
 }
@@ -1062,7 +1123,7 @@ inline bool isinstance(const Handle& derived, const Type& base) {
         detail::object_or_cast(base).ptr()
     );
     if (result == -1) {
-        throw error_already_set();
+        Exception::from_python();
     }
     return result;
 }
@@ -1085,7 +1146,7 @@ inline bool issubclass(const Type& derived, const T& base) {
         detail::object_or_cast(base).ptr()
     );
     if (result == -1) {
-        throw error_already_set();
+        Exception::from_python();
     }
     return result;
 }
@@ -1104,7 +1165,7 @@ inline bool issubclass(const Type& derived) {
     );
     int result = PyObject_IsSubclass(derived.ptr(), T::type.ptr());
     if (result == -1) {
-        throw error_already_set();
+        Exception::from_python();
     }
     return result;
 }
@@ -1161,7 +1222,7 @@ __index__() into an octal string representation. */
 inline Str oct(const Handle& obj) {
     PyObject* string = PyNumber_ToBase(obj.ptr(), 8);
     if (string == nullptr) {
-        throw error_already_set();
+        Exception::from_python();
     }
     return reinterpret_steal<Str>(string);
 }
@@ -1216,7 +1277,7 @@ inline pybind11::iterator reversed(T&& obj) {
 /* Equivalent to Python `setattr(obj, name, value)`. */
 inline void setattr(const Handle& obj, const Str& name, const Object& value) {
     if (PyObject_SetAttr(obj.ptr(), name.ptr(), value.ptr()) < 0) {
-        throw error_already_set();
+        Exception::from_python();
     }
 }
 

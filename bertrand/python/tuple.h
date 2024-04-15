@@ -85,14 +85,9 @@ class Tuple : public Object, public impl::SequenceOps<Tuple> {
             }
             return Py_NewRef(result);
         } else {
-            PyObject* result = pybind11::cast(value).release().ptr();
-            if (result == nullptr) {
-                throw error_already_set();
-            }
-            return result;
+            return Object(value).release().ptr();
         }
     }
-
 
     template <typename T>
     static constexpr bool py_list_constructor = impl::python_like<T> && impl::list_like<T>;
@@ -116,7 +111,7 @@ public:
     /* Default constructor.  Initializes to empty tuple. */
     Tuple() : Base(PyTuple_New(0), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -129,7 +124,7 @@ public:
         Base(PyTuple_New(contents.size()), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             size_t i = 0;
@@ -152,7 +147,7 @@ public:
         Base(PyTuple_New(contents.size()), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             size_t i = 0;
@@ -169,7 +164,7 @@ public:
     template <typename T> requires (py_list_constructor<T>)
     explicit Tuple(const T& list) : Base(PyList_AsTuple(list.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -179,7 +174,7 @@ public:
         Base(PySequence_Tuple(contents.ptr()), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -192,7 +187,7 @@ public:
         }
         m_ptr = PyTuple_New(size);
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             size_t i = 0;
@@ -215,7 +210,7 @@ public:
         Base(PyTuple_New(2), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             PyTuple_SET_ITEM(m_ptr, 0, convert_newref(pair.first));
@@ -245,7 +240,7 @@ public:
         Base(PyTuple_New(sizeof...(Args)), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             unpack_tuple(m_ptr, tuple, std::index_sequence_for<Args...>{});
@@ -379,7 +374,7 @@ protected:
     inline Tuple concat(const std::initializer_list<impl::Initializer>& items) const {
         PyObject* result = PyTuple_New(size() + items.size());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         try {
             size_t i = 0;

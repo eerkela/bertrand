@@ -391,7 +391,7 @@ public:
     /* Default constructor.  Initializes to 0. */
     Int() : Base(PyLong_FromLong(0), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -403,7 +403,7 @@ public:
     template <typename T> requires (py_bool_constructor<T>)
     Int(const T& value) : Base(PyNumber_Long(value.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -424,7 +424,7 @@ public:
             }
         }
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -432,7 +432,7 @@ public:
     template <typename T> requires (py_double_constructor<T>)
     explicit Int(const T& value) : Base(PyNumber_Long(value.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -440,7 +440,7 @@ public:
     template <typename T> requires (cpp_double_constructor<T>)
     explicit Int(const T& value) : Base(PyLong_FromDouble(value), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -448,7 +448,7 @@ public:
     template <typename T> requires (py_converting_constructor<T>)
     explicit Int(const T& obj) : Base(PyNumber_Long(obj.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -461,7 +461,7 @@ public:
         Base(PyLong_FromString(str, nullptr, base), stolen_t{})
     {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 

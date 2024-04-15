@@ -246,7 +246,7 @@ public:
     /* Default constructor.  Initializes to empty string. */
     Str() : Base(PyUnicode_FromStringAndSize("", 0), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -261,7 +261,7 @@ public:
         stolen_t{}
     ) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -269,7 +269,7 @@ public:
     template <typename T> requires (c_string_constructor<T>)
     Str(const T& string) : Base(PyUnicode_FromString(string), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -279,7 +279,7 @@ public:
         std::string s = string;
         m_ptr = PyUnicode_FromStringAndSize(s.c_str(), s.size());
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -289,7 +289,7 @@ public:
         std::string_view s = string;
         m_ptr = PyUnicode_FromStringAndSize(s.data(), s.size());
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -297,7 +297,7 @@ public:
     template <typename T> requires (py_converting_constructor<T>)
     explicit Str(const T& obj) : Base(PyObject_Str(obj.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -305,7 +305,7 @@ public:
     template <typename T> requires (cpp_converting_constructor<T>)
     explicit Str(const T& obj) : Base(PyObject_Str(pybind11::cast(obj).ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -321,7 +321,7 @@ public:
             );
             m_ptr = PyUnicode_FromStringAndSize(result.c_str(), result.size());
             if (m_ptr == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
         }
 
@@ -340,7 +340,7 @@ public:
             );
             m_ptr = PyUnicode_FromStringAndSize(result.c_str(), result.size());
             if (m_ptr == nullptr) {
-                throw error_already_set();
+                Exception::from_python();
             }
         }
 
@@ -386,7 +386,7 @@ public:
     inline explicit operator const char*() const & {
         const char* result = PyUnicode_AsUTF8(this->ptr());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -396,7 +396,7 @@ public:
         Py_ssize_t length;
         const char* result = PyUnicode_AsUTF8AndSize(this->ptr(), &length);
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return std::string(result, length);
     }
@@ -409,7 +409,7 @@ public:
         Py_ssize_t length;
         const char* result = PyUnicode_AsUTF8AndSize(this->ptr(), &length);
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return std::string_view(result, length);
     }
@@ -441,17 +441,17 @@ public:
         }
         Py_UCS4 code = PyUnicode_ReadChar(str.ptr(), 0);
         if (code == (Py_UCS4)-1 && PyErr_Occurred()) {
-            throw error_already_set();
+            Exception::from_python();
         }
         if (PyUnicode_Fill(this->ptr(), 0, size(), code) == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
     /* Fill the string with a given character, given as a raw Python unicode point. */
     inline void fill(Py_UCS4 ch) {
         if (PyUnicode_Fill(this->ptr(), 0, size(), ch) == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
     }
 
@@ -459,7 +459,7 @@ public:
     inline Str substring(Py_ssize_t start = 0, Py_ssize_t end = -1) const {
         PyObject* result = PyUnicode_Substring(this->ptr(), start, end);
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Str>(result);
     }
@@ -484,7 +484,7 @@ public:
     inline Str copy() const {
         PyObject* result = PyUnicode_New(size(), max_char());
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         if (PyUnicode_CopyCharacters(
             result,
@@ -494,7 +494,7 @@ public:
             size()
         )) {
             Py_DECREF(result);
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Str>(result);
     }
@@ -512,7 +512,7 @@ public:
             stop
         );
         if (result < 0) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return static_cast<size_t>(result);
     }
@@ -537,7 +537,7 @@ public:
             1
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -662,7 +662,7 @@ public:
             detail::object_or_cast(iterable).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Str>(result);
     }
@@ -720,7 +720,7 @@ public:
             maxcount
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Str>(result);
     }
@@ -814,7 +814,7 @@ public:
     inline List split() const {
         PyObject* result = PyUnicode_Split(this->ptr(), nullptr, -1);
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<List>(result);
     }
@@ -823,7 +823,7 @@ public:
     inline List split(const Str& sep, Py_ssize_t maxsplit = -1) const {
         PyObject* result = PyUnicode_Split(this->ptr(), sep.ptr(), maxsplit);
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<List>(result);
     }
@@ -832,7 +832,7 @@ public:
     inline List splitlines(bool keepends = false) const {
         PyObject* result = PyUnicode_Splitlines(this->ptr(), keepends);
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<List>(result);
     }
@@ -851,7 +851,7 @@ public:
             -1
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -898,7 +898,7 @@ protected:
             detail::object_or_cast(key).ptr()
         );
         if (result == -1) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return result;
     }
@@ -910,7 +910,7 @@ protected:
             detail::object_or_cast(rhs).ptr()
         );
         if (result == nullptr) {
-            throw error_already_set();
+            Exception::from_python();
         }
         return reinterpret_steal<Return>(result);
     }
@@ -938,7 +938,7 @@ namespace std {
             if (result == -1) {
                 result = PyObject_Hash(str.ptr());  // fall back to PyObject_Hash()
                 if (result == -1 && PyErr_Occurred()) {
-                    throw bertrand::py::error_already_set();
+                    bertrand::py::Exception::from_python();
                 }
             }
             return static_cast<size_t>(result);
