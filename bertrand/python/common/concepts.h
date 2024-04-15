@@ -351,7 +351,7 @@ namespace impl {
     };
 
     template <typename T>
-    concept is_iterable = requires(const T& t) {
+    concept is_iterable = requires(T t) {
         { std::begin(t) } -> std::input_or_output_iterator;
         { std::end(t) } -> std::input_or_output_iterator;
     };

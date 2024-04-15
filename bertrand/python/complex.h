@@ -269,7 +269,7 @@ struct type_caster<bertrand::py::Complex> {
         return true;
     }
 
-    /* Convert a Complex value into a Python object. */
+    /* Convert a py::Complex value into a Python object. */
     inline static handle cast(
         const bertrand::py::Complex& src,
         return_value_policy /* policy */,

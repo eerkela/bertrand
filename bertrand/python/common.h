@@ -582,25 +582,25 @@ inline impl::Iterator<impl::GenericIter<Return>> Object::operator_begin(const T&
     if (iter == nullptr) {
         Exception::from_python();
     }
-    return {reinterpret_steal<Object>(iter)};
+    return impl::Iterator<impl::GenericIter<Return>>(reinterpret_steal<Object>(iter));
 }
 
 
 template <typename Return, typename T>
 inline impl::Iterator<impl::GenericIter<Return>> Object::operator_end(const T& obj) {
-    return {};
+    return impl::Iterator<impl::GenericIter<Return>>();
 }
 
 
 template <typename Return, typename T>
 inline impl::Iterator<impl::GenericIter<Return>> Object::operator_rbegin(const T& obj) {
-    return {obj.template attr<"__reversed__">()()};
+    return impl::Iterator<impl::GenericIter<Return>>(obj.template attr<"__reversed__">()());
 }
 
 
 template <typename Return, typename T>
 inline impl::Iterator<impl::GenericIter<Return>> Object::operator_rend(const T& obj) {
-    return {};
+    return impl::Iterator<impl::GenericIter<Return>>();
 }
 
 

@@ -151,7 +151,29 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    throws_an_error();
+    std::tuple<int, int, int> tup = {1, 2, 3};
+    py::print(py::Tuple(tup));
+
+
+    // py::List list = {1, 2, 3, 4, 5};
+    // for (auto&& x : list | std::views::transform([](auto&& val){ return val < 3; })) {
+    //     py::print(x);
+    // }
+
+
+
+    // TODO: in order to fully satisfy the requirements for views and ranges, all
+    // container types need to use special constructors for these objects, and they
+    // must implement cbegin(), cend(), etc. to be fully qualified.
+
+    // TODO: get this to work in order to allow iterator piping using std::views
+    // py::print(std::ranges::random_access_range<py::List>);  // TODO: this should be true
+    // py::print(std::ranges::random_access_iterator<py::List>);
+
+
+
+
+    // throws_an_error();
     // throw py::TypeError();
 
     // throw py::Exception("test error", 0);

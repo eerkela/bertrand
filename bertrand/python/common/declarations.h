@@ -17,6 +17,7 @@
 #include <map>
 #include <optional>
 #include <ostream>
+#include <ranges>
 #include <set>
 #include <sstream>
 #include <stdexcept>

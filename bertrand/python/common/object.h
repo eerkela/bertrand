@@ -276,8 +276,15 @@ nice for initializer-list syntax, enabling containers to be assigned to like thi
     }                                                                               \
                                                                                     \
     /* Delete type narrowing operator inherited from Object. */                     \
-    template <typename T> requires (std::is_base_of_v<Object, T>)                   \
+    template <std::derived_from<Object> T>                                          \
     operator T() const = delete;                                                    \
+                                                                                    \
+    /* Mark pybind11::cast operator as explicit for subclasses. */                  \
+    template <typename T>                                                           \
+        requires (!impl::proxy_like<T> && !std::derived_from<T, Object>)            \
+    inline explicit operator T() const {                                            \
+        return parent::operator T();                                                \
+    }                                                                               \
                                                                                     \
     template <StaticStr name>                                                       \
     inline impl::Attr<cls, name> attr() const {                                     \
@@ -1069,6 +1076,13 @@ public:
         }
     }
 
+    /* Wrap an Object in a proxy class, which moves it into a managed buffer for
+    granular control. */
+    template <typename T> requires (impl::proxy_like<T>)
+    inline operator T() const {
+        return T(this->operator typename T::Wrapped());
+    }
+
     /* Narrow an Object into one of its subclasses, applying a runtime type check
     against its value. */
     template <std::derived_from<Object> T>
@@ -1079,17 +1093,10 @@ public:
         return T(m_ptr, borrowed_t{});
     }
 
-    /* Wrap an Object in a proxy class, which moves it into a managed buffer for
-    granular control. */
-    template <typename T> requires (impl::proxy_like<T>)
-    inline operator T() const {
-        return T(this->operator typename T::Wrapped());
-    }
-
     /* Explicitly convert to any other type using pybind11's type casting mechanism. */
     template <typename T>
-        requires (!impl::proxy_like<T> && !std::is_base_of_v<Object, T>)
-    inline explicit operator T() const {
+        requires (!impl::proxy_like<T> && !std::derived_from<T, Object>)
+    inline operator T() const {
         try {
             return Handle(m_ptr).template cast<T>();
         } catch (...) {
@@ -1097,17 +1104,16 @@ public:
         }
     }
 
-    /* Contextually convert an Object into a boolean value for use in if/else 
-    statements, with the same semantics as in Python. */
-    inline explicit operator bool() const {
-        int result = PyObject_IsTrue(m_ptr);
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
+    // TODO: this could bely a more general solution for conversions.  Implicit
+    // conversions are always type safe, but static_cast<>() can also be used to
+    // perform an explicit conversion no matter the type.  I could, for instance,
+    // explicitly convert to any container type by just static_cast<>()ing to it
+    // after converting the object to a corresponding Python type (say, by calling)
+    // the list() constructor on it.  That would be pretty cool, and would allow
+    // conversions to both Python types and C++ types in a single line of readable
+    // code.
 
-    /* Explicitly cast to a string representation.  Equivalent to Python `str(obj)`. */
+    /* Implicitly cast to a string representation.  Equivalent to Python `str(obj)`. */
     inline explicit operator std::string() const {
         PyObject* str = PyObject_Str(m_ptr);
         if (str == nullptr) {
@@ -1121,6 +1127,16 @@ public:
         }
         std::string result(data, size);
         Py_DECREF(str);
+        return result;
+    }
+
+    /* Contextually convert an Object into a boolean value for use in if/else 
+    statements, with the same semantics as in Python. */
+    inline explicit operator bool() const {
+        int result = PyObject_IsTrue(m_ptr);
+        if (result == -1) {
+            Exception::from_python();
+        }
         return result;
     }
 
@@ -1160,31 +1176,6 @@ public:
     inline impl::Attr<Object, name> attr() const;
 
 };
-
-
-template <std::derived_from<std::ostream> L, std::derived_from<Object> R>
-inline L& operator<<(L& os, const R& obj) {
-    PyObject* repr = PyObject_Repr(obj.ptr());
-    if (repr == nullptr) {
-        Exception::from_python();
-    }
-    Py_ssize_t size;
-    const char* data = PyUnicode_AsUTF8AndSize(repr, &size);
-    if (data == nullptr) {
-        Py_DECREF(repr);
-        Exception::from_python();
-    }
-    os.write(data, size);
-    Py_DECREF(repr);
-    return os;
-}
-
-
-template <std::derived_from<std::ostream> L, impl::proxy_like T>
-inline L& operator<<(L& os, const T& proxy) {
-    os << proxy.value();
-    return os;
-}
 
 
 /* Borrow a reference to a raw Python handle. */

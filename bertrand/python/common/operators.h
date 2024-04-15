@@ -224,7 +224,8 @@ protected:                                                                      
     template <typename L, typename R> requires (__imod__<L, R>::enable)                 \
     friend L& operator%=(L& lhs, const R& rhs);                                         \
                                                                                         \
-    template <typename L, typename R> requires (__lshift__<L, R>::enable)               \
+    template <typename L, typename R>                                                   \
+        requires (__lshift__<L, R>::enable && !std::derived_from<L, std::ostream>)      \
     friend auto operator<<(const L& lhs, const R& rhs);                                 \
                                                                                         \
     template <typename L, typename R> requires (__ilshift__<L, R>::enable)              \
@@ -242,7 +243,8 @@ protected:                                                                      
     template <typename L, typename R> requires (__iand__<L, R>::enable)                 \
     friend L& operator&=(L& lhs, const R& rhs);                                         \
                                                                                         \
-    template <typename L, typename R> requires (__or__<L, R>::enable)                   \
+    template <typename L, typename R>                                                   \
+        requires (__or__<L, R>::enable && !std::ranges::view<R>)                        \
     friend auto operator|(const L& lhs, const R& rhs);                                  \
                                                                                         \
     template <typename L, typename R> requires (__ior__<L, R>::enable)                  \
@@ -1906,7 +1908,7 @@ struct __ilshift__<L, R> : __ilshift__<typename L::Wrapped, typename R::Wrapped>
 
 
 template <typename L, typename R>
-    requires (__lshift__<L, R>::enable && !std::is_base_of_v<std::ostream, L>)
+    requires (__lshift__<L, R>::enable && !std::derived_from<L, std::ostream>)
 inline auto operator<<(const L& lhs, const R& rhs) {
     using Return = typename __lshift__<L, R>::Return;
     static_assert(
@@ -1926,6 +1928,31 @@ inline auto operator<<(const L& lhs, const R& rhs) {
             return R::template operator_lshift<Return>(lhs, rhs);
         }
     }
+}
+
+
+template <std::derived_from<std::ostream> L, std::derived_from<Object> R>
+inline L& operator<<(L& os, const R& obj) {
+    PyObject* repr = PyObject_Repr(obj.ptr());
+    if (repr == nullptr) {
+        Exception::from_python();
+    }
+    Py_ssize_t size;
+    const char* data = PyUnicode_AsUTF8AndSize(repr, &size);
+    if (data == nullptr) {
+        Py_DECREF(repr);
+        Exception::from_python();
+    }
+    os.write(data, size);
+    Py_DECREF(repr);
+    return os;
+}
+
+
+template <std::derived_from<std::ostream> L, impl::proxy_like T>
+inline L& operator<<(L& os, const T& proxy) {
+    os << proxy.value();
+    return os;
 }
 
 
@@ -2191,7 +2218,8 @@ template <impl::proxy_like L, impl::proxy_like R>
 struct __ior__<L, R> : __ior__<typename L::Wrapped, typename R::Wrapped> {};
 
 
-template <typename L, typename R> requires (__or__<L, R>::enable)
+template <typename L, typename R>
+    requires (__or__<L, R>::enable && !std::ranges::view<R>)
 inline auto operator|(const L& lhs, const R& rhs) {
     using Return = typename __or__<L, R>::Return;
     static_assert(
@@ -2212,6 +2240,19 @@ inline auto operator|(const L& lhs, const R& rhs) {
         }
     }
 }
+
+
+template <std::derived_from<Object> L, std::ranges::view R>
+inline auto operator|(const L& container, const R& view) {
+    return std::views::all(container) | view;
+}
+
+
+// TODO: should this be enabled?  Does it cause a lifetime issue?
+// template <impl::proxy_like L, std::ranges::view R>
+// inline auto operator|(const L& container, const R& view) {
+//     return container.value() | view;
+// }
 
 
 template <typename L, typename R> requires (__ior__<L, R>::enable)

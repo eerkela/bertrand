@@ -49,7 +49,7 @@ public:
 
     /* Default constructor.  Initializes to a sentinel iterator. */
     template <typename... Args>
-    Iterator(Args&&... args) : policy(std::forward<Args>(args)...) {}
+    explicit Iterator(Args&&... args) : policy(std::forward<Args>(args)...) {}
 
     /* Copy constructor. */
     Iterator(const Iterator& other) : policy(other.policy) {}
@@ -384,7 +384,7 @@ public:
     using reference                 = Deref&;
 
     /* Sentinel constructor. */
-    TupleIter(Py_ssize_t index) :
+    TupleIter(Py_ssize_t index = -1) :
         tuple(reinterpret_steal<Object>(nullptr)), curr(nullptr), index(index)
     {}
 
@@ -492,8 +492,8 @@ public:
     using pointer                   = Deref*;
     using reference                 = Deref&;
 
-    /* Default constructor.  Initializes to a sentinel iterator. */
-    ListIter(Py_ssize_t index) :
+    /* Sentinel constructor. */
+    ListIter(Py_ssize_t index = -1) :
         list(reinterpret_steal<Object>(nullptr)), curr(nullptr), index(index)
     {}
 

@@ -928,14 +928,95 @@ namespace impl {
 
 
 // not implemented
-// enumerate() - use a standard loop index
-// filter() - use std::ranges or std::algorithms instead
 // help() - not applicable
 // input() - Use std::cin for now.  May be implemented in the future.
-// map() - use std::ranges or std::algorithms instead
-// next() - use C++ iterators directly
 // open() - planned for a future release along with pathlib support
 // zip() - use C++ iterators directly
+
+
+/* Equivalent to Python `enumerate(args...)`. */
+template <typename First = void, typename... Rest> [[deprecated]]
+inline py::Object enumerate(First&& first, Rest&&... rest) {
+    static_assert(
+        std::is_void_v<First>,
+        "Bertrand does not implement py::enumerate().  Pipe the container with "
+        "std::views::enumerate() or use a simple loop counter instead."
+    );
+    return {};
+}
+
+
+/* Equivalent to Python `filter(args...)`. */
+template <typename First = void, typename... Rest> [[deprecated]]
+inline py::Object filter(First&& first, Rest&&... rest) {
+    static_assert(
+        std::is_void_v<First>,
+        "Bertrand does not implement py::filter().  Pipe the container with "
+        "std::views::filter() instead."
+    );
+    return {};
+}
+
+
+/* Equivalent to Python `map(args...)`. */
+template <typename First = void, typename... Rest> [[deprecated]]
+inline py::Object map(First&& first, Rest&&... rest) {
+    static_assert(
+        std::is_void_v<First>,
+        "Bertrand does not implement py::map().  Pipe the container with "
+        "std::views::transform() instead."
+    );
+    return {};
+}
+
+
+/* Equivalent to Python `max(args...)`. */
+template <typename First = void, typename... Rest> [[deprecated]]
+inline py::Object max(First&& first, Rest&&... rest) {
+    static_assert(
+        std::is_void_v<First>,
+        "Bertrand does not implement py::max().  Use std::max(), std::max_element(), "
+        "or their std::ranges equivalents instead."
+    );
+    return {};
+}
+
+
+/* Equivalent to Python `min(args...)`. */
+template <typename First = void, typename... Rest> [[deprecated]]
+inline py::Object min(First&& first, Rest&&... rest) {
+    static_assert(
+        std::is_void_v<First>,
+        "Bertrand does not implement py::min().  Use std::min(), std::min_element(), "
+        "or their std::ranges equivalents instead."
+    );
+    return {};
+}
+
+
+/* Equivalent to Python `next(args...)`. */
+template <typename First = void, typename... Rest> [[deprecated]]
+inline py::Object next(First&& first, Rest&&... rest) {
+    static_assert(
+        std::is_void_v<First>,
+        "Bertrand does not implement py::next().  Use the iterator's ++ increment "
+        "operator instead, and compare against an end iterator to check for "
+        "completion."
+    );
+    return {};
+}
+
+
+/* Equivalent to Python `sum(obj)`, but also works on C++ containers. */
+template <typename First = void, typename... Rest> [[deprecated]]
+inline py::Object sum(First&& first, Rest&&... rest) {
+    static_assert(
+        std::is_void_v<First>,
+        "Bertrand does not implement py::sum().  Use std::accumulate() or an ordinary "
+        "loop variable instead."
+    );
+    return {};
+}
 
 
 // Superceded by class wrappers
@@ -961,6 +1042,24 @@ namespace impl {
 // super()          -> py::Super
 // tuple()          -> py::Tuple
 // type()           -> py::Type
+
+
+/* Equivalent to Python `all(args...)` */
+template <impl::is_iterable T>
+inline bool all(const T& iterable) {
+    return std::all_of(std::begin(iterable), std::end(iterable), [](const auto& item) {
+        return bool(item);
+    });
+}
+
+
+/* Equivalent to Python `any(args...)` */
+template <impl::is_iterable T>
+inline bool any(const T& iterable) {
+    return std::any_of(std::begin(iterable), std::end(iterable), [](const auto& item) {
+        return bool(item);
+    });
+}
 
 
 /* Get Python's builtin namespace as a dictionary.  This doesn't exist in normal
@@ -1002,16 +1101,6 @@ inline Object aiter(const Object& obj) {
 }
 
 
-/* Equivalent to Python `all(obj)`, except that it also works on iterable C++
-containers. */
-template <impl::is_iterable T>
-inline bool all(const T& obj) {
-    return std::all_of(obj.begin(), obj.end(), [](auto&& item) {
-        return static_cast<bool>(item);
-    });
-}
-
-
 /* Equivalent to Python `anext(obj)`.  Only works on asynchronous Python iterators. */
 inline Object anext(const Object& obj) {
     static const Str s_anext = "anext";
@@ -1025,16 +1114,6 @@ template <typename T>
 inline Object anext(const Object& obj, const T& default_value) {
     static const Str s_anext = "anext";
     return builtins()[s_anext](obj, default_value);
-}
-
-
-/* Equivalent to Python `any(obj)`, except that it also works on iterable C++
-containers. */
-template <impl::is_iterable T>
-inline bool any(const T& obj) {
-    return std::any_of(obj.begin(), obj.end(), [](auto&& item) {
-        return static_cast<bool>(item);
-    });
 }
 
 
@@ -1109,7 +1188,7 @@ require runtime introspection.  Users can refer to py::python_like<> to disambig
 Various permutations of these examples are possible, allowing users to both statically
 and dynamically dispatch based on an arbitrary function's signature, with the same
 universal syntax in both languages. */
-template <typename... Args, typename Func>
+template <typename... Args, impl::is_callable_any Func>
 inline constexpr auto callable(const Func& func) {
     // If no template arguments are given, default to wildcard matching
     if constexpr (sizeof...(Args) == 0) {
@@ -1269,11 +1348,12 @@ inline bool hasattr(const Handle& obj, const Str& name) {
 /* Equivalent to Python `hash(obj)`, but delegates to std::hash, which is overloaded
 for the relevant Python types.  This promotes hash-not-implemented exceptions into
 compile-time equivalents. */
-template <typename T>
+template <typename T> requires (impl::is_hashable<T> || std::derived_from<T, Object>)
 inline size_t hash(T&& obj) {
     static_assert(
         impl::is_hashable<T>,
-        "hash() is not supported for this type.  Did you forget to overload std::hash?"
+        "hash() is not supported for this type.  Did you forget to specialize "
+        "py::__hash__<T>?"
     );
     return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
 }
@@ -1281,7 +1361,7 @@ inline size_t hash(T&& obj) {
 
 /* Equivalent to Python `hex(obj)`.  Converts an integer or other object implementing
 __index__() into a hexadecimal string representation. */
-inline Str hex(const Handle& obj) {
+inline Str hex(const Int& obj) {
     PyObject* string = PyNumber_ToBase(obj.ptr(), 16);
     if (string == nullptr) {
         Exception::from_python();
@@ -1306,20 +1386,6 @@ inline const void* id(const T& obj) {
 }
 
 
-/* Equivalent to Python `isinstance(derived, base)`. */
-template <typename T>
-inline bool isinstance(const Handle& derived, const Type& base) {
-    int result = PyObject_IsInstance(
-        derived.ptr(),
-        detail::object_or_cast(base).ptr()
-    );
-    if (result == -1) {
-        Exception::from_python();
-    }
-    return result;
-}
-
-
 /* Equivalent to Python `isinstance(derived, base)`, but base is provided as a template
 parameter. */
 template <impl::python_like T>
@@ -1329,10 +1395,10 @@ inline bool isinstance(const Handle& derived) {
 }
 
 
-/* Equivalent to Python `issubclass(derived, base)`. */
+/* Equivalent to Python `isinstance(derived, base)`. */
 template <typename T>
-inline bool issubclass(const Type& derived, const T& base) {
-    int result = PyObject_IsSubclass(
+inline bool isinstance(const Handle& derived, const Type& base) {
+    int result = PyObject_IsInstance(
         derived.ptr(),
         detail::object_or_cast(base).ptr()
     );
@@ -1355,6 +1421,20 @@ inline bool issubclass(const Type& derived) {
         "supported for them."
     );
     int result = PyObject_IsSubclass(derived.ptr(), T::type.ptr());
+    if (result == -1) {
+        Exception::from_python();
+    }
+    return result;
+}
+
+
+/* Equivalent to Python `issubclass(derived, base)`. */
+template <typename T>
+inline bool issubclass(const Type& derived, const T& base) {
+    int result = PyObject_IsSubclass(
+        derived.ptr(),
+        detail::object_or_cast(base).ptr()
+    );
     if (result == -1) {
         Exception::from_python();
     }
@@ -1395,20 +1475,6 @@ inline std::optional<size_t> len(const T& obj) {
     } catch (...) {
         return std::nullopt;
     }
-}
-
-
-/* Equivalent to Python `max(obj)`, but also works on iterable C++ containers. */
-template <impl::is_iterable T>
-inline auto max(const T& obj) {
-    return *std::max_element(obj.begin(), obj.end());
-}
-
-
-/* Equivalent to Python `min(obj)`, but also works on iterable C++ containers. */
-template <impl::is_iterable T>
-inline auto min(const T& obj) {
-    return *std::min_element(obj.begin(), obj.end());
 }
 
 
@@ -1502,13 +1568,6 @@ inline List sorted(const Handle& obj, const Function& key, bool reverse = false)
         py::arg("key") = key,
         py::arg("reverse") = reverse
     );
-}
-
-
-/* Equivalent to Python `sum(obj)`, but also works on C++ containers. */
-template <typename T>
-inline auto sum(const T& obj) {
-    return std::accumulate(obj.begin(), obj.end(), T{});
 }
 
 

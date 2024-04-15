@@ -22,7 +22,42 @@
 #include "common.h"
 
 
+// TODO: lift this alongside static_str.h and then create a regex.cpp file to export
+// it to Python.  This means including the header file gives you the C++ bindings and
+// importing the Python module gives you the Python bindings.  This is a good way to
+// separate the two and make it easier to maintain both in tandem.
+
+
+
 // TODO: all methods should accept Python strings as well.
+
+
+// TODO: If I break this class's dependency on Python, I can expose bindings in
+// python.h itself, like a custom type caster that converts it to its python equivalent.
+
+// TODO: alternatively, I can separate the C++ interface into a separate header file
+// with no dependencies on Python, and then include it here and add Python bindings.
+// Maybe separate into pcre2.h and regex.h, where pcre2 is a raw C++ interface that
+// can be imported without any Python dependencies.  Regex.h would then define a type
+// caster for the Regex class and expose it to Python.  It would be included by a
+// regex.cpp file that would be compiled into a Python module, which ideally means that
+// we can catch it in a type-safe way to and from Python, by directly using the C++
+// equivalent in an assignment expression.
+
+
+// bertrand::Regex pattern = R"(
+//    from bertrand import Regex
+//    pattern = Regex(r"\d+")
+// )"_python()["pattern"]
+
+// TODO: that would mean the pattern is returned as a py::Object, then implicitly
+// narrowed to bertrand::Regex, which would invoke pybind11::cast<bertrand::Regex>().
+// This would point to a custom type caster that would convert the Python object into
+// a bertrand::Regex object and vice-versa.  By making this conversion operator implicit,
+// you can just directly assign the Python object to a bertrand::Regex object and it will
+// work as intended without any additional syntax.
+
+
 
 
 namespace bertrand {
@@ -31,8 +66,8 @@ namespace py {
 
 namespace impl {
 
-    static const Static<Module> re = py::import<"re">();
-    static const Static<Type> PyRegexPattern_Type = re->attr("Pattern");
+    static const Module re = py::import<"re">();
+    static const Type PyRegexPattern_Type = re.attr<"Pattern">();
 
 }
 

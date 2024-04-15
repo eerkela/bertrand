@@ -762,7 +762,7 @@ public:
         }
 
         // This error is unreachable.  It is only here to ensure the compiler correctly
-        // respects the [[noreturn]] attribute at the call site.
+        // interprets the [[noreturn]] attribute at the call site.
         throw std::logic_error(
             "Control reached end of [[noreturn]] bertrand::py::Exception::from_python()"
             "without catching an active exception"
@@ -863,6 +863,10 @@ BERTRAND_EXCEPTION(ValueError, Exception, PyExc_ValueError)
             Py_XDECREF(traceback);
             throw;
         }
+    } catch (const pybind11::cast_error& err) {
+        throw CastError(err.what(), ++skip, thread);
+    } catch (const pybind11::reference_cast_error& err) {
+        throw ReferenceCastError(err.what(), ++skip, thread);
     } catch (const pybind11::stop_iteration& err) {
         throw StopIteration(err.what(), ++skip, thread);
     } catch (const pybind11::index_error& err) {
@@ -882,7 +886,7 @@ BERTRAND_EXCEPTION(ValueError, Exception, PyExc_ValueError)
     }
 
     // This error is unreachable.  It is only here to ensure the compiler correctly
-    // respects the [[noreturn]] attribute at the call site.
+    // interprets the [[noreturn]] attribute at the call site.
     throw std::logic_error(
         "Control reached end of [[noreturn]] bertrand::py::Exception::from_pybind11()"
         "without catching an active exception"
