@@ -118,7 +118,7 @@ public:
     }
 
     /* Explicitly create a keys view on an existing dictionary. */
-    explicit KeysView(const Dict& dict);
+    inline explicit KeysView(const Dict& dict);
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
@@ -242,7 +242,7 @@ public:
     }
 
     /* Explicitly create a values view on an existing dictionary. */
-    explicit ValuesView(const Dict& dict);
+    inline explicit ValuesView(const Dict& dict);
 
     ///////////////////////////////
     ////   PYTHON INTERFACE    ////
@@ -309,7 +309,7 @@ public:
     }
 
     /* Explicitly create an items view on an existing dictionary. */
-    explicit ItemsView(const Dict& dict);
+    inline explicit ItemsView(const Dict& dict);
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////

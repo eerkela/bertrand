@@ -194,11 +194,15 @@ Module Module::def_submodule(const char* name, const char* doc) {
         Exception::from_python();
     }
     auto result = reinterpret_borrow<Module>(submodule);
-    if (doc && pybind11::options::show_user_defined_docstrings()) {
-        result.template attr<"__doc__">() = pybind11::str(doc);
+    try {
+        if (doc && pybind11::options::show_user_defined_docstrings()) {
+            result.template attr<"__doc__">() = pybind11::str(doc);
+        }
+        pybind11::setattr(*this, name, result);
+        return result;
+    } catch (...) {
+        Exception::from_pybind11();
     }
-    pybind11::setattr(*this, name, result);
-    return result;
 }
 
 
@@ -1170,37 +1174,61 @@ inline List dir(const Handle& obj) {
 
 /* Equivalent to Python `eval()` with a string expression. */
 inline Object eval(const Str& expr) {
-    return pybind11::eval(expr, globals(), locals());
+    try {
+        return pybind11::eval(expr, globals(), locals());
+    } catch (...) {
+        Exception::from_pybind11();
+    }
 }
 
 
 /* Equivalent to Python `eval()` with a string expression and global variables. */
 inline Object eval(const Str& source, Dict& globals) {
-    return pybind11::eval(source, globals, locals());
+    try {
+        return pybind11::eval(source, globals, locals());
+    } catch (...) {
+        Exception::from_pybind11();
+    }
 }
 
 
 /* Equivalent to Python `eval()` with a string expression and global/local variables. */
 inline Object eval(const Str& source, Dict& globals, Dict& locals) {
-    return pybind11::eval(source, globals, locals);
+    try {
+        return pybind11::eval(source, globals, locals);
+    } catch (...) {
+        Exception::from_pybind11();
+    }
 }
 
 
 /* Equivalent to Python `exec()` with a string expression. */
 inline void exec(const Str& source) {
-    pybind11::exec(source, globals(), locals());
+    try {
+        pybind11::exec(source, globals(), locals());
+    } catch (...) {
+        Exception::from_pybind11();
+    }
 }
 
 
 /* Equivalent to Python `exec()` with a string expression and global variables. */
 inline void exec(const Str& source, Dict& globals) {
-    pybind11::exec(source, globals, locals());
+    try {
+        pybind11::exec(source, globals, locals());
+    } catch (...) {
+        Exception::from_pybind11();
+    }
 }
 
 
 /* Equivalent to Python `exec()` with a string expression and global/local variables. */
 inline void exec(const Str& source, Dict& globals, Dict& locals) {
-    pybind11::exec(source, globals, locals);
+    try {
+        pybind11::exec(source, globals, locals);
+    } catch (...) {
+        Exception::from_pybind11();
+    }
 }
 
 
@@ -1343,7 +1371,11 @@ inline pybind11::iterator iter(T&& obj) {
         !std::is_rvalue_reference_v<T>,
         "passing an rvalue to py::iter() is unsafe"
     );
-    return pybind11::make_iterator(obj.begin(), obj.end());
+    try {
+        return pybind11::make_iterator(obj.begin(), obj.end());
+    } catch (...) {
+        Exception::from_pybind11();
+    }
 }
 
 
@@ -1427,12 +1459,17 @@ inline pybind11::iterator reversed(T&& obj) {
         !std::is_rvalue_reference_v<T>,
         "passing an rvalue to py::reversed() is unsafe"
     );
-    if constexpr (std::is_base_of_v<pybind11::object, std::decay_t<T>>) {
-        return reinterpret_steal<pybind11::iterator>(
-            obj.attr("__reversed__")().release()
-        );
-    } else {
-        return pybind11::make_iterator(obj.rbegin(), obj.rend());
+    static const pybind11::str lookup = "__reversed__";
+    try {
+        if constexpr (std::is_base_of_v<pybind11::object, std::decay_t<T>>) {
+            return reinterpret_steal<pybind11::iterator>(
+                obj.attr(lookup)().release()
+            );
+        } else {
+            return pybind11::make_iterator(obj.rbegin(), obj.rend());
+        }
+    } catch (...) {
+        Exception::from_pybind11();
     }
 }
 

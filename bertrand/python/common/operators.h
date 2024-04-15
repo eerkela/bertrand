@@ -439,12 +439,26 @@ namespace impl {
     template <> struct setattr_helper<"__aexit__">          : Returns<void> {};
     template <> struct delattr_helper<"__aexit__">          : Returns<void> {};
 
+    template <typename L, typename R>
+    concept object_operand =
+        std::derived_from<L, Object> || std::derived_from<R, Object>;
+
 }
 
 
 // NOTE: proxies use the control structs of their wrapped types, so they don't need to
 // be considered separately.  The operator overloads handle this internally through a
 // recursive constexpr branch.
+
+
+// NOTE: if DELETE_OPERATOR_UNLESS_ENABLED is defined, then all competing operator
+// overloads will be deleted, forcing the use of the control struct architecture.
+// Otherwise, other global overloads of these operators will be considered during
+// template instantiation, potentially causing ambiguities or inconsistent results.
+// Ideally, these wouldn't need to be deleted, and just wouldn't be considered at all
+// during template instantiation, which would improve compiler diagnostics over an
+// explicitly deleted alternative.
+#define DELETE_OPERATOR_UNLESS_ENABLED
 
 
 ////////////////////
@@ -688,6 +702,15 @@ inline auto operator<(const L& lhs, const R& rhs) {
 }
 
 
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__lt__<L, R>::enable)
+    inline auto operator<(const L& lhs, const R& rhs) = delete;
+
+#endif
+
+
 //////////////////////////////////
 ////    LESS-THAN-OR-EQUAL    ////
 //////////////////////////////////
@@ -731,6 +754,15 @@ inline auto operator<=(const L& lhs, const R& rhs) {
         }
     }
 }
+
+
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__le__<L, R>::enable)
+    inline auto operator<=(const L& lhs, const R& rhs) = delete;
+
+#endif
 
 
 /////////////////////
@@ -778,6 +810,15 @@ inline auto operator==(const L& lhs, const R& rhs) {
 }
 
 
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__eq__<L, R>::enable)
+    inline auto operator==(const L& lhs, const R& rhs) = delete;
+
+#endif
+
+
 ////////////////////////
 ////   NOT-EQUAL    ////
 ////////////////////////
@@ -821,6 +862,15 @@ inline auto operator!=(const L& lhs, const R& rhs) {
         }
     }
 }
+
+
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__ne__<L, R>::enable)
+    inline auto operator!=(const L& lhs, const R& rhs) = delete;
+
+#endif
 
 
 /////////////////////////////////////
@@ -868,6 +918,15 @@ inline auto operator>=(const L& lhs, const R& rhs) {
 }
 
 
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__ge__<L, R>::enable)
+    inline auto operator>=(const L& lhs, const R& rhs) = delete;
+
+#endif
+
+
 ////////////////////////////
 ////    GREATER-THAN    ////
 ////////////////////////////
@@ -911,6 +970,15 @@ inline auto operator>(const L& lhs, const R& rhs) {
         }
     }
 }
+
+
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__gt__<L, R>::enable)
+    inline auto operator>(const L& lhs, const R& rhs) = delete;
+
+#endif
 
 
 ///////////////////
@@ -997,6 +1065,14 @@ inline auto operator~(const T& self) {
 }
 
 
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <std::derived_from<Object> T> requires (!__invert__<T>::enable)
+    inline auto operator~(const T& self) = delete;
+
+#endif
+
+
 ////////////////////////
 ////    POSITIVE    ////
 ////////////////////////
@@ -1032,6 +1108,14 @@ inline auto operator+(const T& self) {
 }
 
 
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <std::derived_from<Object> T> requires (!__pos__<T>::enable)
+    inline auto operator+(const T& self) = delete;
+
+#endif
+
+
 ////////////////////////
 ////    NEGATIVE    ////
 ////////////////////////
@@ -1065,6 +1149,14 @@ inline auto operator-(const T& self) {
         return T::template operator_neg<Return>(self);
     }
 }
+
+
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <std::derived_from<Object> T> requires (!__neg__<T>::enable)
+    inline auto operator-(const T& self) = delete;
+
+#endif
 
 
 /////////////////////////
@@ -1115,6 +1207,18 @@ inline T operator++(T& self, int) {
 }
 
 
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <std::derived_from<Object> T> requires (!__increment__<T>::enable)
+    inline T& operator++(T& self) = delete;
+
+
+    template <std::derived_from<Object> T> requires (!__increment__<T>::enable)
+    inline T operator++(T& self, int) = delete;
+
+#endif
+
+
 /////////////////////////
 ////    DECREMENT    ////
 /////////////////////////
@@ -1161,6 +1265,18 @@ inline T operator--(T& self, int) {
     }
     return copy;
 }
+
+
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <std::derived_from<Object> T> requires (!__decrement__<T>::enable)
+    inline T& operator--(T& self) = delete;
+
+
+    template <std::derived_from<Object> T> requires (!__decrement__<T>::enable)
+    inline T operator--(T& self, int) = delete;
+
+#endif
 
 
 ///////////////////
@@ -1245,6 +1361,19 @@ inline L& operator+=(L& lhs, const R& rhs) {
 }
 
 
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__add__<L, R>::enable)
+    inline auto operator+(const L& lhs, const R& rhs) = delete;
+
+
+    template <std::derived_from<Object> L, typename R> requires (!__iadd__<L, R>::enable)
+    inline auto operator+=(const L& lhs, const R& rhs) = delete;
+
+#endif
+
+
 ////////////////////////
 ////    SUBTRACT    ////
 ////////////////////////
@@ -1325,6 +1454,19 @@ inline L& operator-=(L& lhs, const R& rhs) {
     }
     return lhs;
 }
+
+
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__sub__<L, R>::enable)
+    inline auto operator-(const L& lhs, const R& rhs) = delete;
+
+
+    template <std::derived_from<Object> L, typename R> requires (!__isub__<L, R>::enable)
+    inline auto operator-=(const L& lhs, const R& rhs) = delete;
+
+#endif
 
 
 ////////////////////////
@@ -1418,6 +1560,19 @@ inline L& operator*=(L& lhs, const R& rhs) {
     }
     return lhs;
 }
+
+
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__mul__<L, R>::enable)
+    inline auto operator*(const L& lhs, const R& rhs) = delete;
+
+
+    template <std::derived_from<Object> L, typename R> requires (!__imul__<L, R>::enable)
+    inline auto operator*=(const L& lhs, const R& rhs) = delete;
+
+#endif
 
 
 //////////////////////
@@ -1514,6 +1669,19 @@ inline L& operator/=(L& lhs, const R& rhs) {
 }
 
 
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__truediv__<L, R>::enable)
+    inline auto operator/(const L& lhs, const R& rhs) = delete;
+
+
+    template <std::derived_from<Object> L, typename R> requires (!__itruediv__<L, R>::enable)
+    inline auto operator/=(const L& lhs, const R& rhs) = delete;
+
+#endif
+
+
 ///////////////////////
 ////    MODULUS    ////
 ///////////////////////
@@ -1606,6 +1774,19 @@ inline L& operator%=(L& lhs, const R& rhs) {
     }
     return lhs;
 }
+
+
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__mod__<L, R>::enable)
+    inline auto operator%(const L& lhs, const R& rhs) = delete;
+
+
+    template <std::derived_from<Object> L, typename R> requires (!__imod__<L, R>::enable)
+    inline auto operator%=(const L& lhs, const R& rhs) = delete;
+
+#endif
 
 
 /////////////////////
@@ -1768,6 +1949,19 @@ inline L& operator<<=(L& lhs, const R& rhs) {
 }
 
 
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__lshift__<L, R>::enable)
+    inline auto operator<<(const L& lhs, const R& rhs) = delete;
+
+
+    template <std::derived_from<Object> L, typename R> requires (!__ilshift__<L, R>::enable)
+    inline auto operator<<=(const L& lhs, const R& rhs) = delete;
+
+#endif
+
+
 //////////////////////
 ////    RSHIFT    ////
 //////////////////////
@@ -1848,6 +2042,19 @@ inline L& operator>>=(L& lhs, const L& rhs) {
     }
     return lhs;
 }
+
+
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__rshift__<L, R>::enable)
+    inline auto operator>>(const L& lhs, const R& rhs) = delete;
+
+
+    template <std::derived_from<Object> L, typename R> requires (!__irshift__<L, R>::enable)
+    inline auto operator>>=(const L& lhs, const R& rhs) = delete;
+
+#endif
 
 
 ///////////////////
@@ -1932,6 +2139,19 @@ inline L& operator&=(L& lhs, const R& rhs) {
 }
 
 
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__and__<L, R>::enable)
+    inline auto operator&(const L& lhs, const R& rhs) = delete;
+
+
+    template <std::derived_from<Object> L, typename R> requires (!__iand__<L, R>::enable)
+    inline auto operator&=(const L& lhs, const R& rhs) = delete;
+
+#endif
+
+
 //////////////////
 ////    OR    ////
 //////////////////
@@ -2012,6 +2232,19 @@ inline L& operator|=(L& lhs, const R& rhs) {
     }
     return lhs;
 }
+
+
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__or__<L, R>::enable)
+    inline auto operator|(const L& lhs, const R& rhs) = delete;
+
+
+    template <std::derived_from<Object> L, typename R> requires (!__ior__<L, R>::enable)
+    inline auto operator|=(const L& lhs, const R& rhs) = delete;
+
+#endif
 
 
 ///////////////////
@@ -2096,8 +2329,22 @@ inline L& operator^=(L& lhs, const R& rhs) {
 }
 
 
+#ifdef DELETE_OPERATOR_UNLESS_ENABLED
+
+    template <typename L, typename R>
+        requires (impl::object_operand<L, R> && !__xor__<L, R>::enable)
+    inline auto operator^(const L& lhs, const R& rhs) = delete;
+
+
+    template <std::derived_from<Object> L, typename R> requires (!__ixor__<L, R>::enable)
+    inline auto operator^=(const L& lhs, const R& rhs) = delete;
+
+#endif
+
+
 }  // namespace py
 }  // namespace bertrand
 
 
+#undef DELETE_OPERATOR_UNLESS_ENABLED
 #endif  // BERTRAND_PYTHON_COMMON_OPERATORS_H

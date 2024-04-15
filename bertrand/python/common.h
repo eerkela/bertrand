@@ -470,13 +470,17 @@ public:
             /* m_free */ nullptr
         };
         m_ptr = PyModule_Create(def);
-        if (m_ptr == nullptr) {
-            if (PyErr_Occurred()) {
-                Exception::from_python();
+        try {
+            if (m_ptr == nullptr) {
+                if (PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                pybind11::pybind11_fail(
+                    "Internal error in pybind11::module_::create_extension_module()"
+                );
             }
-            pybind11::pybind11_fail(
-                "Internal error in pybind11::module_::create_extension_module()"
-            );
+        } catch (...) {
+            Exception::from_pybind11();
         }
     }
 
@@ -492,26 +496,30 @@ public:
     /* Equivalent to pybind11::module_::def(). */
     template <typename Func, typename... Extra>
     Module& def(const char* name_, Func&& f, const Extra&... extra) {
-        pybind11::cpp_function func(
-            std::forward<Func>(f),
-            pybind11::name(name_),
-            pybind11::scope(*this),
-            pybind11::sibling(
-                pybind11::getattr(*this, name_, None)
-            ),
-            extra...
-        );
-        // NB: allow overwriting here because cpp_function sets up a chain with the
-        // intention of overwriting (and has already checked internally that it isn't
-        // overwriting non-functions).
-        add_object(name_, func, true /* overwrite */);
-        return *this;
+        try {
+            pybind11::cpp_function func(
+                std::forward<Func>(f),
+                pybind11::name(name_),
+                pybind11::scope(*this),
+                pybind11::sibling(
+                    pybind11::getattr(*this, name_, None)
+                ),
+                extra...
+            );
+            // NB: allow overwriting here because cpp_function sets up a chain with the
+            // intention of overwriting (and has already checked internally that it isn't
+            // overwriting non-functions).
+            add_object(name_, func, true /* overwrite */);
+            return *this;
+        } catch (...) {
+            Exception::from_pybind11();
+        }
     }
 
     /* Equivalent to pybind11::module_::def_submodule(). */
-    Module def_submodule(const char* name, const char* doc = nullptr);
+    inline Module def_submodule(const char* name, const char* doc = nullptr);
 
-    /* Reload the module or throws `error_already_set`. */
+    /* Reload the module or throw an error. */
     inline void reload() {
         PyObject *obj = PyImport_ReloadModule(this->ptr());
         if (obj == nullptr) {
@@ -526,12 +534,17 @@ public:
         Handle obj,
         bool overwrite = false
     ) {
-        if (!overwrite && pybind11::hasattr(*this, name)) {
-            pybind11::pybind11_fail(
-                "Error during initialization: multiple incompatible definitions with name \""
-                + std::string(name) + "\"");
+        try {
+            if (!overwrite && pybind11::hasattr(*this, name)) {
+                pybind11::pybind11_fail(
+                    "Error during initialization: multiple incompatible "
+                    "definitions with name \"" + std::string(name) + "\""
+                );
+            }
+            PyModule_AddObjectRef(ptr(), name, obj.ptr());
+        } catch (...) {
+            Exception::from_pybind11();
         }
-        PyModule_AddObjectRef(ptr(), name, obj.ptr());
     }
 
 };
@@ -728,7 +741,11 @@ namespace std {
         );
 
         inline size_t operator()(const T& obj) const {
-            return pybind11::hash(obj);
+            try {
+                return pybind11::hash(obj);
+            } catch (...) {
+                bertrand::py::Exception::from_pybind11();
+            }
         }
     };
 

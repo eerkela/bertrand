@@ -1,3 +1,4 @@
+#include "pytypedefs.h"
 #include <istream>
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
@@ -532,19 +533,27 @@ public:
         int lineno,
         PyThreadState* thread_state = nullptr
     ) : Base(
-        reinterpret_cast<PyObject*>(impl::empty_frame(
+        reinterpret_cast<PyObject*>(impl::StackFrame(
             funcname,
             filename,
             lineno,
+            false,
             thread_state
-        )),
-        stolen_t{}
+        ).to_python()),
+        borrowed_t{}
     ) {}
 
     /* Construct an empty frame from a cpptrace::stacktrace_frame object. */
-    Frame(const cpptrace::stacktrace_frame& frame) :
-        Base(reinterpret_cast<PyObject*>(impl::empty_frame(frame)), stolen_t{})
-    {}
+    Frame(
+        const cpptrace::stacktrace_frame& frame,
+        PyThreadState* thread_state = nullptr
+    ) : Base(
+        reinterpret_cast<PyObject*>(impl::StackFrame(
+            frame,
+            thread_state
+        ).to_python()),
+        borrowed_t{}
+    ) {}
 
     /* Skip backward a number of frames on construction. */
     explicit Frame(size_t skip) :

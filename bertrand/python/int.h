@@ -63,6 +63,38 @@ struct __le__<Int, T>                                           : Returns<bool> 
 template <impl::float_like T>
 struct __le__<T, Int>                                           : Returns<bool> {};
 template <>
+struct __eq__<Int, Object>                                      : Returns<bool> {};
+template <>
+struct __eq__<Object, Int>                                      : Returns<bool> {};
+template <impl::bool_like T>
+struct __eq__<Int, T>                                           : Returns<bool> {};
+template <impl::bool_like T>
+struct __eq__<T, Int>                                           : Returns<bool> {};
+template <impl::int_like T>
+struct __eq__<Int, T>                                           : Returns<bool> {};
+template <impl::int_like T> requires (!std::is_same_v<T, Int>)
+struct __eq__<T, Int>                                           : Returns<bool> {};
+template <impl::float_like T>
+struct __eq__<Int, T>                                           : Returns<bool> {};
+template <impl::float_like T>
+struct __eq__<T, Int>                                           : Returns<bool> {};
+template <>
+struct __ne__<Int, Object>                                      : Returns<bool> {};
+template <>
+struct __ne__<Object, Int>                                      : Returns<bool> {};
+template <impl::bool_like T>
+struct __ne__<Int, T>                                           : Returns<bool> {};
+template <impl::bool_like T>
+struct __ne__<T, Int>                                           : Returns<bool> {};
+template <impl::int_like T>
+struct __ne__<Int, T>                                           : Returns<bool> {};
+template <impl::int_like T> requires (!std::is_same_v<T, Int>)
+struct __ne__<T, Int>                                           : Returns<bool> {};
+template <impl::float_like T>
+struct __ne__<Int, T>                                           : Returns<bool> {};
+template <impl::float_like T>
+struct __ne__<T, Int>                                           : Returns<bool> {};
+template <>
 struct __ge__<Int, Object>                                      : Returns<bool> {};
 template <>
 struct __ge__<Object, Int>                                      : Returns<bool> {};

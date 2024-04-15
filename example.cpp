@@ -150,11 +150,8 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
-    py::Int x = 1;
-    py::print(x < "abc");
 
-
-    // throws_an_error();
+    throws_an_error();
     // throw py::TypeError();
 
     // throw py::Exception("test error", 0);

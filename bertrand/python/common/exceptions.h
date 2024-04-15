@@ -22,60 +22,6 @@ namespace py {
 
 namespace impl {
 
-    // TODO: delete empty_frame() and have py::Frame create a StackFrame object instead,
-    // and then borrow its to_python() field.
-
-    /* Create an empty Python frame object to represent a C++ context in Python
-    exception tracebacks. */
-    PyFrameObject* empty_frame(
-        const char* funcname,
-        const char* filename,
-        int lineno,
-        PyThreadState* thread = nullptr
-    ) {
-        // NOTE: This function is adapted from
-        //      Python/traceback.c :: _PyTraceback_Add()
-        if (thread == nullptr) { thread = PyThreadState_Get(); }
-        if (funcname == nullptr) { funcname = ""; }
-        if (filename == nullptr) { filename = ""; }
-        PyObject* globals = PyDict_New();
-        if (globals == nullptr) {
-            throw pybind11::error_already_set();
-        }
-        PyCodeObject* code = PyCode_NewEmpty(filename, funcname, lineno);
-        if (code == nullptr) {
-            Py_DECREF(globals);
-            throw pybind11::error_already_set();
-        }
-        PyFrameObject* frame = PyFrame_New(thread, code, globals, nullptr);
-        Py_DECREF(globals);
-        Py_DECREF(code);
-        if (frame == nullptr) {
-            throw pybind11::error_already_set();
-        }
-        frame->f_lineno = lineno;
-        return frame;
-    }
-
-    /* Create an empty Python frame object to represent a C++ context in Python
-    exception tracebacks. */
-    PyFrameObject* empty_frame(
-        const cpptrace::stacktrace_frame& frame,
-        PyThreadState* thread = nullptr
-    ) {
-        std::string symbol;
-        if (frame.is_inline) {
-            symbol += "[inline] ";
-        }
-        symbol += frame.symbol;
-        return empty_frame(
-            symbol.c_str(),
-            frame.filename.c_str(),
-            frame.line.value_or(0),
-            thread
-        );
-    }
-
     /* A language-agnostic stack frame that is used when reporting mixed Python/C++
     error tracebacks. */
     class StackFrame {
