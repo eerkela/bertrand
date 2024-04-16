@@ -3,8 +3,6 @@
 #define BERTRAND_PYTHON_INCLUDED
 #define PYBIND11_DETAILED_ERROR_MESSAGES
 
-#include <numeric>
-
 #include "python/common.h"
 
 #include "python/bool.h"

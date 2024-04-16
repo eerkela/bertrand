@@ -1,5 +1,3 @@
-#include "pytypedefs.h"
-#include <istream>
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -323,8 +321,7 @@ public:
     /////////////////////////////
 
     /* Execute the code object without context. */
-    BERTRAND_NOINLINE
-    Dict operator()() const {
+    BERTRAND_NOINLINE Dict operator()() const {
         py::Dict context;
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
@@ -335,8 +332,7 @@ public:
     }
 
     /* Execute the code object with the given context. */
-    BERTRAND_NOINLINE
-    Dict& operator()(Dict& context) const {
+    BERTRAND_NOINLINE Dict& operator()(Dict& context) const {
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
             Exception::from_python(1);
@@ -346,8 +342,7 @@ public:
     }
 
     /* Execute the code object with the given context. */
-    BERTRAND_NOINLINE
-    Dict operator()(Dict&& context) const {
+    BERTRAND_NOINLINE Dict operator()(Dict&& context) const {
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
             Exception::from_python(1);

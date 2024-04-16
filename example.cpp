@@ -153,6 +153,12 @@ void run() {
 
     throws_an_error();
 
+    // static py::Code script = R"(
+    //     print("hello, world!")
+    // )"_python;
+
+    // script();
+
 
 
     // py::List list = {1, 2, 3, 4, 5};

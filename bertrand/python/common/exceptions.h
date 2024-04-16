@@ -90,7 +90,7 @@ namespace impl {
 
         StackFrame(PyFrameObject* frame = nullptr, PyThreadState* tstate = nullptr) :
             thread(tstate == nullptr ? PyThreadState_Get() : tstate),
-            py_frame(frame)
+            py_frame(reinterpret_cast<PyFrameObject*>(Py_XNewRef(frame)))
         {
             if (py_frame != nullptr) {
                 #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 9)
@@ -277,25 +277,6 @@ namespace impl {
             PyThreadState* tstate = nullptr
         ) : thread(tstate == nullptr ? PyThreadState_Get() : tstate)
         {
-            if (traceback == nullptr) {
-                #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
-                    if (thread->current_exception != nullptr) {
-                        traceback = reinterpret_cast<PyTracebackObject*>(
-                            PyException_GetTraceback(thread->current_exception)
-                        );
-                    }
-                #else
-                    traceback = reinterpret_cast<PyTracebackObject*>(
-                        Py_XNewRef(thread->curexc_traceback)
-                    );
-                    if (traceback == nullptr && thread->curexc_value != nullptr) {
-                        traceback = reinterpret_cast<PyTracebackObject*>(
-                            PyException_GetTraceback(thread->curexc_value)
-                        );
-                    }
-                #endif
-            }
-
             // Python tracebacks are stored least recent -> most recent, so we can
             // insert them in the same order.
             while (traceback != nullptr) {
@@ -422,7 +403,7 @@ namespace impl {
                     }
                     tb->tb_next = py_traceback;
                     tb->tb_frame = reinterpret_cast<PyFrameObject*>(
-                        Py_NewRef((*it).to_python())
+                        Py_XNewRef((*it).to_python())
                     );
                     #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
                         tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
@@ -511,6 +492,107 @@ namespace impl {
         return true;
     }
 
+    namespace exceptions {
+        static const pybind11::type Exception =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_Exception);
+        static const pybind11::type ArithmeticError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_ArithmeticError);
+        static const pybind11::type FloatingPointError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_FloatingPointError);
+        static const pybind11::type OverflowError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_OverflowError);
+        static const pybind11::type ZeroDivisionError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_ZeroDivisionError);
+        static const pybind11::type AssertionError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_AssertionError); 
+        static const pybind11::type AttributeError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_AttributeError);
+        static const pybind11::type BufferError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_BufferError);
+        static const pybind11::type EOFError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_EOFError);
+        static const pybind11::type ImportError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_ImportError);
+        static const pybind11::type ModuleNotFoundError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_ModuleNotFoundError);
+        static const pybind11::type LookupError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_LookupError);
+        static const pybind11::type IndexError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_IndexError);
+        static const pybind11::type KeyError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_KeyError);
+        static const pybind11::type MemoryError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_MemoryError);
+        static const pybind11::type NameError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_NameError);
+        static const pybind11::type UnboundLocalError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_UnboundLocalError);
+        static const pybind11::type OSError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_OSError);
+        static const pybind11::type BlockingIOError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_BlockingIOError);
+        static const pybind11::type ChildProcessError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_ChildProcessError);
+        static const pybind11::type ConnectionError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_ConnectionError);
+        static const pybind11::type BrokenPipeError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_BrokenPipeError);
+        static const pybind11::type ConnectionAbortedError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_ConnectionAbortedError);
+        static const pybind11::type ConnectionRefusedError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_ConnectionRefusedError);
+        static const pybind11::type ConnectionResetError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_ConnectionResetError);
+        static const pybind11::type FileExistsError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_FileExistsError);
+        static const pybind11::type FileNotFoundError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_FileNotFoundError);
+        static const pybind11::type InterruptedError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_InterruptedError);
+        static const pybind11::type IsADirectoryError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_IsADirectoryError);
+        static const pybind11::type NotADirectoryError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_NotADirectoryError);
+        static const pybind11::type PermissionError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_PermissionError);
+        static const pybind11::type ProcessLookupError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_ProcessLookupError);
+        static const pybind11::type TimeoutError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_TimeoutError);
+        static const pybind11::type ReferenceError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_ReferenceError);
+        static const pybind11::type RuntimeError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_RuntimeError);
+        static const pybind11::type NotImplementedError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_NotImplementedError);
+        static const pybind11::type RecursionError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_RecursionError);
+        static const pybind11::type StopAsyncIteration =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_SystemError);
+        static const pybind11::type StopIteration =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_StopIteration);
+        static const pybind11::type SyntaxError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_SyntaxError);
+        static const pybind11::type IndentationError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_IndentationError);
+        static const pybind11::type TabError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_TabError);
+        static const pybind11::type SystemError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_SystemError);
+        static const pybind11::type TypeError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_TypeError);
+        static const pybind11::type ValueError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_ValueError);
+        static const pybind11::type UnicodeError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_UnicodeError);
+        static const pybind11::type UnicodeDecodeError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_UnicodeDecodeError);
+        static const pybind11::type UnicodeEncodeError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_UnicodeEncodeError);
+        static const pybind11::type UnicodeTranslateError =
+            pybind11::reinterpret_borrow<pybind11::type>(PyExc_UnicodeTranslateError);
+    }
+
     #ifndef BERTRAND_NO_TRACEBACK
 
         #define BERTRAND_EXCEPTION(cls, base, pytype)                                   \
@@ -519,8 +601,8 @@ namespace impl {
                 "exception base class must derive from py::Exception"                   \
             );                                                                          \
             static_assert(                                                              \
-                std::same_as<decltype(pytype), PyObject*>,                              \
-                "exception type must be a PyObject* pointer to a Python exception type" \
+                std::convertible_to<decltype(pytype), const pybind11::type>,            \
+                "exception type must be convertible to pybind11::type"                  \
             );                                                                          \
                                                                                         \
             class PYBIND11_EXPORT_EXCEPTION cls : public base {                         \
@@ -574,7 +656,7 @@ namespace impl {
                 }                                                                       \
                                                                                         \
                 virtual void set_error() const override {                               \
-                    traceback.restore(pytype, message());                               \
+                    traceback.restore(pytype.ptr(), message());                         \
                 }                                                                       \
                                                                                         \
                 static void from_python(                                                \
@@ -588,7 +670,7 @@ namespace impl {
                 ) = delete;                                                             \
             };                                                                          \
                                                                                         \
-            bool cls::registered = impl::register_exception<cls>(pytype);               \
+            inline bool cls::registered = impl::register_exception<cls>(pytype.ptr());  \
 
     #else
 
@@ -598,8 +680,8 @@ namespace impl {
                 "exception base class must derive from py::Exception"                   \
             );                                                                          \
             static_assert(                                                              \
-                std::same_as<decltype(pytype), PyObject*>,                              \
-                "exception type must be a PyObject* pointer to a Python exception type" \
+                std::convertible_to<decltype(pytype), const pybind11::type>,            \
+                "exception type must be convertible to pybind11::type"                  \
             );                                                                          \
                                                                                         \
             class PYBIND11_EXPORT_EXCEPTION cls : public base {                         \
@@ -614,13 +696,13 @@ namespace impl {
                 virtual const char* what() const noexcept override {                    \
                     if (what_string.empty()) {                                          \
                         what_string += #cls": ";                                        \
-                        what_string += message;                                         \
+                        what_string += message();                                       \
                     }                                                                   \
                     return what_string.c_str();                                         \
                 }                                                                       \
                                                                                         \
                 virtual void set_error() const override {                               \
-                    PyErr_SetString(pytype, message.c_str());                           \
+                    PyErr_SetString(pytype.ptr(), message());                           \
                 }                                                                       \
                                                                                         \
                 static void from_python(                                                \
@@ -634,7 +716,7 @@ namespace impl {
                 ) = delete;                                                             \
             };                                                                          \
                                                                                         \
-            bool cls::registered = impl::register_exception<cls>(pytype);               \
+            inline bool cls::registered = impl::register_exception<cls>(pytype.ptr());  \
 
     #endif
 
@@ -757,10 +839,6 @@ public:
             return *this;
         }
 
-        const char* message() const noexcept {
-            return Base::what();
-        }
-
         /* Generate the message that will be printed if this error is propagated to a C++
         context without being explicitly caught.  If debug symbols are enabled, then this
         will include a Python-style traceback covering both the Python and C++ frames that
@@ -787,14 +865,14 @@ public:
             const std::string& message = "",
             size_t skip = 0,
             PyThreadState* thread = nullptr
-        ) : message(message)
+        ) : Base(message)
         {}
 
         explicit Exception(
             const std::string& message,
             const cpptrace::stacktrace& trace,
             PyThreadState* thread = nullptr
-        ) : message(message)
+        ) : Base(message)
         {}
 
         explicit Exception(
@@ -803,7 +881,7 @@ public:
             PyObject* traceback,
             size_t skip = 0,
             PyThreadState* thread = nullptr
-        ) : message(value == nullptr ? std::string() : parse_value(value))
+        ) : Base(value == nullptr ? std::string() : parse_value(value))
         {
             if (type == nullptr) {
                 throw std::logic_error(
@@ -819,7 +897,7 @@ public:
             PyObject* traceback,
             const cpptrace::stacktrace& trace,
             PyThreadState* thread = nullptr
-        ) : message(value == nullptr ? std::string() : parse_value(value))
+        ) : Base(value == nullptr ? std::string() : parse_value(value))
         {
             if (type == nullptr) {
                 throw std::logic_error(
@@ -830,13 +908,13 @@ public:
         }
 
         Exception(const Exception& other) :
-            what_string(other.what_string), message(other.message)
+            Base(other), what_string(other.what_string)
         {}
 
         Exception& operator=(const Exception& other) {
             if (&other != this) {
+                Base::operator=(other);
                 what_string = other.what_string;
-                message = other.message;
             }
             return *this;
         }
@@ -848,7 +926,7 @@ public:
         virtual const char* what() const noexcept override {
             if (what_string.empty()) {
                 what_string += "Exception: ";
-                what_string += message;
+                what_string += message();
             }
             return what_string.c_str();
         }
@@ -856,11 +934,15 @@ public:
         /* Convert this exception into an equivalent Python error, so that it can be
         propagated to a Python context.  The resulting traceback reflects both the Python
         and C++ frames that were traversed to reach the error.  */
-        virtual void set_error() const {
-            PyErr_SetString(PyExc_Exception, message.c_str());
+        virtual void set_error() const override {
+            PyErr_SetString(PyExc_Exception, message());
         }
 
     #endif
+
+    const char* message() const noexcept {
+        return Base::what();
+    }
 
     /* Retrieve an error from a Python context and re-throw it as a C++ error with a
     matching type.  This effectively replaces `pybind11::error_already_set()` and
@@ -874,30 +956,38 @@ public:
             thread = PyThreadState_Get();
         }
 
+        using pybind11::object;
+        using pybind11::reinterpret_borrow;
+        using pybind11::reinterpret_steal;
+
         // interacting with the Python error state is rather clumsy and was recently
         // changed in Python 3.12, so we need to handle both cases
         #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
-            PyObject* value = thread->current_exception;
-            if (value == nullptr) {
+            object value = reinterpret_steal<object>(thread->current_exception);
+            if (value.ptr() == nullptr) {
                 throw std::logic_error(
                     "could not convert Python exception into a C++ exception - "
                     "exception is not set."
                 );
             }
-            PyObject* type = Py_NewRef(Py_TYPE(value));
-            PyObject* traceback = PyException_GetTraceback(value);  // new ref
+            object type = reinterpret_borrow<object>(
+                reinterpret_cast<PyObject*>(Py_TYPE(value.ptr()))
+            );
+            object traceback = reinterpret_steal<object>(PyException_GetTraceback(value));
             thread->current_exception = nullptr;
         #else
-            PyObject* type = thread->curexc_type;
-            PyObject* value = thread->curexc_value;
-            PyObject* traceback = Py_XNewRef(thread->curexc_traceback);
-            if (type == nullptr) {
+            object type = reinterpret_steal<object>(thread->curexc_type);
+            object value = reinterpret_steal<object>(thread->curexc_value);
+            object traceback = reinterpret_steal<object>(thread->curexc_traceback);
+            if (type.ptr() == nullptr) {
                 throw std::logic_error(
                     "could not convert Python exception into a C++ exception - "
                     "exception is not set."
                 );
-            } else if (traceback == nullptr && value != nullptr) {
-                traceback = PyException_GetTraceback(value);  // new ref
+            } else if (traceback.ptr() == nullptr && value.ptr() != nullptr) {
+                traceback = reinterpret_steal<object>(
+                    PyException_GetTraceback(value.ptr())
+                );
             }
             thread->curexc_type = nullptr;
             thread->curexc_value = nullptr;
@@ -905,25 +995,17 @@ public:
         #endif
 
         // Re-throw the current exception as a registered bertrand exception type
-        auto it = impl::rethrow_exception_map.find(type);
-        try {
-            if (it != impl::rethrow_exception_map.end()) {
-                it->second(type, value, traceback, ++skip, thread);
-            } else {
-                throw Exception(type, value, traceback, ++skip, thread);
-            }
-        } catch (...) {
-            Py_XDECREF(type);
-            Py_XDECREF(value);
-            Py_XDECREF(traceback);
-            throw;
+        auto it = impl::rethrow_exception_map.find(type.ptr());
+        if (it != impl::rethrow_exception_map.end()) {
+            it->second(type.ptr(), value.ptr(), traceback.ptr(), ++skip, thread);
         }
 
-        // This error is unreachable.  It is only here to ensure the compiler correctly
-        // interprets the [[noreturn]] attribute at the call site.
-        throw std::logic_error(
-            "Control reached end of [[noreturn]] bertrand::py::Exception::from_python()"
-            "without catching an active exception"
+        throw Exception(
+            type.ptr(),
+            value.ptr(),
+            traceback.ptr(),
+            ++skip,
+            thread
         );
     }
 
@@ -939,59 +1021,59 @@ public:
 };
 
 
-bool Exception::registered = impl::register_exception<Exception>(PyExc_Exception);
+inline bool Exception::registered = impl::register_exception<Exception>(impl::exceptions::Exception.ptr());
 
 
-BERTRAND_EXCEPTION(ArithmeticError, Exception, PyExc_ArithmeticError)
-    BERTRAND_EXCEPTION(FloatingPointError, ArithmeticError, PyExc_FloatingPointError)
-    BERTRAND_EXCEPTION(OverflowError, ArithmeticError, PyExc_OverflowError)
-    BERTRAND_EXCEPTION(ZeroDivisionError, ArithmeticError, PyExc_ZeroDivisionError)
-BERTRAND_EXCEPTION(AssertionError, Exception, PyExc_AssertionError)
-BERTRAND_EXCEPTION(AttributeError, Exception, PyExc_AttributeError)
-BERTRAND_EXCEPTION(BufferError, Exception, PyExc_BufferError)
-BERTRAND_EXCEPTION(EOFError, Exception, PyExc_EOFError)
-BERTRAND_EXCEPTION(ImportError, Exception, PyExc_ImportError)
-    BERTRAND_EXCEPTION(ModuleNotFoundError, ImportError, PyExc_ModuleNotFoundError)
-BERTRAND_EXCEPTION(LookupError, Exception, PyExc_LookupError)
-    BERTRAND_EXCEPTION(IndexError, LookupError, PyExc_IndexError)
-    BERTRAND_EXCEPTION(KeyError, LookupError, PyExc_KeyError)
-BERTRAND_EXCEPTION(MemoryError, Exception, PyExc_MemoryError)
-BERTRAND_EXCEPTION(NameError, Exception, PyExc_NameError)
-    BERTRAND_EXCEPTION(UnboundLocalError, NameError, PyExc_UnboundLocalError)
-BERTRAND_EXCEPTION(OSError, Exception, PyExc_OSError)
-    BERTRAND_EXCEPTION(BlockingIOError, OSError, PyExc_BlockingIOError)
-    BERTRAND_EXCEPTION(ChildProcessError, OSError, PyExc_ChildProcessError)
-    BERTRAND_EXCEPTION(ConnectionError, OSError, PyExc_ConnectionError)
-        BERTRAND_EXCEPTION(BrokenPipeError, ConnectionError, PyExc_BrokenPipeError)
-        BERTRAND_EXCEPTION(ConnectionAbortedError, ConnectionError, PyExc_ConnectionAbortedError)
-        BERTRAND_EXCEPTION(ConnectionRefusedError, ConnectionError, PyExc_ConnectionRefusedError)
-        BERTRAND_EXCEPTION(ConnectionResetError, ConnectionError, PyExc_ConnectionResetError)
-    BERTRAND_EXCEPTION(FileExistsError, OSError, PyExc_FileExistsError)
-    BERTRAND_EXCEPTION(FileNotFoundError, OSError, PyExc_FileNotFoundError)
-    BERTRAND_EXCEPTION(InterruptedError, OSError, PyExc_InterruptedError)
-    BERTRAND_EXCEPTION(IsADirectoryError, OSError, PyExc_IsADirectoryError)
-    BERTRAND_EXCEPTION(NotADirectoryError, OSError, PyExc_NotADirectoryError)
-    BERTRAND_EXCEPTION(PermissionError, OSError, PyExc_PermissionError)
-    BERTRAND_EXCEPTION(ProcessLookupError, OSError, PyExc_ProcessLookupError)
-    BERTRAND_EXCEPTION(TimeoutError, OSError, PyExc_TimeoutError)
-BERTRAND_EXCEPTION(ReferenceError, Exception, PyExc_ReferenceError)
-BERTRAND_EXCEPTION(RuntimeError, Exception, PyExc_RuntimeError)
-    BERTRAND_EXCEPTION(NotImplementedError, RuntimeError, PyExc_NotImplementedError)
-    BERTRAND_EXCEPTION(RecursionError, RuntimeError, PyExc_RecursionError)
-BERTRAND_EXCEPTION(StopAsyncIteration, Exception, PyExc_StopAsyncIteration)
-BERTRAND_EXCEPTION(StopIteration, Exception, PyExc_StopIteration)
-BERTRAND_EXCEPTION(SyntaxError, Exception, PyExc_SyntaxError)
-    BERTRAND_EXCEPTION(IndentationError, SyntaxError, PyExc_IndentationError)
-        BERTRAND_EXCEPTION(TabError, IndentationError, PyExc_TabError)
-BERTRAND_EXCEPTION(SystemError, Exception, PyExc_SystemError)
-BERTRAND_EXCEPTION(TypeError, Exception, PyExc_TypeError)
-    BERTRAND_EXCEPTION(CastError, TypeError, PyExc_TypeError)
-    BERTRAND_EXCEPTION(ReferenceCastError, TypeError, PyExc_TypeError)
-BERTRAND_EXCEPTION(ValueError, Exception, PyExc_ValueError)
-    BERTRAND_EXCEPTION(UnicodeError, ValueError, PyExc_UnicodeError)
-        BERTRAND_EXCEPTION(UnicodeDecodeError, UnicodeError, PyExc_UnicodeDecodeError)
-        BERTRAND_EXCEPTION(UnicodeEncodeError, UnicodeError, PyExc_UnicodeEncodeError)
-        BERTRAND_EXCEPTION(UnicodeTranslateError, UnicodeError, PyExc_UnicodeTranslateError)
+BERTRAND_EXCEPTION(ArithmeticError, Exception, impl::exceptions::ArithmeticError)
+    BERTRAND_EXCEPTION(FloatingPointError, ArithmeticError, impl::exceptions::FloatingPointError)
+    BERTRAND_EXCEPTION(OverflowError, ArithmeticError, impl::exceptions::OverflowError)
+    BERTRAND_EXCEPTION(ZeroDivisionError, ArithmeticError, impl::exceptions::ZeroDivisionError)
+BERTRAND_EXCEPTION(AssertionError, Exception, impl::exceptions::AssertionError)
+BERTRAND_EXCEPTION(AttributeError, Exception, impl::exceptions::AttributeError)
+BERTRAND_EXCEPTION(BufferError, Exception, impl::exceptions::BufferError)
+BERTRAND_EXCEPTION(EOFError, Exception, impl::exceptions::EOFError)
+BERTRAND_EXCEPTION(ImportError, Exception, impl::exceptions::ImportError)
+    BERTRAND_EXCEPTION(ModuleNotFoundError, ImportError, impl::exceptions::ModuleNotFoundError)
+BERTRAND_EXCEPTION(LookupError, Exception, impl::exceptions::LookupError)
+    BERTRAND_EXCEPTION(IndexError, LookupError, impl::exceptions::IndexError)
+    BERTRAND_EXCEPTION(KeyError, LookupError, impl::exceptions::KeyError)
+BERTRAND_EXCEPTION(MemoryError, Exception, impl::exceptions::MemoryError)
+BERTRAND_EXCEPTION(NameError, Exception, impl::exceptions::NameError)
+    BERTRAND_EXCEPTION(UnboundLocalError, NameError, impl::exceptions::UnboundLocalError)
+BERTRAND_EXCEPTION(OSError, Exception, impl::exceptions::OSError)
+    BERTRAND_EXCEPTION(BlockingIOError, OSError, impl::exceptions::BlockingIOError)
+    BERTRAND_EXCEPTION(ChildProcessError, OSError, impl::exceptions::ChildProcessError)
+    BERTRAND_EXCEPTION(ConnectionError, OSError, impl::exceptions::ConnectionError)
+        BERTRAND_EXCEPTION(BrokenPipeError, ConnectionError, impl::exceptions::BrokenPipeError)
+        BERTRAND_EXCEPTION(ConnectionAbortedError, ConnectionError, impl::exceptions::ConnectionAbortedError)
+        BERTRAND_EXCEPTION(ConnectionRefusedError, ConnectionError, impl::exceptions::ConnectionRefusedError)
+        BERTRAND_EXCEPTION(ConnectionResetError, ConnectionError, impl::exceptions::ConnectionResetError)
+    BERTRAND_EXCEPTION(FileExistsError, OSError, impl::exceptions::FileExistsError)
+    BERTRAND_EXCEPTION(FileNotFoundError, OSError, impl::exceptions::FileNotFoundError)
+    BERTRAND_EXCEPTION(InterruptedError, OSError, impl::exceptions::InterruptedError)
+    BERTRAND_EXCEPTION(IsADirectoryError, OSError, impl::exceptions::IsADirectoryError)
+    BERTRAND_EXCEPTION(NotADirectoryError, OSError, impl::exceptions::NotADirectoryError)
+    BERTRAND_EXCEPTION(PermissionError, OSError, impl::exceptions::PermissionError)
+    BERTRAND_EXCEPTION(ProcessLookupError, OSError, impl::exceptions::ProcessLookupError)
+    BERTRAND_EXCEPTION(TimeoutError, OSError, impl::exceptions::TimeoutError)
+BERTRAND_EXCEPTION(ReferenceError, Exception, impl::exceptions::ReferenceError)
+BERTRAND_EXCEPTION(RuntimeError, Exception, impl::exceptions::RuntimeError)
+    BERTRAND_EXCEPTION(NotImplementedError, RuntimeError, impl::exceptions::NotImplementedError)
+    BERTRAND_EXCEPTION(RecursionError, RuntimeError, impl::exceptions::RecursionError)
+BERTRAND_EXCEPTION(StopAsyncIteration, Exception, impl::exceptions::StopAsyncIteration)
+BERTRAND_EXCEPTION(StopIteration, Exception, impl::exceptions::StopIteration)
+BERTRAND_EXCEPTION(SyntaxError, Exception, impl::exceptions::SyntaxError)
+    BERTRAND_EXCEPTION(IndentationError, SyntaxError, impl::exceptions::IndentationError)
+        BERTRAND_EXCEPTION(TabError, IndentationError, impl::exceptions::TabError)
+BERTRAND_EXCEPTION(SystemError, Exception, impl::exceptions::SystemError)
+BERTRAND_EXCEPTION(TypeError, Exception, impl::exceptions::TypeError)
+    BERTRAND_EXCEPTION(CastError, TypeError, impl::exceptions::TypeError)
+    BERTRAND_EXCEPTION(ReferenceCastError, TypeError, impl::exceptions::TypeError)
+BERTRAND_EXCEPTION(ValueError, Exception, impl::exceptions::ValueError)
+    BERTRAND_EXCEPTION(UnicodeError, ValueError, impl::exceptions::UnicodeError)
+        BERTRAND_EXCEPTION(UnicodeDecodeError, UnicodeError, impl::exceptions::UnicodeDecodeError)
+        BERTRAND_EXCEPTION(UnicodeEncodeError, UnicodeError, impl::exceptions::UnicodeEncodeError)
+        BERTRAND_EXCEPTION(UnicodeTranslateError, UnicodeError, impl::exceptions::UnicodeTranslateError)
 
 
 [[noreturn]] BERTRAND_NOINLINE void Exception::from_pybind11(

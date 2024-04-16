@@ -139,12 +139,12 @@ class BuildExt(pybind11_build_ext):
                 commands.append({
                     "directory": str(cwd),
                     "command": " ".join(
-                        ["-DLINTER"] +
                         self.compiler.compiler_so +
                         ["-I" + header for header in include_dirs] +
                         ["-L" + lib_dir for lib_dir in library_dirs] +
                         ["-l" + lib for lib in libraries] +
-                        ext.extra_compile_args
+                        ext.extra_compile_args +
+                        ["-DLINTER"]
                     ),
                     "file": source,
                 })
