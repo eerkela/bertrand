@@ -741,11 +741,7 @@ namespace std {
         );
 
         inline size_t operator()(const T& obj) const {
-            try {
-                return pybind11::hash(obj);
-            } catch (...) {
-                bertrand::py::Exception::from_pybind11();
-            }
+            return pybind11::hash(obj);
         }
     };
 

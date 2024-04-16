@@ -230,15 +230,11 @@ nice for initializer-list syntax, enabling containers to be assigned to like thi
     /* Convert a pybind11 accessor into this type. */                               \
     template <typename Policy>                                                      \
     cls(const detail::accessor<Policy>& accessor) {                                 \
-        try {                                                                       \
-            pybind11::object obj(accessor);                                         \
-            if (check(obj)) {                                                       \
-                m_ptr = obj.release().ptr();                                        \
-            } else {                                                                \
-                throw impl::noconvert<cls>(obj.ptr());                              \
-            }                                                                       \
-        } catch (...) {                                                             \
-            Exception::from_pybind11();                                             \
+        pybind11::object obj(accessor);                                             \
+        if (check(obj)) {                                                           \
+            m_ptr = obj.release().ptr();                                            \
+        } else {                                                                    \
+            throw impl::noconvert<cls>(obj.ptr());                                  \
         }                                                                           \
     }                                                                               \
                                                                                     \
@@ -259,20 +255,12 @@ nice for initializer-list syntax, enabling containers to be assigned to like thi
                                                                                     \
     /* Convert to a pybind11 handle. */                                             \
     inline operator pybind11::handle() const {                                      \
-        try {                                                                       \
-            return pybind11::handle(m_ptr);                                         \
-        } catch (...) {                                                             \
-            Exception::from_pybind11();                                             \
-        }                                                                           \
+        return pybind11::handle(m_ptr);                                             \
     }                                                                               \
                                                                                     \
     /* Convert to a pybind11 object. */                                             \
     inline operator pybind11::object() const {                                      \
-        try {                                                                       \
-            return pybind11::reinterpret_borrow<pybind11::object>(m_ptr);           \
-        } catch (...) {                                                             \
-            Exception::from_pybind11();                                             \
-        }                                                                           \
+        return pybind11::reinterpret_borrow<pybind11::object>(m_ptr);               \
     }                                                                               \
                                                                                     \
     /* Delete type narrowing operator inherited from Object. */                     \
@@ -446,7 +434,7 @@ protected:
                 );
             }
         } catch (...) {
-            Exception::from_pybind11(1);
+            Exception::from_pybind11();
         }
     }
 
@@ -497,7 +485,7 @@ protected:
         try {
             return *Handle(obj.ptr());
         } catch (...) {
-            Exception::from_pybind11(1);
+            Exception::from_pybind11();
         }
     }
 
@@ -968,15 +956,11 @@ public:
     /* Convert a pybind11 accessor into a generic Object. */
     template <typename Policy>
     Object(const detail::accessor<Policy>& accessor) {
-        try {
-            pybind11::object obj(accessor);
-            if (check(obj)) {
-                m_ptr = obj.release().ptr();
-            } else {
-                throw impl::noconvert<Object>(obj.ptr());
-            }
-        } catch (...) {
-            Exception::from_pybind11();
+        pybind11::object obj(accessor);
+        if (check(obj)) {
+            m_ptr = obj.release().ptr();
+        } else {
+            throw impl::noconvert<Object>(obj.ptr());
         }
     }
 
@@ -1060,20 +1044,12 @@ public:
 
     /* Implicitly convert an Object into a pybind11::handle. */
     inline operator pybind11::handle() const {
-        try {
-            return pybind11::handle(m_ptr);
-        } catch (...) {
-            Exception::from_pybind11();
-        }
+        return pybind11::handle(m_ptr);
     }
 
     /* Implicitly convert an Object into a pybind11::object. */
     inline operator pybind11::object() const {
-        try {
-            return pybind11::reinterpret_borrow<pybind11::object>(m_ptr);
-        } catch (...) {
-            Exception::from_pybind11();
-        }
+        return pybind11::reinterpret_borrow<pybind11::object>(m_ptr);
     }
 
     /* Wrap an Object in a proxy class, which moves it into a managed buffer for
@@ -1188,11 +1164,7 @@ inline T reinterpret_borrow(Handle obj) {
 /* Borrow a reference to a raw Python handle. */
 template <std::derived_from<pybind11::object> T>
 inline T reinterpret_borrow(Handle obj) {
-    try {
-        return pybind11::reinterpret_borrow<T>(obj);
-    } catch (...) {
-        Exception::from_pybind11();
-    }
+    return pybind11::reinterpret_borrow<T>(obj);
 }
 
 
@@ -1206,11 +1178,7 @@ inline T reinterpret_steal(Handle obj) {
 /* Steal a reference to a raw Python handle. */
 template <std::derived_from<pybind11::object> T>
 inline T reinterpret_steal(Handle obj) {
-    try {
-        return pybind11::reinterpret_steal<T>(obj);
-    } catch (...) {
-        Exception::from_pybind11();
-    }
+    return pybind11::reinterpret_steal<T>(obj);
 }
 
 

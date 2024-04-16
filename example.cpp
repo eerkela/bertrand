@@ -151,14 +151,19 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    std::tuple<int, int, int> tup = {1, 2, 3};
-    py::print(py::Tuple(tup));
+
+    py::List list = {1, 2, 3, 4, 5};
+    py::print(py::Dict(
+        list |
+        std::views::transform([](auto&& val){ 
+            return std::pair(val, val * val);
+        })
+    ));
 
 
-    // py::List list = {1, 2, 3, 4, 5};
-    // for (auto&& x : list | std::views::transform([](auto&& val){ return val < 3; })) {
-    //     py::print(x);
-    // }
+
+
+
 
 
 

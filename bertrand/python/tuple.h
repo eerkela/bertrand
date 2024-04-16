@@ -170,7 +170,7 @@ public:
 
     /* Explicitly unpack a generic C++ container into a new py::Tuple. */
     template <typename T> requires (impl::is_iterable<T> && !impl::python_like<T>)
-    explicit Tuple(const T& contents) {
+    explicit Tuple(T&& contents) {
         if constexpr (impl::has_size<T>) {
             size_t size = contents.size();
             m_ptr = PyTuple_New(size);

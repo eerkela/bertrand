@@ -373,13 +373,6 @@ class FrozenSet : public impl::ISet<FrozenSet> {
         return PyFrozenSet_New(obj);
     }
 
-    template <typename T>
-    static constexpr bool py_unpacking_constructor =
-        impl::python_like<T> && !impl::frozenset_like<T> && impl::is_iterable<T>;
-    template <typename T>
-    static constexpr bool cpp_unpacking_constructor =
-        !impl::python_like<T> && impl::is_iterable<T>;
-
 public:
     static Type type;
 
@@ -420,8 +413,30 @@ public:
         }
     }
 
+    /* Construct a new FrozenSet from a pair of input iterators. */
+    template <typename Iter, std::sentinel_for<Iter> Sentinel>
+    explicit FrozenSet(Iter first, Sentinel last) :
+        Base(PyFrozenSet_New(nullptr), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            while (first != last) {
+                if (PySet_Add(m_ptr, detail::object_or_cast(*first).ptr())) {
+                    Exception::from_python();
+                }
+                ++first;
+            }
+        } catch (...) {
+            Py_DECREF(m_ptr);
+            throw;
+        }
+    }
+
     /* Explicitly unpack an arbitrary Python container into a new py::FrozenSet. */
-    template <typename T> requires (py_unpacking_constructor<T>)
+    template <typename T>
+        requires (impl::is_iterable<T> && impl::python_like<T> && !impl::frozenset_like<T>)
     explicit FrozenSet(const T& contents) :
         Base(PyFrozenSet_New(contents.ptr()), stolen_t{})
     {
@@ -431,8 +446,8 @@ public:
     }
 
     /* Explicitly unpack an arbitrary C++ container into a new py::FrozenSet. */
-    template <typename T> requires (cpp_unpacking_constructor<T>)
-    explicit FrozenSet(const T& container) {
+    template <typename T> requires (impl::is_iterable<T> && !impl::python_like<T>)
+    explicit FrozenSet(T&& container) {
         m_ptr = PyFrozenSet_New(nullptr);
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -573,13 +588,6 @@ class Set : public impl::ISet<Set> {
         return PySet_New(obj);
     }
 
-    template <typename T>
-    static constexpr bool py_unpacking_constructor =
-        impl::python_like<T> && !impl::set_like<T> && impl::is_iterable<T>;
-    template <typename T>
-    static constexpr bool cpp_unpacking_constructor =
-        !impl::python_like<T> && impl::is_iterable<T>;
-
 public:
     static Type type;
 
@@ -620,8 +628,30 @@ public:
         }
     }
 
+    /* Construct a new Set from a pair of input iterators. */
+    template <typename Iter, std::sentinel_for<Iter> Sentinel>
+    explicit Set(Iter first, Sentinel last) :
+        Base(PySet_New(nullptr), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            while (first != last) {
+                if (PySet_Add(m_ptr, detail::object_or_cast(*first).ptr())) {
+                    Exception::from_python();
+                }
+                ++first;
+            }
+        } catch (...) {
+            Py_DECREF(m_ptr);
+            throw;
+        }
+    }
+
     /* Explicitly unpack an arbitrary Python container into a new py::Set. */
-    template <typename T> requires (py_unpacking_constructor<T>)
+    template <typename T>
+        requires (impl::is_iterable<T> && impl::python_like<T> && !impl::set_like<T>)
     explicit Set(const T& contents) :
         Base(PySet_New(contents.ptr()), stolen_t{})
     {
@@ -631,8 +661,8 @@ public:
     }
 
     /* Explicitly unpack an arbitrary C++ container into a new py::Set. */
-    template <typename T> requires (cpp_unpacking_constructor<T>)
-    explicit Set(const T& contents) : Base(PySet_New(nullptr), stolen_t{}) {
+    template <typename T> requires (impl::is_iterable<T> && !impl::python_like<T>)
+    explicit Set(T&& contents) : Base(PySet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }

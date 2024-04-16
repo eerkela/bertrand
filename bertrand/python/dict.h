@@ -378,14 +378,6 @@ std::initializer_list and enables extra C API functionality. */
 class Dict : public Object {
     using Base = Object;
 
-    template <typename T>
-    static constexpr bool py_unpacking_constructor =
-        impl::python_like<T> && !impl::dict_like<T> && impl::is_iterable<T>;
-    template <typename T>
-    static constexpr bool cpp_unpacking_constructor =
-        !impl::python_like<T> && impl::is_iterable<T>;
-
-
 public:
     static Type type;
 
@@ -426,8 +418,33 @@ public:
         }
     }
 
+    /* Construct a new dict from a pair of input iterators. */
+    template <typename Iter, std::sentinel_for<Iter> Sentinel>
+    explicit Dict(Iter first, Sentinel last) : Base(PyDict_New(), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            while (first != last) {
+                auto&& [k, v] = *first;
+                if (PyDict_SetItem(
+                    m_ptr,
+                    detail::object_or_cast(std::forward<decltype(k)>(k)).ptr(),
+                    detail::object_or_cast(std::forward<decltype(v)>(v)).ptr()
+                )) {
+                    Exception::from_python();
+                }
+                ++first;
+            }
+        } catch (...) {
+            Py_DECREF(m_ptr);
+            throw;
+        }
+    }
+
     /* Explicitly unpack an arbitrary Python container into a new py::Dict. */
-    template <typename T> requires (py_unpacking_constructor<T>)
+    template <typename T>
+        requires (impl::is_iterable<T> && impl::python_like<T> && !impl::dict_like<T>)
     explicit Dict(const T& contents) :
         Base(PyObject_CallOneArg((PyObject*) &PyDict_Type, contents.ptr()), stolen_t{})
     {
@@ -437,8 +454,8 @@ public:
     }
 
     /* Explicitly unpack a arbitrary C++ container into a new py::Dict. */
-    template <typename T> requires (cpp_unpacking_constructor<T>)
-    explicit Dict(const T& container) : Base(PyDict_New(), stolen_t{}) {
+    template <typename T> requires (impl::is_iterable<T> && !impl::python_like<T>)
+    explicit Dict(T&& container) : Base(PyDict_New(), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
