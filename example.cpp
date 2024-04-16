@@ -151,18 +151,17 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-
-    py::List list = {1, 2, 3, 4, 5};
-    py::print(py::Dict(
-        list |
-        std::views::transform([](auto&& val){ 
-            return std::pair(val, val * val);
-        })
-    ));
+    throws_an_error();
 
 
 
-
+    // py::List list = {1, 2, 3, 4, 5};
+    // py::print(py::Dict(
+    //     list |
+    //     std::views::transform([](auto&& val){ 
+    //         return std::pair(val, val * val);
+    //     })
+    // ));
 
 
 

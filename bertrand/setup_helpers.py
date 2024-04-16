@@ -103,8 +103,11 @@ class Extension(Pybind11Extension):
         self.include_dirs.append(get_include())
         self.include_dirs.append(numpy.get_include())
         if traceback:
-            self.extra_compile_args.extend(["-g", "-DBERTRAND_TRACEBACK"])
-            self.extra_link_args.extend(["-g", "-DBERTRAND_TRACEBACK"])
+            self.extra_compile_args.append("-g")
+            self.extra_link_args.append("-g")
+        else:
+            self.extra_compile_args.append("-DBERTRAND_NO_TRACEBACK")
+            self.extra_link_args.append("-DBERTRAND_NO_TRACEBACK")
 
 
 class BuildExt(pybind11_build_ext):

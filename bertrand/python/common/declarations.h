@@ -30,8 +30,6 @@
 #include <vector>
 
 #include <Python.h>
-#include <internal/pycore_frame.h>  // required to assign to frame->f_lineno
-#include <cpptrace/cpptrace.hpp>
 #include <pybind11/pybind11.h>
 #include <pybind11/embed.h>
 #include <pybind11/eval.h>
