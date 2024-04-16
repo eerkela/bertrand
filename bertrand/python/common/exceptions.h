@@ -40,7 +40,7 @@
  * or by placing `#define BERTRAND_NO_TRACEBACK` before including this header.  This
  * will compile out the traceback member and its associated logic, giving similar
  * performance to standard C++ exceptions.  Note that this still allows conversion to
- * Python exceptions, though the tracebacks will terminate at the C++ boundary.
+ * Python exceptions, but the resulting tracebacks will terminate at the C++ boundary.
  */
 
 
@@ -57,6 +57,52 @@ namespace impl {
         mutable PyFrameObject* py_frame = nullptr;
         mutable std::string string;
 
+        /* Parse a function name and collapse `bertrand::StaticStr` objects as template
+        arguments. */
+        static std::string parse_function_name(const std::string& name) {
+            /* NOTE: functions and classes that accept static strings as template
+             * arguments are decomposed into numeric character arrays in the symbol
+             * name, which are be reconstructed here.  Here's an example:
+             *      File "/home/eerkela/data/bertrand/bertrand/python/common/proxies.h",
+             *      line 268, in bertrand::py::impl::Attr<bertrand::py::Object,
+             *      bertrand::StaticStr<7ul>{char [8]{(char)95, (char)95, (char)103,
+             *      (char)101, (char)116, (char)95, (char)95}}>::get_attr() const
+             *
+             * Our goal is to replace the `bertrand::StaticStr<7ul>{char [8]{...}}`
+             * bit with the text it represents, in this case the string `"__get__"`.
+             */
+
+            size_t pos = name.find("bertrand::StaticStr<");
+            if (pos == std::string::npos) {
+                return name;
+            }
+            std::string result;
+            size_t last = 0;
+            while (pos != std::string::npos) {
+                result += name.substr(last, pos - last) + '"';
+                pos = name.find("]{", pos) + 2;
+                size_t end = name.find("}}", pos);
+
+                // extract the first number
+                pos += 6;  // skip "(char)"
+                while (pos < end) {
+                    size_t next = std::min(end, name.find(',', pos));
+                    result += static_cast<char>(std::stoi(
+                        name.substr(pos, next - pos))
+                    );
+                    if (next == end) {
+                        pos = end + 2;  // skip "}}"
+                    } else {
+                        pos = next + 8;  // skip ", (char)"
+                    }
+                }
+                result += '"';
+                last = pos;
+                pos = name.find("bertrand::StaticStr<", pos);
+            }
+            return result + name.substr(last);
+        }
+
     public:
         std::string filename;
         std::string funcname;
@@ -72,7 +118,7 @@ namespace impl {
         ) :
             thread(tstate == nullptr ? PyThreadState_Get() : tstate),
             filename(filename),
-            funcname(funcname),
+            funcname(parse_function_name(funcname)),
             lineno(lineno),
             is_inline(is_inline)
         {}
@@ -83,7 +129,7 @@ namespace impl {
         ) :
             thread(tstate == nullptr ? PyThreadState_Get() : tstate),
             filename(frame.filename),
-            funcname(frame.symbol),
+            funcname(parse_function_name(frame.symbol)),
             lineno(frame.line.value_or(0)),
             is_inline(frame.is_inline)
         {}
@@ -206,8 +252,8 @@ namespace impl {
             return py_frame;
         }
 
-        /* Convert this stack frame into a string representation, for use in exception
-        tracebacks. */
+        /* Convert this stack frame into a string representation, for use in C++
+        exception tracebacks. */
         const std::string& to_string() const noexcept {
             if (string.empty()) {
                 string = "File \"" + filename + "\", line ";
@@ -240,7 +286,7 @@ namespace impl {
         static bool ignore(const cpptrace::stacktrace_frame& frame) {
             return (
                 frame.filename.find("usr/bin/python") != std::string::npos ||
-                frame.symbol.find("pybind11::cpp_function::") != std::string::npos ||
+                frame.symbol.find("pybind11::") != std::string::npos ||
                 frame.symbol.starts_with("__")
             );
         }
@@ -798,8 +844,8 @@ public:
         {
             if (type == nullptr) {
                 throw std::logic_error(
-                    "could not convert Python exception into a C++ exception - exception "
-                    "type is not set."
+                    "could not convert Python exception into a C++ exception - "
+                    "exception type is not set."
                 );
             }
         }
@@ -819,8 +865,8 @@ public:
         {
             if (type == nullptr) {
                 throw std::logic_error(
-                    "could not convert Python exception into a C++ exception - exception "
-                    "type is not set."
+                    "could not convert Python exception into a C++ exception - "
+                    "exception type is not set."
                 );
             }
         }
@@ -885,8 +931,8 @@ public:
         {
             if (type == nullptr) {
                 throw std::logic_error(
-                    "could not convert Python exception into a C++ exception - exception "
-                    "type is not set."
+                    "could not convert Python exception into a C++ exception - "
+                    "exception type is not set."
                 );
             }
         }
@@ -901,8 +947,8 @@ public:
         {
             if (type == nullptr) {
                 throw std::logic_error(
-                    "could not convert Python exception into a C++ exception - exception "
-                    "type is not set."
+                    "could not convert Python exception into a C++ exception - "
+                    "exception type is not set."
                 );
             }
         }
@@ -1122,12 +1168,9 @@ BERTRAND_EXCEPTION(ValueError, Exception, impl::exceptions::ValueError)
         throw ImportError(err.what(), ++skip, thread);
     }
 
-    // This error is unreachable.  It is only here to ensure the compiler correctly
+    // This statement is unreachable.  It is only here to ensure the compiler correctly
     // interprets the [[noreturn]] attribute at the call site.
-    throw std::logic_error(
-        "Control reached end of [[noreturn]] bertrand::py::Exception::from_pybind11()"
-        "without catching an active exception"
-    );
+    throw;
 }
 
 

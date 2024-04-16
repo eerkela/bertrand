@@ -692,7 +692,24 @@ class Function : public Object {
     using Base = Object;
 
     inline static bool runtime_check(PyObject* obj) {
-        return PyFunction_Check(obj) || PyCFunction_Check(obj) || PyMethod_Check(obj);
+        return (
+            PyFunction_Check(obj) ||
+            PyCFunction_Check(obj) ||
+            PyMethod_Check(obj) ||
+            PyInstanceMethod_Check(obj)
+        );
+    }
+
+    inline PyObject* self() const {
+        PyObject* result = this->ptr();
+        if (PyCFunction_Check(result)) {
+            throw RuntimeError("C++ functions do not have code objects");
+        } else if (PyMethod_Check(result)) {
+            result = PyMethod_GET_FUNCTION(result);
+        } else if (PyInstanceMethod_Check(result)) {
+            result = PyInstanceMethod_GET_FUNCTION(result);
+        }
+        return result;
     }
 
 public:
@@ -730,7 +747,7 @@ public:
 
     /* Get the module in which this function was defined. */
     inline Module module_() const {
-        PyObject* result = PyFunction_GetModule(this->ptr());
+        PyObject* result = PyFunction_GetModule(self());
         if (result == nullptr) {
             throw TypeError("function has no module");
         }
@@ -739,7 +756,7 @@ public:
 
     /* Get the code object that is executed when this function is called. */
     inline Code code() const {
-        PyObject* result = PyFunction_GetCode(this->ptr());
+        PyObject* result = PyFunction_GetCode(self());
         if (result == nullptr) {
             throw RuntimeError("function does not have a code object");
         }
@@ -748,7 +765,7 @@ public:
 
     /* Get the globals dictionary associated with the function object. */
     inline Dict globals() const {
-        PyObject* result = PyFunction_GetGlobals(this->ptr());
+        PyObject* result = PyFunction_GetGlobals(self());
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -798,7 +815,7 @@ public:
         Code code = this->code();
 
         // check for positional defaults
-        PyObject* pos_defaults = PyFunction_GetDefaults(this->ptr());
+        PyObject* pos_defaults = PyFunction_GetDefaults(self());
         if (pos_defaults == nullptr) {
             if (code.kwonlyargcount() > 0) {
                 Object kwdefaults = attr<"__kwdefaults__">();
@@ -846,7 +863,7 @@ public:
     //     // in-place.
 
     //     // account for positional defaults
-    //     PyObject* pos_defaults = PyFunction_GetDefaults(this->ptr());
+    //     PyObject* pos_defaults = PyFunction_GetDefaults(self());
     //     if (pos_defaults != nullptr) {
     //         size_t argcount = code.argcount();
     //         Tuple defaults = reinterpret_borrow<Tuple>(pos_defaults);
@@ -891,7 +908,7 @@ public:
 
     /* Get a read-only dictionary holding type annotations for the function. */
     inline MappingProxy annotations() const {
-        PyObject* result = PyFunction_GetAnnotations(this->ptr());
+        PyObject* result = PyFunction_GetAnnotations(self());
         if (result == nullptr) {
             return Dict{};
         }
@@ -903,7 +920,7 @@ public:
     // be used to update the current values in-place. */
     // inline void annotations(std::optional<Dict> annotations) {
     //     if (!annotations.has_value()) {  // clear all annotations
-    //         if (PyFunction_SetAnnotations(this->ptr(), Py_None)) {
+    //         if (PyFunction_SetAnnotations(self(), Py_None)) {
     //             Exception::from_python();
     //         }
 
@@ -942,7 +959,7 @@ public:
     //         }
 
     //         // push changes
-    //         if (PyFunction_SetAnnotations(this->ptr(), result.ptr())) {
+    //         if (PyFunction_SetAnnotations(self(), result.ptr())) {
     //             Exception::from_python();
     //         }
     //     }
@@ -951,7 +968,7 @@ public:
     /* Get the closure associated with the function.  This is a Tuple of cell objects
     containing data captured by the function. */
     inline Tuple closure() const {
-        PyObject* result = PyFunction_GetClosure(this->ptr());
+        PyObject* result = PyFunction_GetClosure(self());
         if (result == nullptr) {
             return {};
         }
@@ -962,59 +979,9 @@ public:
     closure will be deleted. */
     inline void closure(std::optional<Tuple> closure) {
         PyObject* item = closure ? closure.value().ptr() : Py_None;
-        if (PyFunction_SetClosure(this->ptr(), item)) {
+        if (PyFunction_SetClosure(self(), item)) {
             Exception::from_python();
         }
-    }
-
-};
-
-
-//////////////////////
-////    METHOD    ////
-//////////////////////
-
-
-// TODO: what would be great is if assigning to an attribute properly invoked Python's
-// descriptor protocol, so that we could delete py::Method, which is a bit unintuitive
-// anyways.
-
-
-/* New subclass of pybind11::object that represents a bound method at the Python
-level. */
-class Method : public Object {
-    using Base = Object;
-
-    template <typename T>
-    static constexpr bool comptime_check = std::is_base_of_v<Method, T>;
-
-public:
-    static Type type;
-
-    BERTRAND_OBJECT_COMMON(Base, Method, comptime_check, PyInstanceMethod_Check)
-    BERTRAND_OBJECT_OPERATORS(Method)
-
-    /* Default constructor deleted to avoid confusion + possibility of nulls. */
-    Method() = delete;
-
-    /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
-    Method(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Wrap an existing Python function as a method descriptor. */
-    Method(const Function& func) : Base(PyInstanceMethod_New(func.ptr()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Get the underlying function. */
-    inline Function function() const {
-        PyObject* result = PyInstanceMethod_Function(this->ptr());
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return reinterpret_borrow<Function>(result);
     }
 
 };

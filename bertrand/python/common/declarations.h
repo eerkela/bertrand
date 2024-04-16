@@ -142,7 +142,6 @@ class Super;
 class Code;
 class Frame;
 class Function;
-class Method;
 class ClassMethod;
 class StaticMethod;
 class Property;

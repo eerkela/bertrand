@@ -678,7 +678,7 @@ namespace detail {
 
 template <std::derived_from<bertrand::py::Object> T>
 struct type_caster<T> {
-    PYBIND11_TYPE_CASTER(T, _("Object"));
+    PYBIND11_TYPE_CASTER(T, const_name("Object"));
 
     /* Convert Python object to a C++ Object. */
     inline bool load(handle src, bool convert) {

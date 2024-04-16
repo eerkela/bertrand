@@ -151,13 +151,42 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    throws_an_error();
+    static py::Code script = R"Foo(
+        class Foo:
+            def __init__(self, x):
+                self.x = x
 
-    // static py::Code script = R"(
-    //     print("hello, world!")
-    // )"_python;
+            def __repr__(self):
+                return f"Foo({self.x})"
 
-    // script();
+        class Descr:
+            def __get__(self, obj, objtype=None):
+                return obj.x
+
+            def __set__(self, obj, value):
+                obj.x = value
+    )Foo"_python;
+
+    py::Type Foo = script()["Foo"];
+    py::print(Foo(2));
+    Foo.attr<"bar">() = py::Function([](const py::Object& self) {
+        return self.attr<"x">();
+    });
+    py::print(Foo(3).attr<"bar">()());
+
+    py::Type Descr = script()["Descr"];
+    Foo.attr<"y">() = Descr();
+    py::Object f = Foo(4);
+    py::print(f.attr<"y">());
+    f.attr<"y">() = 5;
+    py::print(f.attr<"y">());
+    py::print(f.attr<"x">());
+
+
+    // py::Function func = [](const py::Object& x) {
+    //     return x;
+    // };
+    // py::print(py::Object(func).attr<"__get__">());
 
 
 

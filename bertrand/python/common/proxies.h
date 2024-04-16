@@ -336,12 +336,39 @@ public:
         } else {
             new (Base::buffer) Wrapped(std::forward<T>(value));
             Base::initialized = true;
-            if (PyObject_SetAttr(
-                obj.ptr(),
-                key().ptr(),
-                reinterpret_cast<Wrapped&>(Base::buffer).ptr()
-            ) < 0) {
-                Exception::from_python();
+            PyObject* value_ptr = reinterpret_cast<Wrapped&>(Base::buffer).ptr();
+
+            // manually trigger the descriptor protocol for py::Function objects
+            if constexpr (std::derived_from<std::decay_t<T>, Function>) {
+                if constexpr (std::derived_from<Obj, Type>) {
+                    PyObject* descr = PyInstanceMethod_New(value_ptr);
+                    if (descr == nullptr) {
+                        Exception::from_python();
+                    }
+                    if (PyObject_SetAttr(obj.ptr(), key().ptr(), descr) < 0) {
+                        Py_DECREF(descr);
+                        Exception::from_python();
+                    }
+                    Py_DECREF(descr);
+
+                // if assigning to an object, convert to PyMethod
+                } else {
+                    PyObject* descr = PyMethod_New(value_ptr, obj.ptr());
+                    if (descr == nullptr) {
+                        Exception::from_python();
+                    }
+                    if (PyObject_SetAttr(obj.ptr(), key().ptr(), descr) < 0) {
+                        Py_DECREF(descr);
+                        Exception::from_python();
+                    }
+                    Py_DECREF(descr);
+                }
+
+            // otherwise, just set the attribute normally
+            } else {
+                if (PyObject_SetAttr(obj.ptr(), key().ptr(), value_ptr) < 0) {
+                    Exception::from_python();
+                }
             }
         }
         return *this;
