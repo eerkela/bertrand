@@ -16,6 +16,11 @@ namespace py {
 // etc.
 
 
+// TODO: enable __pow__ and overload operator_pow() to account for negative integer
+// exponents.  This just delegates to parent implementation, but sets a different
+// return type before doing so.
+
+
 template <>
 struct __pos__<Int>                                             : Returns<Int> {};
 template <>

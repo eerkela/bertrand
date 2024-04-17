@@ -18,7 +18,7 @@
 #include "python/bytes.h"
 #include "python/func.h"
 // #include "python/datetime.h"
-#include "python/math.h"
+// #include "python/math.h"
 #include "python/type.h"
 
 
@@ -108,7 +108,7 @@ namespace literals {
 
 /* Every Python type has a static `Type` member that gives access to the Python type
 object associated with instances of that class. */
-inline Type Type::type = Type{};
+inline Type Type::type {};
 inline Type Object::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
 inline Type NoneType::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(Py_TYPE(Py_None)));
 inline Type NotImplementedType::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(Py_TYPE(Py_NotImplemented)));
@@ -203,8 +203,7 @@ Module Module::def_submodule(const char* name, const char* doc) {
 }
 
 
-template <typename T>
-    requires (impl::python_like<T> && impl::str_like<T>)
+template <typename T> requires (impl::python_like<T> && impl::str_like<T>)
 inline Int::Int(const T& str, int base) :
     Base(PyLong_FromUnicodeObject(str.ptr(), base), stolen_t{})
 {
@@ -928,7 +927,30 @@ namespace impl {
 // help() - not applicable
 // input() - Use std::cin for now.  May be implemented in the future.
 // open() - planned for a future release along with pathlib support
-// zip() - use C++ iterators directly
+
+
+/* Equivalent to Python `all(args...)` */
+template <typename First = void, typename... Rest> [[deprecated]]
+inline bool all(First&& first, Rest&&... rest) {
+    static_assert(
+        std::is_void_v<First>,
+        "Bertrand does not implement py::all().  Use std::all_of() or its std::ranges "
+        "equivalent with a boolean predicate instead."
+    );
+    return false;
+}
+
+
+/* Equivalent to Python `any(args...)` */
+template <typename First = void, typename... Rest> [[deprecated]]
+inline bool any(First&& first, Rest&&... rest) {
+    static_assert(
+        std::is_void_v<First>,
+        "Bertrand does not implement py::any().  Use std::any_of() or its std::ranges "
+        "equivalent with a boolean predicate instead."
+    );
+    return false;
+}
 
 
 /* Equivalent to Python `enumerate(args...)`. */
@@ -1016,6 +1038,18 @@ inline py::Object sum(First&& first, Rest&&... rest) {
 }
 
 
+template <typename First = void, typename... Rest> [[deprecated]]
+inline py::Object zip(First&& first, Rest&&... rest) {
+    static_assert(
+        std::is_void_v<First>,
+        "Bertrand does not implement py::zip().  If you are using C++23 or later, use "
+        "std::views::zip() instead.  Otherwise, implement a coupled iterator class or "
+        "keep the iterators separate during the loop body."
+    );
+    return {};
+}
+
+
 // Superceded by class wrappers
 // bool()           -> py::Bool
 // bytearray()      -> py::Bytearray
@@ -1039,24 +1073,6 @@ inline py::Object sum(First&& first, Rest&&... rest) {
 // super()          -> py::Super
 // tuple()          -> py::Tuple
 // type()           -> py::Type
-
-
-/* Equivalent to Python `all(args...)` */
-template <impl::is_iterable T>
-inline bool all(const T& iterable) {
-    return std::all_of(std::begin(iterable), std::end(iterable), [](const auto& item) {
-        return bool(item);
-    });
-}
-
-
-/* Equivalent to Python `any(args...)` */
-template <impl::is_iterable T>
-inline bool any(const T& iterable) {
-    return std::any_of(std::begin(iterable), std::end(iterable), [](const auto& item) {
-        return bool(item);
-    });
-}
 
 
 /* Get Python's builtin namespace as a dictionary.  This doesn't exist in normal
@@ -1546,7 +1562,8 @@ inline void setattr(const Handle& obj, const Str& name, const Object& value) {
 
 
 // TODO: sorted() for C++ types.  Still returns a List, but has to reimplement logic
-// for key and reverse arguments.
+// for key and reverse arguments.  std::ranges::sort() is a better alternative for C++
+// types.
 
 
 /* Equivalent to Python `sorted(obj)`. */

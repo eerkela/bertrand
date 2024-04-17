@@ -151,36 +151,28 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    static py::Code script = R"Foo(
-        class Foo:
-            def __init__(self, x):
-                self.x = x
+    // static const py::Code script = R"Foo(
+    //     class Foo:
+    //         def __init__(self, x):
+    //             self.x = x
 
-            def __repr__(self):
-                return f"Foo({self.x})"
+    //         def __repr__(self):
+    //             return f"Foo({self.x})"
+    // )Foo"_python;
 
-        class Descr:
-            def __get__(self, obj, objtype=None):
-                return obj.x
+    // py::Type Foo = script()["Foo"];
+    // Foo.attr<"bar">() = py::Function([](const py::Object& self) {
+    //     return self.attr<"x">();
+    // });
 
-            def __set__(self, obj, value):
-                obj.x = value
-    )Foo"_python;
 
-    py::Type Foo = script()["Foo"];
-    py::print(Foo(2));
-    Foo.attr<"bar">() = py::Function([](const py::Object& self) {
-        return self.attr<"x">();
-    });
-    py::print(Foo(3).attr<"bar">()());
+    py::Tuple args = {"a", "b", "c"};
+    py::print(*args);
 
-    py::Type Descr = script()["Descr"];
-    Foo.attr<"y">() = Descr();
-    py::Object f = Foo(4);
-    py::print(f.attr<"y">());
-    f.attr<"y">() = 5;
-    py::print(f.attr<"y">());
-    py::print(f.attr<"x">());
+
+
+
+
 
 
     // py::Function func = [](const py::Object& x) {

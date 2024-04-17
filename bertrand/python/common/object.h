@@ -28,8 +28,6 @@ namespace impl {
     template <typename Deref>
     class GenericIter;
 
-    struct SliceInitializer;
-
     /* Standardized error message for type narrowing via pybind11 accessors or the
     generic Object wrapper. */
     template <typename Derived>
@@ -405,6 +403,13 @@ template <std::convertible_to<Object> R>
 struct __ixor__<Object, R>                                  : Returns<Object&> {};
 
 
+// TODO: maybe place unsafe hooks for the protected helpers in the impl:: namespace
+// so that they can be used from outside the Object class for optimization purposes
+// in rounding algorithms, etc.  The base operators would then call these hooks, and
+// the BERTRAND_OPERATORS macro would specify them as friends.  This satisfies the
+// visibility issue for both the operators and rounding strategies.
+
+
 /* A revised pybind11::object interface that allows implicit conversions to subtypes
 (applying a type check on the way), explicit conversions to arbitrary C++ types via
 static_cast<>, cross-language math operators, and generalized slice/attr syntax. */
@@ -480,22 +485,13 @@ protected:
         return size;
     }
 
-    template <typename Return, typename T>
+    template <typename T>
     inline static auto operator_dereference(const T& obj) {
         try {
             return *Handle(obj.ptr());
         } catch (...) {
             Exception::from_pybind11();
         }
-    }
-
-    template <typename Return, typename T>
-    inline static auto operator_invert(const T& obj) {
-        PyObject* result = PyNumber_Invert(detail::object_or_cast(obj).ptr());
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return Return(result, stolen_t{});
     }
 
     template <typename Return, typename L, typename R>
@@ -574,6 +570,24 @@ protected:
             Exception::from_python();
         }
         return result;
+    }
+
+    template <typename Return, typename T>
+    inline static auto operator_abs(const T& obj) {
+        PyObject* result = PyNumber_Absolute(obj.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return Return(result, stolen_t{});
+    }
+
+    template <typename Return, typename T>
+    inline static auto operator_invert(const T& obj) {
+        PyObject* result = PyNumber_Invert(detail::object_or_cast(obj).ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return Return(result, stolen_t{});
     }
 
     template <typename Return, typename T>
@@ -737,6 +751,33 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
+    inline static auto operator_floordiv(const L& lhs, const R& rhs) {
+        PyObject* result = PyNumber_FloorDivide(
+            detail::object_or_cast(lhs).ptr(),
+            detail::object_or_cast(rhs).ptr()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return Return(result, stolen_t{});
+    }
+
+    template <typename Return, typename L, typename R>
+    inline static void operator_ifloordiv(L& lhs, const R& rhs) {
+        PyObject* result = PyNumber_InPlaceFloorDivide(
+            lhs.ptr(),
+            detail::object_or_cast(rhs).ptr()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == lhs.ptr()) {
+            Py_DECREF(result);
+        } else {
+            lhs = L(result, stolen_t{});
+        }
+    }
+
+    template <typename Return, typename L, typename R>
     inline static auto operator_mod(const L& lhs, const R& rhs) {
         PyObject* result = PyNumber_Remainder(
             detail::object_or_cast(lhs).ptr(),
@@ -760,6 +801,68 @@ protected:
             Py_DECREF(result);
         } else {
             lhs = L(result, stolen_t{});
+        }
+    }
+
+    // TODO: overload operator_pow() on Int to check for negative integer exponents
+    // and convert to Float instead.  This just calls the parent implementation and
+    // replaces the Return type with py::Float.
+
+    template <typename Return, typename Base, typename Exp>
+    inline static auto operator_pow(const Base& base, const Exp& exp) {
+        PyObject* result = PyNumber_Power(
+            detail::object_or_cast(base).ptr(),
+            detail::object_or_cast(exp).ptr(),
+            Py_None
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return Return(result, stolen_t{});
+    }
+
+    template <typename Return, typename Base, typename Exp, typename Mod>
+    inline static auto operator_pow(const Base& base, const Exp& exp, const Mod& mod) {
+        PyObject* result = PyNumber_Power(
+            detail::object_or_cast(base).ptr(),
+            detail::object_or_cast(exp).ptr(),
+            detail::object_or_cast(mod).ptr()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return Return(result, stolen_t{});
+    }
+
+    template <typename Return, typename Base, typename Exp>
+    inline static void operator_ipow(Base& base, const Exp& exp) {
+        PyObject* result = PyNumber_InPlacePower(
+            base.ptr(),
+            detail::object_or_cast(exp).ptr(),
+            Py_None
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == base.ptr()) {
+            Py_DECREF(result);
+        } else {
+            base = Base(result, stolen_t{});
+        }
+    }
+
+    template <typename Return, typename Base, typename Exp, typename Mod>
+    inline static void operator_ipow(Base& base, const Exp& exp, const Mod& mod) {
+        PyObject* result = PyNumber_InPlacePower(
+            base.ptr(),
+            detail::object_or_cast(exp).ptr(),
+            detail::object_or_cast(mod).ptr()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == base.ptr()) {
+            Py_DECREF(result);
+        } else {
+            base = Base(result, stolen_t{});
         }
     }
 

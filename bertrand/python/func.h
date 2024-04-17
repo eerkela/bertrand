@@ -695,19 +695,14 @@ class Function : public Object {
         return (
             PyFunction_Check(obj) ||
             PyCFunction_Check(obj) ||
-            PyMethod_Check(obj) ||
-            PyInstanceMethod_Check(obj)
+            PyMethod_Check(obj)
         );
     }
 
     inline PyObject* self() const {
         PyObject* result = this->ptr();
-        if (PyCFunction_Check(result)) {
-            throw RuntimeError("C++ functions do not have code objects");
-        } else if (PyMethod_Check(result)) {
+        if (PyMethod_Check(result)) {
             result = PyMethod_GET_FUNCTION(result);
-        } else if (PyInstanceMethod_Check(result)) {
-            result = PyInstanceMethod_GET_FUNCTION(result);
         }
         return result;
     }
@@ -756,6 +751,9 @@ public:
 
     /* Get the code object that is executed when this function is called. */
     inline Code code() const {
+        if (PyCFunction_Check(this->ptr())) {
+            throw RuntimeError("C++ functions do not have code objects");
+        }
         PyObject* result = PyFunction_GetCode(self());
         if (result == nullptr) {
             throw RuntimeError("function does not have a code object");

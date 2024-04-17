@@ -35,177 +35,6 @@ class Round {
     template <typename T>
     static constexpr bool FLOATLIKE = std::is_floating_point_v<T>;
 
-    /* Do not round.  Used to implement Python-style "true" division. */
-    struct True : RoundTag {
-
-        /* Python: use normal / operator.
-         *
-         * C++: if both operands are integers, cast numerator to double and then use
-         * normal / operator.
-         */
-
-        template <typename L, typename R>
-        inline static auto div(const L& l, const R& r) {
-            if constexpr (PYTHONLIKE<L> || PYTHONLIKE<R>) {
-                return l / r;
-            } else {
-                if (r == 0) {
-                    throw ZeroDivisionError("division by zero");
-                }
-                if constexpr (INTLIKE<L> && INTLIKE<R>) {
-                    return static_cast<double>(l) / r;
-                } else {
-                    return l / r;
-                }
-            }
-        }
-
-        template <typename L, typename R>
-        inline static auto mod(const L& l, const R& r) {
-            return l - (divide(l, r) * r);  // equal to rounding error
-        }
-
-        template <typename L, typename R>
-        inline static auto divmod(const L& l, const R& r) {
-            auto quotient = divide(l, r);
-            return std::make_pair(quotient, l - (quotient * r));
-        }
-
-        template <typename O>
-        inline static auto round(const O& o) {
-            return o;  // does nothing
-        }
-
-    };
-
-    /* Apply C-style division.  Round integers toward zero and apply true division
-    everywhere else. */
-    struct CDiv : RoundTag {
-
-        /* Python: if both operands are integers, compute // and add 1 if the remainder
-         * is nonzero.
-         *
-         * C++: use normal / operator.
-         */
-
-        template <typename L, typename R>
-        static auto div(const L& l, const R& r) {
-            if constexpr (PYTHONLIKE<L> || PYTHONLIKE<R>) {
-                Object numerator = detail::object_or_cast(l);
-                Object denominator = detail::object_or_cast(r);
-                if (PyLong_Check(numerator.ptr()) && PyLong_Check(denominator.ptr())) {
-                    PyObject* temp = PyNumber_FloorDivide(
-                        numerator.ptr(),
-                        denominator.ptr()
-                    );
-                    if (temp == nullptr) {
-                        Exception::from_python();
-                    }
-                    Int result = reinterpret_steal<Int>(temp);
-                    if (result < 0) {
-                        Int a = reinterpret_borrow<Int>(numerator.ptr());
-                        Int b = reinterpret_borrow<Int>(denominator.ptr());
-                        result += Int(a - (result * b)) != 0;
-                    }
-                    return reinterpret_steal<Object>(result.release());
-                } else {
-                    return l / r;
-                }
-
-            } else {
-                if (r == 0) {
-                    throw ZeroDivisionError("division by zero");
-                } else {
-                    return l / r;
-                }
-            }
-        }
-
-        template <typename L, typename R>
-        static auto mod(const L& l, const R& r) {
-            if constexpr (PYTHONLIKE<L> || PYTHONLIKE<R>) {
-                PyObject* result = PyNumber_Remainder(
-                    detail::object_or_cast(l).ptr(),
-                    detail::object_or_cast(r).ptr()
-                );
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                const Int zero(0);
-                return (
-                    reinterpret_steal<Object>(result) *
-                    Int(1 - 2 * ((l < zero) ^ (r < zero)))
-                );
-
-            } else {
-                if (r == 0) {
-                    throw ZeroDivisionError("division by zero");
-                }
-                if constexpr (FLOATLIKE<L> || FLOATLIKE<R>) {
-                    return std::fmod(l, r);
-                } else {
-                    return l % r;
-                }
-            }
-        }
-
-        template <typename L, typename R>
-        static auto divmod(const L& l, const R& r) {
-            if constexpr (PYTHONLIKE<L> || PYTHONLIKE<R>) {
-                Object numerator = detail::object_or_cast(l);
-                Object denominator = detail::object_or_cast(r);
-                if (PyLong_Check(numerator.ptr()) && PyLong_Check(denominator.ptr())) {
-                    Int a = reinterpret_borrow<Int>(numerator.ptr());
-                    Int b = reinterpret_borrow<Int>(denominator.ptr());
-                    PyObject* temp = PyNumber_FloorDivide(a.ptr(), b.ptr());
-                    if (temp == nullptr) {
-                        Exception::from_python();
-                    }
-
-                    Object quotient = reinterpret_steal<Object>(temp);
-                    Object remainder = a - (quotient * b);
-                    if ((quotient < 0) && (remainder != 0)) {
-                        quotient += 1;
-                        remainder *= -1;
-                    }
-                    return std::make_pair<quotient, remainder>;
-
-                } else {
-                    const Int zero(0);
-                    Object quotient = l / r;
-                    PyObject* temp = PyNumber_Remainder(
-                        numerator.ptr(),
-                        denominator.ptr()
-                    );
-                    if (temp == nullptr) {
-                        Exception::from_python();
-                    }
-                    Object remainder = (
-                        reinterpret_steal<Object>(temp) *
-                        Int(1 - 2 * ((l < zero) ^ (r < zero)))
-                    );
-                    return std::make_pair<quotient, remainder>;
-                }
-
-            } else {
-                if (r == 0) {
-                    throw ZeroDivisionError("division by zero");
-                }
-                if constexpr (FLOATLIKE<L> || FLOATLIKE<R>) {
-                    return std::make_pair(l / r, std::fmod(l, r));
-                } else {
-                    return std::make_pair(l / r, l % r);
-                }
-            }
-        }
-
-        template <typename O>
-        inline static auto round(const O& o) {
-            return o;  // does nothing
-        }
-
-    };
-
     /* Round toward negative infinity. */
     struct Floor : RoundTag {
 
@@ -215,55 +44,6 @@ class Round {
          * are integers, subtract 1 if the result is negative and the remainder is
          * nonzero.
          */
-
-        template <typename L, typename R>
-        inline static auto div(const L& l, const R& r) {
-            if constexpr (PYTHONLIKE<L> || PYTHONLIKE<R>) {
-                PyObject* result = PyNumber_FloorDivide(
-                    detail::object_or_cast(l).ptr(),
-                    detail::object_or_cast(r).ptr()
-                );
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Object>(result);
-            } else {
-                if (r == 0) {
-                    throw ZeroDivisionError("division by zero");
-                }
-                auto result = l / r;
-                if constexpr (std::is_integral_v<L> && std::is_integral_v<R>) {
-                    return result - ((result < 0) && (l % r != 0));
-                } else {
-                    return std::floor(result);
-                }
-            }
-        }
-
-        template <typename L, typename R>
-        inline static auto mod(const L& l, const R& r) {
-            if constexpr (PYTHONLIKE<L> || PYTHONLIKE<R>) {
-                PyObject* result = PyNumber_Remainder(
-                    detail::object_or_cast(l).ptr(),
-                    detail::object_or_cast(r).ptr()
-                );
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Object>(result);
-            } else {
-                if (r == 0) {
-                    throw ZeroDivisionError("division by zero");
-                }
-                int correction = (1 - 2 * ((l < 0) ^ (r < 0)));
-                if constexpr (FLOATLIKE<L> || FLOATLIKE<R>) {
-                    // branchless: mod * -1 if only one of the operands is negative
-                    return std::fmod(l, r) * correction;
-                } else {
-                    return (l % r) * correction;
-                }
-            }
-        }
 
         template <typename L, typename R>
         inline static auto divmod(const L& l, const R& r) {
@@ -281,76 +61,7 @@ class Round {
                 );
 
             } else {
-                if (r == 0) {
-                    throw ZeroDivisionError("division by zero");
-                }
 
-                auto quotient = l / r;
-                if constexpr (std::is_integral_v<L> && std::is_integral_v<R>) {
-                    quotient -= ((quotient < 0) && (l % r != 0));
-                } else {
-                    quotient = std::floor(quotient);
-                }
-
-                int correction = (1 - 2 * ((l < 0) ^ (r < 0)));
-                if constexpr (FLOATLIKE<L> || FLOATLIKE<R>) {
-                    return std::make_pair(quotient, std::fmod(l, r) * correction);
-                } else {
-                    return std::make_pair(quotient, (l % r) * correction);
-                }
-            }
-        }
-
-        /* Python: compute obj // 1.
-         *
-         * C++: use std::floor() for floating point numbers.  Otherwise do the same as
-         * for Python.
-         */
-
-        template <typename O>
-        inline static auto round(const O& o) {
-            if constexpr (FLOATLIKE<O>) {
-                return std::floor(o);
-            } else {
-                return div(o, 1);
-            }
-        }
-
-    };
-
-    /* Round toward positive infinity. */
-    struct Ceiling : RoundTag {
-
-        /* compute -(-obj // 1). */
-
-        template <typename L, typename R>
-        inline static auto div(const L& l, const R& r) {
-            return -Floor::div(-l, r);
-        }
-
-        template <typename L, typename R>
-        inline static auto mod(const L& l, const R& r) {
-            return -Floor::mod(-l, r);
-        }
-
-        template <typename L, typename R>
-        inline static auto divmod(const L& l, const R& r) {
-            auto [quotient, remainder] = Floor::divmod(-l, r);
-            return std::make_pair(-quotient, -remainder);
-        }
-
-        /* Python: divide by 1
-         *
-         * C++: use std::ceil() for floating point numbers.  Otherwise do the same as
-         * for Python.
-         */
-
-        template <typename O>
-        inline static auto round(const O& o) {
-            if constexpr (FLOATLIKE<O>) {
-                return std::ceil(o);
-            } else {
-                return div(o, 1);
             }
         }
 
@@ -362,26 +73,6 @@ class Round {
         /* Apply floor when l and r have the same sign and ceiling when they differ. */
 
         template <typename L, typename R>
-        inline static auto div(const L& l, const R& r) {
-            if constexpr (PYTHONLIKE<L> || PYTHONLIKE<R>) {
-                const Int zero(0);
-                Object numerator = detail::object_or_cast(l);
-                Object denominator = detail::object_or_cast(r);
-                if ((numerator < zero) ^ (denominator < zero)) {
-                    return Ceiling::div(numerator, denominator);
-                } else {
-                    return Floor::div(numerator, denominator);
-                }
-            } else {
-                if ((l < 0) ^ (r < 0)) {
-                    return Ceiling::div(l, r);
-                } else {
-                    return Floor::div(l, r);
-                }
-            }
-        }
-
-        template <typename L, typename R>
         inline static auto mod(const L& l, const R& r) {
             if constexpr (PYTHONLIKE<L> || PYTHONLIKE<R>) {
                 const Int zero(0);
@@ -418,21 +109,6 @@ class Round {
                 } else {
                     return Floor::divmod(l, r);
                 }
-            }
-        }
-
-        /* Python: divide by 1
-         *
-         * C++: use std::trunc() for floating point numbers.  Otherwise do the same as
-         * for Python.
-         */
-
-        template <typename O>
-        inline static auto round(const O& o) {
-            if constexpr (FLOATLIKE<O>) {
-                return std::trunc(o);
-            } else {
-                return div(o, 1);
             }
         }
 
@@ -444,26 +120,6 @@ class Round {
         /* Apply ceiling when l and r have the same sign and floor when they differ. */
 
         template <typename L, typename R>
-        inline static auto div(const L& l, const R& r) {
-            if constexpr (PYTHONLIKE<L> || PYTHONLIKE<R>) {
-                const Int zero(0);
-                Object numerator = detail::object_or_cast(l);
-                Object denominator = detail::object_or_cast(r);
-                if ((numerator < zero) ^ (denominator < zero)) {
-                    return Floor::div(numerator, denominator);
-                } else {
-                    return Ceiling::div(numerator, denominator);
-                }
-            } else {
-                if ((l < 0) ^ (r < 0)) {
-                    return Floor::div(l, r);
-                } else {
-                    return Ceiling::div(l, r);
-                }
-            }
-        }
-
-        template <typename L, typename R>
         inline static auto mod(const L& l, const R& r) {
             if constexpr (PYTHONLIKE<L> || PYTHONLIKE<R>) {
                 const Int zero(0);
@@ -500,25 +156,6 @@ class Round {
                 } else {
                     return Floor::divmod(l, r);
                 }
-            }
-        }
-
-        /* Python: divide by 1.
-         *
-         * C++: for floating point numbers, use std::ceil if positive and std::floor if
-         * negative.  Otherwise, do the same as for Python.
-         */
-
-        template <typename O>
-        inline static auto round(const O& o) {
-            if constexpr (FLOATLIKE<O>) {
-                if (o < 0) {
-                    return std::floor(o);
-                } else {
-                    return std::ceil(o);
-                }
-            } else {
-                return div(o, 1);
             }
         }
 
@@ -554,90 +191,495 @@ class Round {
             }
         }
 
-        /* Subtract 0.5 and then ceiling round. */
-
-        template <typename O>
-        inline static auto round(const O& o) {
-            return Ceiling::round(o - 0.5);
-        }
-
     };
 
-    /* Round to nearest, with ties toward positive infinity. */
-    struct HalfCeiling : RoundTag {
+};
 
-        /* Add 0.5 and then floor round. */
 
-        template <typename O>
-        inline static auto round(const O& o) {
-            return Floor::round(o + 0.5);
+
+
+
+/* A collection of tag structs used to implement cross-language rounding strategies for
+basic `div()`, `mod()`, `divmod()`, and `round()` operators. */
+struct Round {
+
+    struct True {
+
+        template <typename L, typename R> requires (impl::object_operand<L, R>)
+        static auto div(const L& lhs, const R& rhs) {
+            return lhs / rhs;
         }
 
-    };
-
-    /* Round to nearest, with ties toward zero. */
-    struct HalfDown : RoundTag {
-
-        /* Apply half-floor when obj is positive and half-ceiling otherwise. */
-
-        template <typename O>
-        inline static auto round(const O& o) {
-            if (o > 0) {
-                return HalfFloor::round(o);
+        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        static auto div(const L& lhs, const R& rhs) {
+            if (rhs == 0) {
+                throw ZeroDivisionError("division by zero");
+            }
+            if constexpr (std::integral<L> && std::integral<R>) {
+                return static_cast<double>(lhs) / rhs;
             } else {
-                return HalfCeiling::round(o);
+                return lhs / rhs;
+            }
+        }
+
+        template <typename L, typename R>
+        static auto mod(const L& lhs, const R& rhs) {
+            return lhs - (div(lhs, rhs) * rhs);
+        }
+
+        template <typename L, typename R>
+        static auto divmod(const L& lhs, const R& rhs) {
+            auto result = div(lhs, rhs);
+            return std::make_pair(result, lhs - (result * rhs));
+        }
+
+        template <typename O>
+        static auto round(const O& obj) {
+            return obj;
+        }
+
+    };
+
+    struct CDiv {
+
+        template <typename L, typename R> requires (impl::object_operand<L, R>)
+        inline static auto div(const L& lhs, const R& rhs) {
+            if constexpr (impl::int_like<L> && impl::int_like<R>) {
+                Int numerator = lhs;
+                Int denominator = rhs;
+                Int result = Round::Floor::invoke<Int>(numerator, denominator);
+                if (
+                    (result < Int::zero()) &&
+                    ((numerator - (result * denominator)) != Int::zero())
+                ) {
+                    ++result;
+                }
+                return result;
+
+            } else if constexpr (std::same_as<L, Object> || std::same_as<R, Object>) {
+                Object numerator = lhs;
+                Object denominator = rhs;
+                if (PyLong_Check(numerator.ptr()) && PyLong_Check(denominator.ptr())) {
+                    Object result = Floor::invoke<Object>(numerator, denominator);
+                    if (
+                        (result < Int::zero()) &&
+                        ((numerator - (result * denominator)) != Int::zero())
+                    ) {
+                        ++result;
+                    }
+                    return result;
+                }
+                return numerator / denominator;
+
+            } else {
+                return lhs / rhs;
+            }
+        }
+
+        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        inline static auto div(const L& lhs, const R& rhs) {
+            if (rhs == 0) {
+                throw ZeroDivisionError("division by zero");
+            }
+            return lhs / rhs;
+        }
+
+        template <typename L, typename R> requires (impl::object_operand<L, R>)
+        inline static auto mod(const L& lhs, const R& rhs) {
+            if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {
+                return -(lhs % rhs);
+            } else {
+                return lhs % rhs;
+            }
+        }
+
+        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        inline static auto mod(const L& lhs, const R& rhs) {
+            if (rhs == 0) {
+                throw ZeroDivisionError("division by zero");
+            }
+            if constexpr (std::floating_point<L> || std::floating_point<R>) {
+                return std::fmod(lhs, rhs);
+            } else {
+                return lhs % rhs;
+            }
+        }
+
+        template <typename L, typename R> requires (impl::object_operand<L, R>)
+        inline static auto divmod(const L& lhs, const R& rhs) {
+            if constexpr (impl::int_like<L> && impl::int_like<R>) {
+                Int numerator = lhs;
+                Int denominator = rhs;
+                Int quotient = Floor::invoke<Int>(numerator, denominator);
+                Int remainder = numerator - (quotient * denominator);
+                if ((quotient < Int::zero()) && (remainder != Int::zero())) {
+                    ++quotient;
+                    return std::make_pair(quotient, -remainder);
+                }
+                return std::make_pair(quotient, remainder);
+
+            } else if constexpr (std::same_as<L, Object> || std::same_as<R, Object>) {
+                Object numerator = lhs;
+                Object denominator = rhs;
+                if (PyLong_Check(numerator.ptr()) && PyLong_Check(denominator.ptr())) {
+                    Object quotient = Floor::invoke<Object>(numerator, denominator);
+                    Object remainder = numerator - (quotient * denominator);
+                    if ((quotient < Int::zero()) && (remainder != Int::zero())) {
+                        ++quotient;
+                        return std::make_pair(quotient, -remainder);
+                    }
+                    return std::make_pair(quotient, remainder);
+                }
+
+                Object quotient = numerator / denominator;
+                if ((numerator < Int::zero()) ^ (denominator < Int::zero())) {
+                    return std::make_pair(quotient, -(numerator % denominator));
+                }
+                return std::make_pair(quotient, numerator % denominator);
+
+            } else if constexpr (impl::object_operand<L, R>) {
+                auto quotient = lhs / rhs;
+                if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {
+                    return std::make_pair(quotient, -(lhs % rhs));
+                }
+                return std::make_pair(quotient, lhs % rhs);
+            
+            } else {
+                auto quotient = lhs / rhs;
+                if ((lhs < 0) ^ (rhs < 0)) {
+                    return std::make_pair(quotient, -(lhs % rhs));
+                }
+                return std::make_pair(quotient, lhs % rhs);
+            }
+        }
+
+        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        inline static auto divmod(const L& lhs, const R& rhs) {
+            if (r == 0) {
+                throw ZeroDivisionError("division by zero");
+            }
+            if constexpr (std::floating_point<L> || std::floating_point<R>) {
+                return std::make_pair(lhs / rhs, std::fmod(lhs, rhs));
+            } else {
+                return std::make_pair(lhs / rhs, lhs % rhs);
+            }
+        }
+
+        template <typename O>
+        inline static auto round(const O& obj) {
+            return obj;
+        }
+
+    };
+
+    struct Floor {
+
+        template <typename L, typename R> requires (__floordiv__<L, R>::enable)
+        inline static auto div(const L& lhs, const R& rhs) {
+            using Return = typename __truediv__<L, R>::Return;
+            static_assert(
+                std::is_base_of_v<Object, Return>,
+                "Floor division operator must return a py::Object subclass.  Check "
+                "your specialization of __floordiv__ for this type and ensure the "
+                "Return type is derived from py::Object."
+            );
+            return invoke<Return>(lhs, rhs);
+        }
+
+        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        inline static auto div(const L& lhs, const R& rhs) {
+            if (rhs == 0) {
+                throw ZeroDivisionError("division by zero");
+            }
+            auto result = lhs / rhs;
+            if constexpr (std::integral<L> && std::integral<R>) {
+                return result - ((result < 0) && (lhs % rhs != 0));
+            } else {
+                return std::floor(result);
+            }
+        }
+
+        template <typename L, typename R> requires (impl::object_operand<L, R>)
+        inline static auto mod(const L& lhs, const R& rhs) {
+            return lhs % rhs;
+        }
+
+        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        inline static auto mod(const L& lhs, const R& rhs) {
+            if (rhs == 0) {
+                throw ZeroDivisionError("division by zero");
+            }
+            int correction = 1 - 2 * ((lhs < 0) ^ (rhs < 0));
+            if constexpr (std::floating_point<L> || std::floating_point<R>) {
+                return std::fmod(lhs, rhs) * correction;
+            } else {
+                return (lhs % rhs) * correction;
+            }
+        }
+
+        template <typename L, typename R> requires (impl::object_operand<L, R>)
+        inline static auto divmod(const L& lhs, const R& rhs) {
+            // TODO: call impl::unsafe::operator_divmod() here, and construct the
+            // return type from __floordiv__ and __mod__.
+        }
+
+        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        inline static auto divmod(const L& lhs, const R& rhs) {
+            if (rhs == 0) {
+                throw ZeroDivisionError("division by zero");
+            }
+
+            auto quotient = lhs / rhs;
+            if constexpr (std::integral<L> && std::integral<R>) {
+                quotient -= ((quotient < 0) && (lhs % rhs != 0));
+            } else {
+                quotient = std::floor(quotient);
+            }
+
+            int correction = (1 - 2 * ((lhs < 0) ^ (rhs < 0)));
+            if constexpr (std::floating_point<L> || std::floating_point<R>) {
+                return std::make_pair(quotient, std::fmod(lhs, rhs) * correction);
+            } else {
+                return std::make_pair(quotient, (lhs % rhs) * correction);
+            }
+        }
+
+        template <typename O>
+        inline static auto round(const O& obj) {
+            if constexpr (std::floating_point<O>) {
+                return std::floor(obj);
+            } else {
+                // TODO: use math.floor()?
+                return div(obj, 1);
             }
         }
 
     };
 
-    /* Round to nearest, with ties away from zero. */
-    struct HalfUp : RoundTag {
- 
-        /* Apply half-ceiling when obj is positive and half-floor otherwise.  If
-         * operand is a C++ float, use std::round() directly.
-         */
+    struct Ceiling {
+
+        template <typename L, typename R>
+        inline static auto div(const L& lhs, const R& rhs) {
+            return -Floor::div(-lhs, rhs);
+        }
+
+        template <typename L, typename R>
+        inline static auto mod(const L& lhs, const R& rhs) {
+            return -Round::Floor::mod(-lhs, rhs);
+        }
+
+        template <typename L, typename R>
+        inline static auto divmod(const L& lhs, const R& rhs) {
+            auto [result, remainder] = Round::Floor::divmod(-lhs, rhs);
+            return std::make_pair(-result, -remainder);
+        }
 
         template <typename O>
-        inline static auto round(const O& o) {
-            if constexpr (FLOATLIKE<O>) {
-                return std::round(o);  // always rounds away from zero
+        inline static auto round(const O& obj) {
+            if constexpr (std::floating_point<O>) {
+                return std::ceil(obj);
             } else {
-                if (o > 0) {
-                    return HalfCeiling::round(o);
+                // TODO: use math.ceil()?
+                return div(obj, 1);
+            }
+        }
+
+    };
+
+    struct Down {
+
+        template <typename L, typename R> requires (__floordiv__<L, R>::enable)
+        inline static auto div(const L& lhs, const R& rhs) {
+            using Return = typename __floordiv__<L, R>::Return;
+            static_assert(
+                std::is_base_of_v<Object, Return>,
+                "Floor division operator must return a py::Object subclass.  Check "
+                "your specialization of __floordiv__ for this type and ensure the "
+                "Return type is derived from py::Object."
+            );
+            Object numerator = lhs;
+            Object denominator = rhs;
+            if ((numerator < Int::zero()) ^ (denominator < Int::zero())) {
+                return -Floor::invoke<Return>(-numerator, denominator);
+            } else {
+                return Floor::invoke<Return>(numerator, denominator);
+            }
+        }
+
+        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        inline static auto div(const L& lhs, const R& rhs) {
+            if ((lhs < 0) ^ (rhs < 0)) {
+                return Ceiling::div(lhs, rhs);
+            } else {
+                return Floor::div(lhs, rhs);
+            }
+        }
+
+        template <typename L, typename R>
+        inline static auto mod(const L& lhs, const R& rhs);
+        template <typename L, typename R>
+        inline static auto divmod(const L& lhs, const R& rhs);
+
+        template <typename O>
+        inline static auto round(const O& obj) {
+            if constexpr (std::floating_point<O>) {
+                return std::trunc(obj);
+            } else {
+                // TODO: use math.trunc()?
+                return div(obj, 1);
+            }
+        }
+
+    };
+
+    struct Up {
+
+        template <typename L, typename R> requires (__floordiv__<L, R>::enable)
+        inline static auto div(const L& lhs, const R& rhs) {
+            using Return = typename __floordiv__<L, R>::Return;
+            static_assert(
+                std::is_base_of_v<Object, Return>,
+                "Floor division operator must return a py::Object subclass.  Check your "
+                "specialization of __floordiv__ for this type and ensure the Return type is "
+                "derived from py::Object."
+            );
+            Object numerator = lhs;
+            Object denominator = rhs;
+            if ((numerator < Int::zero()) ^ (denominator < Int::zero())) {
+                return Floor::invoke<Return>(numerator, denominator);
+            } else {
+                return -Floor::invoke<Return>(-numerator, denominator);
+            }
+        }
+
+        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        inline static auto div(const L& lhs, const R& rhs) {
+            if ((lhs < 0) ^ (rhs < 0)) {
+                return Floor::div(lhs, rhs);
+            } else {
+                return Ceiling::div(lhs, rhs);
+            }
+        }
+
+        template <typename L, typename R>
+        inline static auto mod(const L& lhs, const R& rhs);
+        template <typename L, typename R>
+        inline static auto divmod(const L& lhs, const R& rhs);
+
+        template <typename O>
+        inline static auto round(const O& obj) {
+            if constexpr (std::floating_point<O>) {
+                if (obj < 0) {
+                    return std::floor(obj);
                 } else {
-                    return HalfFloor::round(o);
+                    return std::ceil(obj);
+                }
+            } else {
+                return div(obj, 1);
+            }
+        }
+
+    };
+
+    struct HalfFloor {
+        template <typename L, typename R>
+        inline static auto div(const L& lhs, const R& rhs);
+        template <typename L, typename R>
+        inline static auto mod(const L& lhs, const R& rhs);
+        template <typename L, typename R>
+        inline static auto divmod(const L& lhs, const R& rhs);
+
+        template <typename O>
+        inline static auto round(const O& obj) {
+            return Round::Ceiling::round(obj - 0.5);
+        }
+
+    };
+
+    struct HalfCeiling {
+        template <typename L, typename R>
+        inline static auto div(const L& lhs, const R& rhs);
+        template <typename L, typename R>
+        inline static auto mod(const L& lhs, const R& rhs);
+        template <typename L, typename R>
+        inline static auto divmod(const L& lhs, const R& rhs);
+
+        template <typename O>
+        inline static auto round(const O& obj) {
+            return Floor::round(obj + 0.5);
+        }
+
+    };
+
+    struct HalfDown {
+        template <typename L, typename R>
+        inline static auto div(const L& lhs, const R& rhs);
+        template <typename L, typename R>
+        inline static auto mod(const L& lhs, const R& rhs);
+        template <typename L, typename R>
+        inline static auto divmod(const L& lhs, const R& rhs);
+
+        template <typename O>
+        inline static auto round(const O& obj) {
+            if (obj > 0) {
+                return Round::HalfFloor::round(obj);
+            } else {
+                return Round::HalfCeiling::round(obj);
+            }
+        }
+
+    };
+
+    struct HalfUp {
+        template <typename L, typename R>
+        inline static auto div(const L& lhs, const R& rhs);
+        template <typename L, typename R>
+        inline static auto mod(const L& lhs, const R& rhs);
+        template <typename L, typename R>
+        inline static auto divmod(const L& lhs, const R& rhs);
+
+        template <typename O>
+        inline static auto round(const O& obj) {
+            if constexpr (std::floating_point<O>) {
+                return std::round(obj);  // always rounds away from zero
+            } else {
+                if (obj > 0) {
+                    return Round::HalfCeiling::round(obj);
+                } else {
+                    return Round::HalfFloor::round(obj);
                 }
             }
         }
 
     };
 
-    /* Round to nearest, with ties toward the closest even value. */
-    struct HalfEven : RoundTag {
-
-        // TODO: document behavior
+    struct HalfEven {
+        template <typename L, typename R>
+        inline static auto div(const L& lhs, const R& rhs);
+        template <typename L, typename R>
+        inline static auto mod(const L& lhs, const R& rhs);
+        template <typename L, typename R>
+        inline static auto divmod(const L& lhs, const R& rhs);
 
         template <typename O>
-        inline static auto round(const O& o) {
-            if constexpr (PYTHONLIKE<O>) {
-                static const Handle round = PyDict_GetItemString(
-                    PyEval_GetBuiltins(),
-                    "round"
-                );
-                PyObject* result = PyObject_CallOneArg(round.ptr(), o.ptr());
+        inline static auto round(const O& obj) {
+            if constexpr (impl::python_like<O>) {
+                static const Function py_round = builtins()["round"];
+                PyObject* result = PyObject_CallOneArg(py_round.ptr(), obj.ptr());
                 if (result == nullptr) {
                     Exception::from_python();
                 }
-                return reinterpret_steal<Object>(result);
-            } else if constexpr (FLOATLIKE<O>) {
+                return reinterpret_steal<O>(result);
+
+            } else if constexpr (std::floating_point<O>) {
                 O whole, fract;
-                fract = std::modf(o, &whole);
+                fract = std::modf(obj, &whole);
                 if (std::abs(fract) == 0.5) {
                     return whole + std::fmod(whole, 2);  // -1 if whole % 2 and < 0
                 } else {
-                    return std::round(o);
+                    return std::round(obj);
                 }
+
             } else {
                 // TODO: this branch is incorrect for o = -3.2
 
@@ -645,38 +687,83 @@ class Round {
                 // a branchless way of choosing between half-floor and half-ceiling.
                 // half-down: (abs(o) + 0.5) // 1 * sign(o)
                 // half-up: -(-abs(o) + 0.5) // 1 * sign(o)
-                auto floor_is_odd = FLOOR.mod(FLOOR.round(o), 2) * 2 - 1;
-                return FLOOR.round(abs(o) * floor_is_odd + 0.5) * floor_is_odd;
+                auto floor_is_odd =
+                    Round::FLOOR.mod(Round::FLOOR.round(obj), 2) * 2 - 1;
+                return FLOOR.round(abs(obj) * floor_is_odd + 0.5) * floor_is_odd;
             }
         }
 
     };
 
-public:
-    static constexpr True           TRUE            = True{};
-    static constexpr CDiv           C               = CDiv{};
-    static constexpr Floor          FLOOR           = Floor{};
-    static constexpr Ceiling        CEILING         = Ceiling{};
-    static constexpr Down           DOWN            = Down{};
-    static constexpr Up             UP              = Up{};
-    static constexpr HalfFloor      HALF_FLOOR      = HalfFloor{};
-    static constexpr HalfCeiling    HALF_CEILING    = HalfCeiling{};
-    static constexpr HalfDown       HALF_DOWN       = HalfDown{};
-    static constexpr HalfUp         HALF_UP         = HalfUp{};
-    static constexpr HalfEven       HALF_EVEN       = HalfEven{};
-
-    /* Check whether a given rounding strategy is valid. */
-    template <typename T>
-    static constexpr bool is_valid = std::is_base_of_v<RoundTag, T>;
-
-    /* Check whether a given rounding strategy represents Python or C-style true
-    division. */
-    template <typename T>
-    static constexpr bool is_true_or_c = (
-        std::is_same_v<T, True> || std::is_same_v<T, CDiv>
-    );
+    static constexpr True TRUE {};
+    static constexpr CDiv C {};
+    static constexpr Floor FLOOR {};
+    static constexpr Ceiling CEILING {};
+    static constexpr Down DOWN {};
+    static constexpr Up UP {};
+    static constexpr HalfFloor HALF_FLOOR {};
+    static constexpr HalfCeiling HALF_CEILING {};
+    static constexpr HalfDown HALF_DOWN {};
+    static constexpr HalfUp HALF_UP {};
+    static constexpr HalfEven HALF_EVEN {};
 
 };
+
+
+
+/* Divide the left and right operands according to the specified rounding rule. */
+template <typename L, typename R, typename Mode = Round::Floor>
+    requires (impl::div_mode<L, R, Mode>)
+inline auto div(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
+    if constexpr (impl::proxy_like<L>) {
+        return mode.div(lhs.value(), rhs);
+
+    } else if constexpr (impl::proxy_like<R>) {
+        return mode.div(lhs, rhs.value());
+
+    } else {
+        return mode.div(lhs, rhs);
+    }
+}
+
+
+/* Divide the left and right operands according to the specified rounding rule. */
+template <typename L, typename R, typename Mode = Round::Floor>
+    requires (impl::mod_mode<L, R, Mode>)
+inline auto mod(const L& l, const R& r, const Mode& mode = Round::FLOOR) {
+    if constexpr (impl::proxy_like<L>) {
+        return mode.mod(l.value(), r);
+    } else if constexpr (impl::proxy_like<R>) {
+        return mode.mod(l, r.value());
+    } else {
+        return mode.mod(l, r);
+    }
+}
+
+
+/* Divide the left and right operands according to the specified rounding rule. */
+template <typename L, typename R, typename Mode = Round::Floor>
+    requires (impl::divmod_mode<L, R, Mode>)
+inline auto divmod(const L& l, const R& r, const Mode& mode = Round::FLOOR) {
+    if constexpr (impl::proxy_like<L>) {
+        return mode.divmod(l.value(), r);
+    } else if constexpr (impl::proxy_like<R>) {
+        return mode.divmod(l, r.value());
+    } else {
+        return mode.divmod(l, r);
+    }
+}
+
+
+template <typename O, typename Mode = Round::HalfEven>
+    requires (impl::round_mode<O, Mode>)
+inline auto round(const O& obj, const Mode& mode = Round::HALF_EVEN) {
+    if constexpr (impl::proxy_like<O>) {
+        return mode.round(obj.value());
+    } else {
+        return mode.round(obj);
+    }
+}
 
 
 ////////////////////////////////
@@ -715,97 +802,6 @@ public:
  */
 
 
-/* Divide the left and right operands according to the specified rounding rule. */
-template <typename L, typename R, typename Mode>
-inline auto div(const L& l, const R& r, const Mode& mode = Round::TRUE) {
-    static_assert(
-        Round::is_valid<Mode>,
-        "rounding mode must be one of Round::TRUE, ::C, ::FLOOR, ::CEILING, ::DOWN, "
-        "::UP, ::HALF_FLOOR, ::HALF_CEILING, ::HALF_DOWN, ::HALF_UP, or ::HALF_EVEN"
-    );
-    return Mode::div(l, r);
-}
-
-
-/* Compute the remainder of a division according to the specified rounding rule. */
-template <typename L, typename R, typename Mode>
-auto mod(const L& l, const R& r, const Mode& mode = Round::FLOOR) {
-    static_assert(
-        Round::is_valid<Mode>,
-        "rounding mode must be one of Round::TRUE, ::C, ::FLOOR, ::CEILING, ::DOWN, "
-        "::UP, ::HALF_FLOOR, ::HALF_CEILING, ::HALF_DOWN, ::HALF_UP, or ::HALF_EVEN"
-    );
-    return Mode::mod(l, r);
-}
-
-
-/* Get the quotient and remainder of a division at the same time, using the specified
-rounding rule. */
-template <typename L, typename R, typename Mode>
-auto divmod(const L& l, const R& r, const Mode& mode = Round::FLOOR) {
-    static_assert(
-        Round::is_valid<Mode>,
-        "rounding mode must be one of Round::TRUE, ::C, ::FLOOR, ::CEILING, ::DOWN, "
-        "::UP, ::HALF_FLOOR, ::HALF_CEILING, ::HALF_DOWN, ::HALF_UP, or ::HALF_EVEN"
-    );
-    return Mode::divmod(l, r);
-}
-
-
-/* Equivalent to Python `base ** exp` (exponentiation). */
-template <typename L, typename R>
-auto pow(const L& base, const R& exp) {
-    if constexpr (impl::python_like<L> || impl::python_like<R>) {
-        PyObject* result = PyNumber_Power(
-            detail::object_or_cast(base).ptr(),
-            detail::object_or_cast(exp).ptr(),
-            Py_None
-        );
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return reinterpret_steal<Object>(result);
-    } else {
-        return std::pow(base, exp);
-    }
-}
-
-
-/* Equivalent to Python `pow(base, exp, mod)`. */
-template <typename L, typename R, typename E>
-auto pow(const L& base, const R& exp, const E& mod) {
-    static_assert(
-        (std::is_integral_v<L> || impl::python_like<L>) &&
-        (std::is_integral_v<R> || impl::python_like<R>) &&
-        (std::is_integral_v<E> || impl::python_like<E>),
-        "pow() 3rd argument not allowed unless all arguments are integers"
-    );
-
-    if constexpr (impl::python_like<L> || impl::python_like<R> || impl::python_like<E>) {
-        PyObject* result = PyNumber_Power(
-            detail::object_or_cast(base).ptr(),
-            detail::object_or_cast(exp).ptr(),
-            detail::object_or_cast(mod).ptr()
-        );
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return reinterpret_steal<Object>(result);
-    } else {
-        std::common_type_t<L, R, E> result = 1;
-        base = py::mod(base, mod);
-        while (exp > 0) {
-            if (exp % 2) {
-                result = py::mod(result * base, mod);
-            }
-            exp >>= 1;
-            base = py::mod(base * base, mod);
-        }
-        return result;
-    }
-}
-
-
 /* Equivalent to Python `round(obj, ndigits)`, but works on both Python and C++ inputs
 and accepts a third tag parameter that determines the rounding strategy to apply. */
 template <typename T, typename Mode = decltype(Round::HALF_EVEN)>
@@ -824,7 +820,7 @@ auto round(const T& n, int digits = 0, const Mode& mode = Round::HALF_EVEN) {
         if (digits >= 0) {
             return n;
         } else {
-            return div(n, static_cast<T>(pow(10, digits)), mode);
+            return div(n, static_cast<T>(std::pow(10, digits)), mode);
         }
 
     // same for Python integers

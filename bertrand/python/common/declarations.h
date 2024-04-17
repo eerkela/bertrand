@@ -167,6 +167,8 @@ namespace impl {
     /* Tag class to identify object proxies during SFINAE checks. */
     struct ProxyTag {};
 
+    struct SliceInitializer;
+
 }
 
 

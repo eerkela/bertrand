@@ -72,12 +72,6 @@ namespace py {
     }                                                                                   \
                                                                                         \
     template <typename T = cls> requires (__iter__<T>::enable)                          \
-    inline auto operator*() const {                                                     \
-        using Return = typename __iter__<T>::Return;                                    \
-        return operator_dereference<Return>(*this);                                     \
-    }                                                                                   \
-                                                                                        \
-    template <typename T = cls> requires (__iter__<T>::enable)                          \
     inline auto begin() const {                                                         \
         using Return = typename __iter__<T>::Return;                                    \
         static_assert(                                                                  \
@@ -155,106 +149,99 @@ namespace py {
                                                                                         \
 protected:                                                                              \
                                                                                         \
-    template <typename T> requires (__invert__<T>::enable)                              \
-    friend auto operator~(const T& self);                                               \
-                                                                                        \
-    template <typename L, typename R> requires (__lt__<L, R>::enable)                   \
-    friend auto operator<(const L& lhs, const R& rhs);                                  \
-                                                                                        \
-    template <typename L, typename R> requires (__le__<L, R>::enable)                   \
-    friend auto operator<=(const L& lhs, const R& rhs);                                 \
-                                                                                        \
-    template <typename L, typename R> requires (__eq__<L, R>::enable)                   \
-    friend auto operator==(const L& lhs, const R& rhs);                                 \
-                                                                                        \
-    template <typename L, typename R> requires (__ne__<L, R>::enable)                   \
-    friend auto operator!=(const L& lhs, const R& rhs);                                 \
-                                                                                        \
-    template <typename L, typename R> requires (__ge__<L, R>::enable)                   \
-    friend auto operator>=(const L& lhs, const R& rhs);                                 \
-                                                                                        \
-    template <typename L, typename R> requires (__gt__<L, R>::enable)                   \
-    friend auto operator>(const L& lhs, const R& rhs);                                  \
-                                                                                        \
-    template <typename T> requires (__pos__<T>::enable)                                 \
-    friend auto operator+(const T& self);                                               \
-                                                                                        \
-    template <typename T> requires (__increment__<T>::enable)                           \
-    friend T& operator++(T& self);                                                      \
-                                                                                        \
-    template <typename T> requires (__increment__<T>::enable)                           \
-    friend T operator++(T& self, int);                                                  \
-                                                                                        \
-    template <typename L, typename R> requires (__add__<L, R>::enable)                  \
-    friend auto operator+(const L& lhs, const R& rhs);                                  \
-                                                                                        \
-    template <typename L, typename R> requires (__iadd__<L, R>::enable)                 \
-    friend L& operator+=(L& lhs, const R& rhs);                                         \
-                                                                                        \
-    template <typename T> requires (__neg__<T>::enable)                                 \
-    friend auto operator-(const T& self);                                               \
-                                                                                        \
-    template <typename T> requires (__decrement__<T>::enable)                           \
-    friend T& operator--(T& self);                                                      \
-                                                                                        \
-    template <typename T> requires (__decrement__<T>::enable)                           \
-    friend T operator--(T& self, int);                                                  \
-                                                                                        \
-    template <typename L, typename R> requires (__sub__<L, R>::enable)                  \
-    friend auto operator-(const L& lhs, const R& rhs);                                  \
-                                                                                        \
-    template <typename L, typename R> requires (__isub__<L, R>::enable)                 \
-    friend L& operator-=(L& lhs, const R& rhs);                                         \
-                                                                                        \
-    template <typename L, typename R> requires (__mul__<L, R>::enable)                  \
-    friend auto operator*(const L& lhs, const R& rhs);                                  \
-                                                                                        \
-    template <typename L, typename R> requires (__imul__<L, R>::enable)                 \
-    friend L& operator*=(L& lhs, const R& rhs);                                         \
-                                                                                        \
-    template <typename L, typename R> requires (__truediv__<L, R>::enable)              \
-    friend auto operator/(const L& lhs, const R& rhs);                                  \
-                                                                                        \
-    template <typename L, typename R> requires (__itruediv__<L, R>::enable)             \
-    friend L& operator/=(L& lhs, const R& rhs);                                         \
-                                                                                        \
-    template <typename L, typename R> requires (__mod__<L, R>::enable)                  \
-    friend auto operator%(const L& lhs, const R& rhs);                                  \
-                                                                                        \
-    template <typename L, typename R> requires (__imod__<L, R>::enable)                 \
-    friend L& operator%=(L& lhs, const R& rhs);                                         \
-                                                                                        \
-    template <typename L, typename R>                                                   \
-        requires (__lshift__<L, R>::enable && !std::derived_from<L, std::ostream>)      \
-    friend auto operator<<(const L& lhs, const R& rhs);                                 \
-                                                                                        \
-    template <typename L, typename R> requires (__ilshift__<L, R>::enable)              \
-    friend L& operator<<=(L& lhs, const R& rhs);                                        \
-                                                                                        \
-    template <typename L, typename R> requires (__rshift__<L, R>::enable)               \
-    friend auto operator>>(const L& lhs, const R& rhs);                                 \
-                                                                                        \
-    template <typename L, typename R> requires (__irshift__<L, R>::enable)              \
-    friend L& operator>>=(L& lhs, const R& rhs);                                        \
-                                                                                        \
-    template <typename L, typename R> requires (__and__<L, R>::enable)                  \
-    friend auto operator&(const L& lhs, const R& rhs);                                  \
-                                                                                        \
-    template <typename L, typename R> requires (__iand__<L, R>::enable)                 \
-    friend L& operator&=(L& lhs, const R& rhs);                                         \
-                                                                                        \
-    template <typename L, typename R>                                                   \
-        requires (__or__<L, R>::enable && !std::ranges::view<R>)                        \
-    friend auto operator|(const L& lhs, const R& rhs);                                  \
-                                                                                        \
-    template <typename L, typename R> requires (__ior__<L, R>::enable)                  \
-    friend L& operator|=(L& lhs, const R& rhs);                                         \
-                                                                                        \
-    template <typename L, typename R> requires (__xor__<L, R>::enable)                  \
-    friend auto operator^(const L& lhs, const R& rhs);                                  \
-                                                                                        \
-    template <typename L, typename R> requires (__ixor__<L, R>::enable)                 \
-    friend L& operator^=(L& lhs, const R& rhs);                                         \
+    template <typename Return, typename T, typename... Args>                            \
+    friend auto impl::ops::operator_call(const T& self, Args&&... args);                \
+    template <typename Return, typename T, typename Key>                                \
+    friend auto impl::ops::operator_getitem(const T& self, const Key& key);             \
+    template <typename Return, typename T>                                              \
+    friend auto impl::ops::operator_getitem(                                            \
+        const T& self,                                                                  \
+        std::initializer_list<impl::SliceInitializer> slice                             \
+    );                                                                                  \
+    template <typename Return, typename T>                                              \
+    friend auto impl::ops::operator_begin(const T& obj);                                \
+    template <typename Return, typename T>                                              \
+    friend auto impl::ops::operator_end(const T& obj);                                  \
+    template <typename Return, typename T>                                              \
+    friend auto impl::ops::operator_rbegin(const T& obj);                               \
+    template <typename Return, typename T>                                              \
+    friend auto impl::ops::operator_rend(const T& obj);                                 \
+    template <typename Return, typename T, typename Key>                                \
+    friend auto impl::ops::operator_contains(const T& self, const Key& key);            \
+    template <typename Return, typename T>                                              \
+    friend auto impl::ops::operator_len(const T& self);                                 \
+    template <typename T>                                                               \
+    friend auto impl::ops::operator_dereference(const T& self);                         \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_lt(const L& lhs, const R& rhs);                     \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_le(const L& lhs, const R& rhs);                     \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_eq(const L& lhs, const R& rhs);                     \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_ne(const L& lhs, const R& rhs);                     \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_ge(const L& lhs, const R& rhs);                     \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_gt(const L& lhs, const R& rhs);                     \
+    template <typename Return, typename T>                                              \
+    friend auto impl::ops::operator_abs(const T& self);                                 \
+    template <typename Return, typename T>                                              \
+    friend auto impl::ops::operator_invert(const T& self);                              \
+    template <typename Return, typename T>                                              \
+    friend auto impl::ops::operator_pos(const T& self);                                 \
+    template <typename Return, typename T>                                              \
+    friend auto impl::ops::operator_increment(T& self);                                 \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_add(const L& lhs, const R& rhs);                    \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_iadd(L& lhs, const R& rhs);                         \
+    template <typename Return, typename T>                                              \
+    friend auto impl::ops::operator_neg(const T& self);                                 \
+    template <typename Return, typename T>                                              \
+    friend auto impl::ops::operator_decrement(T& self);                                 \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_sub(const L& lhs, const R& rhs);                    \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_isub(L& lhs, const R& rhs);                         \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_mul(const L& lhs, const R& rhs);                    \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_imul(L& lhs, const R& rhs);                         \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_truediv(const L& lhs, const R& rhs);                \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_itruediv(L& lhs, const R& rhs);                     \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_floordiv(const L& lhs, const R& rhs);               \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_mod(const L& lhs, const R& rhs);                    \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_imod(L& lhs, const R& rhs);                         \
+    template <typename Return, typename Base, typename Exp>                             \
+    friend auto impl::ops::operator_pow(const Base& base, const Exp& exp);              \
+    template <typename Return, typename Base, typename Exp, typename Mod>               \
+    friend auto impl::ops::operator_pow(const Base& base, const Exp& exp, const Mod& mod);\
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_lshift(const L& lhs, const R& rhs);                 \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_ilshift(L& lhs, const R& rhs);                      \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_rshift(const L& lhs, const R& rhs);                 \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_irshift(L& lhs, const R& rhs);                      \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_and(const L& lhs, const R& rhs);                    \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_iand(L& lhs, const R& rhs);                         \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_or(const L& lhs, const R& rhs);                     \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_ior(L& lhs, const R& rhs);                          \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_xor(const L& lhs, const R& rhs);                    \
+    template <typename Return, typename L, typename R>                                  \
+    friend auto impl::ops::operator_ixor(L& lhs, const R& rhs);                         \
                                                                                         \
 public:                                                                                 \
 
@@ -269,6 +256,329 @@ struct Returns {
 
 
 namespace impl {
+
+    namespace ops {
+
+        template <typename Return, typename T, typename... Args>
+        auto operator_call(const T& self, Args&&... args) {
+            return T::template operator_call<Return>(self, std::forward<Args>(args)...);
+        }
+
+        template <typename Return, typename T, typename Key>
+        auto operator_getitem(const T& self, const Key& key) {
+            return T::template operator_getitem<Return>(self, key);
+        }
+
+        template <typename Return, typename T>
+        auto operator_getitem(
+            const T& self,
+            std::initializer_list<impl::SliceInitializer> slice
+        ) {
+            return T::template operator_getitem<Return>(self, slice);
+        }
+
+        template <typename Return, typename T>
+        auto operator_begin(const T& obj) {
+            return T::template operator_begin<Return>(obj);
+        }
+
+        template <typename Return, typename T>
+        auto operator_end(const T& obj) {
+            return T::template operator_end<Return>(obj);
+        }
+
+        template <typename Return, typename T>
+        auto operator_rbegin(const T& obj) {
+            return T::template operator_rbegin<Return>(obj);
+        }
+
+        template <typename Return, typename T>
+        auto operator_rend(const T& obj) {
+            return T::template operator_rend<Return>(obj);
+        }
+
+        template <typename Return, typename T, typename Key>
+        auto operator_contains(const T& self, const Key& key) {
+            return T::template operator_contains<Return>(self, key);
+        }
+
+        template <typename Return, typename T>
+        auto operator_len(const T& self) {
+            return T::template operator_len<Return>(self);
+        }
+
+        template <typename T>
+        auto operator_dereference(const T& self) {
+            return T::template operator_dereference(self);
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_lt(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_lt<Return>(lhs, rhs);
+            } else {
+                return R::template operator_lt<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_le(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_le<Return>(lhs, rhs);
+            } else {
+                return R::template operator_le<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_eq(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_eq<Return>(lhs, rhs);
+            } else {
+                return R::template operator_eq<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_ne(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_ne<Return>(lhs, rhs);
+            } else {
+                return R::template operator_ne<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_ge(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_ge<Return>(lhs, rhs);
+            } else {
+                return R::template operator_ge<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_gt(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_gt<Return>(lhs, rhs);
+            } else {
+                return R::template operator_gt<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename T>
+        auto operator_abs(const T& self) {
+            return T::template operator_abs<Return>(self);
+        }
+
+        template <typename Return, typename T>
+        auto operator_invert(const T& self) {
+            return T::template operator_invert<Return>(self);
+        }
+
+        template <typename Return, typename T>
+        auto operator_pos(const T& self) {
+            return T::template operator_pos<Return>(self);
+        }
+
+        template <typename Return, typename T>
+        auto operator_increment(T& self) {
+            return T::template operator_increment<Return>(self);
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_add(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_add<Return>(lhs, rhs);
+            } else {
+                return R::template operator_add<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_iadd(L& lhs, const R& rhs) {
+            return L::template operator_iadd<Return>(lhs, rhs);
+        }
+
+        template <typename Return, typename T>
+        auto operator_neg(const T& self) {
+            return T::template operator_neg<Return>(self);
+        }
+
+        template <typename Return, typename T>
+        auto operator_decrement(T& self) {
+            return T::template operator_decrement<Return>(self);
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_sub(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_sub<Return>(lhs, rhs);
+            } else {
+                return R::template operator_sub<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_isub(L& lhs, const R& rhs) {
+            return L::template operator_isub<Return>(lhs, rhs);
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_mul(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_mul<Return>(lhs, rhs);
+            } else {
+                return R::template operator_mul<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_imul(L& lhs, const R& rhs) {
+            return L::template operator_imul<Return>(lhs, rhs);
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_truediv(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_truediv<Return>(lhs, rhs);
+            } else {
+                return R::template operator_truediv<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_itruediv(L& lhs, const R& rhs) {
+            return L::template operator_itruediv<Return>(lhs, rhs);
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_floordiv(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_floordiv<Return>(lhs, rhs);
+            } else {
+                return R::template operator_floordiv<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_ifloordiv(L& lhs, const R& rhs) {
+            return L::template operator_ifloordiv<Return>(lhs, rhs);
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_mod(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_mod<Return>(lhs, rhs);
+            } else {
+                return R::template operator_mod<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_imod(L& lhs, const R& rhs) {
+            return L::template operator_imod<Return>(lhs, rhs);
+        }
+
+        template <typename Return, typename Base, typename Exp>
+        auto operator_pow(const Base& base, const Exp& exp) {
+            if constexpr (std::is_base_of_v<Object, Base>) {
+                return Base::template operator_pow<Return>(base, exp);
+            } else {
+                return Exp::template operator_pow<Return>(base, exp);
+            }
+        }
+
+        template <typename Return, typename Base, typename Exp, typename Mod>
+        auto operator_pow(const Base& base, const Exp& exp, const Mod& mod) {
+            if constexpr (std::is_base_of_v<Object, Base>) {
+                return Base::template operator_pow<Return>(base, exp, mod);
+            } else {
+                return Exp::template operator_pow<Return>(base, exp, mod);
+            }
+        }
+
+        template <typename Return, typename Base, typename Exp>
+        auto operator_ipow(Base& base, const Exp& exp) {
+            return Base::template operator_ipow<Return>(base, exp);
+        }
+
+        template <typename Return, typename Base, typename Exp, typename Mod>
+        auto operator_ipow(Base& base, const Exp& exp, const Mod& mod) {
+            return Base::template operator_ipow<Return>(base, exp, mod);
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_lshift(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_lshift<Return>(lhs, rhs);
+            } else {
+                return R::template operator_lshift<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_ilshift(L& lhs, const R& rhs) {
+            return L::template operator_ilshift<Return>(lhs, rhs);
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_rshift(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_rshift<Return>(lhs, rhs);
+            } else {
+                return R::template operator_rshift<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_irshift(L& lhs, const R& rhs) {
+            return L::template operator_irshift<Return>(lhs, rhs);
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_and(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_and<Return>(lhs, rhs);
+            } else {
+                return R::template operator_and<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_iand(L& lhs, const R& rhs) {
+            return L::template operator_iand<Return>(lhs, rhs);
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_or(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_or<Return>(lhs, rhs);
+            } else {
+                return R::template operator_or<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_ior(L& lhs, const R& rhs) {
+            return L::template operator_ior<Return>(lhs, rhs);
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_xor(const L& lhs, const R& rhs) {
+            if constexpr (std::is_base_of_v<Object, L>) {
+                return L::template operator_xor<Return>(lhs, rhs);
+            } else {
+                return R::template operator_xor<Return>(lhs, rhs);
+            }
+        }
+
+        template <typename Return, typename L, typename R>
+        auto operator_ixor(L& lhs, const R& rhs) {
+            return L::template operator_ixor<Return>(lhs, rhs);
+        }
+
+    }
 
     // NOTE: using a secondary helper struct to handle double underscore attributes
     // delays template instantiation enough to prevent ambiguities with specializations
@@ -398,18 +708,6 @@ namespace impl {
     template <> struct getattr_helper<"__index__">          : Returns<Function> {};
     template <> struct setattr_helper<"__index__">          : Returns<void> {};
     template <> struct delattr_helper<"__index__">          : Returns<void> {};
-    template <> struct getattr_helper<"__round__">          : Returns<Function> {};
-    template <> struct setattr_helper<"__round__">          : Returns<void> {};
-    template <> struct delattr_helper<"__round__">          : Returns<void> {};
-    template <> struct getattr_helper<"__trunc__">          : Returns<Function> {};
-    template <> struct setattr_helper<"__trunc__">          : Returns<void> {};
-    template <> struct delattr_helper<"__trunc__">          : Returns<void> {};
-    template <> struct getattr_helper<"__floor__">          : Returns<Function> {};
-    template <> struct setattr_helper<"__floor__">          : Returns<void> {};
-    template <> struct delattr_helper<"__floor__">          : Returns<void> {};
-    template <> struct getattr_helper<"__ceil__">           : Returns<Function> {};
-    template <> struct setattr_helper<"__ceil__">           : Returns<void> {};
-    template <> struct delattr_helper<"__ceil__">           : Returns<void> {};
     template <> struct getattr_helper<"__enter__">          : Returns<Function> {};
     template <> struct setattr_helper<"__enter__">          : Returns<void> {};
     template <> struct delattr_helper<"__enter__">          : Returns<void> {};
@@ -445,22 +743,27 @@ namespace impl {
     concept object_operand =
         std::derived_from<L, Object> || std::derived_from<R, Object>;
 
+    template <typename L, typename R, typename Mode>
+    concept div_mode = requires(const L& lhs, const R& rhs, const Mode& mode) {
+        mode.div(lhs, rhs);
+    };
+
+    template <typename L, typename R, typename Mode>
+    concept mod_mode = requires(const L& lhs, const R& rhs, const Mode& mode) {
+        mode.mod(lhs, rhs);
+    };
+
+    template <typename L, typename R, typename Mode>
+    concept divmod_mode = requires(const L& lhs, const R& rhs, const Mode& mode) {
+        mode.divmod(lhs, rhs);
+    };
+
+    template <typename O, typename Mode>
+    concept round_mode = requires(const O& obj, const Mode& mode) {
+        mode.round(obj);
+    };
+
 }
-
-
-// NOTE: proxies use the control structs of their wrapped types, so they don't need to
-// be considered separately.  The operator overloads handle this internally through a
-// recursive constexpr branch.
-
-
-// NOTE: if DELETE_OPERATOR_UNLESS_ENABLED is defined, then all competing operator
-// overloads will be deleted, forcing the use of the control struct architecture.
-// Otherwise, other global overloads of these operators will be considered during
-// template instantiation, potentially causing ambiguities or inconsistent results.
-// Ideally, these wouldn't need to be deleted, and just wouldn't be considered at all
-// during template instantiation, which would improve compiler diagnostics over an
-// explicitly deleted alternative.
-#define DELETE_OPERATOR_UNLESS_ENABLED
 
 
 ////////////////////
@@ -641,6 +944,21 @@ template <impl::proxy_like T, typename Key>
 struct __contains__<T, Key> : __contains__<typename T::Wrapped, Key> {};
 
 
+///////////////////////////
+////    DEREFERENCE    ////
+///////////////////////////
+
+
+template <typename T> requires (__iter__<T>::enable)
+inline auto operator*(const T& obj) {
+    if constexpr (impl::proxy_like<T>) {
+        return *obj.value();
+    } else {
+        return impl::ops::operator_dereference(obj);
+    }
+}
+
+
 ////////////////////
 ////    HASH    ////
 ////////////////////
@@ -695,22 +1013,14 @@ inline auto operator<(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs < rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_lt<Return>(lhs, rhs);
-        } else {
-            return R::template operator_lt<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_lt<Return>(lhs, rhs);
     }
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__lt__<L, R>::enable)
-    inline auto operator<(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__lt__<L, R>::enable)
+inline auto operator<(const L& lhs, const R& rhs) = delete;
 
 
 //////////////////////////////////
@@ -749,22 +1059,14 @@ inline auto operator<=(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs <= rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_le<Return>(lhs, rhs);
-        } else {
-            return R::template operator_le<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_le<Return>(lhs, rhs);
     }
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__le__<L, R>::enable)
-    inline auto operator<=(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__le__<L, R>::enable)
+inline auto operator<=(const L& lhs, const R& rhs) = delete;
 
 
 /////////////////////
@@ -803,22 +1105,14 @@ inline auto operator==(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs == rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_eq<Return>(lhs, rhs);
-        } else {
-            return R::template operator_eq<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_eq<Return>(lhs, rhs);
     }
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__eq__<L, R>::enable)
-    inline auto operator==(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__eq__<L, R>::enable)
+inline auto operator==(const L& lhs, const R& rhs) = delete;
 
 
 ////////////////////////
@@ -857,22 +1151,14 @@ inline auto operator!=(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs != rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_ne<Return>(lhs, rhs);
-        } else {
-            return R::template operator_ne<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_ne<Return>(lhs, rhs);
     }
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__ne__<L, R>::enable)
-    inline auto operator!=(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__ne__<L, R>::enable)
+inline auto operator!=(const L& lhs, const R& rhs) = delete;
 
 
 /////////////////////////////////////
@@ -911,22 +1197,14 @@ inline auto operator>=(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs >= rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_ge<Return>(lhs, rhs);
-        } else {
-            return R::template operator_ge<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_ge<Return>(lhs, rhs);
     }
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__ge__<L, R>::enable)
-    inline auto operator>=(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__ge__<L, R>::enable)
+inline auto operator>=(const L& lhs, const R& rhs) = delete;
 
 
 ////////////////////////////
@@ -965,22 +1243,14 @@ inline auto operator>(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs > rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_gt<Return>(lhs, rhs);
-        } else {
-            return R::template operator_gt<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_gt<Return>(lhs, rhs);
     }
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__gt__<L, R>::enable)
-    inline auto operator>(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__gt__<L, R>::enable)
+inline auto operator>(const L& lhs, const R& rhs) = delete;
 
 
 ///////////////////
@@ -1015,11 +1285,7 @@ inline auto abs(const T& obj) {
     if constexpr (impl::proxy_like<T>) {
         return abs(obj.value());
     } else {
-        PyObject* result = PyNumber_Absolute(obj.ptr());
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return reinterpret_steal<Return>(result);
+        return impl::ops::operator_abs<Return>(obj);
     }
 }
 
@@ -1062,17 +1328,13 @@ inline auto operator~(const T& self) {
     if constexpr (impl::proxy_like<T>) {
         return ~self.value();
     } else {
-        return T::template operator_invert<Return>(self);
+        return impl::ops::operator_invert<Return>(self);
     }
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <std::derived_from<Object> T> requires (!__invert__<T>::enable)
-    inline auto operator~(const T& self) = delete;
-
-#endif
+template <std::derived_from<Object> T> requires (!__invert__<T>::enable)
+inline auto operator~(const T& self) = delete;
 
 
 ////////////////////////
@@ -1105,17 +1367,13 @@ inline auto operator+(const T& self) {
     if constexpr (impl::proxy_like<T>) {
         return +self.value();
     } else {
-        return T::template operator_pos<Return>(self);
+        return impl::ops::operator_pos<Return>(self);
     }
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <std::derived_from<Object> T> requires (!__pos__<T>::enable)
-    inline auto operator+(const T& self) = delete;
-
-#endif
+template <std::derived_from<Object> T> requires (!__pos__<T>::enable)
+inline auto operator+(const T& self) = delete;
 
 
 ////////////////////////
@@ -1148,17 +1406,13 @@ inline auto operator-(const T& self) {
     if constexpr (impl::proxy_like<T>) {
         return -self.value();
     } else {
-        return T::template operator_neg<Return>(self);
+        return impl::ops::operator_neg<Return>(self);
     }
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <std::derived_from<Object> T> requires (!__neg__<T>::enable)
-    inline auto operator-(const T& self) = delete;
-
-#endif
+template <std::derived_from<Object> T> requires (!__neg__<T>::enable)
+inline auto operator-(const T& self) = delete;
 
 
 /////////////////////////
@@ -1184,7 +1438,7 @@ inline T& operator++(T& self) {
     if constexpr (impl::proxy_like<T>) {
         ++self.value();
     } else {
-        T::template operator_increment<Return>(self);
+        impl::ops::operator_increment<Return>(self);
     }
     return self;
 }
@@ -1203,22 +1457,18 @@ inline T operator++(T& self, int) {
     if constexpr (impl::proxy_like<T>) {
         ++self.value();
     } else {
-        T::template operator_increment<Return>(self);
+        impl::ops::operator_increment<Return>(self);
     }
     return copy;
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <std::derived_from<Object> T> requires (!__increment__<T>::enable)
-    inline T& operator++(T& self) = delete;
+template <std::derived_from<Object> T> requires (!__increment__<T>::enable)
+inline T& operator++(T& self) = delete;
 
 
-    template <std::derived_from<Object> T> requires (!__increment__<T>::enable)
-    inline T operator++(T& self, int) = delete;
-
-#endif
+template <std::derived_from<Object> T> requires (!__increment__<T>::enable)
+inline T operator++(T& self, int) = delete;
 
 
 /////////////////////////
@@ -1244,7 +1494,7 @@ inline T& operator--(T& self) {
     if constexpr (impl::proxy_like<T>) {
         --self.value();
     } else {
-        T::template operator_decrement<Return>(self);
+        impl::ops::operator_decrement<Return>(self);
     }
     return self;
 }
@@ -1263,22 +1513,18 @@ inline T operator--(T& self, int) {
     if constexpr (impl::proxy_like<T>) {
         --self.value();
     } else {
-        T::template operator_decrement<Return>(self);
+        impl::ops::operator_decrement<Return>(self);
     }
     return copy;
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <std::derived_from<Object> T> requires (!__decrement__<T>::enable)
-    inline T& operator--(T& self) = delete;
+template <std::derived_from<Object> T> requires (!__decrement__<T>::enable)
+inline T& operator--(T& self) = delete;
 
 
-    template <std::derived_from<Object> T> requires (!__decrement__<T>::enable)
-    inline T operator--(T& self, int) = delete;
-
-#endif
+template <std::derived_from<Object> T> requires (!__decrement__<T>::enable)
+inline T operator--(T& self, int) = delete;
 
 
 ///////////////////
@@ -1334,11 +1580,7 @@ inline auto operator+(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs + rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_add<Return>(lhs, rhs);
-        } else {
-            return R::template operator_add<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_add<Return>(lhs, rhs);
     }
 }
 
@@ -1357,23 +1599,19 @@ inline L& operator+=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs += rhs.value();
     } else {
-        L::template operator_iadd<Return>(lhs, rhs);
+        impl::ops::operator_iadd<Return>(lhs, rhs);
     }
     return lhs;
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__add__<L, R>::enable)
-    inline auto operator+(const L& lhs, const R& rhs) = delete;
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__add__<L, R>::enable)
+inline auto operator+(const L& lhs, const R& rhs) = delete;
 
 
-    template <std::derived_from<Object> L, typename R> requires (!__iadd__<L, R>::enable)
-    inline auto operator+=(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <std::derived_from<Object> L, typename R> requires (!__iadd__<L, R>::enable)
+inline auto operator+=(const L& lhs, const R& rhs) = delete;
 
 
 ////////////////////////
@@ -1429,11 +1667,7 @@ inline auto operator-(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs - rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_sub<Return>(lhs, rhs);
-        } else {
-            return R::template operator_sub<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_sub<Return>(lhs, rhs);
     }
 }
 
@@ -1452,23 +1686,19 @@ inline L& operator-=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs -= rhs.value();
     } else {
-        L::template operator_isub<Return>(lhs, rhs);
+        impl::ops::operator_isub<Return>(lhs, rhs);
     }
     return lhs;
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__sub__<L, R>::enable)
-    inline auto operator-(const L& lhs, const R& rhs) = delete;
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__sub__<L, R>::enable)
+inline auto operator-(const L& lhs, const R& rhs) = delete;
 
 
-    template <std::derived_from<Object> L, typename R> requires (!__isub__<L, R>::enable)
-    inline auto operator-=(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <std::derived_from<Object> L, typename R> requires (!__isub__<L, R>::enable)
+inline auto operator-=(const L& lhs, const R& rhs) = delete;
 
 
 ////////////////////////
@@ -1535,11 +1765,7 @@ inline auto operator*(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs * rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_mul<Return>(lhs, rhs);
-        } else {
-            return R::template operator_mul<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_mul<Return>(lhs, rhs);
     }
 }
 
@@ -1558,23 +1784,19 @@ inline L& operator*=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs *= rhs.value();
     } else {
-        L::template operator_imul<Return>(lhs, rhs);
+        impl::ops::operator_imul<Return>(lhs, rhs);
     }
     return lhs;
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__mul__<L, R>::enable)
-    inline auto operator*(const L& lhs, const R& rhs) = delete;
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__mul__<L, R>::enable)
+inline auto operator*(const L& lhs, const R& rhs) = delete;
 
 
-    template <std::derived_from<Object> L, typename R> requires (!__imul__<L, R>::enable)
-    inline auto operator*=(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <std::derived_from<Object> L, typename R> requires (!__imul__<L, R>::enable)
+inline auto operator*=(const L& lhs, const R& rhs) = delete;
 
 
 //////////////////////
@@ -1619,6 +1841,15 @@ template <impl::proxy_like L, impl::proxy_like R>
 struct __truediv__<L, R> : __truediv__<typename L::Wrapped, typename R::Wrapped> {};
 
 template <typename L, typename R>
+struct __floordiv__ { static constexpr bool enable = false; };
+template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
+struct __floordiv__<L, R> : __floordiv__<typename L::Wrapped, R> {};
+template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
+struct __floordiv__<L, R> : __floordiv__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::proxy_like R>
+struct __floordiv__<L, R> : __floordiv__<typename L::Wrapped, typename R::Wrapped> {};
+
+template <typename L, typename R>
 struct __itruediv__ { static constexpr bool enable = false; };
 template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
 struct __itruediv__<L, R> : __itruediv__<typename L::Wrapped, R> {};
@@ -1642,11 +1873,7 @@ inline auto operator/(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs / rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_truediv<Return>(lhs, rhs);
-        } else {
-            return R::template operator_truediv<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_truediv<Return>(lhs, rhs);
     }
 }
 
@@ -1665,23 +1892,19 @@ inline L& operator/=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs /= rhs.value();
     } else {
-        L::template operator_itruediv<Return>(lhs, rhs);
+        impl::ops::operator_itruediv<Return>(lhs, rhs);
     }
     return lhs;
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__truediv__<L, R>::enable)
-    inline auto operator/(const L& lhs, const R& rhs) = delete;
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__truediv__<L, R>::enable)
+inline auto operator/(const L& lhs, const R& rhs) = delete;
 
 
-    template <std::derived_from<Object> L, typename R> requires (!__itruediv__<L, R>::enable)
-    inline auto operator/=(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <std::derived_from<Object> L, typename R> requires (!__itruediv__<L, R>::enable)
+inline auto operator/=(const L& lhs, const R& rhs) = delete;
 
 
 ///////////////////////
@@ -1749,11 +1972,7 @@ inline auto operator%(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs % rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_mod<Return>(lhs, rhs);
-        } else {
-            return R::template operator_mod<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_mod<Return>(lhs, rhs);
     }
 }
 
@@ -1772,23 +1991,43 @@ inline L& operator%=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs %= rhs.value();
     } else {
-        L::template operator_imod<Return>(lhs, rhs);
+        impl::ops::operator_imod<Return>(lhs, rhs);
     }
     return lhs;
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__mod__<L, R>::enable)
-    inline auto operator%(const L& lhs, const R& rhs) = delete;
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__mod__<L, R>::enable)
+inline auto operator%(const L& lhs, const R& rhs) = delete;
 
 
-    template <std::derived_from<Object> L, typename R> requires (!__imod__<L, R>::enable)
-    inline auto operator%=(const L& lhs, const R& rhs) = delete;
+template <std::derived_from<Object> L, typename R> requires (!__imod__<L, R>::enable)
+inline auto operator%=(const L& lhs, const R& rhs) = delete;
 
-#endif
+
+/////////////////////
+////    ROUND    ////
+/////////////////////
+
+
+namespace impl {
+    template <> struct getattr_helper<"__round__">          : Returns<Function> {};
+    template <> struct setattr_helper<"__round__">          : Returns<void> {};
+    template <> struct delattr_helper<"__round__">          : Returns<void> {};
+
+    template <> struct getattr_helper<"__trunc__">          : Returns<Function> {};
+    template <> struct setattr_helper<"__trunc__">          : Returns<void> {};
+    template <> struct delattr_helper<"__trunc__">          : Returns<void> {};
+
+    template <> struct getattr_helper<"__floor__">          : Returns<Function> {};
+    template <> struct setattr_helper<"__floor__">          : Returns<void> {};
+    template <> struct delattr_helper<"__floor__">          : Returns<void> {};
+
+    template <> struct getattr_helper<"__ceil__">           : Returns<Function> {};
+    template <> struct setattr_helper<"__ceil__">           : Returns<void> {};
+    template <> struct delattr_helper<"__ceil__">           : Returns<void> {};
+}
 
 
 /////////////////////
@@ -1811,60 +2050,96 @@ namespace impl {
 }
 
 
-// TODO: move pow() here
+template <typename base, typename exponent>
+struct __pow__ { static constexpr bool enable = false; };
+template <impl::proxy_like base, typename exponent> requires (!impl::proxy_like<exponent>)
+struct __pow__<base, exponent> : __pow__<typename base::Wrapped, exponent> {};
+template <typename base, impl::proxy_like exponent> requires (!impl::proxy_like<base>)
+struct __pow__<base, exponent> : __pow__<base, typename exponent::Wrapped> {};
+template <impl::proxy_like base, impl::proxy_like exponent>
+struct __pow__<base, exponent> : __pow__<typename base::Wrapped, typename exponent::Wrapped> {};
 
 
-// /* Equivalent to Python `base ** exp` (exponentiation). */
-// template <typename L, typename R>
-// auto pow(const L& base, const R& exp) {
-//     if constexpr (impl::python_like<L> || impl::python_like<R>) {
-//         PyObject* result = PyNumber_Power(
-//             detail::object_or_cast(base).ptr(),
-//             detail::object_or_cast(exp).ptr(),
-//             Py_None
-//         );
-//         if (result == nullptr) {
-//             Exception::from_python();
+/* Equivalent to Python `base ** exp` (exponentiation). */
+template <typename Base, typename Exp> requires (__pow__<Base, Exp>::enable)
+auto pow(const Base& base, const Exp& exp) {
+    using Return = typename __pow__<Base, Exp>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "pow() must return a py::Object subclass.  Check your specialization "
+        "of __pow__ for this type and ensure the Return type is derived from "
+        "py::Object."
+    );
+    if constexpr (impl::proxy_like<Base>) {
+        return pow(base.value(), exp);
+    } else if constexpr (impl::proxy_like<Exp>) {
+        return pow(base, exp.value());
+    } else {
+        return impl::ops::operator_pow<Return>(base, exp);
+    }
+}
+
+
+/* Equivalent to Python `pow(base, exp)`, except that it takes a C++ value and applies
+std::pow() for identical semantics. */
+template <typename Base, typename Exp> requires (!impl::object_operand<Base, Exp>)
+auto pow(const Base& base, const Exp& exponent) {
+    if constexpr (impl::complex_like<Base> && impl::complex_like<Exp>) {
+        return std::common_type_t<Base, Exp>(
+            std::pow(base.real(), exponent.real()),
+            std::pow(base.imag(), exponent.imag())
+        );
+    } else if constexpr (impl::complex_like<Base>) {
+        return Base(
+            std::pow(base.real(), exponent),
+            std::pow(base.imag(), exponent)
+        );
+    } else if constexpr (impl::complex_like<Exp>) {
+        return Exp(
+            std::pow(base, exponent.real()),
+            std::pow(base, exponent.imag())
+        );
+    } else {
+        return std::pow(base, exponent);
+    }
+}
+
+
+/* Equivalent to Python `pow(base, exp, mod)`. */
+template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
+    requires (__pow__<Base, Exp>::enable)
+auto pow(const Base& base, const Exp& exp, const Mod& mod) {
+    using Return = typename __pow__<Base, Exp>::Return;
+    static_assert(
+        std::is_base_of_v<Object, Return>,
+        "pow() must return a py::Object subclass.  Check your specialization "
+        "of __pow__ for this type and ensure the Return type is derived from "
+        "py::Object."
+    );
+    if constexpr (impl::proxy_like<Base>) {
+        return pow(base.value(), exp, mod);
+    } else if constexpr (impl::proxy_like<Exp>) {
+        return pow(base, exp.value(), mod);
+    } else {
+        return impl::ops::operator_pow<Return>(base, exp, mod);
+    }
+}
+
+
+// /* Equivalent to Python `pow(base, exp, mod)`, but works on C++ integers with identical
+// semantics. */
+// template <std::integral Base, std::integral Exp, std::integral Mod>
+// auto pow(Base base, Exp exp, Mod mod) {
+//     std::common_type_t<Base, Exp, Mod> result = 1;
+//     base = py::mod(base, mod);
+//     while (exp > 0) {
+//         if (exp % 2) {
+//             result = py::mod(result * base, mod);
 //         }
-//         return reinterpret_steal<Object>(result);
-//     } else {
-//         return std::pow(base, exp);
+//         exp >>= 1;
+//         base = py::mod(base * base, mod);
 //     }
-// }
-
-
-// /* Equivalent to Python `pow(base, exp, mod)`. */
-// template <typename L, typename R, typename E>
-// auto pow(const L& base, const R& exp, const E& mod) {
-//     static_assert(
-//         (std::is_integral_v<L> || impl::python_like<L>) &&
-//         (std::is_integral_v<R> || impl::python_like<R>) &&
-//         (std::is_integral_v<E> || impl::python_like<E>),
-//         "pow() 3rd argument not allowed unless all arguments are integers"
-//     );
-
-//     if constexpr (impl::python_like<L> || impl::python_like<R> || impl::python_like<E>) {
-//         PyObject* result = PyNumber_Power(
-//             detail::object_or_cast(base).ptr(),
-//             detail::object_or_cast(exp).ptr(),
-//             detail::object_or_cast(mod).ptr()
-//         );
-//         if (result == nullptr) {
-//             Exception::from_python();
-//         }
-//         return reinterpret_steal<Object>(result);
-//     } else {
-//         std::common_type_t<L, R, E> result = 1;
-//         base = py::mod(base, mod);
-//         while (exp > 0) {
-//             if (exp % 2) {
-//                 result = py::mod(result * base, mod);
-//             }
-//             exp >>= 1;
-//             base = py::mod(base * base, mod);
-//         }
-//         return result;
-//     }
+//     return result;
 // }
 
 
@@ -1922,11 +2197,7 @@ inline auto operator<<(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs << rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_lshift<Return>(lhs, rhs);
-        } else {
-            return R::template operator_lshift<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_lshift<Return>(lhs, rhs);
     }
 }
 
@@ -1970,23 +2241,19 @@ inline L& operator<<=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs <<= rhs.value();
     } else {
-        L::template operator_ilshift<Return>(lhs, rhs);
+        impl::ops::operator_ilshift<Return>(lhs, rhs);
     }
     return lhs;
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__lshift__<L, R>::enable)
-    inline auto operator<<(const L& lhs, const R& rhs) = delete;
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__lshift__<L, R>::enable)
+inline auto operator<<(const L& lhs, const R& rhs) = delete;
 
 
-    template <std::derived_from<Object> L, typename R> requires (!__ilshift__<L, R>::enable)
-    inline auto operator<<=(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <std::derived_from<Object> L, typename R> requires (!__ilshift__<L, R>::enable)
+inline auto operator<<=(const L& lhs, const R& rhs) = delete;
 
 
 //////////////////////
@@ -2042,17 +2309,13 @@ inline auto operator>>(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs >> rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_rshift<Return>(lhs, rhs);
-        } else {
-            return R::template operator_rshift<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_rshift<Return>(lhs, rhs);
     }
 }
 
 
 template <typename L, typename R> requires (__irshift__<L, R>::enable)
-inline L& operator>>=(L& lhs, const L& rhs) {
+inline L& operator>>=(L& lhs, const R& rhs) {
     using Return = typename __irshift__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, L&>,
@@ -2065,23 +2328,19 @@ inline L& operator>>=(L& lhs, const L& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs >>= rhs.value();
     } else {
-        L::template operator_irshift<Return>(lhs, rhs);
+        impl::ops::operator_irshift<Return>(lhs, rhs);
     }
     return lhs;
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__rshift__<L, R>::enable)
-    inline auto operator>>(const L& lhs, const R& rhs) = delete;
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__rshift__<L, R>::enable)
+inline auto operator>>(const L& lhs, const R& rhs) = delete;
 
 
-    template <std::derived_from<Object> L, typename R> requires (!__irshift__<L, R>::enable)
-    inline auto operator>>=(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <std::derived_from<Object> L, typename R> requires (!__irshift__<L, R>::enable)
+inline auto operator>>=(const L& lhs, const R& rhs) = delete;
 
 
 ///////////////////
@@ -2137,11 +2396,7 @@ inline auto operator&(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs & rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_and<Return>(lhs, rhs);
-        } else {
-            return R::template operator_and<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_and<Return>(lhs, rhs);
     }
 }
 
@@ -2160,23 +2415,19 @@ inline L& operator&=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs &= rhs.value();
     } else {
-        L::template operator_iand<Return>(lhs, rhs);
+        impl::ops::operator_iand<Return>(lhs, rhs);
     }
     return lhs;
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__and__<L, R>::enable)
-    inline auto operator&(const L& lhs, const R& rhs) = delete;
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__and__<L, R>::enable)
+inline auto operator&(const L& lhs, const R& rhs) = delete;
 
 
-    template <std::derived_from<Object> L, typename R> requires (!__iand__<L, R>::enable)
-    inline auto operator&=(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <std::derived_from<Object> L, typename R> requires (!__iand__<L, R>::enable)
+inline auto operator&=(const L& lhs, const R& rhs) = delete;
 
 
 //////////////////
@@ -2233,11 +2484,7 @@ inline auto operator|(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs | rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_or<Return>(lhs, rhs);
-        } else {
-            return R::template operator_or<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_or<Return>(lhs, rhs);
     }
 }
 
@@ -2269,23 +2516,19 @@ inline L& operator|=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs |= rhs.value();
     } else {
-        L::template operator_ior<Return>(lhs, rhs);
+        impl::ops::operator_ior<Return>(lhs, rhs);
     }
     return lhs;
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__or__<L, R>::enable)
-    inline auto operator|(const L& lhs, const R& rhs) = delete;
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__or__<L, R>::enable)
+inline auto operator|(const L& lhs, const R& rhs) = delete;
 
 
-    template <std::derived_from<Object> L, typename R> requires (!__ior__<L, R>::enable)
-    inline auto operator|=(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <std::derived_from<Object> L, typename R> requires (!__ior__<L, R>::enable)
+inline auto operator|=(const L& lhs, const R& rhs) = delete;
 
 
 ///////////////////
@@ -2341,11 +2584,7 @@ inline auto operator^(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs ^ rhs.value();
     } else {
-        if constexpr (std::is_base_of_v<Object, L>) {
-            return L::template operator_xor<Return>(lhs, rhs);
-        } else {
-            return R::template operator_xor<Return>(lhs, rhs);
-        }
+        return impl::ops::operator_xor<Return>(lhs, rhs);
     }
 }
 
@@ -2364,28 +2603,23 @@ inline L& operator^=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs ^= rhs.value();
     } else {
-        L::template operator_ixor<Return>(lhs, rhs);
+        impl::ops::operator_ixor<Return>(lhs, rhs);
     }
     return lhs;
 }
 
 
-#ifdef DELETE_OPERATOR_UNLESS_ENABLED
-
-    template <typename L, typename R>
-        requires (impl::object_operand<L, R> && !__xor__<L, R>::enable)
-    inline auto operator^(const L& lhs, const R& rhs) = delete;
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__xor__<L, R>::enable)
+inline auto operator^(const L& lhs, const R& rhs) = delete;
 
 
-    template <std::derived_from<Object> L, typename R> requires (!__ixor__<L, R>::enable)
-    inline auto operator^=(const L& lhs, const R& rhs) = delete;
-
-#endif
+template <std::derived_from<Object> L, typename R> requires (!__ixor__<L, R>::enable)
+inline auto operator^=(const L& lhs, const R& rhs) = delete;
 
 
 }  // namespace py
 }  // namespace bertrand
 
 
-#undef DELETE_OPERATOR_UNLESS_ENABLED
 #endif  // BERTRAND_PYTHON_COMMON_OPERATORS_H
