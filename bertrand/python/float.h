@@ -225,6 +225,24 @@ public:
         return PyFloat_AS_DOUBLE(this->ptr());
     }
 
+    /* Get the zero singleton. */
+    static const Float& zero() {
+        static const Float val = 0.0;
+        return val;
+    }
+
+    /* Get the half singleton. */
+    static const Float& half() {
+        static const Float val = 0.5;
+        return val;
+    }
+
+    /* Get the one singleton. */
+    static const Float& one() {
+        static const Float val = 1.0;
+        return val;
+    }
+
 };
 
 

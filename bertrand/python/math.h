@@ -1,3 +1,4 @@
+#include "bertrand/python.h"
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -10,6 +11,7 @@
 
 #include "common.h"
 #include "int.h"
+#include "float.h"
 #include "tuple.h"
 
 
@@ -71,6 +73,50 @@ namespace py {
 
 
 
+namespace impl {
+
+    template <typename L, typename R, typename Mode>
+    concept div_mode = requires(const L& lhs, const R& rhs, const Mode& mode) {
+        mode.div(lhs, rhs);
+    };
+
+    template <typename L, typename R, typename Mode>
+    concept mod_mode = requires(const L& lhs, const R& rhs, const Mode& mode) {
+        mode.mod(lhs, rhs);
+    };
+
+    template <typename L, typename R, typename Mode>
+    concept divmod_mode = requires(const L& lhs, const R& rhs, const Mode& mode) {
+        mode.divmod(lhs, rhs);
+    };
+
+    template <typename O, typename Mode>
+    concept round_mode = requires(const O& obj, const Mode& mode) {
+        mode.round(obj);
+    };
+
+    size_t pow_int(size_t base, size_t exp) {
+        size_t result = 1;
+        while (exp > 0) {
+            if (exp % 2 == 1) {
+                result *= base;
+            }
+            base *= base;
+            exp /= 2;
+        }
+        return result;
+    }
+
+}
+
+
+
+// TODO: How should round() work when called on integers?  Should this be included in
+// the CRTP class, and just return the argument without modification?
+
+// TODO: also figure out how to handle digits.
+
+
 /* A collection of tag structs used to implement cross-language rounding strategies for
 basic `div()`, `mod()`, `divmod()`, and `round()` operators. */
 class Round {
@@ -117,6 +163,9 @@ class Round {
 
         template <typename L, typename R> requires (!impl::object_operand<L, R>)
         static auto div(const L& lhs, const R& rhs) {
+            if (rhs == 0) {
+                throw ZeroDivisionError("division by zero");
+            }
             return Derived::cpp_div(lhs, rhs);
         }
 
@@ -129,6 +178,9 @@ class Round {
 
         template <typename L, typename R> requires (!impl::object_operand<L, R>)
         static auto mod(const L& lhs, const R& rhs) {
+            if (rhs == 0) {
+                throw ZeroDivisionError("division by zero");
+            }
             return Derived::cpp_mod(lhs, rhs);
         }
 
@@ -144,7 +196,57 @@ class Round {
 
         template <typename L, typename R> requires (!impl::object_operand<L, R>)
         static auto divmod(const L& lhs, const R& rhs) {
+            if (rhs == 0) {
+                throw ZeroDivisionError("division by zero");
+            }
             return Derived::cpp_divmod(lhs, rhs);
+        }
+
+        template <typename O>
+        static auto round(const O& obj, int digits) {
+            // negative digits uniformly divide by a power of 10 with rounding
+            if (digits < 0) {
+                size_t scale = impl::pow_int(10, -digits);
+                if constexpr (std::derived_from<O, Object>) {
+                    Int py_scale = scale;
+                    return Derived::div(obj, py_scale) * py_scale;
+                } else {
+                    return Derived::div(obj, scale) * scale;
+                }
+            }
+
+            // integers and bools are unaffected
+            if constexpr (impl::bool_like<O> || impl::int_like<O>) {
+                return obj;
+
+            // generic objects are tested for integer-ness
+            } else if constexpr (std::same_as<O, Object>) {
+                if (PyLong_Check(obj.ptr())) {
+                    return obj;
+                }
+                Int scale = impl::pow_int(10, digits);
+                Object whole = Round::Floor::div(obj, Int::one());
+                return whole + (Derived::py_round((obj - whole) * scale) / scale);
+
+            // Other objects are split using floor division, minimizing translation
+            } else if constexpr (std::derived_from<O, Object>) {
+                Int scale = impl::pow_int(10, digits);
+                auto whole = Round::Floor::div(obj, Int::one());
+                return whole + (Derived::py_round((obj - whole) * scale) / scale);
+
+            // C++ floats can use an STL method to avoid precision loss
+            } else if constexpr (std::floating_point<O>) {
+                size_t scale = impl::pow_int(10, digits);
+                O whole, fract;
+                fract = std::modf(obj, &whole);
+                return whole + (Derived::cpp_round(fract * scale) / scale);
+
+            // all other C++ objects are handled just like Python objects
+            } else {
+                size_t scale = impl::pow_int(10, digits);
+                auto whole = Round::Floor::div(obj, 1);
+                return whole + (Derived::cpp_round((obj - whole) * scale) / scale);
+            }
         }
 
     };
@@ -329,8 +431,7 @@ public:
 
     };
 
-    class Floor : public Base<Floor> {
-        friend Base<Floor>;
+    struct Floor : public Base<Floor> {
 
         template <typename Quotient>
         static auto py_div(const Object& lhs, const Object& rhs) {
@@ -354,11 +455,16 @@ public:
             );
         }
 
+        template <typename O>
+        static auto py_round(const O& obj) {
+            return div(obj, Int::one());
+        }
+
         template <typename L, typename R>
         static auto cpp_div(const L& lhs, const R& rhs) {
             auto quotient = lhs / rhs;
             if constexpr (std::signed_integral<L> && std::signed_integral<R>) {
-                return quotient - ((quotient < 0) && ((lhs % rhs) != 0));
+                return quotient - (((lhs < 0) ^ (rhs < 0)) && ((lhs % rhs) != 0));  // TODO: subtle bug if quotient rounds to zero
             } else if constexpr (std::integral<L> && std::integral<R>) {
                 return quotient;
             } else {
@@ -381,10 +487,8 @@ public:
             return std::make_pair(div(lhs, rhs), mod(lhs, rhs));
         }
 
-    public:
-
         template <typename O>
-        static auto round(const O& obj) {
+        static auto cpp_round(const O& obj) {
             if constexpr (std::floating_point<O>) {
                 return std::floor(obj);
             } else {
@@ -394,8 +498,7 @@ public:
 
     };
 
-    class Ceiling : public Base<Ceiling> {
-        friend Base<Ceiling>;
+    struct Ceiling : public Base<Ceiling> {
 
         template <typename Quotient>
         static auto py_div(const Object& lhs, const Object& rhs) {
@@ -424,11 +527,16 @@ public:
             );
         }
 
+        template <typename O>
+        static auto py_round(const O& obj) {
+            return div(obj, Int::one());
+        }
+
         template <typename L, typename R>
         static auto cpp_div(const L& lhs, const R& rhs) {
             auto quotient = lhs / rhs;
             if constexpr (std::integral<L> && std::integral<R>) {
-                return quotient + ((quotient > 0) && ((lhs % rhs) != 0));
+                return quotient + (((lhs < 0) == (rhs < 0)) && ((lhs % rhs) != 0));
             } else {
                 return std::ceil(quotient);
             }
@@ -449,10 +557,8 @@ public:
             return std::make_pair(div(lhs, rhs), mod(lhs, rhs));
         }
 
-    public:
-
         template <typename O>
-        static auto round(const O& obj) {
+        static auto cpp_round(const O& obj) {
             if constexpr (std::floating_point<O>) {
                 return std::ceil(obj);
             } else {
@@ -462,8 +568,7 @@ public:
 
     };
 
-    class Down : public Base<Down> {
-        friend Base<Down>;
+    struct Down : public Base<Down> {
 
         template <typename Quotient>
         static auto py_div(const Object& lhs, const Object& rhs) {
@@ -507,6 +612,11 @@ public:
             }
         }
 
+        template <typename O>
+        static auto py_round(const O& obj) {
+            return div(obj, Int::one());
+        }
+
         template <typename L, typename R>
         static auto cpp_div(const L& lhs, const R& rhs) {
             if ((lhs < 0) ^ (rhs < 0)) {
@@ -534,10 +644,8 @@ public:
             }
         }
 
-    public:
-
         template <typename O>
-        static auto round(const O& obj) {
+        static auto cpp_round(const O& obj) {
             if constexpr (std::floating_point<O>) {
                 return std::trunc(obj);
             } else {
@@ -547,8 +655,7 @@ public:
 
     };
 
-    class Up : public Base<Up> {
-        friend Base<Up>;
+    struct Up : public Base<Up> {
 
         template <typename Quotient>
         static auto py_div(const Object& lhs, const Object& rhs) {
@@ -592,6 +699,11 @@ public:
             }
         }
 
+        template <typename O>
+        static auto py_round(const O& obj) {
+            return div(obj, Int::one());
+        }
+
         template <typename L, typename R>
         static auto cpp_div(const L& lhs, const R& rhs) {
             if ((lhs < 0) ^ (rhs < 0)) {
@@ -619,10 +731,8 @@ public:
             }
         }
 
-    public:
-
         template <typename O>
-        static auto round(const O& obj) {
+        static auto cpp_round(const O& obj) {
             if constexpr (std::floating_point<O>) {
                 if (obj < 0) {
                     return std::floor(obj);
@@ -636,97 +746,138 @@ public:
 
     };
 
-    struct HalfFloor {
-        template <typename L, typename R>
-        inline static auto div(const L& lhs, const R& rhs);
-        template <typename L, typename R>
-        inline static auto mod(const L& lhs, const R& rhs);
-        template <typename L, typename R>
-        inline static auto divmod(const L& lhs, const R& rhs);
+    struct HalfFloor : public Base<HalfFloor> {
+
+        template <typename Quotient>
+        static auto py_div(const Object& lhs, const Object& rhs) {
+
+        }
+
+        template <typename Remainder>
+        static auto py_mod(const Object& lhs, const Object& rhs) {
+
+        }
+
+        template <typename Quotient, typename Remainder>
+        static auto py_divmod(const Object& lhs, const Object& rhs) {
+
+        }
 
         template <typename O>
-        inline static auto round(const O& obj) {
-            return Round::Ceiling::round(obj - 0.5);
+        static auto py_round(const O& obj) {
+            return Ceiling::py_round(obj - Float::half());
+        }
+
+        template <typename L, typename R>
+        static auto cpp_div(const L& lhs, const R& rhs) {
+
+        }
+
+        template <typename L, typename R>
+        static auto cpp_mod(const L& lhs, const R& rhs) {
+
+        }
+
+        template <typename L, typename R>
+        static auto cpp_divmod(const L& lhs, const R& rhs) {
+
+        }
+
+        template <typename O>
+        static auto cpp_round(const O& obj) {
+            return Ceiling::cpp_round(obj - 0.5);
         }
 
     };
 
-    struct HalfCeiling {
-        template <typename L, typename R>
-        inline static auto div(const L& lhs, const R& rhs);
-        template <typename L, typename R>
-        inline static auto mod(const L& lhs, const R& rhs);
-        template <typename L, typename R>
-        inline static auto divmod(const L& lhs, const R& rhs);
+    struct HalfCeiling : public Base<HalfCeiling> {
 
         template <typename O>
-        inline static auto round(const O& obj) {
-            return Floor::round(obj + 0.5);
+        static auto py_round(const O& obj) {
+            return Floor::py_round(obj + Float::half());
+        }
+
+        template <typename O>
+        static auto cpp_round(const O& obj) {
+            return Floor::cpp_round(obj + 0.5);
         }
 
     };
 
-    struct HalfDown {
-        template <typename L, typename R>
-        inline static auto div(const L& lhs, const R& rhs);
-        template <typename L, typename R>
-        inline static auto mod(const L& lhs, const R& rhs);
-        template <typename L, typename R>
-        inline static auto divmod(const L& lhs, const R& rhs);
+    struct HalfDown : public Base<HalfDown> {
 
         template <typename O>
-        inline static auto round(const O& obj) {
-            if (obj > 0) {
-                return Round::HalfFloor::round(obj);
+        static auto py_round(const O& obj) {
+            if (obj > Int::zero()) {
+                return HalfFloor::py_round(obj);
             } else {
-                return Round::HalfCeiling::round(obj);
+                return HalfCeiling::py_round(obj);
+            }
+        }
+
+        template <typename O>
+        static auto cpp_round(const O& obj) {
+            if (obj > 0) {
+                return HalfFloor::cpp_round(obj);
+            } else {
+                return HalfCeiling::cpp_round(obj);
             }
         }
 
     };
 
-    struct HalfUp {
-        template <typename L, typename R>
-        inline static auto div(const L& lhs, const R& rhs);
-        template <typename L, typename R>
-        inline static auto mod(const L& lhs, const R& rhs);
-        template <typename L, typename R>
-        inline static auto divmod(const L& lhs, const R& rhs);
+    struct HalfUp : public Base<HalfUp> {
 
         template <typename O>
-        inline static auto round(const O& obj) {
+        static auto py_round(const O& obj) {
+            if (obj > Int::zero()) {
+                return HalfCeiling::py_round(obj);
+            } else {
+                return HalfFloor::py_round(obj);
+            }
+        }
+
+        template <typename O>
+        static auto cpp_round(const O& obj) {
             if constexpr (std::floating_point<O>) {
                 return std::round(obj);  // always rounds away from zero
             } else {
                 if (obj > 0) {
-                    return Round::HalfCeiling::round(obj);
+                    return HalfCeiling::cpp_round(obj);
                 } else {
-                    return Round::HalfFloor::round(obj);
+                    return HalfFloor::cpp_round(obj);
                 }
             }
         }
 
     };
 
-    struct HalfEven {
-        template <typename L, typename R>
-        inline static auto div(const L& lhs, const R& rhs);
-        template <typename L, typename R>
-        inline static auto mod(const L& lhs, const R& rhs);
-        template <typename L, typename R>
-        inline static auto divmod(const L& lhs, const R& rhs);
+    class HalfEven : public Base<HalfEven> {
+
+        static Function get_round() {
+            PyObject* builtins = PyEval_GetBuiltins();
+            PyObject* round = PyDict_GetItemString(builtins, "round");
+            if (round == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Function>(round);
+        }
+
+    public:
 
         template <typename O>
-        inline static auto round(const O& obj) {
-            if constexpr (impl::python_like<O>) {
-                static const Function py_round = builtins()["round"];
-                PyObject* result = PyObject_CallOneArg(py_round.ptr(), obj.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<O>(result);
+        static auto py_round(const O& obj) {
+            static const Function func = get_round();
+            PyObject* result = PyObject_CallOneArg(func.ptr(), obj.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<O>(result);
+        }
 
-            } else if constexpr (std::floating_point<O>) {
+        template <typename O>
+        static auto cpp_round(const O& obj) {
+            if constexpr (std::floating_point<O>) {
                 O whole, fract;
                 fract = std::modf(obj, &whole);
                 if (std::abs(fract) == 0.5) {
@@ -765,51 +916,16 @@ public:
 };
 
 
-
-namespace impl {
-
-    template <typename L, typename R, typename Mode>
-    concept div_mode = requires(const L& lhs, const R& rhs, const Mode& mode) {
-        mode.div(lhs, rhs);
-    };
-
-    template <typename L, typename R, typename Mode>
-    concept mod_mode = requires(const L& lhs, const R& rhs, const Mode& mode) {
-        mode.mod(lhs, rhs);
-    };
-
-    template <typename L, typename R, typename Mode>
-    concept divmod_mode = requires(const L& lhs, const R& rhs, const Mode& mode) {
-        mode.divmod(lhs, rhs);
-    };
-
-    template <typename O, typename Mode>
-    concept round_mode = requires(const O& obj, const Mode& mode) {
-        mode.round(obj);
-    };
-
-}
-
-
 /* Divide the left and right operands according to the specified rounding rule. */
 template <typename L, typename R, typename Mode = Round::Floor>
     requires (impl::div_mode<L, R, Mode>)
 inline auto div(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
-        return mode.div(lhs.value(), rhs);
-
+        return div(lhs.value(), rhs);
     } else if constexpr (impl::proxy_like<R>) {
-        return mode.div(lhs, rhs.value());
-
+        return div(lhs, rhs.value());
     } else {
-        if constexpr (impl::object_operand<L, R>) {
-            return mode.div(lhs, rhs);
-        } else {
-            if (rhs == 0) {
-                throw ZeroDivisionError("division by zero");
-            }
-            return mode.div(lhs, rhs);
-        }
+        return mode.div(lhs, rhs);
     }
 }
 
@@ -817,13 +933,13 @@ inline auto div(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
 /* Divide the left and right operands according to the specified rounding rule. */
 template <typename L, typename R, typename Mode = Round::Floor>
     requires (impl::mod_mode<L, R, Mode>)
-inline auto mod(const L& l, const R& r, const Mode& mode = Round::FLOOR) {
+inline auto mod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
-        return mode.mod(l.value(), r);
+        return mod(lhs.value(), rhs);
     } else if constexpr (impl::proxy_like<R>) {
-        return mode.mod(l, r.value());
+        return mod(lhs, rhs.value());
     } else {
-        return mode.mod(l, r);
+        return mode.mod(lhs, rhs);
     }
 }
 
@@ -831,24 +947,27 @@ inline auto mod(const L& l, const R& r, const Mode& mode = Round::FLOOR) {
 /* Divide the left and right operands according to the specified rounding rule. */
 template <typename L, typename R, typename Mode = Round::Floor>
     requires (impl::divmod_mode<L, R, Mode>)
-inline auto divmod(const L& l, const R& r, const Mode& mode = Round::FLOOR) {
+inline auto divmod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
-        return mode.divmod(l.value(), r);
+        return divmod(lhs.value(), rhs);
     } else if constexpr (impl::proxy_like<R>) {
-        return mode.divmod(l, r.value());
+        return divmod(lhs, rhs.value());
     } else {
-        return mode.divmod(l, r);
+        return mode.divmod(lhs, rhs);
     }
 }
 
 
+/* Round the operand to a given number of digits according to the specified rounding
+rule.  Positive digits count to the right of the decimal point, while negative values
+count to the left. */
 template <typename O, typename Mode = Round::HalfEven>
     requires (impl::round_mode<O, Mode>)
-inline auto round(const O& obj, const Mode& mode = Round::HALF_EVEN) {
+inline auto round(const O& obj, int digits = 0, const Mode& mode = Round::HALF_EVEN) {
     if constexpr (impl::proxy_like<O>) {
-        return mode.round(obj.value());
+        return round(obj.value(), digits, mode);
     } else {
-        return mode.round(obj);
+        return mode.round(obj, digits);
     }
 }
 

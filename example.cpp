@@ -166,9 +166,17 @@ void run() {
     // });
 
 
-    py::Tuple args = {"a", "b", "c"};
-    py::print(*args);
+    py::Int x = 1;
+    py::Int y = 2;
+    // double x = -4;
+    // double y = 3;
 
+    for (size_t i = 0; i < 1000000; ++i) {
+        volatile auto z = py::div(x, y, py::Round::TRUE);
+        // volatile auto z = x / y;
+    }
+
+    // py::print(py::div(x, y, py::Round::DOWN));
 
 
 
