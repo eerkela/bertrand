@@ -743,26 +743,6 @@ namespace impl {
     concept object_operand =
         std::derived_from<L, Object> || std::derived_from<R, Object>;
 
-    template <typename L, typename R, typename Mode>
-    concept div_mode = requires(const L& lhs, const R& rhs, const Mode& mode) {
-        mode.div(lhs, rhs);
-    };
-
-    template <typename L, typename R, typename Mode>
-    concept mod_mode = requires(const L& lhs, const R& rhs, const Mode& mode) {
-        mode.mod(lhs, rhs);
-    };
-
-    template <typename L, typename R, typename Mode>
-    concept divmod_mode = requires(const L& lhs, const R& rhs, const Mode& mode) {
-        mode.divmod(lhs, rhs);
-    };
-
-    template <typename O, typename Mode>
-    concept round_mode = requires(const O& obj, const Mode& mode) {
-        mode.round(obj);
-    };
-
 }
 
 
