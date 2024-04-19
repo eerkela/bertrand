@@ -15,6 +15,8 @@
 
 // NOTE: this is going to be a lot more complicated than it would seem at first.
 
+// Maybe in the future, I could provide GNU MPFR bindings as well?
+
 
 namespace bertrand {
 namespace py {

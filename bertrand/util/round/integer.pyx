@@ -154,7 +154,7 @@ cdef dict integer_rounding_bias = {
     "ceiling":      lambda n, d: d - (d > 0) + (d < 0),
     "down":         _bias_down,
     "up":           _bias_up,
-    "half_floor":   lambda n, d: (d - (d > 0) + 2 * (d < 0)) // 2,
+    "half_floor":   lambda n, d: (d - (d > 0)) // 2 + (d < 0),
     "half_ceiling": lambda n, d: (d + (d < 0)) // 2,
     "half_down":    _bias_half_down,
     "half_up":      _bias_half_up,

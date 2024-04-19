@@ -543,14 +543,20 @@ public:
 
     /* Get a static reference to the zero singleton. */
     static const Int& zero() {
-        static const Int zero(0);
+        static const Int zero = 0;
         return zero;
     }
 
     /* Get a static reference to the one singleton. */
     static const Int& one() {
-        static const Int one(1);
+        static const Int one = 1;
         return one;
+    }
+
+    /* Get a static reference to the two singleton. */
+    static const Int& two() {
+        static const Int two = 2;
+        return two;
     }
 
 };
