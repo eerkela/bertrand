@@ -14,7 +14,7 @@
 #include "func.h"
 
 
-// TODO: allow for Decimal operands?
+// TODO: allow for complex/Decimal operands?
 
 
 namespace bertrand {
@@ -451,7 +451,7 @@ public:
         static auto cpp_div(const L& lhs, const R& rhs) {
             auto quotient = lhs / rhs;
             if constexpr (std::signed_integral<L> && std::signed_integral<R>) {
-                return quotient - (((lhs < 0) ^ (rhs < 0)) && ((lhs % rhs) != 0));  // TODO: subtle bug if quotient rounds to zero
+                return quotient - (((lhs < 0) ^ (rhs < 0)) && ((lhs % rhs) != 0));
             } else if constexpr (std::integral<L> && std::integral<R>) {
                 return quotient;
             } else {
@@ -476,11 +476,7 @@ public:
 
         template <typename O>
         static auto cpp_round(const O& obj) {
-            if constexpr (std::floating_point<O>) {
-                return std::floor(obj);
-            } else {
-                return div(obj, 1);
-            }
+            return std::floor(obj);
         }
 
     };
@@ -546,11 +542,7 @@ public:
 
         template <typename O>
         static auto cpp_round(const O& obj) {
-            if constexpr (std::floating_point<O>) {
-                return std::ceil(obj);
-            } else {
-                return div(obj, 1);
-            }
+            return std::ceil(obj);
         }
 
     };
@@ -633,11 +625,7 @@ public:
 
         template <typename O>
         static auto cpp_round(const O& obj) {
-            if constexpr (std::floating_point<O>) {
-                return std::trunc(obj);
-            } else {
-                return div(obj, 1);
-            }
+            return std::trunc(obj);
         }
 
     };
@@ -720,14 +708,10 @@ public:
 
         template <typename O>
         static auto cpp_round(const O& obj) {
-            if constexpr (std::floating_point<O>) {
-                if (obj < 0) {
-                    return std::floor(obj);
-                } else {
-                    return std::ceil(obj);
-                }
+            if (obj < 0) {
+                return std::floor(obj);
             } else {
-                return div(obj, 1);
+                return std::ceil(obj);
             }
         }
 
@@ -737,7 +721,7 @@ public:
 
         /* NOTE: The Python formula for half-floor integer division is:
          *
-         *      bias = (d - (d > 0)) // 2 + (d < 0)
+         *      bias = (d + ~(d < 0)) // 2
          *      (n + bias) // d
          *
          * C++ integer division adds an extra term to the bias:
@@ -757,24 +741,27 @@ public:
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
-                Object numerator = lhs;
-                numerator += impl::ops::operator_floordiv<Object>(
-                    rhs - (rhs > Int::zero()),
+                Object a = rhs > Int::zero();
+                Object numerator = lhs + impl::ops::operator_floordiv<Object>(
+                    rhs + ~a,
                     Int::two()
                 );
-                numerator += (rhs < Int::zero());
                 return reinterpret_steal<Quotient>(
                     impl::ops::operator_floordiv<Object>(numerator, rhs).release()
                 );
-
+                /*   a ~a    (rhs + ~a) // 2
+                 *   0 -1  = (rhs -  1) // 2  =  (rhs - 1) // 2 
+                 *   0 -1  = (rhs -  1) // 2  =  (rhs - 1) // 2
+                 *   1 -2  = (rhs -  2) // 2  =  (rhs - 2) // 2
+                 *   1 -2  = (rhs -  2) // 2  =  (rhs - 2) // 2
+                 */
             } else if constexpr (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
-                    Object numerator = lhs;
-                    numerator += impl::ops::operator_floordiv<Object>(
-                        rhs - (rhs > Int::zero()),
+                    Object a = rhs > Int::zero();
+                    Object numerator = lhs + impl::ops::operator_floordiv<Object>(
+                        rhs + ~a,
                         Int::two()
                     );
-                    numerator += (rhs < Int::zero());
                     return reinterpret_steal<Quotient>(
                         impl::ops::operator_floordiv<Object>(numerator, rhs).release()
                     );
@@ -849,20 +836,25 @@ public:
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
-                Object numerator = lhs;
-                numerator += impl::ops::operator_floordiv<Object>(
-                    rhs + (rhs < Int::zero()),
+                Object a = rhs > Int::zero();
+                Object numerator = lhs + impl::ops::operator_floordiv<Object>(
+                    rhs + a,
                     Int::two()
                 );
                 return reinterpret_steal<Quotient>(
                     impl::ops::operator_floordiv<Object>(numerator, rhs).release()
                 );
-
+                /*   a    (rhs + a) // 2
+                 *   0  = (rhs + 0) // 2  =  (rhs    ) // 2 
+                 *   0  = (rhs + 0) // 2  =  (rhs    ) // 2
+                 *   1  = (rhs + 1) // 2  =  (rhs + 1) // 2
+                 *   1  = (rhs + 1) // 2  =  (rhs + 1) // 2
+                 */
             } else if constexpr (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
-                    Object numerator = lhs;
-                    numerator += impl::ops::operator_floordiv<Object>(
-                        rhs + (rhs < Int::zero()),
+                    Object a = rhs > Int::zero();
+                    Object numerator = lhs +  impl::ops::operator_floordiv<Object>(
+                        rhs + a,
                         Int::two()
                     );
                     return reinterpret_steal<Quotient>(
@@ -917,43 +909,49 @@ public:
 
     struct HalfDown : public Base<HalfDown> {
 
-        /* NOTE: The Python formula for half-down integer division is:
-         *
-         *      bias = (d + (d < 0) - ((n > 0) ^ (d < 0))) // 2
-         *      (n + bias) // d
-         *
-         * C++ integer division uses half-floor where operands are the same sign, and
+        /* NOTE: integer division uses half-floor where operands are the same sign, and
          * half-ceiling where they differ.
          */
 
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
-                Object a = lhs > Int::zero();
-                Object b = rhs < Int::zero();
-                Object bias = impl::ops::operator_floordiv<Object>(
-                    rhs + b - (a ^ b),
-                    Int::two()
-                );
-                return reinterpret_steal<Quotient>(
-                    impl::ops::operator_floordiv<Object>(lhs + bias, rhs).release()
-                );
-                /*   a  b    (rhs + b - (a ^ b)) // 2
-                 *   1  0  = (rhs + 0 - (1 ^ 0)) // 2  =  (rhs - 1) // 2 
-                 *   1  1  = (rhs + 1 + (1 ^ 1)) // 2  =  (rhs + 1) // 2
-                 *   0  1  = (rhs + 1 - (0 ^ 1)) // 2  =  (rhs) // 2
-                 *   0  0  = (rhs + 0 + (0 ^ 0)) // 2  =  (rhs) // 2
-                 */
-            } else if (std::same_as<L, Object> || std::same_as<R, Object>) {
-                if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
-                    Object a = lhs > Int::zero();
-                    Object b = rhs < Int::zero();
-                    Object bias = impl::ops::operator_floordiv<Object>(
-                        rhs + b - (a ^ b),
+                Object a = rhs > Int::zero();
+                Object b = lhs > Int::zero();
+                Object numerator = lhs;
+                if (a == b) {  // NOTE: branches are faster than writing more Python
+                    numerator += impl::ops::operator_floordiv<Object>(
+                        rhs + ~a,
                         Int::two()
                     );
+                } else {
+                    numerator += impl::ops::operator_floordiv<Object>(
+                        rhs + a,
+                        Int::two()
+                    );
+                }
+                return reinterpret_steal<Quotient>(
+                    impl::ops::operator_floordiv<Object>(numerator, rhs).release()
+                );
+
+            } else if (std::same_as<L, Object> || std::same_as<R, Object>) {
+                if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
+                    Object a = rhs > Int::zero();
+                    Object b = lhs > Int::zero();
+                    Object numerator = lhs;
+                    if (a == b) {  // NOTE: branches are faster than writing more Python
+                        numerator += impl::ops::operator_floordiv<Object>(
+                            rhs + ~a,
+                            Int::two()
+                        );
+                    } else {
+                        numerator += impl::ops::operator_floordiv<Object>(
+                            rhs + a,
+                            Int::two()
+                        );
+                    }
                     return reinterpret_steal<Quotient>(
-                        impl::ops::operator_floordiv<Object>(lhs + bias, rhs).release()
+                        impl::ops::operator_floordiv<Object>(numerator, rhs).release()
                     );
                 }
 
@@ -1036,43 +1034,49 @@ public:
 
     struct HalfUp : public Base<HalfUp> {
 
-        /* NOTE: The Python formula for half-down integer division is:
-         *
-         *      bias = (d + (d < 0) - ((n < 0) ^ (d < 0))) // 2
-         *      (n + bias) // d
-         *
-         * C++ integer division uses half-ceiling where operands are the same sign, and
-         * half-floor where they differ.
+        /* NOTE: integer division uses half-ceiling where operands are the same sign,
+         * and half-floor where they differ.
          */
 
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
-                Object a = lhs < Int::zero();
-                Object b = rhs < Int::zero();
-                Object bias = impl::ops::operator_floordiv<Object>(
-                    rhs + b - (a ^ b),
-                    Int::two()
-                );
-                return reinterpret_steal<Quotient>(
-                    impl::ops::operator_floordiv<Object>(lhs + bias, rhs).release()
-                );
-                /*   a  b    (rhs + b - (a ^ b)) // 2
-                 *   0  0  = (rhs + 0 - (0 ^ 0)) // 2  =  (rhs) // 2 
-                 *   0  1  = (rhs + 1 - (0 ^ 1)) // 2  =  (rhs) // 2
-                 *   1  1  = (rhs + 1 - (1 ^ 1)) // 2  =  (rhs + 1) // 2
-                 *   1  0  = (rhs + 0 - (1 ^ 0)) // 2  =  (rhs - 1) // 2
-                 */
-            } else if (std::same_as<L, Object> || std::same_as<R, Object>) {
-                if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
-                    Object a = lhs < Int::zero();
-                    Object b = rhs < Int::zero();
-                    Object bias = impl::ops::operator_floordiv<Object>(
-                        rhs + b - (a ^ b),
+                Object a = rhs > Int::zero();
+                Object b = lhs > Int::zero();
+                Object numerator = lhs;
+                if (a == b) {  // NOTE: branches are faster than writing more Python
+                    numerator += impl::ops::operator_floordiv<Object>(
+                        rhs + a,
                         Int::two()
                     );
+                } else {
+                    numerator += impl::ops::operator_floordiv<Object>(
+                        rhs + ~a,
+                        Int::two()
+                    );
+                }
+                return reinterpret_steal<Quotient>(
+                    impl::ops::operator_floordiv<Object>(numerator, rhs).release()
+                );
+
+            } else if (std::same_as<L, Object> || std::same_as<R, Object>) {
+                if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
+                    Object a = rhs > Int::zero();
+                    Object b = lhs > Int::zero();
+                    Object numerator = lhs;
+                    if (a == b) {  // NOTE: branches are faster than writing more Python
+                        numerator += impl::ops::operator_floordiv<Object>(
+                            rhs + a,
+                            Int::two()
+                        );
+                    } else {
+                        numerator += impl::ops::operator_floordiv<Object>(
+                            rhs + ~a,
+                            Int::two()
+                        );
+                    }
                     return reinterpret_steal<Quotient>(
-                        impl::ops::operator_floordiv<Object>(lhs + bias, rhs).release()
+                        impl::ops::operator_floordiv<Object>(numerator, rhs).release()
                     );
                 }
 
@@ -1144,15 +1148,7 @@ public:
 
         template <typename O>
         static auto cpp_round(const O& obj) {
-            if constexpr (std::floating_point<O>) {
-                return std::round(obj);  // always rounds away from zero
-            } else {
-                if (obj > 0) {
-                    return HalfCeiling::cpp_round(obj);
-                } else {
-                    return HalfFloor::cpp_round(obj);
-                }
-            }
+            return std::round(obj);  // always rounds away from zero
         }
 
     };
@@ -1170,7 +1166,88 @@ public:
 
     public:
 
-        // TODO: division and modulus operations
+        /* NOTE: integer division applies half-ceiling where the quotient `n // d`
+         * would be odd, and half-floor where it would be even.
+         */
+
+        template <typename Quotient, typename L, typename R>
+        static auto py_div(const Object& lhs, const Object& rhs) {
+            if constexpr (impl::int_like<L> && impl::int_like<R>) {
+                Object a = rhs > Int::zero();
+                Object numerator = lhs;
+                if (impl::ops::operator_floordiv<Object>(lhs, rhs) % Int::two()) {
+                    numerator += impl::ops::operator_floordiv<Object>(
+                        rhs + a,
+                        Int::two()
+                    );
+                } else {
+                    numerator += impl::ops::operator_floordiv<Object>(
+                        rhs + ~a,
+                        Int::two()
+                    );
+                }
+                return reinterpret_steal<Quotient>(
+                    impl::ops::operator_floordiv<Object>(numerator, rhs).release()
+                );
+
+            } else if (std::same_as<L, Object> || std::same_as<R, Object>) {
+                if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
+                    Object a = rhs > Int::zero();
+                    Object numerator = lhs;
+                    if (impl::ops::operator_floordiv<Object>(lhs, rhs) % Int::two()) {
+                        numerator += impl::ops::operator_floordiv<Object>(
+                            rhs + a,
+                            Int::two()
+                        );
+                    } else {
+                        numerator += impl::ops::operator_floordiv<Object>(
+                            rhs + ~a,
+                            Int::two()
+                        );
+                    }
+                    return reinterpret_steal<Quotient>(
+                        impl::ops::operator_floordiv<Object>(numerator, rhs).release()
+                    );
+                }
+
+                // half-ceiling where the quotient would be odd, half-floor otherwise
+                Object bias = rhs / Int::two();
+                if (impl::ops::operator_floordiv<Object>(lhs, rhs) % Int::two()) {  // half-ceiling
+                    return reinterpret_steal<Quotient>(
+                        impl::ops::operator_floordiv<Object>(
+                            lhs + bias,
+                            rhs
+                        ).release()
+                    );
+                } else {  // half-floor
+                    return reinterpret_steal<Quotient>(
+                        -impl::ops::operator_floordiv<Object>(
+                            -lhs + bias,
+                            rhs
+                        ).release()
+                    );
+                }
+
+            } else {
+                // half-ceiling where the quotient would be odd, half-floor otherwise
+                Object bias = rhs / Int::two();
+                if (impl::ops::operator_floordiv<Object>(lhs, rhs) % Int::two()) {  // half-ceiling
+                    return reinterpret_steal<Quotient>(
+                        impl::ops::operator_floordiv<Object>(
+                            lhs + bias,
+                            rhs
+                        ).release()
+                    );
+                } else {  // half-floor
+                    return reinterpret_steal<Quotient>(
+                        -impl::ops::operator_floordiv<Object>(
+                            -lhs + bias,
+                            rhs
+                        ).release()
+                    );
+                }
+            }
+        }
 
         template <typename O>
         static auto py_round(const O& obj) {
@@ -1182,27 +1259,34 @@ public:
             return reinterpret_steal<O>(result);
         }
 
+        template <typename L, typename R>
+        static auto cpp_div(const L& lhs, const R& rhs) {
+            if constexpr (std::integral<L> && std::integral<R>) {
+                bool a = lhs < 0;
+                bool b = rhs > 0;
+                int c = a - b;
+                int sign = (a != b) - (a == b);
+                bool odd = ((lhs - rhs / 2) / rhs) % 2;
+                return (lhs + sign * ((rhs + c * (!odd) + ~c * odd) / 2)) / rhs;
+            } else {
+                bool odd = (lhs - rhs / 2) / rhs % 2;
+                if (odd) {
+                    return Ceiling::cpp_div(lhs, rhs);
+                } else {
+                    return Floor::cpp_div(lhs, rhs);
+                }
+            }
+        }
+
         template <typename O>
         static auto cpp_round(const O& obj) {
-            if constexpr (std::floating_point<O>) {
-                O whole, fract;
-                fract = std::modf(obj, &whole);
-                if (std::abs(fract) == 0.5) {
-                    return whole + std::fmod(whole, 2);  // -1 if whole % 2 and < 0
-                } else {
-                    return std::round(obj);
-                }
-
+            O whole, fract;
+            fract = std::modf(obj, &whole);
+            if (std::abs(fract) == 0.5) {
+                // NOTE: fmod evaluates negative if whole < 0
+                return whole + std::fmod(whole, 2);
             } else {
-                // TODO: this branch is incorrect for o = -3.2
-
-                // floor_is_odd = +1 if floor(o) is odd and -1 if it's even.  This is
-                // a branchless way of choosing between half-floor and half-ceiling.
-                // half-down: (abs(o) + 0.5) // 1 * sign(o)
-                // half-up: -(-abs(o) + 0.5) // 1 * sign(o)
-                auto floor_is_odd =
-                    Round::FLOOR.mod(Round::FLOOR.round(obj), 2) * 2 - 1;
-                return FLOOR.round(abs(obj) * floor_is_odd + 0.5) * floor_is_odd;
+                return std::round(obj);
             }
         }
 

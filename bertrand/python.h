@@ -22,6 +22,11 @@
 #include "python/type.h"
 
 
+// TODO: the only remaining language feature left to emulate are:
+// - context managers (RAII)  - use py::enter() to enter a context, and py::exit() or destructor to exit
+// - decorators (?)
+
+
 /* NOTES ON PERFORMANCE:
  * In general, bertrand should be as fast or faster than the equivalent Python code,
  * owing to the use of static typing, comp time, and optimized CPython API calls.  
