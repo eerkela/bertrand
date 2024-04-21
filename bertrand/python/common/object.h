@@ -120,7 +120,7 @@ namespace impl {
     protected:
 
         template <typename Return, typename L, typename R>
-        inline static auto operator_add(const L& lhs, const R& rhs) {
+        static auto operator_add(const L& lhs, const R& rhs) {
             PyObject* result = PySequence_Concat(
                 detail::object_or_cast(lhs).ptr(),
                 detail::object_or_cast(rhs).ptr()
@@ -132,7 +132,7 @@ namespace impl {
         }
 
         template <typename Return, typename L, typename R>
-        inline static void operator_iadd(L& lhs, const R& rhs) {
+        static void operator_iadd(L& lhs, const R& rhs) {
             PyObject* result = PySequence_InPlaceConcat(
                 lhs.ptr(),
                 detail::object_or_cast(rhs).ptr()
@@ -147,7 +147,7 @@ namespace impl {
         }
 
         template <typename Return, typename L>
-        inline static auto operator_mul(const L& lhs, Py_ssize_t repetitions) {
+        static auto operator_mul(const L& lhs, Py_ssize_t repetitions) {
             PyObject* result = PySequence_Repeat(
                 detail::object_or_cast(lhs).ptr(),
                 repetitions
@@ -159,7 +159,7 @@ namespace impl {
         }
 
         template <typename Return, typename L>
-        inline static void operator_imul(L& lhs, Py_ssize_t repetitions) {
+        static void operator_imul(L& lhs, Py_ssize_t repetitions) {
             PyObject* result = PySequence_InPlaceRepeat(
                 lhs.ptr(),
                 repetitions
@@ -268,12 +268,12 @@ nice for initializer-list syntax, enabling containers to be assigned to like thi
     /* Mark pybind11::cast operator as explicit for subclasses. */                  \
     template <typename T>                                                           \
         requires (!impl::proxy_like<T> && !std::derived_from<T, Object>)            \
-    inline explicit operator T() const {                                            \
+    explicit operator T() const {                                                   \
         return parent::operator T();                                                \
     }                                                                               \
                                                                                     \
     template <StaticStr name>                                                       \
-    inline impl::Attr<cls, name> attr() const {                                     \
+    impl::Attr<cls, name> attr() const {                                            \
         return impl::Attr<cls, name>(*this);                                        \
     }                                                                               \
 
@@ -428,7 +428,7 @@ protected:
     friend T reinterpret_steal(Handle);
 
     template <typename Return, typename T, typename... Args>
-    inline static Return operator_call(const T& obj, Args&&... args) {
+    static Return operator_call(const T& obj, Args&&... args) {
         try {
             if constexpr (std::is_void_v<Return>) {
                 Handle(obj.ptr())(std::forward<Args>(args)...);
@@ -444,28 +444,28 @@ protected:
     }
 
     template <typename Return, typename T, typename Key>
-    inline static impl::Item<T, std::decay_t<Key>> operator_getitem(
+    static impl::Item<T, std::decay_t<Key>> operator_getitem(
         const T& obj,
         Key&& key
     );
 
     template <typename Return, typename T>
-    inline static impl::Item<T, Slice> operator_getitem(
+    static impl::Item<T, Slice> operator_getitem(
         const T& obj,
         std::initializer_list<impl::SliceInitializer> slice
     );
 
     template <typename Return, typename T>
-    inline static impl::Iterator<impl::GenericIter<Return>> operator_begin(const T& obj);
+    static impl::Iterator<impl::GenericIter<Return>> operator_begin(const T& obj);
     template <typename Return, typename T>
-    inline static impl::Iterator<impl::GenericIter<Return>> operator_end(const T& obj);
+    static impl::Iterator<impl::GenericIter<Return>> operator_end(const T& obj);
     template <typename Return, typename T>
-    inline static impl::Iterator<impl::GenericIter<Return>> operator_rbegin(const T& obj);
+    static impl::Iterator<impl::GenericIter<Return>> operator_rbegin(const T& obj);
     template <typename Return, typename T>
-    inline static impl::Iterator<impl::GenericIter<Return>> operator_rend(const T& obj);
+    static impl::Iterator<impl::GenericIter<Return>> operator_rend(const T& obj);
 
     template <typename Return, typename L, typename R>
-    inline static bool operator_contains(const L& lhs, const R& rhs) {
+    static bool operator_contains(const L& lhs, const R& rhs) {
         int result = PySequence_Contains(
             lhs.ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -477,7 +477,7 @@ protected:
     }
 
     template <typename Return, typename T>
-    inline static size_t operator_len(const T& obj) {
+    static size_t operator_len(const T& obj) {
         Py_ssize_t size = PyObject_Size(obj.ptr());
         if (size < 0) {
             Exception::from_python();
@@ -486,7 +486,7 @@ protected:
     }
 
     template <typename T>
-    inline static auto operator_dereference(const T& obj) {
+    static auto operator_dereference(const T& obj) {
         try {
             return *Handle(obj.ptr());
         } catch (...) {
@@ -495,7 +495,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static bool operator_lt(const L& lhs, const R& rhs) {
+    static bool operator_lt(const L& lhs, const R& rhs) {
         int result = PyObject_RichCompareBool(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr(),
@@ -508,7 +508,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static bool operator_le(const L& lhs, const R& rhs) {
+    static bool operator_le(const L& lhs, const R& rhs) {
         int result = PyObject_RichCompareBool(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr(),
@@ -521,7 +521,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static bool operator_eq(const L& lhs, const R& rhs) {
+    static bool operator_eq(const L& lhs, const R& rhs) {
         int result = PyObject_RichCompareBool(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr(),
@@ -534,7 +534,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static bool operator_ne(const L& lhs, const R& rhs) {
+    static bool operator_ne(const L& lhs, const R& rhs) {
         int result = PyObject_RichCompareBool(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr(),
@@ -547,7 +547,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static bool operator_ge(const L& lhs, const R& rhs) {
+    static bool operator_ge(const L& lhs, const R& rhs) {
         int result = PyObject_RichCompareBool(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr(),
@@ -560,7 +560,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static bool operator_gt(const L& lhs, const R& rhs) {
+    static bool operator_gt(const L& lhs, const R& rhs) {
         int result = PyObject_RichCompareBool(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr(),
@@ -573,7 +573,7 @@ protected:
     }
 
     template <typename Return, typename T>
-    inline static auto operator_abs(const T& obj) {
+    static auto operator_abs(const T& obj) {
         PyObject* result = PyNumber_Absolute(obj.ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -582,7 +582,7 @@ protected:
     }
 
     template <typename Return, typename T>
-    inline static auto operator_invert(const T& obj) {
+    static auto operator_invert(const T& obj) {
         PyObject* result = PyNumber_Invert(detail::object_or_cast(obj).ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -591,7 +591,7 @@ protected:
     }
 
     template <typename Return, typename T>
-    inline static auto operator_pos(const T& obj) {
+    static auto operator_pos(const T& obj) {
         PyObject* result = PyNumber_Positive(detail::object_or_cast(obj).ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -600,7 +600,7 @@ protected:
     }
 
     template <typename Return, typename T>
-    inline static void operator_increment(T& obj) {
+    static void operator_increment(T& obj) {
         static const pybind11::int_ one = 1;
         PyObject* result = PyNumber_InPlaceAdd(
             detail::object_or_cast(obj).ptr(),
@@ -617,7 +617,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static auto operator_add(const L& lhs, const R& rhs) {
+    static auto operator_add(const L& lhs, const R& rhs) {
         PyObject* result = PyNumber_Add(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -629,7 +629,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static void operator_iadd(L& lhs, const R& rhs) {
+    static void operator_iadd(L& lhs, const R& rhs) {
         PyObject* result = PyNumber_InPlaceAdd(
             lhs.ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -644,7 +644,7 @@ protected:
     }
 
     template <typename Return, typename T>
-    inline static auto operator_neg(const T& obj) {
+    static auto operator_neg(const T& obj) {
         PyObject* result = PyNumber_Negative(detail::object_or_cast(obj).ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -653,7 +653,7 @@ protected:
     }
 
     template <typename Return, typename T>
-    inline static void operator_decrement(T& obj) {
+    static void operator_decrement(T& obj) {
         static const pybind11::int_ one = 1;
         PyObject* result = PyNumber_InPlaceSubtract(
             detail::object_or_cast(obj).ptr(),
@@ -670,7 +670,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static auto operator_sub(const L& lhs, const R& rhs) {
+    static auto operator_sub(const L& lhs, const R& rhs) {
         PyObject* result = PyNumber_Subtract(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -682,7 +682,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static void operator_isub(L& lhs, const R& rhs) {
+    static void operator_isub(L& lhs, const R& rhs) {
         PyObject* result = PyNumber_InPlaceAdd(
             lhs.ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -697,7 +697,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static auto operator_mul(const L& lhs, const R& rhs) {
+    static auto operator_mul(const L& lhs, const R& rhs) {
         PyObject* result = PyNumber_Multiply(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -709,7 +709,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static void operator_imul(L& lhs, const R& rhs) {
+    static void operator_imul(L& lhs, const R& rhs) {
         PyObject* result = PyNumber_InPlaceMultiply(
             lhs.ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -724,7 +724,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static auto operator_truediv(const L& lhs, const R& rhs) {
+    static auto operator_truediv(const L& lhs, const R& rhs) {
         PyObject* result = PyNumber_TrueDivide(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -736,7 +736,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static void operator_itruediv(L& lhs, const R& rhs) {
+    static void operator_itruediv(L& lhs, const R& rhs) {
         PyObject* result = PyNumber_InPlaceTrueDivide(
             lhs.ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -751,7 +751,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static auto operator_floordiv(const L& lhs, const R& rhs) {
+    static auto operator_floordiv(const L& lhs, const R& rhs) {
         PyObject* result = PyNumber_FloorDivide(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -763,7 +763,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static void operator_ifloordiv(L& lhs, const R& rhs) {
+    static void operator_ifloordiv(L& lhs, const R& rhs) {
         PyObject* result = PyNumber_InPlaceFloorDivide(
             lhs.ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -778,7 +778,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static auto operator_mod(const L& lhs, const R& rhs) {
+    static auto operator_mod(const L& lhs, const R& rhs) {
         PyObject* result = PyNumber_Remainder(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -790,7 +790,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static void operator_imod(L& lhs, const R& rhs) {
+    static void operator_imod(L& lhs, const R& rhs) {
         PyObject* result = PyNumber_InPlaceRemainder(
             lhs.ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -809,7 +809,7 @@ protected:
     // replaces the Return type with py::Float.
 
     template <typename Return, typename Base, typename Exp>
-    inline static auto operator_pow(const Base& base, const Exp& exp) {
+    static auto operator_pow(const Base& base, const Exp& exp) {
         PyObject* result = PyNumber_Power(
             detail::object_or_cast(base).ptr(),
             detail::object_or_cast(exp).ptr(),
@@ -822,7 +822,7 @@ protected:
     }
 
     template <typename Return, typename Base, typename Exp, typename Mod>
-    inline static auto operator_pow(const Base& base, const Exp& exp, const Mod& mod) {
+    static auto operator_pow(const Base& base, const Exp& exp, const Mod& mod) {
         PyObject* result = PyNumber_Power(
             detail::object_or_cast(base).ptr(),
             detail::object_or_cast(exp).ptr(),
@@ -835,7 +835,7 @@ protected:
     }
 
     template <typename Return, typename Base, typename Exp>
-    inline static void operator_ipow(Base& base, const Exp& exp) {
+    static void operator_ipow(Base& base, const Exp& exp) {
         PyObject* result = PyNumber_InPlacePower(
             base.ptr(),
             detail::object_or_cast(exp).ptr(),
@@ -851,7 +851,7 @@ protected:
     }
 
     template <typename Return, typename Base, typename Exp, typename Mod>
-    inline static void operator_ipow(Base& base, const Exp& exp, const Mod& mod) {
+    static void operator_ipow(Base& base, const Exp& exp, const Mod& mod) {
         PyObject* result = PyNumber_InPlacePower(
             base.ptr(),
             detail::object_or_cast(exp).ptr(),
@@ -867,7 +867,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static auto operator_lshift(const L& lhs, const R& rhs) {
+    static auto operator_lshift(const L& lhs, const R& rhs) {
         PyObject* result = PyNumber_Lshift(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -879,7 +879,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static void operator_ilshift(L& lhs, const R& rhs) {
+    static void operator_ilshift(L& lhs, const R& rhs) {
         PyObject* result = PyNumber_InPlaceLshift(
             lhs.ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -894,7 +894,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static auto operator_rshift(const L& lhs, const R& rhs) {
+    static auto operator_rshift(const L& lhs, const R& rhs) {
         PyObject* result = PyNumber_Rshift(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -906,7 +906,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static void operator_irshift(L& lhs, const R& rhs) {
+    static void operator_irshift(L& lhs, const R& rhs) {
         PyObject* result = PyNumber_InPlaceRshift(
             lhs.ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -921,7 +921,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static auto operator_and(const L& lhs, const R& rhs) {
+    static auto operator_and(const L& lhs, const R& rhs) {
         PyObject* result = PyNumber_And(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -933,7 +933,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static void operator_iand(L& lhs, const R& rhs) {
+    static void operator_iand(L& lhs, const R& rhs) {
         PyObject* result = PyNumber_InPlaceAnd(
             lhs.ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -948,7 +948,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static auto operator_or(const L& lhs, const R& rhs) {
+    static auto operator_or(const L& lhs, const R& rhs) {
         PyObject* result = PyNumber_Or(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -960,7 +960,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static void operator_ior(L& lhs, const R& rhs) {
+    static void operator_ior(L& lhs, const R& rhs) {
         PyObject* result = PyNumber_InPlaceOr(
             lhs.ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -975,7 +975,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static auto operator_xor(const L& lhs, const R& rhs) {
+    static auto operator_xor(const L& lhs, const R& rhs) {
         PyObject* result = PyNumber_Xor(
             detail::object_or_cast(lhs).ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -987,7 +987,7 @@ protected:
     }
 
     template <typename Return, typename L, typename R>
-    inline static void operator_ixor(L& lhs, const R& rhs) {
+    static void operator_ixor(L& lhs, const R& rhs) {
         PyObject* result = PyNumber_InPlaceXor(
             lhs.ptr(),
             detail::object_or_cast(rhs).ptr()
@@ -1046,16 +1046,6 @@ public:
     Object(Object&& other) : m_ptr(other.m_ptr) { other.m_ptr = nullptr; }
     Object(pybind11::object&& other) : m_ptr(other.release().ptr()) {}
 
-    /* Convert any C++ value into a generic python object. */
-    template <typename T> requires (!impl::python_like<T>)
-    Object(const T& value) : m_ptr([&value] {
-        try {
-            return pybind11::cast(value).release().ptr();
-        } catch (...) {
-            Exception::from_pybind11();
-        }
-    }()) {}
-
     /* Convert a pybind11 accessor into a generic Object. */
     template <typename Policy>
     Object(const detail::accessor<Policy>& accessor) {
@@ -1066,6 +1056,16 @@ public:
             throw impl::noconvert<Object>(obj.ptr());
         }
     }
+
+    /* Convert any C++ value into a generic python object. */
+    template <typename T> requires (!impl::python_like<T>)
+    explicit Object(const T& value) : m_ptr([&value] {
+        try {
+            return pybind11::cast(value).release().ptr();
+        } catch (...) {
+            Exception::from_pybind11();
+        }
+    }()) {}
 
     /* Copy assignment operator. */
     Object& operator=(const Object& other) {
@@ -1158,14 +1158,14 @@ public:
     /* Wrap an Object in a proxy class, which moves it into a managed buffer for
     granular control. */
     template <typename T> requires (impl::proxy_like<T>)
-    inline operator T() const {
+    operator T() const {
         return T(this->operator typename T::Wrapped());
     }
 
     /* Narrow an Object into one of its subclasses, applying a runtime type check
     against its value. */
     template <std::derived_from<Object> T>
-    inline operator T() const {
+    operator T() const {
         if (!T::check(*this)) {
             throw impl::noconvert<T>(m_ptr);
         }
@@ -1175,7 +1175,7 @@ public:
     /* Explicitly convert to any other type using pybind11's type casting mechanism. */
     template <typename T>
         requires (!impl::proxy_like<T> && !std::derived_from<T, Object>)
-    inline operator T() const {
+    operator T() const {
         try {
             return Handle(m_ptr).template cast<T>();
         } catch (...) {
@@ -1252,35 +1252,35 @@ public:
     BERTRAND_OBJECT_OPERATORS(Object)
 
     template <StaticStr name>
-    inline impl::Attr<Object, name> attr() const;
+    impl::Attr<Object, name> attr() const;
 
 };
 
 
 /* Borrow a reference to a raw Python handle. */
 template <std::derived_from<Object> T>
-inline T reinterpret_borrow(Handle obj) {
+T reinterpret_borrow(Handle obj) {
     return T(obj, Object::borrowed_t{});
 }
 
 
 /* Borrow a reference to a raw Python handle. */
 template <std::derived_from<pybind11::object> T>
-inline T reinterpret_borrow(Handle obj) {
+T reinterpret_borrow(Handle obj) {
     return pybind11::reinterpret_borrow<T>(obj);
 }
 
 
 /* Steal a reference to a raw Python handle. */
 template <std::derived_from<Object> T>
-inline T reinterpret_steal(Handle obj) {
+T reinterpret_steal(Handle obj) {
     return T(obj, Object::stolen_t{});
 }
 
 
 /* Steal a reference to a raw Python handle. */
 template <std::derived_from<pybind11::object> T>
-inline T reinterpret_steal(Handle obj) {
+T reinterpret_steal(Handle obj) {
     return pybind11::reinterpret_steal<T>(obj);
 }
 

@@ -1,13 +1,10 @@
-#if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
-#error "This file should not be included directly.  Please include <bertrand/python.h> instead."
-#endif
-
 #ifndef BERTRAND_REGEX_H
 #define BERTRAND_REGEX_H
 
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <memory>
 #include <new>
 #include <optional>
 #include <sstream>
@@ -19,57 +16,14 @@
 #define PCRE2_CODE_UNIT_WIDTH 8  // for UTF8/ASCII strings
 #include "pcre2.h"
 
-#include "common.h"
+
+#include <iostream>
 
 
-// TODO: lift this alongside static_str.h and then create a regex.cpp file to export
-// it to Python.  This means including the header file gives you the C++ bindings and
-// importing the Python module gives you the Python bindings.  This is a good way to
-// separate the two and make it easier to maintain both in tandem.
-
-
-
-// TODO: all methods should accept Python strings as well.
-
-
-// TODO: If I break this class's dependency on Python, I can expose bindings in
-// python.h itself, like a custom type caster that converts it to its python equivalent.
-
-// TODO: alternatively, I can separate the C++ interface into a separate header file
-// with no dependencies on Python, and then include it here and add Python bindings.
-// Maybe separate into pcre2.h and regex.h, where pcre2 is a raw C++ interface that
-// can be imported without any Python dependencies.  Regex.h would then define a type
-// caster for the Regex class and expose it to Python.  It would be included by a
-// regex.cpp file that would be compiled into a Python module, which ideally means that
-// we can catch it in a type-safe way to and from Python, by directly using the C++
-// equivalent in an assignment expression.
-
-
-// bertrand::Regex pattern = R"(
-//    from bertrand import Regex
-//    pattern = Regex(r"\d+")
-// )"_python()["pattern"]
-
-// TODO: that would mean the pattern is returned as a py::Object, then implicitly
-// narrowed to bertrand::Regex, which would invoke pybind11::cast<bertrand::Regex>().
-// This would point to a custom type caster that would convert the Python object into
-// a bertrand::Regex object and vice-versa.  By making this conversion operator implicit,
-// you can just directly assign the Python object to a bertrand::Regex object and it will
-// work as intended without any additional syntax.
-
-
+#include <pybind11/pybind11.h>
 
 
 namespace bertrand {
-namespace py {
-
-
-namespace impl {
-
-    static const Module re = py::import<"re">();
-    static const Type PyRegexPattern_Type = re.attr<"Pattern">();
-
-}
 
 
 /* A thin wrapper around a compiled PCRE2 regular expression that provides a Pythonic
@@ -89,8 +43,8 @@ limited to):
       equivalent functions.
     - Many of the flags available in Python's `re` module are not available here and
       vice versa.  PCRE2 provides a different and much expanded set of flags, which
-      are too numerous to replicate here.  The most common flags are available as
-      enumerated constants in the `Regex` class.
+      are too numerous to replicate here.  By default, all regular expressions are
+      built with JIT compilation enabled for maximum performance.
 
 Other than these differences, the `Regex` class should be familiar to anyone who has
 used Python's `re` module.  PCRE2 has nearly identical syntax and supports all the same
@@ -103,7 +57,7 @@ https://www.pcre.org/current/doc/html/index.html
 class Regex {
     std::string _pattern;
     uint32_t _flags;
-    pcre2_code* code;
+    std::shared_ptr<pcre2_code> code;  // make this a shared ptr
 
     static bool normalize_indices(long long size, long long& start, long long& stop) {
         if (start < 0) {
@@ -144,39 +98,28 @@ class Regex {
         );
     }
 
-public:
-    class Iterator;
-
-    /* Enumerated bitset describing compilation flags for PCRE2 regular expressions. */
-    enum : uint32_t {
-        DEFAULT = 0,
-        JIT = PCRE2_JIT_COMPLETE,  // hard compile the pattern for JIT execution
-        NO_UTF_CHECK = PCRE2_NO_UTF_CHECK,  // disable UTF-8 validity check (faster)
-        IGNORE_CASE = PCRE2_CASELESS
-    };
-
-    /* Default constructor.  Yields a null pattern, which should not be used in
-    matching.  This constructor exists only to make the Regex class trivially
-    constructable, which is a requirement for pybind11 type casters. */
-    Regex() : _pattern(), _flags(0), code(nullptr) {}
+    struct internal {};
 
     /* Compile the pattern into a PCRE2 regular expression. */
     template <typename T>
-    Regex(const T& pattern, uint32_t flags = DEFAULT) :
-        _pattern(pattern), _flags(flags), code(nullptr)
+    Regex(const T& pattern, uint32_t flags, internal) :
+        _pattern(pattern), _flags(flags), code(nullptr, pcre2_code_free)
     {
         int err;
         PCRE2_SIZE err_offset;
 
         // compile the pattern
-        code = pcre2_compile(
-            reinterpret_cast<PCRE2_SPTR>(_pattern.c_str()),
-            _pattern.size(),
-            flags & ~(JIT),  // compile without JIT flags
-            &err,
-            &err_offset,
-            nullptr  // use default compile context
-        );
+        code = std::shared_ptr<pcre2_code> {
+            pcre2_compile(
+                reinterpret_cast<PCRE2_SPTR>(_pattern.c_str()),
+                _pattern.size(),
+                flags,
+                &err,
+                &err_offset,
+                nullptr  // use default compile context
+            ),
+            pcre2_code_free
+        };
 
         // pretty print errors
         if (code == nullptr) {
@@ -189,50 +132,71 @@ public:
             throw std::runtime_error(err_msg.str());
         }
 
-        // recompile with JIT flags if requested (expensive)
-        if (flags & JIT) {
-            int rc = pcre2_jit_compile(code, JIT);
+        // JIT compile the expression if possible
+        uint32_t jit_flags = flags & (
+            PCRE2_JIT_COMPLETE | PCRE2_JIT_PARTIAL_SOFT | PCRE2_JIT_PARTIAL_HARD
+        );
+        if (jit_flags) {
+            int rc = pcre2_jit_compile(code.get(), jit_flags);
             if (rc < 0 && rc != PCRE2_ERROR_JIT_BADOPTION) {
-                pcre2_code_free(code);
+                pcre2_code_free(code.get());
                 code = nullptr;
                 throw pcre_error(rc);
             }
         }
     }
 
+public:
+    class Iterator;
+
+    /* Default constructor.  Yields a null pattern, which should not be used in
+    matching.  This constructor exists only to make the Regex class trivially
+    constructable, which is a requirement for pybind11 type casters. */
+    Regex() : _pattern(), _flags(0), code(nullptr, pcre2_code_free) {}
+
+    template <size_t N>
+    explicit Regex(const char(&pattern)[N], uint32_t flags = PCRE2_JIT_COMPLETE) :
+        Regex(pattern, flags, internal{})
+    {}
+
+    explicit Regex(const std::string& pattern, uint32_t flags = PCRE2_JIT_COMPLETE) :
+        Regex(pattern, flags, internal{})
+    {}
+
+    explicit Regex(const std::string_view& pattern, uint32_t flags = PCRE2_JIT_COMPLETE) :
+        Regex(pattern, flags, internal{})
+    {}
+
+    /* Copy constructor. */
+    Regex(const Regex& other) :
+        _pattern(other._pattern), _flags(other._flags),
+        code(other.code)
+    {}
+
     /* Move constructor. */
     Regex(Regex&& other) noexcept :
-        _pattern(std::move(other._pattern)), _flags(other._flags), code(other.code)
-    {
-        other.code = nullptr;
-    }
+        _pattern(std::move(other._pattern)), _flags(other._flags),
+        code(std::move(other.code))
+    {}
 
-    /* Move assignment operator. */
-    Regex& operator=(Regex&& other) noexcept {
-        if (this == &other) {
-            return *this;
-        }
-
-        _pattern = std::move(other._pattern);
-        _flags = other._flags;
-        pcre2_code* temp = code;
-        code = other.code;
-        other.code = nullptr;
-        if (temp != nullptr) {
-            pcre2_code_free(code);
+    /* Copy assignment operator. */
+    Regex& operator=(const Regex& other) {
+        if (&other != this) {
+            _pattern = other._pattern;
+            _flags = other._flags;
+            code = other.code;
         }
         return *this;
     }
 
-    /* Copy constructors deleted for simplicity. */
-    Regex(const Regex&) = delete;
-    Regex operator=(const Regex&) = delete;
-
-    /* Free the PCRE2 code object on deletion. */
-    ~Regex() noexcept {
-        if (code != nullptr) {
-            pcre2_code_free(code);
+    /* Move assignment operator. */
+    Regex& operator=(Regex&& other) noexcept {
+        if (&other != this) {
+            _pattern = std::move(other._pattern);
+            _flags = other._flags;
+            code = std::move(other.code);
         }
+        return *this;
     }
 
     //////////////////////
@@ -240,7 +204,7 @@ public:
     //////////////////////
 
     /* Get the pattern used to construct the regular expression. */
-    inline std::string pattern() const {
+    inline std::string pattern() const noexcept {
         return _pattern;
     }
 
@@ -255,12 +219,12 @@ public:
     }
 
     /* Get the number of capture groups in the regular expression. */
-    inline size_t count() const noexcept {
+    inline size_t groupcount() const noexcept {
         if (code == nullptr) {
             return 0;
         }
         uint32_t count;
-        pcre2_pattern_info(code, PCRE2_INFO_CAPTURECOUNT, &count);
+        pcre2_pattern_info(code.get(), PCRE2_INFO_CAPTURECOUNT, &count);
         return count;
     }
 
@@ -275,9 +239,9 @@ public:
         PCRE2_SPTR table;
         uint32_t name_count;
         uint32_t name_entry_size;
-        pcre2_pattern_info(code, PCRE2_INFO_NAMETABLE, &table);
-        pcre2_pattern_info(code, PCRE2_INFO_NAMECOUNT, &name_count);
-        pcre2_pattern_info(code, PCRE2_INFO_NAMEENTRYSIZE, &name_entry_size);
+        pcre2_pattern_info(code.get(), PCRE2_INFO_NAMETABLE, &table);
+        pcre2_pattern_info(code.get(), PCRE2_INFO_NAMECOUNT, &name_count);
+        pcre2_pattern_info(code.get(), PCRE2_INFO_NAMEENTRYSIZE, &name_entry_size);
 
         // extract all named capture groups
         for (uint32_t i = 0; i < name_count; ++i) {
@@ -303,11 +267,6 @@ public:
         PCRE2_SIZE* ovector;
         size_t _count;
         bool owns_match;
-
-        using OptString = std::optional<std::string>;
-        using GroupVec = std::vector<OptString>;
-        using GroupDict = std::unordered_map<std::string, OptString>;
-        using Initializer = std::variant<long long, std::string>;
 
         /* Get the group number associated with a named capture group. */
         inline int groupnum(const char* name) const {
@@ -392,7 +351,7 @@ public:
             if (match == nullptr || index >= count()) {
                 return std::nullopt;
             }
-            return ovector[2 * index];
+            return std::make_optional(ovector[index * 2]);
         }
 
         /* Get the start index of a numbered capture group. */
@@ -400,7 +359,7 @@ public:
             if (match == nullptr || index >= count()) {
                 return std::nullopt;
             }
-            return ovector[2 * index + 1];
+            return std::make_optional(ovector[index * 2 + 1]);
         }
 
         /* Return a pair containing both the start and end indices of a numbered
@@ -416,7 +375,7 @@ public:
         }
 
         /* Extract a numbered capture group. */
-        OptString group(size_t index = 0) const noexcept {
+        std::optional<std::string> group(size_t index = 0) const noexcept {
             if (match == nullptr || index >= count()) {
                 return std::nullopt;
             }
@@ -430,19 +389,34 @@ public:
             }
         }
 
-        /* Extract several capture groups at once. */
-        template <typename... Args> requires (sizeof...(Args) > 1)
-        inline GroupVec group(Args&&... args) const noexcept {
-            return {group(std::forward<Args>(args))...};
-        }
+        // /* Extract several capture groups at once. */
+        // template <typename First, typename Second, typename... Rest>
+        // inline std::vector<std::optional<std::string>> group(
+        //     First&& first,
+        //     Second&& second,
+        //     Rest&&... rest
+        // ) const noexcept {
+        //     return {
+        //         group(std::forward<First>(first)),
+        //         group(std::forward<Second>(second)),
+        //         group(std::forward<Rest>(rest))...
+        //     };
+        // }
+    
+        /* Extract several capture groups at once, as called from Python using variadic
+        positional arguments. */
+        inline auto group(const pybind11::args& args) const
+            -> std::vector<std::optional<std::string>>;
 
         /* Extract all capture groups into a std::vector. */
-        inline GroupVec groups(OptString default_value = std::nullopt) const noexcept {
-            GroupVec result;
+        inline std::vector<std::optional<std::string>> groups(
+            std::optional<std::string> default_value = std::nullopt
+        ) const noexcept {
+            std::vector<std::optional<std::string>> result;
             size_t n = count();
             result.reserve(n);
             for (size_t i = 0; i < n; ++i) {
-                OptString grp = group(i);
+                std::optional<std::string> grp = group(i);
                 result.push_back(grp.has_value() ? grp : default_value);
             }
             return result;
@@ -453,7 +427,7 @@ public:
         ////////////////////////////////////
 
         /* Get a capture group's name from its index number. */
-        OptString groupname(size_t index) const noexcept {
+        inline std::optional<std::string> groupname(size_t index) const noexcept {
             if (match == nullptr || index >= count()) {
                 return std::nullopt;
             }
@@ -550,7 +524,9 @@ public:
         }
 
         /* Extract a named capture group. */
-        OptString group(const char* name) const noexcept {
+        inline auto group(const char* name) const noexcept
+            -> std::optional<std::string>
+        {
             int number = groupnum(name);
             if (number == PCRE2_ERROR_NOSUBSTRING) {
                 return std::nullopt;
@@ -559,18 +535,24 @@ public:
         }
 
         /* Extract a named capture group. */
-        OptString group(const std::string& name) const noexcept {
+        inline auto group(const std::string& name) const noexcept
+            -> std::optional<std::string>
+        {
             return group(name.c_str());
         }
 
         /* Extract a named capture group. */
-        OptString group(const std::string_view& name) const noexcept {
+        inline auto group(const std::string_view& name) const noexcept
+            -> std::optional<std::string>
+        {
             return group(name.data());
         }
 
         /* Extract all named capture groups into a std::unordered_map. */
-        GroupDict groupdict(OptString default_value = std::nullopt) const noexcept {
-            GroupDict result;
+        inline std::unordered_map<std::string, std::optional<std::string>> groupdict(
+            std::optional<std::string> default_value = std::nullopt
+        ) const noexcept {
+            std::unordered_map<std::string, std::optional<std::string>> result;
             if (match == nullptr) {
                 return result;
             }
@@ -587,7 +569,7 @@ public:
             for (uint32_t i = 0; i < name_count; ++i) {
                 uint16_t group_number = (table[0] << 8) | table[1];
                 const char* name = reinterpret_cast<const char*>(table + 2);
-                OptString grp = group(group_number);
+                std::optional<std::string> grp = group(group_number);
                 result[name] = grp.has_value() ? grp : default_value;
                 table += name_entry_size;
             }
@@ -650,30 +632,34 @@ public:
 
         };
 
-        GroupIter begin() const noexcept {
+        inline GroupIter begin() const noexcept {
             return {*this, 0};
         }
 
-        GroupIter end() const noexcept {
+        inline GroupIter end() const noexcept {
             return {*this};
         }
 
         /* Syntactic sugar for match.group(). */
         template <typename T>
-        inline OptString operator[](const T& index) const {
+        inline std::optional<std::string> operator[](const T& index) const {
             return group(index);
         }
 
         /* Syntactic sugar for match.group() using initializer list syntax to extract
         multiple groups. */
-        GroupVec operator[](const std::initializer_list<Initializer>& groups) {
-            GroupVec result;
+        inline std::vector<std::optional<std::string>> operator[](
+            const std::initializer_list<std::variant<long long, std::string>>& groups
+        ) {
+            std::vector<std::optional<std::string>> result;
             result.reserve(groups.size());
             for (auto&& item : groups) {
-                std::visit([&result, this](auto&& arg) {
-                    result.push_back(group(arg));
-                }, item);
-                // result.push_back(group(item));
+                std::visit(
+                    [&result, this](auto&& arg) {
+                        result.push_back(group(arg));
+                    },
+                    item
+                );
             }
             return result;
         }
@@ -712,13 +698,13 @@ public:
     match.  Yields a (possibly false) Match struct that can be used to access and
     iterate over capture groups. */
     Match match(const std::string& subject) const {
-        pcre2_match_data* data = pcre2_match_data_create_from_pattern(code, nullptr);
+        pcre2_match_data* data = pcre2_match_data_create_from_pattern(code.get(), nullptr);
         if (data == nullptr) {
             throw std::bad_alloc();
         }
 
         int rc = pcre2_match(
-            code,
+            code.get(),
             reinterpret_cast<PCRE2_SPTR>(subject.c_str()),
             subject.length(),
             0,  // start at beginning of string
@@ -736,7 +722,7 @@ public:
                 throw pcre_error(rc);
             }
         }
-        return {code, subject, data, true};
+        return {code.get(), subject, data, true};
     }
 
     /* Evaluate the regular expression against a target string and return the first
@@ -747,13 +733,13 @@ public:
             return {};
         }
 
-        pcre2_match_data* data = pcre2_match_data_create_from_pattern(code, nullptr);
+        pcre2_match_data* data = pcre2_match_data_create_from_pattern(code.get(), nullptr);
         if (data == nullptr) {
             throw std::bad_alloc();
         }
 
         int rc = pcre2_match(
-            code,
+            code.get(),
             reinterpret_cast<PCRE2_SPTR>(subject.c_str()),
             stop,
             start,
@@ -771,7 +757,7 @@ public:
                 throw pcre_error(rc);
             }
         }
-        return {code, subject, data, true};
+        return {code.get(), subject, data, true};
     }
 
     ///////////////////////////////
@@ -944,7 +930,15 @@ public:
     Note that the return value is a temporary object that can only be iterated over
     once.  The caller must not store the result of this function. */
     inline IterProxy finditer(const std::string& subject) const {
-        return {Iterator(code, subject, 0, subject.length()), Iterator()};
+        return {
+            Iterator(
+                code.get(),
+                subject,
+                0,
+                subject.length()
+            ),
+            Iterator()
+        };
     }
 
     /* Return an iterator that produces successive matches within the target string.
@@ -958,7 +952,14 @@ public:
         if (!normalize_indices(subject.length(), start, stop)) {
             return {Iterator(), Iterator()};
         }
-        return {Iterator(code, subject, start, stop), Iterator()};
+        return {
+            Iterator(code.get(),
+                subject,
+                start,
+                stop
+            ),
+            Iterator()
+        };
     }
 
     /* Extract all matches of the regular expression against a target string.  Returns
@@ -1048,7 +1049,7 @@ public:
         size_t retries = 0;
         while (true) {
             int n = pcre2_substitute(
-                code,
+                code.get(),
                 reinterpret_cast<PCRE2_SPTR>(subject.c_str()),
                 subject.length(),
                 0,  // start at beginning of string
@@ -1102,7 +1103,7 @@ public:
         PCRE2_SIZE remaining = buflen;
 
         // allocate a match struct to store the most recent match
-        pcre2_match_data* match = pcre2_match_data_create_from_pattern(code, nullptr);
+        pcre2_match_data* match = pcre2_match_data_create_from_pattern(code.get(), nullptr);
         if (match == nullptr) {
             throw std::bad_alloc();
         }
@@ -1120,7 +1121,7 @@ public:
                 PCRE2_SIZE outlen = remaining;
                 // PCRE2_SIZE delta = subject.length() - last;
                 ret_val = pcre2_substitute(
-                    code,
+                    code.get(),
                     reinterpret_cast<PCRE2_SPTR>(subject.c_str() + last),
                     subject.length() - last,
                     0,  // start at beginning of substring
@@ -1177,7 +1178,7 @@ public:
         }
     }
 
-    /* Dump a string representation of a Regex object to an output stream. */
+    /* Print a string representation of a Regex pattern to an output stream. */
     friend std::ostream& operator<<(std::ostream& stream, const Regex& regex) {
         stream << "<Regex: " << regex.pattern() << ">";
         return stream;
@@ -1186,57 +1187,7 @@ public:
 };
 
 
-}  // namespace py
 }  // namespace bertrand
-
-
-
-// TODO: This class should use actual pybind11 bindings to expose a symmetric interface
-// to Python, which should allow us to preserve the flags and semantics when the regex
-// run from a Python context.
-
-
-
-/* Convert Python re.Pattern objects into py::Regex instances when passing them to
-Python. */
-namespace pybind11 {
-namespace detail {
-
-
-template <>
-struct type_caster<bertrand::py::Regex> {
-    PYBIND11_TYPE_CASTER(bertrand::py::Regex, _("Regex"));
-
-    /* Convert a Python re.Pattern into a py::Regex instance. */
-    bool load(handle src, bool convert) {
-        int check = PyObject_IsInstance(
-            src.ptr(),
-            bertrand::py::impl::PyRegexPattern_Type->ptr()
-        );
-        if (check == -1) {
-            throw error_already_set();
-        } else if (check == 0) {
-            return false;
-        }
-
-        // create a new Regex instance from the pattern.  Note that this resets any
-        // flags that were set on the pattern.
-        static const pybind11::str method = "pattern";
-        value = bertrand::py::Regex(src.attr(method).cast<std::string>());
-        return true;
-    }
-
-    /* Convert a py::Regex instance into a Python re.Pattern. */
-    static handle cast(const bertrand::py::Regex& src, return_value_policy, handle) {
-        static const pybind11::str method = "compile";
-        return bertrand::py::impl::re->attr(method)(src.pattern()).release();
-    }
-
-};
-
-
-}  // namespace detail
-}  // namespace pybind11
 
 
 #endif  // BERTRAND_REGEX_H

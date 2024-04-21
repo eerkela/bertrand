@@ -22,9 +22,37 @@
 #include "python/type.h"
 
 
+#include "regex.h"
+
+
 // TODO: the only remaining language feature left to emulate are:
-// - context managers (RAII)  - use py::enter() to enter a context, and py::exit() or destructor to exit
+// - context managers (RAII)  - use py::enter() to enter a context (which produces an RAII guard), and py::exit() or destructor to exit
 // - decorators (?)
+
+
+// TODO: numpy types can be implemented as constexpr structs that have an internal
+// flyweight cache (which might be difficult wrt allocations).  They would inherit from
+// a virtual base class that implements the full type interface.  This would allow me
+// to pass polymorphic types by const reference to a base class, and use them to
+// select overloads at compile time.  For instance, you could write several algorithms
+// that accept different families of type tags, and the compiler would figure it out
+// for you, resulting in zero overhead.  This would effectively mirror the Python
+// @overload decorator, but using built-in C++ language features and no additional
+// syntax.
+
+// The only problem with this is that it seems like the presence of virtual methods
+// makes such a tag not directly usable as a template parameter, though it may be used
+// through its type directly, which could be piped into an array definition.  This
+// would mean that we could statically dispatch on an array type by using C++20
+// template constraints.
+
+// I could also implement a using declaration that could resolve types by name
+// entirely at compile time.  Something like:
+
+//    using Type = bertrand::resolve<"Int">;  // Bonus points if I can do full compile-time regex matches
+
+
+
 
 
 /* NOTES ON PERFORMANCE:
@@ -185,7 +213,7 @@ inline Type Property::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*
 ////////////////////////////////////
 
 
-Module Module::def_submodule(const char* name, const char* doc) {
+inline Module Module::def_submodule(const char* name, const char* doc) {
     const char* this_name = PyModule_GetName(m_ptr);
     if (this_name == nullptr) {
         Exception::from_python();
@@ -430,7 +458,7 @@ inline Object Dict::popitem() {
 }
 
 
-KeysView::KeysView(const Dict& dict) {
+inline KeysView::KeysView(const Dict& dict) {
     m_ptr = dict.template attr<"keys">()().release().ptr();
 }
 
@@ -440,7 +468,7 @@ inline KeysView Dict::keys() const {
 }
 
 
-ValuesView::ValuesView(const Dict& dict) {
+inline ValuesView::ValuesView(const Dict& dict) {
     m_ptr = dict.template attr<"values">()().release().ptr();
 }
 
@@ -450,7 +478,7 @@ inline ValuesView Dict::values() const {
 }
 
 
-ItemsView::ItemsView(const Dict& dict) {
+inline ItemsView::ItemsView(const Dict& dict) {
     m_ptr = dict.template attr<"items">()().release().ptr();
 }
 
@@ -772,6 +800,60 @@ inline Bytes Code::bytecode() const {
 
 namespace impl {
 
+    template <typename Obj, typename T>
+    struct visit_helper {
+        static constexpr bool value = false;
+    };
+
+    template <typename Obj, typename R, typename T, typename... A>
+    struct visit_helper<Obj, R(*)(T, A...)> {
+        using Arg = std::decay_t<T>;
+        static_assert(
+            std::derived_from<Arg, Obj>,
+            "visitor argument must derive from the visited object"
+        );
+        static constexpr bool value = true;
+    };
+
+    template <typename Obj, typename R, typename C, typename T, typename... A>
+    struct visit_helper<Obj, R(C::*)(T, A...)> : visit_helper<Obj, R(*)(T, A...)> {};
+    template <typename Obj, typename R, typename C, typename T, typename... A>
+    struct visit_helper<Obj, R(C::*)(T, A...) const> : visit_helper<Obj, R(*)(T, A...)> {};
+    template <typename Obj, typename R, typename C, typename T, typename... A>
+    struct visit_helper<Obj, R(C::*)(T, A...) volatile> : visit_helper<Obj, R(*)(T, A...)> {};
+    template <typename Obj, typename R, typename C, typename T, typename... A>
+    struct visit_helper<Obj, R(C::*)(T, A...) const volatile> : visit_helper<Obj, R(*)(T, A...)> {};
+
+    template <typename Obj, has_call_operator T>
+    struct visit_helper<Obj, T> : visit_helper<Obj, decltype(&T::operator())> {};
+
+    template <typename T, typename Obj>
+    concept visitable = visit_helper<std::decay_t<Obj>, std::decay_t<T>>::value;
+
+    template <typename Obj, typename Func, typename... Rest>
+    auto visit_recursive(Obj&& obj, Func&& func, Rest&&... rest) {
+        using Arg = visit_helper<std::decay_t<Obj>, std::decay_t<Func>>::Arg;
+
+        if (Arg::check(obj)) {
+            return std::invoke(func, reinterpret_borrow<Arg>(obj.ptr()));
+
+        } else {
+            if constexpr (sizeof...(Rest) > 0) {
+                return visit_recursive(
+                    std::forward<Obj>(obj),
+                    std::forward<Rest>(rest)...
+                );
+
+            } else {
+                std::string message = (
+                    "no suitable function found for object of type '" +
+                    std::string(Type(obj).name()) + "'"
+                );
+                throw TypeError(message);
+            }
+        }
+    }
+
     /* Base class for CallTraits tags, which contain SFINAE information about a
     callable Python/C++ object, as returned by `py::callable()`. */
     template <typename Func>
@@ -928,6 +1010,128 @@ namespace impl {
 }
 
 
+/* An equivalent for std::visit, which applies one of a selection of functions
+depending on the runtime type of a generic Python object.
+
+This is roughly equivalent to std::visit, but with a few key differences:
+
+    1.  Each function must accept at least one argument, which must be derived from
+        `py::Object`.  They are free to accept additional arguments as long as those
+        arguments have default values.
+    2.  Each function is checked in order, which invokes a runtime type check against
+        the type of the first argument.  The first function that matches the observed
+        type of the object is called, and all other functions are ignored.
+    3.  The generic `py::Object` type acts as a catch-all, since its check() method
+        always returns true as long as the object is not null.  Including a function
+        that accepts `py::Object` can therefore act as a default case, if no previous
+        function matches.
+    4.  If no function is found that matches the object's type, a `TypeError` is thrown
+        with a message indicating the observed type of the object.
+    5.  Overload sets are not supported, as the first argument to an overloaded
+        function is not well-defined.  List the functions in order instead.
+*/
+template <typename Obj, impl::visitable<Obj>... Funcs>
+    requires (std::derived_from<std::decay_t<Obj>, Object>)
+auto visit(Obj&& obj, Funcs&&... funcs) {
+    static_assert(
+        sizeof...(Funcs) > 0,
+        "visit() requires at least one function to dispatch to"
+    );
+    return impl::visit_recursive(
+        std::forward<Obj>(obj),
+        std::forward<Funcs>(funcs)...
+    );
+}
+
+
+/* An equivalent for std::transform, which applies one of a selection of functions
+depending on the runtime type of each object in a Python iterator.
+
+This is equivalent to manually piping the iterator through std::transform and
+immediately invoking py::visit() on each element.
+*/
+template <typename... Funcs>
+auto transform(Funcs&&... funcs) {
+    return std::views::transform(
+        [&funcs...](auto&& item) {
+            return visit(
+                std::forward<decltype(item)>(item),
+                std::forward<Funcs>(funcs)...
+            );
+        }
+    );
+}
+
+
+/* Equivalent to Python `callable(obj)`, except that it supports extended C++ syntax to
+account for C++ function pointers, lambdas, and constexpr SFINAE checks.
+
+Here's how this function can be used:
+
+    if (py::callable(func)) {
+        // works just like normal Python. Enters the branch if func is a Python or C++
+        // callable with arbitrary arguments.
+    }
+
+    if (py::callable<int, int>(func)) {
+        // if used on a C++ function, inspects the function's signature at compile time
+        // to determine if it can be called with the provided arguments.
+
+        // if used on a Python callable, inspects the underlying code object to ensure
+        // that all args can be converted to Python objects, and that their number
+        // matches the function's signature (not accounting for variadic or keyword
+        // arguments).
+    }
+
+    if (py::callable<void>(func)) {
+        // specifically checks that the function is callable with zero arguments.
+        // Note that the zero-argument template specialization is reserved for wildcard
+        // matching, so we have to provide an explicit void argument here.
+    }
+
+Additionally, `py::callable()` can be used at compile time if the function allows it.
+This is only enabled for C++ functions whose signatures can be fully determined at
+compile time, and will result in compile errors if used on Python objects, which
+require runtime introspection.  Users can refer to py::python_like<> to disambiguate.
+
+    using Return = typename decltype(py::callable<int, int>(func))::Return;
+        // gets the hypothetical return type of the function with the given arguments,
+        // or an internal NoReturn placeholder if no overload could be found.  Always
+        // refers to Object for Python callables, provided that the arguments are valid
+
+    static_assert(py::callable<bool, bool>(func), "func must be callable with two bools");
+        // raises a compile error if the function cannot be called with the given
+        // arguments.  Throws a no-constexpr error if used on Python callables.
+
+    if constexpr (py::callable<double, double>(func)) {
+        // enters a constexpr branch if the function can be called with the given
+        // arguments.  The compiler will discard the branch if the condition is not
+        // met, or raise a no-constexpr error if used on Python callables.
+    }
+
+Various permutations of these examples are possible, allowing users to both statically
+and dynamically dispatch based on an arbitrary function's signature, with the same
+universal syntax in both languages. */
+template <typename... Args, impl::is_callable_any Func>
+constexpr auto callable(const Func& func) {
+    // If no template arguments are given, default to wildcard matching
+    if constexpr (sizeof...(Args) == 0) {
+        return impl::CallTraits<Func, void>{func};
+
+    // If void is given as a single argument, reinterpret as an empty argument list
+    } else if constexpr (
+        sizeof...(Args) == 1 &&
+        std::is_same_v<std::tuple_element_t<0, std::tuple<Args...>>, void>
+    ) {
+        return impl::CallTraits<Func>{func};
+
+    // Otherwise, pass the arguments through to the strict matching overload
+    } else {
+        return impl::CallTraits<Func, Args...>{func};
+    }
+}
+
+
 // not implemented
 // help() - not applicable
 // input() - Use std::cin for now.  May be implemented in the future.
@@ -936,7 +1140,7 @@ namespace impl {
 
 /* Equivalent to Python `all(args...)` */
 template <typename First = void, typename... Rest> [[deprecated]]
-inline bool all(First&& first, Rest&&... rest) {
+bool all(First&& first, Rest&&... rest) {
     static_assert(
         std::is_void_v<First>,
         "Bertrand does not implement py::all().  Use std::all_of() or its std::ranges "
@@ -948,7 +1152,7 @@ inline bool all(First&& first, Rest&&... rest) {
 
 /* Equivalent to Python `any(args...)` */
 template <typename First = void, typename... Rest> [[deprecated]]
-inline bool any(First&& first, Rest&&... rest) {
+bool any(First&& first, Rest&&... rest) {
     static_assert(
         std::is_void_v<First>,
         "Bertrand does not implement py::any().  Use std::any_of() or its std::ranges "
@@ -960,7 +1164,7 @@ inline bool any(First&& first, Rest&&... rest) {
 
 /* Equivalent to Python `enumerate(args...)`. */
 template <typename First = void, typename... Rest> [[deprecated]]
-inline py::Object enumerate(First&& first, Rest&&... rest) {
+py::Object enumerate(First&& first, Rest&&... rest) {
     static_assert(
         std::is_void_v<First>,
         "Bertrand does not implement py::enumerate().  Pipe the container with "
@@ -972,7 +1176,7 @@ inline py::Object enumerate(First&& first, Rest&&... rest) {
 
 /* Equivalent to Python `filter(args...)`. */
 template <typename First = void, typename... Rest> [[deprecated]]
-inline py::Object filter(First&& first, Rest&&... rest) {
+py::Object filter(First&& first, Rest&&... rest) {
     static_assert(
         std::is_void_v<First>,
         "Bertrand does not implement py::filter().  Pipe the container with "
@@ -984,7 +1188,7 @@ inline py::Object filter(First&& first, Rest&&... rest) {
 
 /* Equivalent to Python `map(args...)`. */
 template <typename First = void, typename... Rest> [[deprecated]]
-inline py::Object map(First&& first, Rest&&... rest) {
+py::Object map(First&& first, Rest&&... rest) {
     static_assert(
         std::is_void_v<First>,
         "Bertrand does not implement py::map().  Pipe the container with "
@@ -996,7 +1200,7 @@ inline py::Object map(First&& first, Rest&&... rest) {
 
 /* Equivalent to Python `max(args...)`. */
 template <typename First = void, typename... Rest> [[deprecated]]
-inline py::Object max(First&& first, Rest&&... rest) {
+py::Object max(First&& first, Rest&&... rest) {
     static_assert(
         std::is_void_v<First>,
         "Bertrand does not implement py::max().  Use std::max(), std::max_element(), "
@@ -1008,7 +1212,7 @@ inline py::Object max(First&& first, Rest&&... rest) {
 
 /* Equivalent to Python `min(args...)`. */
 template <typename First = void, typename... Rest> [[deprecated]]
-inline py::Object min(First&& first, Rest&&... rest) {
+py::Object min(First&& first, Rest&&... rest) {
     static_assert(
         std::is_void_v<First>,
         "Bertrand does not implement py::min().  Use std::min(), std::min_element(), "
@@ -1020,7 +1224,7 @@ inline py::Object min(First&& first, Rest&&... rest) {
 
 /* Equivalent to Python `next(args...)`. */
 template <typename First = void, typename... Rest> [[deprecated]]
-inline py::Object next(First&& first, Rest&&... rest) {
+py::Object next(First&& first, Rest&&... rest) {
     static_assert(
         std::is_void_v<First>,
         "Bertrand does not implement py::next().  Use the iterator's ++ increment "
@@ -1033,7 +1237,7 @@ inline py::Object next(First&& first, Rest&&... rest) {
 
 /* Equivalent to Python `sum(obj)`, but also works on C++ containers. */
 template <typename First = void, typename... Rest> [[deprecated]]
-inline py::Object sum(First&& first, Rest&&... rest) {
+py::Object sum(First&& first, Rest&&... rest) {
     static_assert(
         std::is_void_v<First>,
         "Bertrand does not implement py::sum().  Use std::accumulate() or an ordinary "
@@ -1044,7 +1248,7 @@ inline py::Object sum(First&& first, Rest&&... rest) {
 
 
 template <typename First = void, typename... Rest> [[deprecated]]
-inline py::Object zip(First&& first, Rest&&... rest) {
+py::Object zip(First&& first, Rest&&... rest) {
     static_assert(
         std::is_void_v<First>,
         "Bertrand does not implement py::zip().  If you are using C++23 or later, use "
@@ -1154,75 +1358,6 @@ inline Str bin(const Handle& obj) {
         Exception::from_python();
     }
     return reinterpret_steal<Str>(string);
-}
-
-
-/* Equivalent to Python `callable(obj)`, except that it supports extended C++ syntax to
-account for C++ function pointers, lambdas, and constexpr SFINAE checks.
-
-Here's how this function can be used:
-
-    if (py::callable(func)) {
-        // works just like normal Python. Enters the branch if func is a Python or C++
-        // callable with arbitrary arguments.
-    }
-
-    if (py::callable<int, int>(func)) {
-        // if used on a C++ function, inspects the function's signature at compile time
-        // to determine if it can be called with the provided arguments.
-
-        // if used on a Python callable, inspects the underlying code object to ensure
-        // that all args can be converted to Python objects, and that their number
-        // matches the function's signature (not accounting for variadic or keyword
-        // arguments).
-    }
-
-    if (py::callable<void>(func)) {
-        // specifically checks that the function is callable with zero arguments.
-        // Note that the zero-argument template specialization is reserved for wildcard
-        // matching, so we have to provide an explicit void argument here.
-    }
-
-Additionally, `py::callable()` can be used at compile time if the function allows it.
-This is only enabled for C++ functions whose signatures can be fully determined at
-compile time, and will result in compile errors if used on Python objects, which
-require runtime introspection.  Users can refer to py::python_like<> to disambiguate.
-
-    using Return = typename decltype(py::callable<int, int>(func))::Return;
-        // gets the hypothetical return type of the function with the given arguments,
-        // or an internal NoReturn placeholder if no overload could be found.  Always
-        // refers to Object for Python callables, provided that the arguments are valid
-
-    static_assert(py::callable<bool, bool>(func), "func must be callable with two bools");
-        // raises a compile error if the function cannot be called with the given
-        // arguments.  Throws a no-constexpr error if used on Python callables.
-
-    if constexpr (py::callable<double, double>(func)) {
-        // enters a constexpr branch if the function can be called with the given
-        // arguments.  The compiler will discard the branch if the condition is not
-        // met, or raise a no-constexpr error if used on Python callables.
-    }
-
-Various permutations of these examples are possible, allowing users to both statically
-and dynamically dispatch based on an arbitrary function's signature, with the same
-universal syntax in both languages. */
-template <typename... Args, impl::is_callable_any Func>
-inline constexpr auto callable(const Func& func) {
-    // If no template arguments are given, default to wildcard matching
-    if constexpr (sizeof...(Args) == 0) {
-        return impl::CallTraits<Func, void>{func};
-
-    // If void is given as a single argument, reinterpret as an empty argument list
-    } else if constexpr (
-        sizeof...(Args) == 1 &&
-        std::is_same_v<std::tuple_element_t<0, std::tuple<Args...>>, void>
-    ) {
-        return impl::CallTraits<Func>{func};
-
-    // Otherwise, pass the arguments through to the strict matching overload
-    } else {
-        return impl::CallTraits<Func, Args...>{func};
-    }
 }
 
 
@@ -1367,7 +1502,7 @@ inline bool hasattr(const Handle& obj, const Str& name) {
 for the relevant Python types.  This promotes hash-not-implemented exceptions into
 compile-time equivalents. */
 template <typename T> requires (impl::is_hashable<T> || std::derived_from<T, Object>)
-inline size_t hash(T&& obj) {
+size_t hash(T&& obj) {
     static_assert(
         impl::is_hashable<T>,
         "hash() is not supported for this type.  Did you forget to specialize "
@@ -1391,7 +1526,7 @@ inline Str hex(const Int& obj) {
 /* Equivalent to Python `id(obj)`, but also works with C++ values.  Casts the object's
 memory address to a void pointer. */
 template <typename T>
-inline const void* id(const T& obj) {
+const void* id(const T& obj) {
     if constexpr (std::is_pointer_v<T>) {
         return reinterpret_cast<void*>(obj);
 
@@ -1415,7 +1550,8 @@ inline bool isinstance(const Handle& derived) {
 
 /* Equivalent to Python `isinstance(derived, base)`. */
 template <typename T>
-inline bool isinstance(const Handle& derived, const Type& base) {
+    requires (impl::type_like<T> || impl::tuple_like<T> || std::same_as<T, Object>)
+inline bool isinstance(const Handle& derived, const T& base) {
     int result = PyObject_IsInstance(
         derived.ptr(),
         detail::object_or_cast(base).ptr()
@@ -1448,6 +1584,7 @@ inline bool issubclass(const Type& derived) {
 
 /* Equivalent to Python `issubclass(derived, base)`. */
 template <typename T>
+    requires (impl::type_like<T> || impl::tuple_like<T> || std::same_as<T, Object>)
 inline bool issubclass(const Type& derived, const T& base) {
     int result = PyObject_IsSubclass(
         derived.ptr(),
@@ -1467,10 +1604,10 @@ template <impl::is_iterable T>
 inline pybind11::iterator iter(T&& obj) {
     static_assert(
         !std::is_rvalue_reference_v<T>,
-        "passing an rvalue to py::iter() is unsafe"
+        "passing a temporary container to py::iter() is unsafe"
     );
     try {
-        return pybind11::make_iterator(obj.begin(), obj.end());
+        return pybind11::make_iterator(std::begin(obj), std::end(obj));
     } catch (...) {
         Exception::from_pybind11();
     }
@@ -1478,20 +1615,18 @@ inline pybind11::iterator iter(T&& obj) {
 
 
 /* Equivalent to Python `len(obj)`, but also accepts C++ types implementing a .size()
-method.  Returns nullopt if the size could not be determined.  Use `.size()` directly
-if you'd prefer a compile error instead. */
+method. */
 template <typename T>
-inline std::optional<size_t> len(const T& obj) {
+    requires (impl::has_size<T> || std::derived_from<T, pybind11::object>)
+inline size_t len(const T& obj) {
     try {
         if constexpr (impl::has_size<T>) {
-            return obj.size();  // prefers custom overloads of .size()
-        } else if constexpr (impl::python_like<T>) {
-            return pybind11::len(obj);  // fallback to Python __len__
+            return obj.size();
         } else {
-            return std::nullopt;
+            return pybind11::len(obj);
         }
     } catch (...) {
-        return std::nullopt;
+        Exception::from_pybind11();
     }
 }
 
@@ -1537,20 +1672,20 @@ inline Int ord(const Handle& obj) {
 /* Equivalent to Python `reversed(obj)` except that it can also accept C++ containers
 and generate Python iterators over them.  Note that requesting an iterator over an
 rvalue is not allowed, and will trigger a compiler error. */
-template <typename T>
+template <impl::is_reverse_iterable T>
 inline pybind11::iterator reversed(T&& obj) {
     static_assert(
         !std::is_rvalue_reference_v<T>,
-        "passing an rvalue to py::reversed() is unsafe"
+        "passing a temporary container to py::reversed() is unsafe"
     );
-    static const pybind11::str lookup = "__reversed__";
     try {
         if constexpr (std::is_base_of_v<pybind11::object, std::decay_t<T>>) {
+            static const pybind11::str lookup = "__reversed__";
             return reinterpret_steal<pybind11::iterator>(
                 obj.attr(lookup)().release()
             );
         } else {
-            return pybind11::make_iterator(obj.rbegin(), obj.rend());
+            return pybind11::make_iterator(std::rbegin(obj), std::rend(obj));
         }
     } catch (...) {
         Exception::from_pybind11();
@@ -1579,7 +1714,6 @@ inline List sorted(const Handle& obj) {
 
 
 /* Equivalent to Python `sorted(obj, key=key, reverse=reverse)`. */
-template <typename Func>
 inline List sorted(const Handle& obj, const Function& key, bool reverse = false) {
     static const Str s_sorted = "sorted";
     return builtins()[s_sorted](
@@ -1604,6 +1738,31 @@ inline Dict vars(const Object& object) {
 
 
 }  // namespace py
+
+
+auto Regex::Match::group(const py::args& args) const
+    -> std::vector<std::optional<std::string>>
+{
+    auto tuple = py::Tuple::from_args(args);
+    std::vector<std::optional<std::string>> result;
+    result.reserve(tuple.size());
+
+    for (const auto& arg : tuple) {
+        if (py::Str::check(arg)) {
+            result.push_back(group(static_cast<std::string>(arg)));
+        } else if (py::Int::check(arg)) {
+            result.push_back(group(static_cast<size_t>(arg)));
+        } else {
+            throw py::TypeError(
+                "group() expects an integer or string argument"
+            );
+        }
+    }
+
+    return result;
+}
+
+
 }  // namespace bertrand
 
 

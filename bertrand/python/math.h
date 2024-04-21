@@ -43,7 +43,7 @@ namespace impl {
         mode.round(obj);
     };
 
-    size_t pow_int(size_t base, size_t exp) {
+    inline size_t pow_int(size_t base, size_t exp) {
         size_t result = 1;
         while (exp > 0) {
             if (exp % 2 == 1) {
@@ -741,7 +741,7 @@ public:
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
-                Object a = rhs > Int::zero();
+                Object a {rhs > Int::zero()};
                 Object numerator = lhs + impl::ops::operator_floordiv<Object>(
                     rhs + ~a,
                     Int::two()
@@ -757,7 +757,7 @@ public:
                  */
             } else if constexpr (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
-                    Object a = rhs > Int::zero();
+                    Object a {rhs > Int::zero()};
                     Object numerator = lhs + impl::ops::operator_floordiv<Object>(
                         rhs + ~a,
                         Int::two()
@@ -836,7 +836,7 @@ public:
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
-                Object a = rhs > Int::zero();
+                Object a {rhs > Int::zero()};
                 Object numerator = lhs + impl::ops::operator_floordiv<Object>(
                     rhs + a,
                     Int::two()
@@ -852,7 +852,7 @@ public:
                  */
             } else if constexpr (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
-                    Object a = rhs > Int::zero();
+                    Object a {rhs > Int::zero()};
                     Object numerator = lhs +  impl::ops::operator_floordiv<Object>(
                         rhs + a,
                         Int::two()
@@ -916,8 +916,8 @@ public:
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
-                Object a = rhs > Int::zero();
-                Object b = lhs > Int::zero();
+                Object a {rhs > Int::zero()};
+                Object b {lhs > Int::zero()};
                 Object numerator = lhs;
                 if (a == b) {  // NOTE: branches are faster than writing more Python
                     numerator += impl::ops::operator_floordiv<Object>(
@@ -936,8 +936,8 @@ public:
 
             } else if (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
-                    Object a = rhs > Int::zero();
-                    Object b = lhs > Int::zero();
+                    Object a {rhs > Int::zero()};
+                    Object b { lhs > Int::zero() };
                     Object numerator = lhs;
                     if (a == b) {  // NOTE: branches are faster than writing more Python
                         numerator += impl::ops::operator_floordiv<Object>(
@@ -1041,8 +1041,8 @@ public:
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
-                Object a = rhs > Int::zero();
-                Object b = lhs > Int::zero();
+                Object a {rhs > Int::zero()};
+                Object b {lhs > Int::zero()};
                 Object numerator = lhs;
                 if (a == b) {  // NOTE: branches are faster than writing more Python
                     numerator += impl::ops::operator_floordiv<Object>(
@@ -1061,8 +1061,8 @@ public:
 
             } else if (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
-                    Object a = rhs > Int::zero();
-                    Object b = lhs > Int::zero();
+                    Object a {rhs > Int::zero()};
+                    Object b {lhs > Int::zero()};
                     Object numerator = lhs;
                     if (a == b) {  // NOTE: branches are faster than writing more Python
                         numerator += impl::ops::operator_floordiv<Object>(
@@ -1173,7 +1173,7 @@ public:
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
-                Object a = rhs > Int::zero();
+                Object a {rhs > Int::zero()};
                 Object numerator = lhs;
                 if (impl::ops::operator_floordiv<Object>(lhs, rhs) % Int::two()) {
                     numerator += impl::ops::operator_floordiv<Object>(
@@ -1192,7 +1192,7 @@ public:
 
             } else if (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
-                    Object a = rhs > Int::zero();
+                    Object a {rhs > Int::zero()};
                     Object numerator = lhs;
                     if (impl::ops::operator_floordiv<Object>(lhs, rhs) % Int::two()) {
                         numerator += impl::ops::operator_floordiv<Object>(

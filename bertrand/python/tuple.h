@@ -284,15 +284,6 @@ public:
         };
     }
 
-private:
-
-    template <typename... Args, size_t... N>
-    inline std::tuple<Args...> convert_to_std_tuple(std::index_sequence<N...>) const {
-        return std::make_tuple(static_cast<Args>(GET_ITEM(N))...);
-    }
-
-public:
-
     /* Implicitly convert a py::Tuple into a C++ std::tuple.  Throws an error if the
     tuple does not have the expected length. */
     template <typename... Args>
@@ -303,7 +294,10 @@ public:
                 << ", not " << size();
             throw IndexError(msg.str());
         }
-        return convert_to_std_tuple<Args...>(std::index_sequence_for<Args...>{});
+
+        return [&]<size_t... N>(std::index_sequence<N...>) {
+            return std::make_tuple(static_cast<Args>(GET_ITEM(N))...);
+        }(std::index_sequence_for<Args...>{});
     }
 
     /* Implicitly convert a py::Tuple into a C++ std::array.  Throws an error if the
@@ -321,6 +315,17 @@ public:
             result[i] = static_cast<T>(GET_ITEM(i));
         }
         return result;
+    }
+
+    /* Extract variadic positional arguments from pybind11 into a more expressive
+    py::Tuple object. */
+    static Tuple from_args(const pybind11::args& args) {
+        return reinterpret_borrow<Tuple>(args.ptr());
+    }
+
+    /* Convert a tuple to variadic positional arguments for pybind11. */
+    static pybind11::args to_args(const Tuple& tuple) {
+        return reinterpret_borrow<pybind11::args>(tuple);
     }
 
     /* Get the underlying PyObject* array. */

@@ -416,6 +416,7 @@ namespace impl {
 
         /* Set an active Python error with this traceback. */
         void restore(PyObject* type, const char* value) const {
+            PyErr_Clear();
             PyTracebackObject* tb = to_python();
             PyErr_SetString(type, value);
             #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)

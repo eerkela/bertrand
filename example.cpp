@@ -75,7 +75,8 @@
 ///////////////////////
 
 
-#include <bertrand/python.h>
+#include "bertrand/python.h"
+#include <bertrand/bertrand.h>
 
 #include <chrono>
 #include <iostream>
@@ -93,15 +94,9 @@ static const py::Function array = np.attr<"array">();
 static const py::Type dtype = np.attr<"dtype">();
 
 
-
-// TODO: this almost works, but I end up duplicating the C++ traceback both times I
-// cross the Python/C++ boundary.  I need to figure out how to avoid that.
-
-
 void helper() {
     throw py::TypeError("abc");
 }
-
 
 
 void throws_an_error() {
@@ -146,9 +141,91 @@ void throws_an_error() {
 }
 
 
+void get_pattern(const bertrand::Regex& re) {
+    py::print(re.pattern());
+}
+
+
+bertrand::Regex from_cpp() {
+    return bertrand::Regex("abc");
+}
+
+
+int test(const py::Object& obj) {
+    py::print(obj);
+    return 3;
+}
+
+
+template <typename... Funcs>
+struct Overload : Funcs... {
+    using Funcs::operator()...;
+};
+
+
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
+
+
+
+
+    // int x = 1;
+    // std::string y = "abc";
+    // std::variant<int, std::string> z = x;
+    // std::visit(
+    //     Overload{
+    //         [](const int& arg) {
+    //             py::print(arg);
+    //         },
+    //         [](const std::string& arg) {
+    //             py::print(arg);
+    //         }
+    //     },
+    //     z
+    // );
+
+
+
+
+    // py::Object foo("abc");
+    // int x = py::visit(foo,
+    //     [](const py::Float& obj) {
+    //         py::print(obj);
+    //         return 1;
+    //     },
+    //     [](const py::Str& obj, int y = 2) {
+    //         py::print(obj, y);
+    //         return 2;
+    //     },
+    //     test,
+    //     [](const py::Int& obj) {
+    //         py::print(obj);
+    //         return 0;
+    //     }
+    // );
+    // py::print(x);
+
+
+
+    py::List list = {1, 2, 3.0, 4.5, "5"};
+    auto view = list | py::transform(
+        [](const py::Int& obj) {
+            return py::Str("int");
+        },
+        [](const py::Float& obj) {
+            return py::Str("float");
+        },
+        [](const py::Str& obj) {
+            return py::Str("string");
+        }
+    );
+    for (auto&& x : view) {
+        py::print(x);
+    }
+
+
+
 
 
     // static const py::Code script = R"Foo(
@@ -166,19 +243,29 @@ void run() {
     // });
 
 
-    py::Int x = 1;
-    py::Int y = 2;
-    // double x = -4;
-    // double y = 3;
-
-    for (size_t i = 0; i < 1000000; ++i) {
-        volatile auto z = py::div(x, y, py::Round::TRUE);
-        // volatile auto z = x / y;
-    }
-
-    // py::print(py::div(x, y, py::Round::DOWN));
+    // static const bertrand::Regex re("hello");
+    // for (size_t i = 0; i < 1000000; ++i) {
+    //     volatile auto match = re.match("hello, world!");
+    // }
+    // py::print(!!re.match("hello, world!"));
 
 
+    // py::import<"bertrand.regex">();  // NOTE: this works to bring things into scope
+
+
+    // // NOTE: this works as long as the module has been loaded.
+    // py::Object x("abc");
+    // bertrand::Regex re(static_cast<std::string>(x));
+    // py::Object y(re);
+    // py::print(re);
+    // py::print(y);
+    // bertrand::Regex re2 = y;
+    // py::print(re2);
+
+
+    // py::Int z = 1;
+    // py::Object w = z;
+    // py::print(w);
 
 
 
@@ -703,4 +790,6 @@ void run() {
 PYBIND11_MODULE(example, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring
     m.def("run", &run, "A test function to demonstrate pybind11");
+    m.def("get_pattern", &get_pattern, "catch a Python regex pattern in C++");
+    m.def("from_cpp", &from_cpp, "return a Python regex from C++");
 }

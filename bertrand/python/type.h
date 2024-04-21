@@ -10,6 +10,9 @@
 #include "dict.h"
 
 
+// TODO: Type::of<T>(), where T is a registered pybind11 extension type.
+
+
 namespace bertrand {
 namespace py {
 

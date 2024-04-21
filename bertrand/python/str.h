@@ -357,18 +357,6 @@ public:
         return reinterpret_borrow<pybind11::str>(m_ptr);
     }
 
-    /* Explicitly convert a py::Str into a C-style UTF8 byte array.  Note that Python
-    caches the result in the string itself, making this operation unsafe for
-    rvalue-qualified objects. */
-    inline explicit operator const char*() const && = delete;
-    inline explicit operator const char*() const & {
-        const char* result = PyUnicode_AsUTF8(this->ptr());
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
     /* Implicitly convert a py::Str into a C++ std::string. */
     inline operator std::string() const {
         Py_ssize_t length;
@@ -376,20 +364,7 @@ public:
         if (result == nullptr) {
             Exception::from_python();
         }
-        return std::string(result, length);
-    }
-
-    /* Implicitly convert a py::Str into a C++ std::string_view.  Note that this
-    provides a view into an internal buffer stored in the string itself, making this
-    operation unsafe for rvalue-qualified objects. */
-    inline operator std::string_view() const && = delete;
-    inline operator std::string_view() const & {
-        Py_ssize_t length;
-        const char* result = PyUnicode_AsUTF8AndSize(this->ptr(), &length);
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return std::string_view(result, length);
+        return {result, static_cast<size_t>(length)};
     }
 
     /* Get the underlying unicode buffer. */

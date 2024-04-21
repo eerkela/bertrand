@@ -44,7 +44,7 @@ namespace py {
 
 #define BERTRAND_OBJECT_OPERATORS(cls)                                                  \
     template <typename... Args> requires (__call__<cls, Args...>::enable)               \
-    inline auto operator()(Args&&... args) const {                                      \
+    auto operator()(Args&&... args) const {                                             \
         using Return = typename __call__<cls, Args...>::Return;                         \
         static_assert(                                                                  \
             std::is_same_v<Return, void> || std::is_base_of_v<Return, Object>,          \
@@ -56,7 +56,7 @@ namespace py {
     }                                                                                   \
                                                                                         \
     template <typename Key> requires (__getitem__<cls, Key>::enable)                    \
-    inline auto operator[](const Key& key) const {                                      \
+    auto operator[](const Key& key) const {                                             \
         using Return = typename __getitem__<cls, Key>::Return;                          \
         if constexpr (impl::proxy_like<Key>) {                                          \
             return (*this)[key.value()];                                                \
@@ -66,13 +66,13 @@ namespace py {
     }                                                                                   \
                                                                                         \
     template <typename T = cls> requires (__getitem__<T, Slice>::enable)                \
-    inline auto operator[](std::initializer_list<impl::SliceInitializer> slice) const { \
+    auto operator[](std::initializer_list<impl::SliceInitializer> slice) const {        \
         using Return = typename __getitem__<T, Slice>::Return;                          \
         return operator_getitem<Return>(*this, slice);                                  \
     }                                                                                   \
                                                                                         \
     template <typename T = cls> requires (__iter__<T>::enable)                          \
-    inline auto begin() const {                                                         \
+    auto begin() const {                                                                \
         using Return = typename __iter__<T>::Return;                                    \
         static_assert(                                                                  \
             std::is_base_of_v<Object, Return>,                                          \
@@ -84,7 +84,10 @@ namespace py {
     }                                                                                   \
                                                                                         \
     template <typename T = cls> requires (__iter__<T>::enable)                          \
-    inline auto end() const {                                                           \
+    auto cbegin() const { return begin<T>(); }                                          \
+                                                                                        \
+    template <typename T = cls> requires (__iter__<T>::enable)                          \
+    auto end() const {                                                                  \
         using Return = typename __iter__<T>::Return;                                    \
         static_assert(                                                                  \
             std::is_base_of_v<Object, Return>,                                          \
@@ -95,8 +98,11 @@ namespace py {
         return operator_end<Return>(*this);                                             \
     }                                                                                   \
                                                                                         \
+    template <typename T = cls> requires (__iter__<T>::enable)                          \
+    auto cend() const { return end<T>(); }                                              \
+                                                                                        \
     template <typename T = cls> requires (__reversed__<T>::enable)                      \
-    inline auto rbegin() const {                                                        \
+    auto rbegin() const {                                                               \
         using Return = typename __reversed__<T>::Return;                                \
         static_assert(                                                                  \
             std::is_base_of_v<Object, Return>,                                          \
@@ -108,7 +114,10 @@ namespace py {
     }                                                                                   \
                                                                                         \
     template <typename T = cls> requires (__reversed__<T>::enable)                      \
-    inline auto rend() const {                                                          \
+    auto crbegin() const { return rbegin<T>(); }                                        \
+                                                                                        \
+    template <typename T = cls> requires (__reversed__<T>::enable)                      \
+    auto rend() const {                                                                 \
         using Return = typename __reversed__<T>::Return;                                \
         static_assert(                                                                  \
             std::is_base_of_v<Object, Return>,                                          \
@@ -119,8 +128,11 @@ namespace py {
         return operator_rend<Return>(*this);                                            \
     }                                                                                   \
                                                                                         \
+    template <typename T = cls> requires (__reversed__<T>::enable)                      \
+    auto crend() const { return rend<T>(); }                                            \
+                                                                                        \
     template <typename T> requires (__contains__<cls, T>::enable)                       \
-    inline bool contains(const T& key) const {                                          \
+    bool contains(const T& key) const {                                                 \
         using Return = typename __contains__<cls, T>::Return;                           \
         static_assert(                                                                  \
             std::is_same_v<Return, bool>,                                               \
@@ -136,7 +148,7 @@ namespace py {
     }                                                                                   \
                                                                                         \
     template <typename T = cls> requires (__len__<T>::enable)                           \
-    inline size_t size() const {                                                        \
+    size_t size() const {                                                               \
         using Return = typename __len__<T>::Return;                                     \
         static_assert(                                                                  \
             std::is_same_v<Return, size_t>,                                             \
@@ -930,7 +942,7 @@ struct __contains__<T, Key> : __contains__<typename T::Wrapped, Key> {};
 
 
 template <typename T> requires (__iter__<T>::enable)
-inline auto operator*(const T& obj) {
+auto operator*(const T& obj) {
     if constexpr (impl::proxy_like<T>) {
         return *obj.value();
     } else {
@@ -980,7 +992,7 @@ struct __lt__<L, R> : __lt__<typename L::Wrapped, typename R::Wrapped> {};
 
 
 template <typename L, typename R> requires (__lt__<L, R>::enable)
-inline auto operator<(const L& lhs, const R& rhs) {
+auto operator<(const L& lhs, const R& rhs) {
     using Return = typename __lt__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, bool>,
@@ -1000,7 +1012,7 @@ inline auto operator<(const L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__lt__<L, R>::enable)
-inline auto operator<(const L& lhs, const R& rhs) = delete;
+auto operator<(const L& lhs, const R& rhs) = delete;
 
 
 //////////////////////////////////
@@ -1026,7 +1038,7 @@ struct __le__<L, R> : __le__<typename L::Wrapped, typename R::Wrapped> {};
 
 
 template <typename L, typename R> requires (__le__<L, R>::enable)
-inline auto operator<=(const L& lhs, const R& rhs) {
+auto operator<=(const L& lhs, const R& rhs) {
     using Return = typename __le__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, bool>,
@@ -1046,7 +1058,7 @@ inline auto operator<=(const L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__le__<L, R>::enable)
-inline auto operator<=(const L& lhs, const R& rhs) = delete;
+auto operator<=(const L& lhs, const R& rhs) = delete;
 
 
 /////////////////////
@@ -1072,7 +1084,7 @@ struct __eq__<L, R> : __eq__<typename L::Wrapped, typename R::Wrapped> {};
 
 
 template <typename L, typename R> requires (__eq__<L, R>::enable)
-inline auto operator==(const L& lhs, const R& rhs) {
+auto operator==(const L& lhs, const R& rhs) {
     using Return = typename __eq__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, bool>,
@@ -1092,7 +1104,7 @@ inline auto operator==(const L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__eq__<L, R>::enable)
-inline auto operator==(const L& lhs, const R& rhs) = delete;
+auto operator==(const L& lhs, const R& rhs) = delete;
 
 
 ////////////////////////
@@ -1118,7 +1130,7 @@ struct __ne__<L, R> : __ne__<typename L::Wrapped, typename R::Wrapped> {};
 
 
 template <typename L, typename R> requires (__ne__<L, R>::enable)
-inline auto operator!=(const L& lhs, const R& rhs) {
+auto operator!=(const L& lhs, const R& rhs) {
     using Return = typename __ne__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, bool>,
@@ -1138,7 +1150,7 @@ inline auto operator!=(const L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__ne__<L, R>::enable)
-inline auto operator!=(const L& lhs, const R& rhs) = delete;
+auto operator!=(const L& lhs, const R& rhs) = delete;
 
 
 /////////////////////////////////////
@@ -1164,7 +1176,7 @@ struct __ge__<L, R> : __ge__<typename L::Wrapped, typename R::Wrapped> {};
 
 
 template <typename L, typename R> requires (__ge__<L, R>::enable)
-inline auto operator>=(const L& lhs, const R& rhs) {
+auto operator>=(const L& lhs, const R& rhs) {
     using Return = typename __ge__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, bool>,
@@ -1184,7 +1196,7 @@ inline auto operator>=(const L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__ge__<L, R>::enable)
-inline auto operator>=(const L& lhs, const R& rhs) = delete;
+auto operator>=(const L& lhs, const R& rhs) = delete;
 
 
 ////////////////////////////
@@ -1210,7 +1222,7 @@ struct __gt__<L, R> : __gt__<typename L::Wrapped, typename R::Wrapped> {};
 
 
 template <typename L, typename R> requires (__gt__<L, R>::enable)
-inline auto operator>(const L& lhs, const R& rhs) {
+auto operator>(const L& lhs, const R& rhs) {
     using Return = typename __gt__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, bool>,
@@ -1230,7 +1242,7 @@ inline auto operator>(const L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__gt__<L, R>::enable)
-inline auto operator>(const L& lhs, const R& rhs) = delete;
+auto operator>(const L& lhs, const R& rhs) = delete;
 
 
 ///////////////////
@@ -1254,7 +1266,7 @@ struct __abs__<T> : __abs__<typename T::Wrapped> {};
 /* Equivalent to Python `abs(obj)` for any object that specializes the __abs__ control
 struct. */
 template <typename T> requires (__abs__<T>::enable)
-inline auto abs(const T& obj) {
+auto abs(const T& obj) {
     using Return = __abs__<T>::Return;
     static_assert(
         std::is_base_of_v<Object, Return>,
@@ -1273,7 +1285,7 @@ inline auto abs(const T& obj) {
 /* Equivalent to Python `abs(obj)`, except that it takes a C++ value and applies
 std::abs() for identical semantics. */
 template <typename T> requires (!impl::python_like<T>)
-inline auto abs(const T& value) {
+auto abs(const T& value) {
     return std::abs(value);
 }
 
@@ -1297,7 +1309,7 @@ struct __invert__<T> : __invert__<typename T::Wrapped> {};
 
 
 template <typename T> requires (__invert__<T>::enable)
-inline auto operator~(const T& self) {
+auto operator~(const T& self) {
     using Return = typename __invert__<T>::Return;
     static_assert(
         std::is_base_of_v<Object, Return>,
@@ -1314,7 +1326,7 @@ inline auto operator~(const T& self) {
 
 
 template <std::derived_from<Object> T> requires (!__invert__<T>::enable)
-inline auto operator~(const T& self) = delete;
+auto operator~(const T& self) = delete;
 
 
 ////////////////////////
@@ -1336,7 +1348,7 @@ struct __pos__<T> : __pos__<typename T::Wrapped> {};
 
 
 template <typename T> requires (__pos__<T>::enable)
-inline auto operator+(const T& self) {
+auto operator+(const T& self) {
     using Return = typename __pos__<T>::Return;
     static_assert(
         std::is_base_of_v<Object, Return>,
@@ -1353,7 +1365,7 @@ inline auto operator+(const T& self) {
 
 
 template <std::derived_from<Object> T> requires (!__pos__<T>::enable)
-inline auto operator+(const T& self) = delete;
+auto operator+(const T& self) = delete;
 
 
 ////////////////////////
@@ -1375,7 +1387,7 @@ struct __neg__<T> : __neg__<typename T::Wrapped> {};
 
 
 template <typename T> requires (__neg__<T>::enable)
-inline auto operator-(const T& self) {
+auto operator-(const T& self) {
     using Return = typename __neg__<T>::Return;
     static_assert(
         std::is_base_of_v<Object, Return>,
@@ -1392,7 +1404,7 @@ inline auto operator-(const T& self) {
 
 
 template <std::derived_from<Object> T> requires (!__neg__<T>::enable)
-inline auto operator-(const T& self) = delete;
+auto operator-(const T& self) = delete;
 
 
 /////////////////////////
@@ -1407,7 +1419,7 @@ struct __increment__<T> : __increment__<typename T::Wrapped> {};
 
 
 template <typename T> requires (__increment__<T>::enable)
-inline T& operator++(T& self) {
+T& operator++(T& self) {
     using Return = typename __increment__<T>::Return;
     static_assert(
         std::is_same_v<Return, T>,
@@ -1425,7 +1437,7 @@ inline T& operator++(T& self) {
 
 
 template <typename T> requires (__increment__<T>::enable)
-inline T operator++(T& self, int) {
+T operator++(T& self, int) {
     using Return = typename __increment__<T>::Return;
     static_assert(
         std::is_same_v<Return, T>,
@@ -1444,11 +1456,11 @@ inline T operator++(T& self, int) {
 
 
 template <std::derived_from<Object> T> requires (!__increment__<T>::enable)
-inline T& operator++(T& self) = delete;
+T& operator++(T& self) = delete;
 
 
 template <std::derived_from<Object> T> requires (!__increment__<T>::enable)
-inline T operator++(T& self, int) = delete;
+T operator++(T& self, int) = delete;
 
 
 /////////////////////////
@@ -1463,7 +1475,7 @@ struct __decrement__<T> : __decrement__<typename T::Wrapped> {};
 
 
 template <typename T> requires (__decrement__<T>::enable)
-inline T& operator--(T& self) {
+T& operator--(T& self) {
     using Return = typename __decrement__<T>::Return;
     static_assert(
         std::is_same_v<Return, T>,
@@ -1481,7 +1493,7 @@ inline T& operator--(T& self) {
 
 
 template <typename T> requires (__decrement__<T>::enable)
-inline T operator--(T& self, int) {
+T operator--(T& self, int) {
     using Return = typename __decrement__<T>::Return;
     static_assert(
         std::is_same_v<Return, T>,
@@ -1500,11 +1512,11 @@ inline T operator--(T& self, int) {
 
 
 template <std::derived_from<Object> T> requires (!__decrement__<T>::enable)
-inline T& operator--(T& self) = delete;
+T& operator--(T& self) = delete;
 
 
 template <std::derived_from<Object> T> requires (!__decrement__<T>::enable)
-inline T operator--(T& self, int) = delete;
+T operator--(T& self, int) = delete;
 
 
 ///////////////////
@@ -1547,7 +1559,7 @@ struct __iadd__<L, R> : __iadd__<typename L::Wrapped, typename R::Wrapped> {};
 
 
 template <typename L, typename R> requires (__add__<L, R>::enable)
-inline auto operator+(const L& lhs, const R& rhs) {
+auto operator+(const L& lhs, const R& rhs) {
     using Return = typename __add__<L, R>::Return;
     static_assert(
         std::is_base_of_v<Object, Return>,
@@ -1566,7 +1578,7 @@ inline auto operator+(const L& lhs, const R& rhs) {
 
 
 template <typename L, typename R> requires (__iadd__<L, R>::enable)
-inline L& operator+=(L& lhs, const R& rhs) {
+L& operator+=(L& lhs, const R& rhs) {
     using Return = typename __iadd__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, L&>,
@@ -1587,11 +1599,11 @@ inline L& operator+=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__add__<L, R>::enable)
-inline auto operator+(const L& lhs, const R& rhs) = delete;
+auto operator+(const L& lhs, const R& rhs) = delete;
 
 
 template <std::derived_from<Object> L, typename R> requires (!__iadd__<L, R>::enable)
-inline auto operator+=(const L& lhs, const R& rhs) = delete;
+auto operator+=(const L& lhs, const R& rhs) = delete;
 
 
 ////////////////////////
@@ -1634,7 +1646,7 @@ struct __isub__<L, R> : __isub__<typename L::Wrapped, typename R::Wrapped> {};
 
 
 template <typename L, typename R> requires (__sub__<L, R>::enable)
-inline auto operator-(const L& lhs, const R& rhs) {
+auto operator-(const L& lhs, const R& rhs) {
     using Return = typename __sub__<L, R>::Return;
     static_assert(
         std::is_base_of_v<Object, Return>,
@@ -1653,7 +1665,7 @@ inline auto operator-(const L& lhs, const R& rhs) {
 
 
 template <typename L, typename R> requires (__isub__<L, R>::enable)
-inline L& operator-=(L& lhs, const R& rhs) {
+L& operator-=(L& lhs, const R& rhs) {
     using Return = typename __isub__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, L&>,
@@ -1674,11 +1686,11 @@ inline L& operator-=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__sub__<L, R>::enable)
-inline auto operator-(const L& lhs, const R& rhs) = delete;
+auto operator-(const L& lhs, const R& rhs) = delete;
 
 
 template <std::derived_from<Object> L, typename R> requires (!__isub__<L, R>::enable)
-inline auto operator-=(const L& lhs, const R& rhs) = delete;
+auto operator-=(const L& lhs, const R& rhs) = delete;
 
 
 ////////////////////////
@@ -1732,7 +1744,7 @@ struct __imul__<L, R> : __imul__<typename L::Wrapped, typename R::Wrapped> {};
 
 
 template <typename L, typename R> requires (__mul__<L, R>::enable)
-inline auto operator*(const L& lhs, const R& rhs) {
+auto operator*(const L& lhs, const R& rhs) {
     using Return = typename __mul__<L, R>::Return;
     static_assert(
         std::is_base_of_v<Object, Return>,
@@ -1751,7 +1763,7 @@ inline auto operator*(const L& lhs, const R& rhs) {
 
 
 template <typename L, typename R> requires (__imul__<L, R>::enable)
-inline L& operator*=(L& lhs, const R& rhs) {
+L& operator*=(L& lhs, const R& rhs) {
     using Return = typename __imul__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, L&>,
@@ -1772,11 +1784,11 @@ inline L& operator*=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__mul__<L, R>::enable)
-inline auto operator*(const L& lhs, const R& rhs) = delete;
+auto operator*(const L& lhs, const R& rhs) = delete;
 
 
 template <std::derived_from<Object> L, typename R> requires (!__imul__<L, R>::enable)
-inline auto operator*=(const L& lhs, const R& rhs) = delete;
+auto operator*=(const L& lhs, const R& rhs) = delete;
 
 
 //////////////////////
@@ -1840,7 +1852,7 @@ struct __itruediv__<L, R> : __itruediv__<typename L::Wrapped, typename R::Wrappe
 
 
 template <typename L, typename R> requires (__truediv__<L, R>::enable)
-inline auto operator/(const L& lhs, const R& rhs) {
+auto operator/(const L& lhs, const R& rhs) {
     using Return = typename __truediv__<L, R>::Return;
     static_assert(
         std::is_base_of_v<Object, Return>,
@@ -1859,7 +1871,7 @@ inline auto operator/(const L& lhs, const R& rhs) {
 
 
 template <typename L, typename R> requires (__itruediv__<L, R>::enable)
-inline L& operator/=(L& lhs, const R& rhs) {
+L& operator/=(L& lhs, const R& rhs) {
     using Return = typename __itruediv__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, L&>,
@@ -1880,11 +1892,11 @@ inline L& operator/=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__truediv__<L, R>::enable)
-inline auto operator/(const L& lhs, const R& rhs) = delete;
+auto operator/(const L& lhs, const R& rhs) = delete;
 
 
 template <std::derived_from<Object> L, typename R> requires (!__itruediv__<L, R>::enable)
-inline auto operator/=(const L& lhs, const R& rhs) = delete;
+auto operator/=(const L& lhs, const R& rhs) = delete;
 
 
 ///////////////////////
@@ -1939,7 +1951,7 @@ struct __imod__<L, R> : __imod__<typename L::Wrapped, typename R::Wrapped> {};
 
 
 template <typename L, typename R> requires (__mod__<L, R>::enable)
-inline auto operator%(const L& lhs, const R& rhs) {
+auto operator%(const L& lhs, const R& rhs) {
     using Return = typename __mod__<L, R>::Return;
     static_assert(
         std::is_base_of_v<Object, Return>,
@@ -1958,7 +1970,7 @@ inline auto operator%(const L& lhs, const R& rhs) {
 
 
 template <typename L, typename R> requires (__imod__<L, R>::enable)
-inline L& operator%=(L& lhs, const R& rhs) {
+L& operator%=(L& lhs, const R& rhs) {
     using Return = typename __imod__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, L&>,
@@ -1979,11 +1991,11 @@ inline L& operator%=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__mod__<L, R>::enable)
-inline auto operator%(const L& lhs, const R& rhs) = delete;
+auto operator%(const L& lhs, const R& rhs) = delete;
 
 
 template <std::derived_from<Object> L, typename R> requires (!__imod__<L, R>::enable)
-inline auto operator%=(const L& lhs, const R& rhs) = delete;
+auto operator%=(const L& lhs, const R& rhs) = delete;
 
 
 /////////////////////
@@ -2164,7 +2176,7 @@ struct __ilshift__<L, R> : __ilshift__<typename L::Wrapped, typename R::Wrapped>
 
 template <typename L, typename R>
     requires (__lshift__<L, R>::enable && !std::derived_from<L, std::ostream>)
-inline auto operator<<(const L& lhs, const R& rhs) {
+auto operator<<(const L& lhs, const R& rhs) {
     using Return = typename __lshift__<L, R>::Return;
     static_assert(
         std::is_base_of_v<Object, Return>,
@@ -2183,7 +2195,7 @@ inline auto operator<<(const L& lhs, const R& rhs) {
 
 
 template <std::derived_from<std::ostream> L, std::derived_from<Object> R>
-inline L& operator<<(L& os, const R& obj) {
+L& operator<<(L& os, const R& obj) {
     PyObject* repr = PyObject_Repr(obj.ptr());
     if (repr == nullptr) {
         Exception::from_python();
@@ -2201,14 +2213,14 @@ inline L& operator<<(L& os, const R& obj) {
 
 
 template <std::derived_from<std::ostream> L, impl::proxy_like T>
-inline L& operator<<(L& os, const T& proxy) {
+L& operator<<(L& os, const T& proxy) {
     os << proxy.value();
     return os;
 }
 
 
 template <typename L, typename R> requires (__ilshift__<L, R>::enable)
-inline L& operator<<=(L& lhs, const R& rhs) {
+L& operator<<=(L& lhs, const R& rhs) {
     using Return = typename __ilshift__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, L&>,
@@ -2229,11 +2241,11 @@ inline L& operator<<=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__lshift__<L, R>::enable)
-inline auto operator<<(const L& lhs, const R& rhs) = delete;
+auto operator<<(const L& lhs, const R& rhs) = delete;
 
 
 template <std::derived_from<Object> L, typename R> requires (!__ilshift__<L, R>::enable)
-inline auto operator<<=(const L& lhs, const R& rhs) = delete;
+auto operator<<=(const L& lhs, const R& rhs) = delete;
 
 
 //////////////////////
@@ -2276,7 +2288,7 @@ struct __irshift__<L, R> : __irshift__<typename L::Wrapped, typename R::Wrapped>
 
 
 template <typename L, typename R> requires (__rshift__<L, R>::enable)
-inline auto operator>>(const L& lhs, const R& rhs) {
+auto operator>>(const L& lhs, const R& rhs) {
     using Return = typename __rshift__<L, R>::Return;
     static_assert(
         std::is_base_of_v<Object, Return>,
@@ -2295,7 +2307,7 @@ inline auto operator>>(const L& lhs, const R& rhs) {
 
 
 template <typename L, typename R> requires (__irshift__<L, R>::enable)
-inline L& operator>>=(L& lhs, const R& rhs) {
+L& operator>>=(L& lhs, const R& rhs) {
     using Return = typename __irshift__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, L&>,
@@ -2316,11 +2328,11 @@ inline L& operator>>=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__rshift__<L, R>::enable)
-inline auto operator>>(const L& lhs, const R& rhs) = delete;
+auto operator>>(const L& lhs, const R& rhs) = delete;
 
 
 template <std::derived_from<Object> L, typename R> requires (!__irshift__<L, R>::enable)
-inline auto operator>>=(const L& lhs, const R& rhs) = delete;
+auto operator>>=(const L& lhs, const R& rhs) = delete;
 
 
 ///////////////////
@@ -2363,7 +2375,7 @@ struct __iand__<L, R> : __iand__<typename L::Wrapped, typename R::Wrapped> {};
 
 
 template <typename L, typename R> requires (__and__<L, R>::enable)
-inline auto operator&(const L& lhs, const R& rhs) {
+auto operator&(const L& lhs, const R& rhs) {
     using Return = typename __and__<L, R>::Return;
     static_assert(
         std::is_base_of_v<Object, Return>,
@@ -2382,7 +2394,7 @@ inline auto operator&(const L& lhs, const R& rhs) {
 
 
 template <typename L, typename R> requires (__iand__<L, R>::enable)
-inline L& operator&=(L& lhs, const R& rhs) {
+L& operator&=(L& lhs, const R& rhs) {
     using Return = typename __iand__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, L&>,
@@ -2403,11 +2415,11 @@ inline L& operator&=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__and__<L, R>::enable)
-inline auto operator&(const L& lhs, const R& rhs) = delete;
+auto operator&(const L& lhs, const R& rhs) = delete;
 
 
 template <std::derived_from<Object> L, typename R> requires (!__iand__<L, R>::enable)
-inline auto operator&=(const L& lhs, const R& rhs) = delete;
+auto operator&=(const L& lhs, const R& rhs) = delete;
 
 
 //////////////////
@@ -2451,7 +2463,7 @@ struct __ior__<L, R> : __ior__<typename L::Wrapped, typename R::Wrapped> {};
 
 template <typename L, typename R>
     requires (__or__<L, R>::enable && !std::ranges::view<R>)
-inline auto operator|(const L& lhs, const R& rhs) {
+auto operator|(const L& lhs, const R& rhs) {
     using Return = typename __or__<L, R>::Return;
     static_assert(
         std::is_base_of_v<Object, Return>,
@@ -2470,20 +2482,20 @@ inline auto operator|(const L& lhs, const R& rhs) {
 
 
 template <std::derived_from<Object> L, std::ranges::view R>
-inline auto operator|(const L& container, const R& view) {
+auto operator|(const L& container, const R& view) {
     return std::views::all(container) | view;
 }
 
 
 // TODO: should this be enabled?  Does it cause a lifetime issue?
 // template <impl::proxy_like L, std::ranges::view R>
-// inline auto operator|(const L& container, const R& view) {
+// auto operator|(const L& container, const R& view) {
 //     return container.value() | view;
 // }
 
 
 template <typename L, typename R> requires (__ior__<L, R>::enable)
-inline L& operator|=(L& lhs, const R& rhs) {
+L& operator|=(L& lhs, const R& rhs) {
     using Return = typename __ior__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, L&>,
@@ -2504,11 +2516,11 @@ inline L& operator|=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__or__<L, R>::enable)
-inline auto operator|(const L& lhs, const R& rhs) = delete;
+auto operator|(const L& lhs, const R& rhs) = delete;
 
 
 template <std::derived_from<Object> L, typename R> requires (!__ior__<L, R>::enable)
-inline auto operator|=(const L& lhs, const R& rhs) = delete;
+auto operator|=(const L& lhs, const R& rhs) = delete;
 
 
 ///////////////////
@@ -2551,7 +2563,7 @@ struct __ixor__<L, R> : __ixor__<typename L::Wrapped, typename R::Wrapped> {};
 
 
 template <typename L, typename R> requires (__xor__<L, R>::enable)
-inline auto operator^(const L& lhs, const R& rhs) {
+auto operator^(const L& lhs, const R& rhs) {
     using Return = typename __xor__<L, R>::Return;
     static_assert(
         std::is_base_of_v<Object, Return>,
@@ -2570,7 +2582,7 @@ inline auto operator^(const L& lhs, const R& rhs) {
 
 
 template <typename L, typename R> requires (__ixor__<L, R>::enable)
-inline L& operator^=(L& lhs, const R& rhs) {
+L& operator^=(L& lhs, const R& rhs) {
     using Return = typename __ixor__<L, R>::Return;
     static_assert(
         std::is_same_v<Return, L&>,
@@ -2591,11 +2603,11 @@ inline L& operator^=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::object_operand<L, R> && !__xor__<L, R>::enable)
-inline auto operator^(const L& lhs, const R& rhs) = delete;
+auto operator^(const L& lhs, const R& rhs) = delete;
 
 
 template <std::derived_from<Object> L, typename R> requires (!__ixor__<L, R>::enable)
-inline auto operator^=(const L& lhs, const R& rhs) = delete;
+auto operator^=(const L& lhs, const R& rhs) = delete;
 
 
 }  // namespace py

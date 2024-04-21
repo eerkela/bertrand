@@ -920,7 +920,7 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `mappingproxy.copy()`. */
-    inline Dict copy() const;
+    Dict copy() const;
 
     /* Equivalent to Python `mappingproxy.get(key)`. */
     template <impl::is_hashable K>

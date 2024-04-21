@@ -17,7 +17,7 @@ namespace impl {
     explicit constructors on the target type, which can give unexpected results and
     violate bertrand's strict type safety. */
     template <typename U>
-    inline static decltype(auto) implicit_cast(U&& value) {
+    static decltype(auto) implicit_cast(U&& value) {
         return std::forward<U>(value);
     }
 
@@ -357,7 +357,7 @@ namespace impl {
     };
 
     template <typename T>
-    concept reverse_iterable = requires(const T& t) {
+    concept is_reverse_iterable = requires(const T& t) {
         { std::rbegin(t) } -> std::input_or_output_iterator;
         { std::rend(t) } -> std::input_or_output_iterator;
     };
@@ -377,13 +377,16 @@ namespace impl {
         { pybind11::iter(t) } -> std::convertible_to<pybind11::iterator>;
     };
 
+    template <typename T>
+    concept has_call_operator = requires { &std::decay_t<T>::operator(); };
+
     /* SFINAE condition is used to recognize callable C++ types without regard to their
     argument signatures. */
     template <typename T>
     concept is_callable_any = 
         std::is_function_v<std::remove_pointer_t<std::decay_t<T>>> ||
         std::is_member_function_pointer_v<std::decay_t<T>> ||
-        requires { &std::decay_t<T>::operator(); };
+        has_call_operator<T>;
 
 }  // namespace impl
 }  // namespace py

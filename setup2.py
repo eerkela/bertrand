@@ -164,6 +164,9 @@ class build_ext(BuildExt):
 
 
 setup(
-    ext_modules=[Extension("example", ["example.cpp"])],
+    ext_modules=[
+        Extension("example", ["example.cpp"]),
+        # Extension("bertrand.regex", ["bertrand/regex.cpp"])
+    ],
     cmdclass={"build_ext": build_ext},
 )

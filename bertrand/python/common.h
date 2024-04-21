@@ -556,19 +556,19 @@ public:
 
 
 template <bertrand::StaticStr name>
-inline impl::Attr<Object, name> Object::attr() const {
+impl::Attr<Object, name> Object::attr() const {
     return impl::Attr<Object, name>(*this);
 }
 
 
 template <typename Return, typename T, typename Key>
-inline impl::Item<T, std::decay_t<Key>> Object::operator_getitem(const T& obj, Key&& key) {
+impl::Item<T, std::decay_t<Key>> Object::operator_getitem(const T& obj, Key&& key) {
     return impl::Item<T, std::decay_t<Key>>(obj, std::forward<Key>(key));
 }
 
 
 template <typename Return, typename T>
-inline impl::Item<T, Slice> Object::operator_getitem(
+impl::Item<T, Slice> Object::operator_getitem(
     const T& obj,
     std::initializer_list<impl::SliceInitializer> slice
 ) {
@@ -577,7 +577,7 @@ inline impl::Item<T, Slice> Object::operator_getitem(
 
 
 template <typename Return, typename T>
-inline impl::Iterator<impl::GenericIter<Return>> Object::operator_begin(const T& obj) {
+impl::Iterator<impl::GenericIter<Return>> Object::operator_begin(const T& obj) {
     PyObject* iter = PyObject_GetIter(obj.ptr());
     if (iter == nullptr) {
         Exception::from_python();
@@ -587,26 +587,26 @@ inline impl::Iterator<impl::GenericIter<Return>> Object::operator_begin(const T&
 
 
 template <typename Return, typename T>
-inline impl::Iterator<impl::GenericIter<Return>> Object::operator_end(const T& obj) {
+impl::Iterator<impl::GenericIter<Return>> Object::operator_end(const T& obj) {
     return impl::Iterator<impl::GenericIter<Return>>();
 }
 
 
 template <typename Return, typename T>
-inline impl::Iterator<impl::GenericIter<Return>> Object::operator_rbegin(const T& obj) {
+impl::Iterator<impl::GenericIter<Return>> Object::operator_rbegin(const T& obj) {
     return impl::Iterator<impl::GenericIter<Return>>(obj.template attr<"__reversed__">()());
 }
 
 
 template <typename Return, typename T>
-inline impl::Iterator<impl::GenericIter<Return>> Object::operator_rend(const T& obj) {
+impl::Iterator<impl::GenericIter<Return>> Object::operator_rend(const T& obj) {
     return impl::Iterator<impl::GenericIter<Return>>();
 }
 
 
 template <typename Obj, typename Wrapped>
 template <typename T> requires (__getitem__<T, Slice>::enable)
-inline auto impl::Proxy<Obj, Wrapped>::operator[](
+auto impl::Proxy<Obj, Wrapped>::operator[](
     std::initializer_list<impl::SliceInitializer> slice
 ) const {
     return get_value()[slice];
@@ -620,7 +620,7 @@ inline auto impl::Proxy<Obj, Wrapped>::operator[](
 
 /* Equivalent to Python `import module`.  Only recognizes absolute imports. */
 template <StaticStr name>
-inline Module import() {
+Module import() {
     static const pybind11::str lookup = static_cast<const char*>(name);
     PyObject *obj = PyImport_Import(lookup.ptr());
     if (obj == nullptr) {
@@ -632,7 +632,7 @@ inline Module import() {
 
 /* Equivalent to Python `print(args...)`. */
 template <typename... Args>
-inline void print(Args&&... args) {
+void print(Args&&... args) {
     try {
         pybind11::print(std::forward<Args>(args)...);
     } catch (...) {
@@ -645,7 +645,7 @@ inline void print(Args&&... args) {
 represent C++ types using std::to_string or the stream insertion operator (<<).  If all
 else fails, falls back to typeid(obj).name(). */
 template <typename T>
-inline std::string repr(const T& obj) {
+std::string repr(const T& obj) {
     if constexpr (impl::has_stream_insertion<T>) {
         std::ostringstream stream;
         stream << obj;
@@ -681,7 +681,7 @@ struct type_caster<T> {
     PYBIND11_TYPE_CASTER(T, const_name("Object"));
 
     /* Convert Python object to a C++ Object. */
-    inline bool load(handle src, bool convert) {
+    bool load(handle src, bool convert) {
         if (!convert) {
             return false;
         }
@@ -690,7 +690,7 @@ struct type_caster<T> {
     }
 
     /* Convert a C++ Object into its wrapped object. */
-    inline static handle cast(const T& src, return_value_policy policy, handle parent) {
+    static handle cast(const T& src, return_value_policy policy, handle parent) {
         return Py_XNewRef(src.ptr());
     }
 
@@ -702,12 +702,12 @@ struct type_caster<T> {
     PYBIND11_TYPE_CASTER(T, const_name("Proxy"));
 
     /* Convert Python object to a C++ Proxy. */
-    inline bool load(handle src, bool convert) {
+    bool load(handle src, bool convert) {
         return false;
     }
 
     /* Convert a C++ Proxy into its wrapped object. */
-    inline static handle cast(const T& src, return_value_policy policy, handle parent) {
+    static handle cast(const T& src, return_value_policy policy, handle parent) {
         return Py_XNewRef(src.value().ptr());
     }
 

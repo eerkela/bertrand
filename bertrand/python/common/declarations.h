@@ -37,6 +37,8 @@
 #include <pybind11/iostream.h>
 // #include <pybind11/numpy.h>
 #include <pybind11/pytypes.h>
+#include <pybind11/stl.h>
+#include <pybind11/stl_bind.h>
 
 #include <bertrand/common.h>
 #include "bertrand/static_str.h"
@@ -56,7 +58,12 @@ namespace py {
 */
 
 
+// TODO: account for all relevant binding functions inherited from pybind11
+
+
 // binding functions
+using pybind11::init;
+using pybind11::init_alias;
 using pybind11::implicitly_convertible;
 using pybind11::args_are_all_keyword_or_ds;
 using pybind11::initialize_interpreter;
@@ -74,6 +81,10 @@ using pybind11::add_ostream_redirect;
 
 
 // annotations
+using pybind11::overload_cast;
+using pybind11::const_;
+using pybind11::args;
+using pybind11::kwargs;
 using pybind11::is_method;
 using pybind11::is_setter;
 using pybind11::is_operator;
@@ -178,9 +189,9 @@ namespace impl {
 
 
 template <std::derived_from<Object> T>
-inline T reinterpret_borrow(Handle obj);
+T reinterpret_borrow(Handle obj);
 template <std::derived_from<Object> T>
-inline T reinterpret_steal(Handle obj);
+T reinterpret_steal(Handle obj);
 
 
 }  // namespace py

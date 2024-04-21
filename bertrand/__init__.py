@@ -69,7 +69,7 @@
 
 
 
-
+from .regex import Regex
 from .setup_helpers import BuildExt, Extension, get_include
 
 

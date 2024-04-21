@@ -193,12 +193,12 @@ public:
 
     template <typename T>
         requires (!std::is_same_v<T, Wrapped> && std::is_convertible_v<Wrapped, T>)
-    inline operator T() const {
+    operator T() const {
         return implicit_cast<T>(get_value());
     }
 
     template <typename T> requires (!std::is_convertible_v<Wrapped, T>)
-    inline explicit operator T() const {
+    explicit operator T() const {
         return static_cast<T>(get_value());
     }
 
@@ -207,17 +207,17 @@ public:
     /////////////////////////
 
     template <typename... Args>
-    inline auto operator()(Args&&... args) const {
+    auto operator()(Args&&... args) const {
         return get_value()(std::forward<Args>(args)...);
     }
 
     template <typename T>
-    inline auto operator[](T&& key) const {
+    auto operator[](T&& key) const {
         return get_value()[std::forward<T>(key)];
     }
 
     template <typename T = Wrapped> requires (__getitem__<T, Slice>::enable)
-    inline auto operator[](std::initializer_list<impl::SliceInitializer> slice) const;
+    auto operator[](std::initializer_list<impl::SliceInitializer> slice) const;
 
     template <typename T>
     inline auto contains(const T& key) const { return get_value().contains(key); }
@@ -323,7 +323,7 @@ public:
         */
 
     template <typename T> requires (__setattr__<Obj, name, std::remove_cvref_t<T>>::enable)
-    inline Attr& operator=(T&& value) {
+    Attr& operator=(T&& value) {
         using Return = typename __setattr__<Obj, name, std::remove_cvref_t<T>>::Return;
         static_assert(
             std::is_void_v<Return>,
@@ -383,7 +383,7 @@ public:
         */
 
     template <typename T = Obj> requires (__delattr__<T, name>::enable) 
-    inline void del() {
+    void del() {
         using Return = typename __delattr__<T, name>::Return;
         static_assert(
             std::is_void_v<Return>,
@@ -600,7 +600,7 @@ public:
         */
 
     template <typename T> requires (__setitem__<Obj, Key, std::remove_cvref_t<T>>::enable)
-    inline Item& operator=(T&& value) {
+    Item& operator=(T&& value) {
         using Return = typename __setitem__<Obj, Key, std::remove_cvref_t<T>>::Return;
         static_assert(
             std::is_void_v<Return>,
@@ -638,7 +638,7 @@ public:
         */
 
     template <typename T = Obj> requires (__delitem__<T, Key>::enable)
-    inline void del() {
+    void del() {
         using Return = typename __delitem__<T, Key>::Return;
         static_assert(
             std::is_void_v<Return>,
