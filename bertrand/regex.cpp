@@ -178,6 +178,9 @@ PYBIND11_MODULE(regex, m) {
             )
         )
         .def("__bool__", &bertrand::Regex::Match::operator bool)
+        // .def("__iter__", [](const bertrand::Regex::Match& self) {
+        //     return py::iter(self);
+        // }, py::keep_alive<0, 1>())
     ;
 
 }

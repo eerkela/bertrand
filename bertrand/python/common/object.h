@@ -1059,7 +1059,7 @@ public:
 
     /* Convert any C++ value into a generic python object. */
     template <typename T> requires (!impl::python_like<T>)
-    explicit Object(const T& value) : m_ptr([&value] {
+    Object(const T& value) : m_ptr([&value] {
         try {
             return pybind11::cast(value).release().ptr();
         } catch (...) {

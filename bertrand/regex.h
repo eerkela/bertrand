@@ -26,6 +26,18 @@
 namespace bertrand {
 
 
+namespace detail {
+
+    template <typename T>
+    concept group_id =
+        std::convertible_to<T, size_t> ||
+        std::convertible_to<T, const char*> ||
+        std::convertible_to<T, const std::string&> ||
+        std::convertible_to<T, const std::string_view&>;
+
+}
+
+
 /* A thin wrapper around a compiled PCRE2 regular expression that provides a Pythonic
 interface for matching and searching strings.
 
@@ -229,7 +241,7 @@ public:
     }
 
     /* Get a dictionary mapping symbolic group names to their corresponding numbers. */
-    std::unordered_map<std::string, size_t> groupindex() const {
+    inline std::unordered_map<std::string, size_t> groupindex() const {
         std::unordered_map<std::string, size_t> result;
         if (code == nullptr) {
             return result;
@@ -262,11 +274,10 @@ public:
         friend Regex;
         friend Iterator;
         pcre2_code* code;
-        pcre2_match_data* match;
+        std::shared_ptr<pcre2_match_data> match;
         std::string subject;
         PCRE2_SIZE* ovector;
         size_t _count;
-        bool owns_match;
 
         /* Get the group number associated with a named capture group. */
         inline int groupnum(const char* name) const {
@@ -281,8 +292,8 @@ public:
             const std::string& subject,
             pcre2_match_data* match,
             bool owns_match
-        ) : code(code), match(match), subject(subject), ovector(nullptr), _count(0),
-            owns_match(owns_match)
+        ) : code(code), match(match, pcre2_match_data_free), subject(subject),
+            ovector(nullptr), _count(0)
         {
             if (match != nullptr) {
                 ovector = pcre2_get_ovector_pointer(match);
@@ -293,44 +304,46 @@ public:
     public:
         Match() = default;
 
+        /* Copy constructor. */
+        Match(const Match& other) noexcept :
+            code(other.code), match(other.match), subject(other.subject),
+            ovector(other.ovector), _count(other._count)
+        {}
+
         /* Move constructor. */
         Match(Match&& other) noexcept :
-            code(other.code), match(other.match), subject(std::move(other.subject)),
-            ovector(other.ovector), _count(other._count), owns_match(other.owns_match)
+            code(other.code), match(std::move(other.match)),
+            subject(std::move(other.subject)), ovector(other.ovector),
+            _count(other._count)
         {
-            other.match = nullptr;
+            other.code = nullptr;
+            other.ovector = nullptr;
+        }
+
+        /* Copy assignment operator. */
+        Match& operator=(const Match& other) noexcept {
+            if (&other != this) {
+                code = other.code;
+                subject = other.subject;
+                ovector = other.ovector;
+                _count = other._count;
+                match = other.match;
+            }
+            return *this;
         }
 
         /* Move assignment operator. */
         Match& operator=(Match&& other) noexcept {
-            if (this == &other) {
-                return *this;
+            if (&other != this) {
+                code = other.code;
+                subject = std::move(other.subject);
+                ovector = other.ovector;
+                _count = other._count;
+                match = std::move(other.match);
+                other.code = nullptr;
+                other.ovector = nullptr;
             }
-
-            code = other.code;
-            subject = std::move(other.subject);
-            ovector = other.ovector;
-            _count = other._count;
-            owns_match = other.owns_match;
-
-            pcre2_match_data* temp = match;
-            match = other.match;
-            other.match = nullptr;
-            if (temp != nullptr) {
-                pcre2_match_data_free(temp);
-            }
-
             return *this;
-        }
-
-        /* Copy constructor/assignment operators deleted for simplicity. */
-        Match(const Match&) = delete;
-        Match operator=(const Match&) = delete;
-
-        ~Match() noexcept {
-            if (owns_match && match != nullptr) {
-                pcre2_match_data_free(match);
-            }
         }
 
         inline operator bool() const {
@@ -374,8 +387,12 @@ public:
             return std::make_pair(ovector[adj_index], ovector[adj_index + 1]);
         }
 
+        // TODO: pipe this into the iterator class as its dereference operator.  The
+        // iterator can then just maintain a pointer to the ovector and the current
+        // index
+
         /* Extract a numbered capture group. */
-        std::optional<std::string> group(size_t index = 0) const noexcept {
+        inline std::optional<std::string> group(size_t index = 0) const noexcept {
             if (match == nullptr || index >= count()) {
                 return std::nullopt;
             }
@@ -389,20 +406,23 @@ public:
             }
         }
 
-        // /* Extract several capture groups at once. */
-        // template <typename First, typename Second, typename... Rest>
-        // inline std::vector<std::optional<std::string>> group(
-        //     First&& first,
-        //     Second&& second,
-        //     Rest&&... rest
-        // ) const noexcept {
-        //     return {
-        //         group(std::forward<First>(first)),
-        //         group(std::forward<Second>(second)),
-        //         group(std::forward<Rest>(rest))...
-        //     };
-        // }
-    
+        /* Extract several capture groups at once using an initializer list. */
+        inline std::vector<std::optional<std::string>> group(
+            const std::initializer_list<std::variant<size_t, const char*>>& groups
+        ) const noexcept {
+            std::vector<std::optional<std::string>> result;
+            result.reserve(groups.size());
+            for (auto&& item : groups) {
+                std::visit(
+                    [&result, this](auto&& arg) {
+                        result.push_back(group(arg));
+                    },
+                    item
+                );
+            }
+            return result;
+        }
+
         /* Extract several capture groups at once, as called from Python using variadic
         positional arguments. */
         inline auto group(const pybind11::args& args) const
@@ -598,17 +618,45 @@ public:
             {}
 
         public:
-            using iterator_category     = std::forward_iterator_tag;
+            using iterator_category     = std::input_iterator_tag;
             using difference_type       = std::ptrdiff_t;
             using value_type            = std::pair<size_t, std::string>;
             using pointer               = value_type*;
             using reference             = value_type&;
 
-            GroupIter(const GroupIter&) = default;
-            GroupIter(GroupIter&&) = default;
+            GroupIter(const GroupIter& other) :
+                match(other.match), index(other.index), count(other.count)
+            {}
+
+            GroupIter(GroupIter&& other) :
+                match(other.match), index(other.index), count(other.count)
+            {}
+
+            // GroupIter& operator=(const GroupIter& other) {
+            //     if (&other != this) {
+            //         match = other.match;
+            //         index = other.index;
+            //         count = other.count;
+            //     }
+            //     return *this;
+            // }
+
+            // GroupIter& operator=(GroupIter&& other) {
+            //     if (&other != this) {
+            //         match = other.match;
+            //         index = other.index;
+            //         count = other.count;
+            //     }
+            //     return *this;
+            // }
 
             /* Dereference to access the current capture group. */
-            inline std::pair<size_t, std::string> operator*() const {
+            inline value_type operator*() const {
+                return {index, match[index].value()};  // current group is never empty
+            }
+
+            /* Dereference to access an attribute on the current capture group. */
+            inline value_type operator->() const {
                 return {index, match[index].value()};  // current group is never empty
             }
 
@@ -618,6 +666,12 @@ public:
                     // skip empty capture groups
                 }
                 return *this;
+            }
+
+            inline GroupIter operator++(int) {
+                GroupIter copy = *this;
+                ++(*this);
+                return copy;
             }
 
             /* Equality comparison to terminate the sequence. */
@@ -641,31 +695,35 @@ public:
         }
 
         /* Syntactic sugar for match.group(). */
-        template <typename T>
-        inline std::optional<std::string> operator[](const T& index) const {
+        inline std::optional<std::string> operator[](size_t index) const {
             return group(index);
         }
 
-        /* Syntactic sugar for match.group() using initializer list syntax to extract
+        /* Syntactic sugar for match.group(). */
+        inline std::optional<std::string> operator[](const char* name) const {
+            return group(name);
+        }
+
+        /* Syntactic sugar for match.group(). */
+        inline std::optional<std::string> operator[](const std::string& name) const {
+            return group(name);
+        }
+
+        /* Syntactic sugar for match.group(). */
+        inline std::optional<std::string> operator[](const std::string_view& name) const {
+            return group(name);
+        }
+
+        /* Syntactic sugar for match.group() using an initializer list to extract
         multiple groups. */
         inline std::vector<std::optional<std::string>> operator[](
-            const std::initializer_list<std::variant<long long, std::string>>& groups
+            const std::initializer_list<std::variant<size_t, const char*>>& groups
         ) {
-            std::vector<std::optional<std::string>> result;
-            result.reserve(groups.size());
-            for (auto&& item : groups) {
-                std::visit(
-                    [&result, this](auto&& arg) {
-                        result.push_back(group(arg));
-                    },
-                    item
-                );
-            }
-            return result;
+            return group(groups);
         }
 
         /* Dump a string representation of a match object to an output stream. */
-        friend std::ostream& operator<<(std::ostream& stream, const Match& match) {
+        inline friend std::ostream& operator<<(std::ostream& stream, const Match& match) {
             if (!match) {
                 stream << "<No Match>";
                 return stream;
@@ -697,7 +755,7 @@ public:
     /* Evaluate the regular expression against a target string and return the first
     match.  Yields a (possibly false) Match struct that can be used to access and
     iterate over capture groups. */
-    Match match(const std::string& subject) const {
+    inline Match match(const std::string& subject) const {
         pcre2_match_data* data = pcre2_match_data_create_from_pattern(code.get(), nullptr);
         if (data == nullptr) {
             throw std::bad_alloc();
@@ -728,7 +786,7 @@ public:
     /* Evaluate the regular expression against a target string and return the first
     match.  Yields a (possibly false) Match struct that can be used to access and
     iterate over capture groups. */
-    Match match(const std::string& subject, long long start, long long stop = -1) const {
+    inline Match match(const std::string& subject, long long start, long long stop = -1) const {
         if (!normalize_indices(subject.length(), start, stop)) {
             return {};
         }
@@ -988,7 +1046,7 @@ public:
 
     /* Split the target string at each match of the regular expression.  Returns a
     vector containing the split substrings. */
-    std::vector<std::string> split(
+    inline std::vector<std::string> split(
         const std::string& subject,
         size_t maxsplit = 0
     ) const {
@@ -1037,7 +1095,7 @@ public:
     /* Replace every occurrence of the regular expression in the target string.
     Returns a (string, count) pair containing the new string and the number of
     replacements that were made. */
-    std::pair<std::string, size_t> subn(
+    inline std::pair<std::string, size_t> subn(
         const std::string& replacement,
         const std::string& subject
     ) const {
@@ -1086,7 +1144,7 @@ public:
     /* Replace a maximum number of occurrences of the regular expression in the target
     string.  Returns a (string, count) pair containing the new string and the number of
     replacements that were made. */
-    std::pair<std::string, size_t> subn(
+    inline std::pair<std::string, size_t> subn(
         const std::string& replacement,
         const std::string& subject,
         size_t count
@@ -1179,7 +1237,7 @@ public:
     }
 
     /* Print a string representation of a Regex pattern to an output stream. */
-    friend std::ostream& operator<<(std::ostream& stream, const Regex& regex) {
+    inline friend std::ostream& operator<<(std::ostream& stream, const Regex& regex) {
         stream << "<Regex: " << regex.pattern() << ">";
         return stream;
     }

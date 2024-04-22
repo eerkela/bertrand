@@ -183,7 +183,7 @@ public:
     template <typename T> requires (impl::is_iterable<T> && !impl::python_like<T>)
     explicit List(T&& contents) {
         if constexpr (impl::has_size<T>) {
-            size_t size = contents.size();
+            size_t size = std::size(contents);
             m_ptr = PyList_New(size);  // TODO: this can potentially create an empty list
             if (m_ptr == nullptr) {
                 Exception::from_python();

@@ -135,7 +135,7 @@ namespace impl {
     concept sequence_like = requires(const T& t) {
         { std::begin(t) } -> std::input_or_output_iterator;
         { std::end(t) } -> std::input_or_output_iterator;
-        { t.size() } -> std::convertible_to<size_t>;
+        { std::size(t) } -> std::convertible_to<size_t>;
         { t[0] };
     };
 
@@ -331,7 +331,7 @@ namespace impl {
 
     template <typename T>
     concept has_size = requires(const T& t) {
-        { t.size() } -> std::convertible_to<size_t>;
+        { std::size(t) } -> std::convertible_to<size_t>;
     };
 
     template <typename T>

@@ -172,7 +172,7 @@ public:
     template <typename T> requires (impl::is_iterable<T> && !impl::python_like<T>)
     explicit Tuple(T&& contents) {
         if constexpr (impl::has_size<T>) {
-            size_t size = contents.size();
+            size_t size = std::size(contents);
             m_ptr = PyTuple_New(size);
             if (m_ptr == nullptr) {
                 Exception::from_python();

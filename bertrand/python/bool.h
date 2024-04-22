@@ -354,7 +354,7 @@ public:
     /* Explicitly convert any C++ object that implements a `.size()` method into a
     py::Bool. */
     template <typename T> requires (container_size_constructor<T>)
-    explicit Bool(const T& obj) : Bool(obj.size() > 0) {}
+    explicit Bool(const T& obj) : Bool(std::size(obj) > 0) {}
 
     /* Explicitly convert a std::tuple into a py::Bool. */
     template <typename... Args>

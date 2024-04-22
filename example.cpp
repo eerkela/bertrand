@@ -157,10 +157,21 @@ int test(const py::Object& obj) {
 }
 
 
-template <typename... Funcs>
-struct Overload : Funcs... {
-    using Funcs::operator()...;
+
+
+template <typename T = py::Object>
+struct Foo : public py::List {
+    using Wrapped = T;
+
+    using py::List::List;
+
 };
+
+
+template <typename T>
+Foo(const std::initializer_list<T>&) -> Foo<py::Object>;
+template <typename... Args>
+Foo(Args&&...) -> Foo<py::Object>;
 
 
 void run() {
@@ -168,24 +179,13 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
+    Foo<py::Int> foo = {1, 2, 3, 4, 5};
+    Foo foo2 = foo;
+    py::print(typeid(decltype(foo2)::Wrapped).name());
 
 
-    // int x = 1;
-    // std::string y = "abc";
-    // std::variant<int, std::string> z = x;
-    // std::visit(
-    //     Overload{
-    //         [](const int& arg) {
-    //             py::print(arg);
-    //         },
-    //         [](const std::string& arg) {
-    //             py::print(arg);
-    //         }
-    //     },
-    //     z
-    // );
-
-
+    // py::List list = {1, 2, 3};
+    // py::print(list);
 
 
     // py::Object foo("abc");
@@ -208,21 +208,21 @@ void run() {
 
 
 
-    py::List list = {1, 2, 3.0, 4.5, "5"};
-    auto view = list | py::transform(
-        [](const py::Int& obj) {
-            return py::Str("int");
-        },
-        [](const py::Float& obj) {
-            return py::Str("float");
-        },
-        [](const py::Str& obj) {
-            return py::Str("string");
-        }
-    );
-    for (auto&& x : view) {
-        py::print(x);
-    }
+    // py::List list = {1, 2, 3.0, 4.5, "5"};
+    // auto view = list | py::transform(
+    //     [](const py::Int& obj) {
+    //         return py::Str("int");
+    //     },
+    //     [](const py::Float& obj) {
+    //         return py::Str("float");
+    //     },
+    //     [](const py::Str& obj) {
+    //         return py::Str("string");
+    //     }
+    // );
+    // for (auto&& x : view) {
+    //     py::print(x);
+    // }
 
 
 

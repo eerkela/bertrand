@@ -1614,6 +1614,21 @@ inline pybind11::iterator iter(T&& obj) {
 }
 
 
+/* Equivalent to Python `iter(obj)` except that it takes raw C++ iterators and converts
+them into a valid Python iterator object. */
+template <typename Iter, std::sentinel_for<Iter> Sentinel>
+inline pybind11::iterator iter(Iter&& begin, Sentinel&& end) {
+    try {
+        return pybind11::make_iterator(
+            std::forward<Iter>(begin),
+            std::forward<Sentinel>(end)
+        );
+    } catch (...) {
+        Exception::from_pybind11();
+    }
+}
+
+
 /* Equivalent to Python `len(obj)`, but also accepts C++ types implementing a .size()
 method. */
 template <typename T>
@@ -1621,7 +1636,7 @@ template <typename T>
 inline size_t len(const T& obj) {
     try {
         if constexpr (impl::has_size<T>) {
-            return obj.size();
+            return std::size(obj);
         } else {
             return pybind11::len(obj);
         }
@@ -1687,6 +1702,21 @@ inline pybind11::iterator reversed(T&& obj) {
         } else {
             return pybind11::make_iterator(std::rbegin(obj), std::rend(obj));
         }
+    } catch (...) {
+        Exception::from_pybind11();
+    }
+}
+
+
+/* Equivalent to Python `reversed(obj)` except that it takes raw C++ iterators and
+converts them into a valid Python iterator object. */
+template <typename Iter, std::sentinel_for<Iter> Sentinel>
+inline pybind11::iterator reversed(Iter&& begin, Sentinel&& end) {
+    try {
+        return pybind11::make_iterator(
+            std::forward<Iter>(begin),
+            std::forward<Sentinel>(end)
+        );
     } catch (...) {
         Exception::from_pybind11();
     }
