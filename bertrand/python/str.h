@@ -171,22 +171,8 @@ struct __imul__<L, R>                                           : Returns<Str> {
 class Str : public Object, public impl::SequenceOps<Str> {
     using Base = Object;
 
-    template <typename T>
-    inline auto to_format_string(T&& arg) -> decltype(auto) {
-        using U = std::decay_t<T>;
-        if constexpr (std::is_base_of_v<Handle, U>) {
-            return arg.ptr();
-        } else if constexpr (std::is_base_of_v<std::string, U>) {
-            return arg.c_str();
-        } else if constexpr (std::is_base_of_v<std::string_view, U>) {
-            return arg.data();
-        } else {
-            return std::forward<T>(arg);
-        }
-    }
-
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Str, impl::str_like, PyUnicode_Check)
     BERTRAND_OBJECT_OPERATORS(Str)
@@ -219,7 +205,7 @@ public:
 
     /* Implicitly convert a C-style string array into a py::Str object. */
     template <typename T>
-        requires (!impl::python_like<T> && std::is_convertible_v<T, const char*>)
+        requires (!impl::python_like<T> && std::convertible_to<T, const char*>)
     Str(const T& string) : Base(PyUnicode_FromString(string), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -230,8 +216,8 @@ public:
     template <typename T>
         requires (
             !impl::python_like<T> &&
-            !std::is_convertible_v<T, const char*> &&
-            std::is_convertible_v<T, std::string>
+            !std::convertible_to<T, const char*> &&
+            std::convertible_to<T, std::string>
         )
     Str(const T& string) : Base(nullptr, stolen_t{}) {
         std::string s = string;
@@ -245,9 +231,9 @@ public:
     template <typename T>
         requires (
             !impl::python_like<T> &&
-            !std::is_convertible_v<T, const char*> &&
-            !std::is_convertible_v<T, std::string> &&
-            std::is_convertible_v<T, std::string_view>
+            !std::convertible_to<T, const char*> &&
+            !std::convertible_to<T, std::string> &&
+            std::convertible_to<T, std::string_view>
         )
     Str(const T& string) : Base(nullptr, stolen_t{}) {
         std::string_view s = string;
@@ -268,9 +254,9 @@ public:
     /* Explicitly convert an arbitrary C++ object into a py::Str representation. */
     template <typename T> requires (
         !impl::python_like<T> &&
-        !std::is_convertible_v<T, const char*> &&
-        !std::is_convertible_v<T, std::string> &&
-        !std::is_convertible_v<T, std::string_view>
+        !std::convertible_to<T, const char*> &&
+        !std::convertible_to<T, std::string> &&
+        !std::convertible_to<T, std::string_view>
     )
     explicit Str(const T& obj) : Base(PyObject_Str(Object(obj).ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
@@ -604,7 +590,7 @@ public:
     inline Str join(const T& iterable) const {
         PyObject* result = PyUnicode_Join(
             this->ptr(),
-            detail::object_or_cast(iterable).ptr()
+            Object(iterable).ptr()
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -834,7 +820,7 @@ protected:
     inline static bool operator_contains(const L& self, const R& key) {
         int result = PyUnicode_Contains(
             self.ptr(),
-            detail::object_or_cast(key).ptr()
+            Object(key).ptr()
         );
         if (result == -1) {
             Exception::from_python();
@@ -845,8 +831,8 @@ protected:
     template <typename Return, typename L, typename R>
     inline static auto operator_add(const L& lhs, const R& rhs) {
         PyObject* result = PyUnicode_Concat(
-            detail::object_or_cast(lhs).ptr(),
-            detail::object_or_cast(rhs).ptr()
+            Object(lhs).ptr(),
+            Object(rhs).ptr()
         );
         if (result == nullptr) {
             Exception::from_python();

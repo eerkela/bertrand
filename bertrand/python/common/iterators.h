@@ -31,11 +31,11 @@ class Iterator {
 protected:
     Policy policy;
 
-    static constexpr bool random_access = std::is_same_v<
+    static constexpr bool random_access = std::same_as<
         typename Policy::iterator_category,
         std::random_access_iterator_tag
     >;
-    static constexpr bool bidirectional = random_access || std::is_same_v<
+    static constexpr bool bidirectional = random_access || std::same_as<
         typename Policy::iterator_category,
         std::bidirectional_iterator_tag
     >;

@@ -292,7 +292,7 @@ class Bool : public Object {
     using Base = Object;
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Bool, impl::bool_like, PyBool_Check)
     BERTRAND_OBJECT_OPERATORS(Bool)

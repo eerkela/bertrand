@@ -136,70 +136,70 @@ namespace literals {
 ////////////////////////////
 
 
-// TODO: Regex and Decimal types?
+// TODO: Decimal type?
 
 
 /* Every Python type has a static `Type` member that gives access to the Python type
 object associated with instances of that class. */
-inline Type Type::type {};
-inline Type Object::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyBaseObject_Type));
-inline Type NoneType::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(Py_TYPE(Py_None)));
-inline Type NotImplementedType::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(Py_TYPE(Py_NotImplemented)));
-inline Type EllipsisType::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyEllipsis_Type));
-inline Type Module::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyModule_Type));
-inline Type Bool::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyBool_Type));
-inline Type Int::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyLong_Type));
-inline Type Float::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyFloat_Type));
-inline Type Complex::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyComplex_Type));
-inline Type Slice::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PySlice_Type));
-inline Type Range::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyRange_Type));
-inline Type List::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyList_Type));
-inline Type Tuple::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyTuple_Type));
-inline Type Set::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PySet_Type));
-inline Type FrozenSet::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyFrozenSet_Type));
-inline Type Dict::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyDict_Type));
-inline Type MappingProxy::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyDictProxy_Type));
-inline Type KeysView::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyDictKeys_Type));
-inline Type ValuesView::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyDictValues_Type));
-inline Type ItemsView::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyDictItems_Type));
-inline Type Str::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyUnicode_Type));
-inline Type Bytes::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyBytes_Type));
-inline Type ByteArray::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyByteArray_Type));
-inline Type Code::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyCode_Type));
-inline Type Frame::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyFrame_Type));
-inline Type Function::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyFunction_Type));
-inline Type ClassMethod::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type));
-inline Type StaticMethod::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyStaticMethod_Type));
-inline Type Property::type = reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(&PyProperty_Type));
-// inline Type Timedelta::type = [] {
+inline const Type Type::type {};
+inline const Type Object::type = reinterpret_borrow<Type>((PyObject*) &PyBaseObject_Type);
+inline const Type NoneType::type = reinterpret_borrow<Type>((PyObject*) Py_TYPE(Py_None));
+inline const Type NotImplementedType::type = reinterpret_borrow<Type>((PyObject*) Py_TYPE(Py_NotImplemented));
+inline const Type EllipsisType::type = reinterpret_borrow<Type>((PyObject*) &PyEllipsis_Type);
+inline const Type Module::type = reinterpret_borrow<Type>((PyObject*) &PyModule_Type);
+inline const Type Bool::type = reinterpret_borrow<Type>((PyObject*) &PyBool_Type);
+inline const Type Int::type = reinterpret_borrow<Type>((PyObject*) &PyLong_Type);
+inline const Type Float::type = reinterpret_borrow<Type>((PyObject*) &PyFloat_Type);
+inline const Type Complex::type = reinterpret_borrow<Type>((PyObject*) &PyComplex_Type);
+inline const Type Slice::type = reinterpret_borrow<Type>((PyObject*) &PySlice_Type);
+inline const Type Range::type = reinterpret_borrow<Type>((PyObject*) &PyRange_Type);
+inline const Type List::type = reinterpret_borrow<Type>((PyObject*) &PyList_Type);
+inline const Type Tuple::type = reinterpret_borrow<Type>((PyObject*) &PyTuple_Type);
+inline const Type Set::type = reinterpret_borrow<Type>((PyObject*) &PySet_Type);
+inline const Type FrozenSet::type = reinterpret_borrow<Type>((PyObject*) &PyFrozenSet_Type);
+inline const Type Dict::type = reinterpret_borrow<Type>((PyObject*) &PyDict_Type);
+inline const Type MappingProxy::type = reinterpret_borrow<Type>((PyObject*) &PyDictProxy_Type);
+inline const Type KeysView::type = reinterpret_borrow<Type>((PyObject*) &PyDictKeys_Type);
+inline const Type ValuesView::type = reinterpret_borrow<Type>((PyObject*) &PyDictValues_Type);
+inline const Type ItemsView::type = reinterpret_borrow<Type>((PyObject*) &PyDictItems_Type);
+inline const Type Str::type = reinterpret_borrow<Type>((PyObject*) &PyUnicode_Type);
+inline const Type Bytes::type = reinterpret_borrow<Type>((PyObject*) &PyBytes_Type);
+inline const Type ByteArray::type = reinterpret_borrow<Type>((PyObject*) &PyByteArray_Type);
+inline const Type Code::type = reinterpret_borrow<Type>((PyObject*) &PyCode_Type);
+inline const Type Frame::type = reinterpret_borrow<Type>((PyObject*) &PyFrame_Type);
+inline const Type Function::type = reinterpret_borrow<Type>((PyObject*) &PyFunction_Type);
+inline const Type ClassMethod::type = reinterpret_borrow<Type>((PyObject*) &PyClassMethodDescr_Type);
+inline const Type StaticMethod::type = reinterpret_borrow<Type>((PyObject*) &PyStaticMethod_Type);
+inline const Type Property::type = reinterpret_borrow<Type>((PyObject*) &PyProperty_Type);
+// inline const Type Timedelta::type = [] {
 //     if (impl::DATETIME_IMPORTED) {
 //         return reinterpret_borrow<Type>(impl::PyDelta_Type->ptr());
 //     } else {
 //         return Type();
 //     }
 // }();
-// inline Type Timezone::type = [] {
+// inline const Type Timezone::type = [] {
 //     if (impl::DATETIME_IMPORTED) {
 //         return reinterpret_borrow<Type>(impl::PyTZInfo_Type->ptr());
 //     } else {
 //         return Type();
 //     }
 // }();
-// inline Type Date::type = [] {
+// inline const Type Date::type = [] {
 //     if (impl::DATETIME_IMPORTED) {
 //         return reinterpret_borrow<Type>(impl::PyDate_Type->ptr());
 //     } else {
 //         return Type();
 //     }
 // }();
-// inline Type Time::type = [] {
+// inline const Type Time::type = [] {
 //     if (impl::DATETIME_IMPORTED) {
 //         return reinterpret_borrow<Type>(impl::PyTime_Type->ptr());
 //     } else {
 //         return Type();
 //     }
 // }();
-// inline Type Datetime::type = [] {
+// inline const Type Datetime::type = [] {
 //     if (impl::DATETIME_IMPORTED) {
 //         return reinterpret_borrow<Type>(impl::PyDateTime_Type->ptr());
 //     } else {
@@ -899,7 +899,7 @@ namespace impl {
         represented in the code object itself. */
         template <typename T = Func> requires (python_like<T>)
         operator bool() const {
-            if constexpr(std::is_same_v<Return, NoReturn>) {
+            if constexpr(std::same_as<Return, NoReturn>) {
                 return false;
             } else {
                 static constexpr Py_ssize_t expected = sizeof...(Args);
@@ -1102,7 +1102,7 @@ constexpr auto callable(const Func& func) {
     // If void is given as a single argument, reinterpret as an empty argument list
     } else if constexpr (
         sizeof...(Args) == 1 &&
-        std::is_same_v<std::tuple_element_t<0, std::tuple<Args...>>, void>
+        std::same_as<std::tuple_element_t<0, std::tuple<Args...>>, void>
     ) {
         return impl::CallTraits<Func>{func};
 
@@ -1524,7 +1524,7 @@ const void* id(const T& obj) {
 parameter. */
 template <impl::python_like T>
 inline bool isinstance(const Handle& derived) {
-    static_assert(!std::is_same_v<T, Handle>, "isinstance<py::Handle>() is not allowed");
+    static_assert(!std::same_as<T, Handle>, "isinstance<py::Handle>() is not allowed");
     return T::check_(derived);
 }
 
@@ -1548,9 +1548,9 @@ inline bool isinstance(const Handle& derived, const T& base) {
 parameter. */
 template <impl::python_like T>
 inline bool issubclass(const Type& derived) {
-    static_assert(!std::is_same_v<T, Handle>, "issubclass<py::Handle>() is not allowed");
+    static_assert(!std::same_as<T, Handle>, "issubclass<py::Handle>() is not allowed");
     static_assert(
-        std::is_base_of_v<Object, T>,
+        std::derived_from<T, Object>,
         "issubclass<T>() requires T to be a subclass of py::Object.  pybind11 types "
         "do not directly track their associated Python types, so this function is not "
         "supported for them."
@@ -1675,7 +1675,7 @@ inline pybind11::iterator reversed(T&& obj) {
         "passing a temporary container to py::reversed() is unsafe"
     );
     try {
-        if constexpr (std::is_base_of_v<pybind11::object, std::decay_t<T>>) {
+        if constexpr (std::derived_from<std::decay_t<T>, pybind11::object>) {
             static const pybind11::str lookup = "__reversed__";
             return reinterpret_steal<pybind11::iterator>(
                 obj.attr(lookup)().release()

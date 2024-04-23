@@ -145,7 +145,7 @@ class Float : public Object {
     using Base = Object;
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Float, impl::float_like, PyFloat_Check)
     BERTRAND_OBJECT_OPERATORS(Float)

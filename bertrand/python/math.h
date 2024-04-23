@@ -65,7 +65,7 @@ class Round {
     template <typename Return>
     static consteval void check_truediv_type() {
         static_assert(
-            std::is_base_of_v<Object, Return>,
+            std::derived_from<Return, Object>,
             "True division operator must return a py::Object subclass.  Check your "
             "specialization of __truediv__ for this type and ensure the Return type is "
             "derived from py::Object."
@@ -75,7 +75,7 @@ class Round {
     template <typename Return>
     static consteval void check_floordiv_type() {
         static_assert(
-            std::is_base_of_v<Object, Return>,
+            std::derived_from<Return, Object>,
             "Floor division operator must return a py::Object subclass.  Check your "
             "specialization of __floordiv__ for this type and ensure the Return type is "
             "derived from py::Object."
@@ -85,7 +85,7 @@ class Round {
     template <typename Return>
     static consteval void check_mod_type() {
         static_assert(
-            std::is_base_of_v<Object, Return>,
+            std::derived_from<Return, Object>,
             "Modulus operator must return a py::Object subclass.  Check your "
             "specialization of __mod__ for this type and ensure the Return type is "
             "derived from py::Object."

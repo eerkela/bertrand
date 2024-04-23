@@ -33,49 +33,49 @@ template <impl::is_hashable Key>
 struct __contains__<KeysView, Key>                          : Returns<bool> {};
 template <>
 struct __lt__<KeysView, Object>                             : Returns<bool> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
+template <std::derived_from<KeysView> T>
 struct __lt__<KeysView, T>                                  : Returns<bool> {};
 template <impl::anyset_like T>
 struct __lt__<KeysView, T>                                  : Returns<bool> {};
 template <>
 struct __le__<KeysView, Object>                             : Returns<bool> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
+template <std::derived_from<KeysView> T>
 struct __le__<KeysView, T>                                  : Returns<bool> {};
 template <impl::anyset_like T>
 struct __le__<KeysView, T>                                  : Returns<bool> {};
 template <>
 struct __ge__<KeysView, Object>                             : Returns<bool> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
+template <std::derived_from<KeysView> T>
 struct __ge__<KeysView, T>                                  : Returns<bool> {};
 template <impl::anyset_like T>
 struct __ge__<KeysView, T>                                  : Returns<bool> {};
 template <>
 struct __gt__<KeysView, Object>                             : Returns<bool> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
+template <std::derived_from<KeysView> T>
 struct __gt__<KeysView, T>                                  : Returns<bool> {};
 template <impl::anyset_like T>
 struct __gt__<KeysView, T>                                  : Returns<bool> {};
 template <>
 struct __or__<KeysView, Object>                             : Returns<Set> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
+template <std::derived_from<KeysView> T>
 struct __or__<KeysView, T>                                  : Returns<Set> {};
 template <impl::anyset_like T>
 struct __or__<KeysView, T>                                  : Returns<Set> {};
 template <>
 struct __and__<KeysView, Object>                            : Returns<Set> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
+template <std::derived_from<KeysView> T>
 struct __and__<KeysView, T>                                 : Returns<Set> {};
 template <impl::anyset_like T>
 struct __and__<KeysView, T>                                 : Returns<Set> {};
 template <>
 struct __sub__<KeysView, Object>                            : Returns<Set> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
+template <std::derived_from<KeysView> T>
 struct __sub__<KeysView, T>                                 : Returns<Set> {};
 template <impl::anyset_like T>
 struct __sub__<KeysView, T>                                 : Returns<Set> {};
 template <>
 struct __xor__<KeysView, Object>                            : Returns<Set> {};
-template <typename T> requires (std::is_base_of_v<KeysView, T>)
+template <std::derived_from<KeysView> T>
 struct __xor__<KeysView, T>                                 : Returns<Set> {};
 template <impl::anyset_like T>
 struct __xor__<KeysView, T>                                 : Returns<Set> {};
@@ -86,7 +86,7 @@ class KeysView : public Object, public impl::KeysTag {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool comptime_check = std::is_base_of_v<KeysView, T>; 
+    static constexpr bool comptime_check = std::derived_from<T, KeysView>; 
 
     inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictKeys_Type);
@@ -97,7 +97,7 @@ class KeysView : public Object, public impl::KeysTag {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, KeysView, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(KeysView)
@@ -209,7 +209,7 @@ class ValuesView : public Object, public impl::ValuesTag {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool comptime_check = std::is_base_of_v<ValuesView, T>; 
+    static constexpr bool comptime_check = std::derived_from<T, ValuesView>; 
 
     inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictValues_Type);
@@ -220,7 +220,7 @@ class ValuesView : public Object, public impl::ValuesTag {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, ValuesView, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(ValuesView)
@@ -275,7 +275,7 @@ class ItemsView : public Object, public impl::ItemsTag {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool comptime_check = std::is_base_of_v<ItemsView, T>; 
+    static constexpr bool comptime_check = std::derived_from<T, ItemsView>; 
 
     inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, (PyObject*) &PyDictItems_Type);
@@ -286,7 +286,7 @@ class ItemsView : public Object, public impl::ItemsTag {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, ItemsView, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(ItemsView)
@@ -375,7 +375,7 @@ class Dict : public Object, public impl::DictTag {
     using Base = Object;
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Dict, impl::dict_like, PyDict_Check)
     BERTRAND_OBJECT_OPERATORS(Dict)
@@ -425,8 +425,8 @@ public:
                 auto&& [k, v] = *first;
                 if (PyDict_SetItem(
                     m_ptr,
-                    detail::object_or_cast(std::forward<decltype(k)>(k)).ptr(),
-                    detail::object_or_cast(std::forward<decltype(v)>(v)).ptr()
+                    Object(std::forward<decltype(k)>(k)).ptr(),
+                    Object(std::forward<decltype(v)>(v)).ptr()
                 )) {
                     Exception::from_python();
                 }
@@ -459,8 +459,8 @@ public:
             for (auto&& [k, v] : container) {
                 if (PyDict_SetItem(
                     m_ptr,
-                    detail::object_or_cast(std::forward<decltype(k)>(k)).ptr(),
-                    detail::object_or_cast(std::forward<decltype(v)>(v)).ptr()
+                    Object(std::forward<decltype(k)>(k)).ptr(),
+                    Object(std::forward<decltype(v)>(v)).ptr()
                 )) {
                     Exception::from_python();
                 }
@@ -512,11 +512,7 @@ public:
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
     template <impl::dict_like T>
     inline void merge(const T& items) {
-        if (PyDict_Merge(
-            this->ptr(),
-            detail::object_or_cast(items).ptr(),
-            0
-        )) {
+        if (PyDict_Merge(this->ptr(), Object(items).ptr(), 0)) {
             Exception::from_python();
         }
     }
@@ -524,11 +520,7 @@ public:
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
     template <impl::is_iterable T> requires (!impl::dict_like<T>)
     inline void merge(const T& items) {
-        if (PyDict_MergeFromSeq2(
-            this->ptr(),
-            detail::object_or_cast(items).ptr(),
-            0
-        )) {
+        if (PyDict_MergeFromSeq2(this->ptr(), Object(items).ptr(), 0)) {
             Exception::from_python();
         }
     }
@@ -562,7 +554,7 @@ public:
             for (auto&& key : keys) {
                 if (PyDict_SetItem(
                     result,
-                    detail::object_or_cast(std::forward<decltype(key)>(key)).ptr(),
+                    Object(std::forward<decltype(key)>(key)).ptr(),
                     Py_None
                 )) {
                     Exception::from_python();
@@ -599,9 +591,8 @@ public:
     }
 
     /* Equivalent to Python `dict.fromkeys(keys, value)`. */
-    template <impl::is_iterable K, typename V>
-    static inline Dict fromkeys(const K& keys, const V& value) {
-        Object converted = detail::object_or_cast(value);
+    template <impl::is_iterable K>
+    static inline Dict fromkeys(const K& keys, const Object& value) {
         PyObject* result = PyDict_New();
         if (result == nullptr) {
             Exception::from_python();
@@ -610,8 +601,8 @@ public:
             for (auto&& key : keys) {
                 if (PyDict_SetItem(
                     result,
-                    detail::object_or_cast(std::forward<decltype(key)>(key)).ptr(),
-                    converted.ptr()
+                    Object(std::forward<decltype(key)>(key)).ptr(),
+                    value.ptr()
                 )) {
                     Exception::from_python();
                 }
@@ -624,12 +615,10 @@ public:
     }
 
     /* Equivalent to Python `dict.fromkeys(<braced initializer list>, value)`. */
-    template <typename V>
     inline Dict fromkeys(
         const std::initializer_list<impl::HashInitializer>& keys,
-        const V& value
+        const Object& value
     ) {
-        Object converted = detail::object_or_cast(value);
         PyObject* result = PyDict_New();
         if (result == nullptr) {
             Exception::from_python();
@@ -639,7 +628,7 @@ public:
                 if (PyDict_SetItem(
                     result,
                     init.value.ptr(),
-                    converted.ptr()
+                    value.ptr()
                 )) {
                     Exception::from_python();
                 }
@@ -654,10 +643,7 @@ public:
     /* Equivalent to Python `dict.get(key)`.  Returns None if the key is not found. */
     template <impl::is_hashable K>
     inline Object get(const K& key) const {
-        PyObject* result = PyDict_GetItemWithError(
-            this->ptr(),
-            detail::object_or_cast(key).ptr()
-        );
+        PyObject* result = PyDict_GetItemWithError(this->ptr(), Object(key).ptr());
         if (result == nullptr) {
             if (PyErr_Occurred()) {
                 Exception::from_python();
@@ -670,10 +656,7 @@ public:
     /* Equivalent to Python `dict.get(key, default_value)`. */
     template <impl::is_hashable K>
     inline Object get(const K& key, const Object& default_value) const {
-        PyObject* result = PyDict_GetItemWithError(
-            this->ptr(),
-            detail::object_or_cast(key).ptr()
-        );
+        PyObject* result = PyDict_GetItemWithError(this->ptr(), Object(key).ptr());
         if (result == nullptr) {
             if (PyErr_Occurred()) {
                 Exception::from_python();
@@ -686,10 +669,7 @@ public:
     /* Equivalent to Python `dict.pop(key)`.  Returns None if the key is not found. */
     template <impl::is_hashable K>
     inline Object pop(const K& key) {
-        PyObject* result = PyDict_GetItemWithError(
-            this->ptr(),
-            detail::object_or_cast(key).ptr()
-        );
+        PyObject* result = PyDict_GetItemWithError(this->ptr(), Object(key).ptr());
         if (result == nullptr) {
             if (PyErr_Occurred()) {
                 Exception::from_python();
@@ -705,10 +685,7 @@ public:
     /* Equivalent to Python `dict.pop(key, default_value)`. */
     template <impl::is_hashable K>
     inline Object pop(const K& key, const Object& default_value) {
-        PyObject* result = PyDict_GetItemWithError(
-            this->ptr(),
-            detail::object_or_cast(key).ptr()
-        );
+        PyObject* result = PyDict_GetItemWithError(this->ptr(), Object(key).ptr());
         if (result == nullptr) {
             if (PyErr_Occurred()) {
                 Exception::from_python();
@@ -729,7 +706,7 @@ public:
     inline Object setdefault(const K& key) {
         PyObject* result = PyDict_SetDefault(
             this->ptr(),
-            detail::object_or_cast(key).ptr(),
+            Object(key).ptr(),
             Py_None
         );
         if (result == nullptr) {
@@ -743,7 +720,7 @@ public:
     inline Object setdefault(const K& key, const Object& default_value) {
         PyObject* result = PyDict_SetDefault(
             this->ptr(),
-            detail::object_or_cast(key).ptr(),
+            Object(key).ptr(),
             default_value.ptr()
         );
         if (result == nullptr) {
@@ -766,7 +743,7 @@ public:
         if constexpr (impl::python_like<T>) {
             if (PyDict_MergeFromSeq2(
                 this->ptr(),
-                detail::object_or_cast(items).ptr(),
+                Object(items).ptr(),
                 1
             )) {
                 Exception::from_python();
@@ -775,8 +752,8 @@ public:
             for (auto&& [k, v] : items) {
                 if (PyDict_SetItem(
                     this->ptr(),
-                    detail::object_or_cast(std::forward<decltype(k)>(k)).ptr(),
-                    detail::object_or_cast(std::forward<decltype(v)>(v)).ptr()
+                    Object(std::forward<decltype(k)>(k)).ptr(),
+                    Object(std::forward<decltype(v)>(v)).ptr()
                 )) {
                     Exception::from_python();
                 }
@@ -833,10 +810,7 @@ protected:
 
     template <typename Return, typename L, typename R>
     inline static bool operator_contains(const L& self, const R& key) {
-        int result = PyDict_Contains(
-            self.ptr(),
-            detail::object_or_cast(key).ptr()
-        );
+        int result = PyDict_Contains(self.ptr(), Object(key).ptr());
         if (result == -1) {
             Exception::from_python();
         }
@@ -891,7 +865,7 @@ class MappingProxy : public Object, public impl::MappingProxyTag {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, MappingProxy, impl::mappingproxy_like, runtime_check)
     BERTRAND_OBJECT_OPERATORS(MappingProxy)

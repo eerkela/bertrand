@@ -47,7 +47,7 @@ namespace py {
     auto operator()(Args&&... args) const {                                             \
         using Return = typename __call__<cls, Args...>::Return;                         \
         static_assert(                                                                  \
-            std::is_same_v<Return, void> || std::is_base_of_v<Return, Object>,          \
+            std::is_void_v<Return> || std::derived_from<Return, Object>,                \
             "Call operator must return either void or a py::Object subclass.  "         \
             "Check your specialization of __call__ for the given arguments and "        \
             "ensure that it is derived from py::Object."                                \
@@ -75,7 +75,7 @@ namespace py {
     auto begin() const {                                                                \
         using Return = typename __iter__<Self>::Return;                                 \
         static_assert(                                                                  \
-            std::is_base_of_v<Object, Return>,                                          \
+            std::derived_from<Return, Object>,                                          \
             "iterator must dereference to a subclass of Object.  Check your "           \
             "specialization of __iter__ for this types and ensure the Return type "     \
             "is a subclass of py::Object."                                              \
@@ -90,7 +90,7 @@ namespace py {
     auto end() const {                                                                  \
         using Return = typename __iter__<Self>::Return;                                 \
         static_assert(                                                                  \
-            std::is_base_of_v<Object, Return>,                                          \
+            std::derived_from<Return, Object>,                                          \
             "iterator must dereference to a subclass of Object.  Check your "           \
             "specialization of __iter__ for this types and ensure the Return type "     \
             "is a subclass of py::Object."                                              \
@@ -105,7 +105,7 @@ namespace py {
     auto rbegin() const {                                                               \
         using Return = typename __reversed__<Self>::Return;                             \
         static_assert(                                                                  \
-            std::is_base_of_v<Object, Return>,                                          \
+            std::derived_from<Return, Object>,                                          \
             "iterator must dereference to a subclass of Object.  Check your "           \
             "specialization of __reversed__ for this types and ensure the Return "      \
             "type is a subclass of py::Object."                                         \
@@ -120,7 +120,7 @@ namespace py {
     auto rend() const {                                                                 \
         using Return = typename __reversed__<Self>::Return;                             \
         static_assert(                                                                  \
-            std::is_base_of_v<Object, Return>,                                          \
+            std::derived_from<Return, Object>,                                          \
             "iterator must dereference to a subclass of Object.  Check your "           \
             "specialization of __reversed__ for this types and ensure the Return "      \
             "type is a subclass of py::Object."                                         \
@@ -135,7 +135,7 @@ namespace py {
     bool contains(const Self& key) const {                                              \
         using Return = typename __contains__<cls, Self>::Return;                        \
         static_assert(                                                                  \
-            std::is_same_v<Return, bool>,                                               \
+            std::same_as<Return, bool>,                                                 \
             "contains() operator must return a boolean value.  Check your "             \
             "specialization of __contains__ for these types and ensure the Return "     \
             "type is set to bool."                                                      \
@@ -151,7 +151,7 @@ namespace py {
     size_t size() const {                                                               \
         using Return = typename __len__<Self>::Return;                                  \
         static_assert(                                                                  \
-            std::is_same_v<Return, size_t>,                                             \
+            std::same_as<Return, size_t>,                                               \
             "size() operator must return a size_t for compatibility with C++ "          \
             "containers.  Check your specialization of __len__ for these types "        \
             "and ensure the Return type is set to size_t."                              \
@@ -329,7 +329,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_lt(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_lt<Return>(lhs, rhs);
             } else {
                 return R::template operator_lt<Return>(lhs, rhs);
@@ -338,7 +338,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_le(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_le<Return>(lhs, rhs);
             } else {
                 return R::template operator_le<Return>(lhs, rhs);
@@ -347,7 +347,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_eq(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_eq<Return>(lhs, rhs);
             } else {
                 return R::template operator_eq<Return>(lhs, rhs);
@@ -356,7 +356,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_ne(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_ne<Return>(lhs, rhs);
             } else {
                 return R::template operator_ne<Return>(lhs, rhs);
@@ -365,7 +365,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_ge(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_ge<Return>(lhs, rhs);
             } else {
                 return R::template operator_ge<Return>(lhs, rhs);
@@ -374,7 +374,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_gt(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_gt<Return>(lhs, rhs);
             } else {
                 return R::template operator_gt<Return>(lhs, rhs);
@@ -403,7 +403,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_add(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_add<Return>(lhs, rhs);
             } else {
                 return R::template operator_add<Return>(lhs, rhs);
@@ -427,7 +427,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_sub(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_sub<Return>(lhs, rhs);
             } else {
                 return R::template operator_sub<Return>(lhs, rhs);
@@ -441,7 +441,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_mul(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_mul<Return>(lhs, rhs);
             } else {
                 return R::template operator_mul<Return>(lhs, rhs);
@@ -455,7 +455,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_truediv(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_truediv<Return>(lhs, rhs);
             } else {
                 return R::template operator_truediv<Return>(lhs, rhs);
@@ -469,7 +469,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_floordiv(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_floordiv<Return>(lhs, rhs);
             } else {
                 return R::template operator_floordiv<Return>(lhs, rhs);
@@ -483,7 +483,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_mod(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_mod<Return>(lhs, rhs);
             } else {
                 return R::template operator_mod<Return>(lhs, rhs);
@@ -497,7 +497,7 @@ namespace impl {
 
         template <typename Return, typename Base, typename Exp>
         auto operator_pow(const Base& base, const Exp& exp) {
-            if constexpr (std::is_base_of_v<Object, Base>) {
+            if constexpr (std::derived_from<Base, Object>) {
                 return Base::template operator_pow<Return>(base, exp);
             } else {
                 return Exp::template operator_pow<Return>(base, exp);
@@ -506,7 +506,7 @@ namespace impl {
 
         template <typename Return, typename Base, typename Exp, typename Mod>
         auto operator_pow(const Base& base, const Exp& exp, const Mod& mod) {
-            if constexpr (std::is_base_of_v<Object, Base>) {
+            if constexpr (std::derived_from<Base, Object>) {
                 return Base::template operator_pow<Return>(base, exp, mod);
             } else {
                 return Exp::template operator_pow<Return>(base, exp, mod);
@@ -525,7 +525,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_lshift(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_lshift<Return>(lhs, rhs);
             } else {
                 return R::template operator_lshift<Return>(lhs, rhs);
@@ -539,7 +539,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_rshift(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_rshift<Return>(lhs, rhs);
             } else {
                 return R::template operator_rshift<Return>(lhs, rhs);
@@ -553,7 +553,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_and(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_and<Return>(lhs, rhs);
             } else {
                 return R::template operator_and<Return>(lhs, rhs);
@@ -567,7 +567,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_or(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_or<Return>(lhs, rhs);
             } else {
                 return R::template operator_or<Return>(lhs, rhs);
@@ -581,7 +581,7 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         auto operator_xor(const L& lhs, const R& rhs) {
-            if constexpr (std::is_base_of_v<Object, L>) {
+            if constexpr (std::derived_from<L, Object>) {
                 return L::template operator_xor<Return>(lhs, rhs);
             } else {
                 return R::template operator_xor<Return>(lhs, rhs);
@@ -998,7 +998,7 @@ template <typename L, typename R> requires (__lt__<L, R>::enable)
 auto operator<(const L& lhs, const R& rhs) {
     using Return = typename __lt__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, bool>,
+        std::same_as<Return, bool>,
         "Less-than operator must return a boolean value.  Check your "
         "specialization of __lt__ for these types and ensure the Return type "
         "is set to bool."
@@ -1044,7 +1044,7 @@ template <typename L, typename R> requires (__le__<L, R>::enable)
 auto operator<=(const L& lhs, const R& rhs) {
     using Return = typename __le__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, bool>,
+        std::same_as<Return, bool>,
         "Less-than-or-equal operator must return a boolean value.  Check your "
         "specialization of __le__ for this type and ensure the Return type is "
         "set to bool."
@@ -1090,7 +1090,7 @@ template <typename L, typename R> requires (__eq__<L, R>::enable)
 auto operator==(const L& lhs, const R& rhs) {
     using Return = typename __eq__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, bool>,
+        std::same_as<Return, bool>,
         "Equality operator must return a boolean value.  Check your "
         "specialization of __eq__ for this type and ensure the Return type is "
         "set to bool."
@@ -1136,7 +1136,7 @@ template <typename L, typename R> requires (__ne__<L, R>::enable)
 auto operator!=(const L& lhs, const R& rhs) {
     using Return = typename __ne__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, bool>,
+        std::same_as<Return, bool>,
         "Inequality operator must return a boolean value.  Check your "
         "specialization of __ne__ for this type and ensure the Return type is "
         "set to bool."
@@ -1182,7 +1182,7 @@ template <typename L, typename R> requires (__ge__<L, R>::enable)
 auto operator>=(const L& lhs, const R& rhs) {
     using Return = typename __ge__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, bool>,
+        std::same_as<Return, bool>,
         "Greater-than-or-equal operator must return a boolean value.  Check "
         "your specialization of __ge__ for this type and ensure the Return "
         "type is set to bool."
@@ -1228,7 +1228,7 @@ template <typename L, typename R> requires (__gt__<L, R>::enable)
 auto operator>(const L& lhs, const R& rhs) {
     using Return = typename __gt__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, bool>,
+        std::same_as<Return, bool>,
         "Greater-than operator must return a boolean value.  Check your "
         "specialization of __gt__ for this type and ensure the Return type is "
         "set to bool."
@@ -1272,7 +1272,7 @@ template <typename T> requires (__abs__<T>::enable)
 auto abs(const T& obj) {
     using Return = __abs__<T>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "Absolute value operator must return a py::Object subclass.  Check your "
         "specialization of __abs__ for this type and ensure the Return type is set to "
         "a py::Object subclass."
@@ -1315,7 +1315,7 @@ template <typename T> requires (__invert__<T>::enable)
 auto operator~(const T& self) {
     using Return = typename __invert__<T>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "Bitwise NOT operator must return a py::Object subclass.  Check your "
         "specialization of __invert__ for this type and ensure the Return type "
         "is set to a py::Object subclass."
@@ -1354,7 +1354,7 @@ template <typename T> requires (__pos__<T>::enable)
 auto operator+(const T& self) {
     using Return = typename __pos__<T>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "Unary positive operator must return a py::Object subclass.  Check "
         "your specialization of __pos__ for this type and ensure the Return "
         "type is set to a py::Object subclass."
@@ -1393,7 +1393,7 @@ template <typename T> requires (__neg__<T>::enable)
 auto operator-(const T& self) {
     using Return = typename __neg__<T>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "Unary negative operator must return a py::Object subclass.  Check "
         "your specialization of __neg__ for this type and ensure the Return "
         "type is set to a py::Object subclass."
@@ -1425,7 +1425,7 @@ template <typename T> requires (__increment__<T>::enable)
 T& operator++(T& self) {
     using Return = typename __increment__<T>::Return;
     static_assert(
-        std::is_same_v<Return, T>,
+        std::same_as<Return, T>,
         "Increment operator must return a reference to the derived type.  "
         "Check your specialization of __increment__ for this type and ensure "
         "the Return type is set to the derived type."
@@ -1443,7 +1443,7 @@ template <typename T> requires (__increment__<T>::enable)
 T operator++(T& self, int) {
     using Return = typename __increment__<T>::Return;
     static_assert(
-        std::is_same_v<Return, T>,
+        std::same_as<Return, T>,
         "Increment operator must return a reference to the derived type.  "
         "Check your specialization of __increment__ for this type and ensure "
         "the Return type is set to the derived type."
@@ -1481,7 +1481,7 @@ template <typename T> requires (__decrement__<T>::enable)
 T& operator--(T& self) {
     using Return = typename __decrement__<T>::Return;
     static_assert(
-        std::is_same_v<Return, T>,
+        std::same_as<Return, T>,
         "Decrement operator must return a reference to the derived type.  "
         "Check your specialization of __decrement__ for this type and ensure "
         "the Return type is set to the derived type."
@@ -1499,7 +1499,7 @@ template <typename T> requires (__decrement__<T>::enable)
 T operator--(T& self, int) {
     using Return = typename __decrement__<T>::Return;
     static_assert(
-        std::is_same_v<Return, T>,
+        std::same_as<Return, T>,
         "Decrement operator must return a reference to the derived type.  "
         "Check your specialization of __decrement__ for this type and ensure "
         "the Return type is set to the derived type."
@@ -1565,7 +1565,7 @@ template <typename L, typename R> requires (__add__<L, R>::enable)
 auto operator+(const L& lhs, const R& rhs) {
     using Return = typename __add__<L, R>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "Addition operator must return a py::Object subclass.  Check your "
         "specialization of __add__ for this type and ensure the Return type is "
         "derived from py::Object."
@@ -1584,7 +1584,7 @@ template <typename L, typename R> requires (__iadd__<L, R>::enable)
 L& operator+=(L& lhs, const R& rhs) {
     using Return = typename __iadd__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, L&>,
+        std::same_as<Return, L&>,
         "In-place addition operator must return a mutable reference to the left "
         "operand.  Check your specialization of __iadd__ for these types and "
         "ensure the Return type is set to the left operand."
@@ -1652,7 +1652,7 @@ template <typename L, typename R> requires (__sub__<L, R>::enable)
 auto operator-(const L& lhs, const R& rhs) {
     using Return = typename __sub__<L, R>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "Subtraction operator must return a py::Object subclass.  Check your "
         "specialization of __sub__ for this type and ensure the Return type is "
         "derived from py::Object."
@@ -1671,7 +1671,7 @@ template <typename L, typename R> requires (__isub__<L, R>::enable)
 L& operator-=(L& lhs, const R& rhs) {
     using Return = typename __isub__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, L&>,
+        std::same_as<Return, L&>,
         "In-place addition operator must return a mutable reference to the left "
         "operand.  Check your specialization of __isub__ for these types and "
         "ensure the Return type is set to the left operand."
@@ -1750,7 +1750,7 @@ template <typename L, typename R> requires (__mul__<L, R>::enable)
 auto operator*(const L& lhs, const R& rhs) {
     using Return = typename __mul__<L, R>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "Multiplication operator must return a py::Object subclass.  Check "
         "your specialization of __mul__ for this type and ensure the Return "
         "type is derived from py::Object."
@@ -1769,7 +1769,7 @@ template <typename L, typename R> requires (__imul__<L, R>::enable)
 L& operator*=(L& lhs, const R& rhs) {
     using Return = typename __imul__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, L&>,
+        std::same_as<Return, L&>,
         "In-place multiplication operator must return a mutable reference to the "
         "left operand.  Check your specialization of __imul__ for these types "
         "and ensure the Return type is set to the left operand."
@@ -1858,7 +1858,7 @@ template <typename L, typename R> requires (__truediv__<L, R>::enable)
 auto operator/(const L& lhs, const R& rhs) {
     using Return = typename __truediv__<L, R>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "True division operator must return a py::Object subclass.  Check "
         "your specialization of __truediv__ for this type and ensure the "
         "Return type is derived from py::Object."
@@ -1877,7 +1877,7 @@ template <typename L, typename R> requires (__itruediv__<L, R>::enable)
 L& operator/=(L& lhs, const R& rhs) {
     using Return = typename __itruediv__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, L&>,
+        std::same_as<Return, L&>,
         "In-place true division operator must return a mutable reference to the "
         "left operand.  Check your specialization of __itruediv__ for these "
         "types and ensure the Return type is set to the left operand."
@@ -1957,7 +1957,7 @@ template <typename L, typename R> requires (__mod__<L, R>::enable)
 auto operator%(const L& lhs, const R& rhs) {
     using Return = typename __mod__<L, R>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "Modulus operator must return a py::Object subclass.  Check your "
         "specialization of __mod__ for this type and ensure the Return type "
         "is derived from py::Object."
@@ -1976,7 +1976,7 @@ template <typename L, typename R> requires (__imod__<L, R>::enable)
 L& operator%=(L& lhs, const R& rhs) {
     using Return = typename __imod__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, L&>,
+        std::same_as<Return, L&>,
         "In-place modulus operator must return a mutable reference to the left "
         "operand.  Check your specialization of __imod__ for these types and "
         "ensure the Return type is set to the left operand."
@@ -2060,7 +2060,7 @@ template <typename Base, typename Exp> requires (__pow__<Base, Exp>::enable)
 auto pow(const Base& base, const Exp& exp) {
     using Return = typename __pow__<Base, Exp>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "pow() must return a py::Object subclass.  Check your specialization "
         "of __pow__ for this type and ensure the Return type is derived from "
         "py::Object."
@@ -2106,7 +2106,7 @@ template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
 auto pow(const Base& base, const Exp& exp, const Mod& mod) {
     using Return = typename __pow__<Base, Exp>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "pow() must return a py::Object subclass.  Check your specialization "
         "of __pow__ for this type and ensure the Return type is derived from "
         "py::Object."
@@ -2182,7 +2182,7 @@ template <typename L, typename R>
 auto operator<<(const L& lhs, const R& rhs) {
     using Return = typename __lshift__<L, R>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "Left shift operator must return a py::Object subclass.  Check your "
         "specialization of __lshift__ for this type and ensure the Return "
         "type is derived from py::Object."
@@ -2226,7 +2226,7 @@ template <typename L, typename R> requires (__ilshift__<L, R>::enable)
 L& operator<<=(L& lhs, const R& rhs) {
     using Return = typename __ilshift__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, L&>,
+        std::same_as<Return, L&>,
         "In-place left shift operator must return a mutable reference to the left "
         "operand.  Check your specialization of __ilshift__ for these types "
         "and ensure the Return type is set to the left operand."
@@ -2294,7 +2294,7 @@ template <typename L, typename R> requires (__rshift__<L, R>::enable)
 auto operator>>(const L& lhs, const R& rhs) {
     using Return = typename __rshift__<L, R>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "Right shift operator must return a py::Object subclass.  Check your "
         "specialization of __rshift__ for this type and ensure the Return "
         "type is derived from py::Object."
@@ -2313,7 +2313,7 @@ template <typename L, typename R> requires (__irshift__<L, R>::enable)
 L& operator>>=(L& lhs, const R& rhs) {
     using Return = typename __irshift__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, L&>,
+        std::same_as<Return, L&>,
         "In-place right shift operator must return a mutable reference to the left "
         "operand.  Check your specialization of __irshift__ for these types "
         "and ensure the Return type is set to the left operand."
@@ -2381,7 +2381,7 @@ template <typename L, typename R> requires (__and__<L, R>::enable)
 auto operator&(const L& lhs, const R& rhs) {
     using Return = typename __and__<L, R>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "Bitwise AND operator must return a py::Object subclass.  Check your "
         "specialization of __and__ for this type and ensure the Return type "
         "is derived from py::Object."
@@ -2400,7 +2400,7 @@ template <typename L, typename R> requires (__iand__<L, R>::enable)
 L& operator&=(L& lhs, const R& rhs) {
     using Return = typename __iand__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, L&>,
+        std::same_as<Return, L&>,
         "In-place bitwise AND operator must return a mutable reference to the left "
         "operand.  Check your specialization of __iand__ for these types and "
         "ensure the Return type is set to the left operand."
@@ -2469,7 +2469,7 @@ template <typename L, typename R>
 auto operator|(const L& lhs, const R& rhs) {
     using Return = typename __or__<L, R>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "Bitwise OR operator must return a py::Object subclass.  Check your "
         "specialization of __or__ for this type and ensure the Return type is "
         "derived from py::Object."
@@ -2501,7 +2501,7 @@ template <typename L, typename R> requires (__ior__<L, R>::enable)
 L& operator|=(L& lhs, const R& rhs) {
     using Return = typename __ior__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, L&>,
+        std::same_as<Return, L&>,
         "In-place bitwise OR operator must return a mutable reference to the left "
         "operand.  Check your specialization of __ior__ for these types and "
         "ensure the Return type is set to the left operand."
@@ -2569,7 +2569,7 @@ template <typename L, typename R> requires (__xor__<L, R>::enable)
 auto operator^(const L& lhs, const R& rhs) {
     using Return = typename __xor__<L, R>::Return;
     static_assert(
-        std::is_base_of_v<Object, Return>,
+        std::derived_from<Return, Object>,
         "Bitwise XOR operator must return a py::Object subclass.  Check your "
         "specialization of __xor__ for this type and ensure the Return type "
         "is derived from py::Object."
@@ -2588,7 +2588,7 @@ template <typename L, typename R> requires (__ixor__<L, R>::enable)
 L& operator^=(L& lhs, const R& rhs) {
     using Return = typename __ixor__<L, R>::Return;
     static_assert(
-        std::is_same_v<Return, L&>,
+        std::same_as<Return, L&>,
         "In-place bitwise XOR operator must return a mutable reference to the left "
         "operand.  Check your specialization of __ixor__ for these types and "
         "ensure the Return type is set to the left operand."

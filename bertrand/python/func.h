@@ -206,7 +206,7 @@ class Code : public Object {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool comptime_check = std::is_base_of_v<Code, T>;
+    static constexpr bool comptime_check = std::derived_from<T, Code>;
 
     inline PyCodeObject* self() const {
         return reinterpret_cast<PyCodeObject*>(this->ptr());
@@ -275,7 +275,7 @@ class Code : public Object {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Code, comptime_check, PyCode_Check)
     BERTRAND_OBJECT_OPERATORS(Code)
@@ -494,14 +494,14 @@ class Frame : public Object {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool comptime_check = std::is_base_of_v<Frame, T>;
+    static constexpr bool comptime_check = std::derived_from<T, Frame>;
 
     inline PyFrameObject* self() const {
         return reinterpret_cast<PyFrameObject*>(this->ptr());
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Frame, comptime_check, PyFrame_Check)
     BERTRAND_OBJECT_OPERATORS(Frame)
@@ -711,7 +711,7 @@ class Function : public Object {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Function, impl::is_callable_any, runtime_check)
     BERTRAND_OBJECT_OPERATORS(Function)
@@ -1007,7 +1007,7 @@ class ClassMethod : public Object {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool comptime_check = std::is_base_of_v<ClassMethod, T>;
+    static constexpr bool comptime_check = std::derived_from<T, ClassMethod>;
 
     inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(
@@ -1021,7 +1021,7 @@ class ClassMethod : public Object {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, ClassMethod, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(ClassMethod)
@@ -1067,7 +1067,7 @@ class StaticMethod : public Object {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool comptime_check = std::is_base_of_v<StaticMethod, T>;
+    static constexpr bool comptime_check = std::derived_from<T, StaticMethod>;
 
     static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(
@@ -1081,7 +1081,7 @@ class StaticMethod : public Object {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, StaticMethod, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(StaticMethod)
@@ -1142,7 +1142,7 @@ class Property : public Object {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool comptime_check = std::is_base_of_v<Property, T>;
+    static constexpr bool comptime_check = std::derived_from<T, Property>;
 
     inline static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(obj, impl::PyProperty.ptr());
@@ -1153,7 +1153,7 @@ class Property : public Object {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Property, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(Property)

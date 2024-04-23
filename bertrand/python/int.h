@@ -45,7 +45,7 @@ template <impl::bool_like T>
 struct __lt__<T, Int>                                           : Returns<bool> {};
 template <impl::int_like T>
 struct __lt__<Int, T>                                           : Returns<bool> {};
-template <impl::int_like T> requires (!std::is_same_v<T, Int>)
+template <impl::int_like T> requires (!std::same_as<T, Int>)
 struct __lt__<T, Int>                                           : Returns<bool> {};
 template <impl::float_like T>
 struct __lt__<Int, T>                                           : Returns<bool> {};
@@ -61,7 +61,7 @@ template <impl::bool_like T>
 struct __le__<T, Int>                                           : Returns<bool> {};
 template <impl::int_like T>
 struct __le__<Int, T>                                           : Returns<bool> {};
-template <impl::int_like T> requires (!std::is_same_v<T, Int>)
+template <impl::int_like T> requires (!std::same_as<T, Int>)
 struct __le__<T, Int>                                           : Returns<bool> {};
 template <impl::float_like T>
 struct __le__<Int, T>                                           : Returns<bool> {};
@@ -77,7 +77,7 @@ template <impl::bool_like T>
 struct __eq__<T, Int>                                           : Returns<bool> {};
 template <impl::int_like T>
 struct __eq__<Int, T>                                           : Returns<bool> {};
-template <impl::int_like T> requires (!std::is_same_v<T, Int>)
+template <impl::int_like T> requires (!std::same_as<T, Int>)
 struct __eq__<T, Int>                                           : Returns<bool> {};
 template <impl::float_like T>
 struct __eq__<Int, T>                                           : Returns<bool> {};
@@ -93,7 +93,7 @@ template <impl::bool_like T>
 struct __ne__<T, Int>                                           : Returns<bool> {};
 template <impl::int_like T>
 struct __ne__<Int, T>                                           : Returns<bool> {};
-template <impl::int_like T> requires (!std::is_same_v<T, Int>)
+template <impl::int_like T> requires (!std::same_as<T, Int>)
 struct __ne__<T, Int>                                           : Returns<bool> {};
 template <impl::float_like T>
 struct __ne__<Int, T>                                           : Returns<bool> {};
@@ -109,7 +109,7 @@ template <impl::bool_like T>
 struct __ge__<T, Int>                                           : Returns<bool> {};
 template <impl::int_like T>
 struct __ge__<Int, T>                                           : Returns<bool> {};
-template <impl::int_like T> requires (!std::is_same_v<T, Int>)
+template <impl::int_like T> requires (!std::same_as<T, Int>)
 struct __ge__<T, Int>                                           : Returns<bool> {};
 template <impl::float_like T>
 struct __ge__<Int, T>                                           : Returns<bool> {};
@@ -125,7 +125,7 @@ template <impl::bool_like T>
 struct __gt__<T, Int>                                           : Returns<bool> {};
 template <impl::int_like T>
 struct __gt__<Int, T>                                           : Returns<bool> {};
-template <impl::int_like T> requires (!std::is_same_v<T, Int>)
+template <impl::int_like T> requires (!std::same_as<T, Int>)
 struct __gt__<T, Int>                                           : Returns<bool> {};
 template <impl::float_like T>
 struct __gt__<Int, T>                                           : Returns<bool> {};
@@ -141,7 +141,7 @@ template <impl::bool_like T>
 struct __add__<T, Int>                                          : Returns<Int> {};
 template <impl::int_like T>
 struct __add__<Int, T>                                          : Returns<Int> {};
-template <impl::int_like T> requires (!std::is_same_v<T, Int>)
+template <impl::int_like T> requires (!std::same_as<T, Int>)
 struct __add__<T, Int>                                          : Returns<Int> {};
 template <impl::float_like T>
 struct __add__<Int, T>                                          : Returns<Float> {};
@@ -165,7 +165,7 @@ template <impl::bool_like T>
 struct __sub__<T, Int>                                          : Returns<Int> {};
 template <impl::int_like T>
 struct __sub__<Int, T>                                          : Returns<Int> {};
-template <impl::int_like T> requires (!std::is_same_v<T, Int>)
+template <impl::int_like T> requires (!std::same_as<T, Int>)
 struct __sub__<T, Int>                                          : Returns<Int> {};
 template <impl::float_like T>
 struct __sub__<Int, T>                                          : Returns<Float> {};
@@ -189,7 +189,7 @@ template <impl::bool_like T>
 struct __mul__<T, Int>                                          : Returns<Int> {};
 template <impl::int_like T>
 struct __mul__<Int, T>                                          : Returns<Int> {};
-template <impl::int_like T> requires (!std::is_same_v<T, Int>)
+template <impl::int_like T> requires (!std::same_as<T, Int>)
 struct __mul__<T, Int>                                          : Returns<Int> {};
 template <impl::float_like T>
 struct __mul__<Int, T>                                          : Returns<Float> {};
@@ -215,7 +215,7 @@ template <impl::bool_like T>
 struct __truediv__<T, Int>                                      : Returns<Float> {};
 template <impl::int_like T>
 struct __truediv__<Int, T>                                      : Returns<Float> {};
-template <impl::int_like T> requires (!std::is_same_v<T, Int>)
+template <impl::int_like T> requires (!std::same_as<T, Int>)
 struct __truediv__<T, Int>                                      : Returns<Float> {};
 template <impl::float_like T>
 struct __truediv__<Int, T>                                      : Returns<Float> {};
@@ -235,7 +235,7 @@ template <impl::bool_like T>
 struct __mod__<T, Int>                                          : Returns<Int> {};
 template <impl::int_like T>
 struct __mod__<Int, T>                                          : Returns<Int> {};
-template <impl::int_like T> requires (!std::is_same_v<T, Int>)
+template <impl::int_like T> requires (!std::same_as<T, Int>)
 struct __mod__<T, Int>                                          : Returns<Int> {};
 template <impl::float_like T>
 struct __mod__<Int, T>                                          : Returns<Float> {};
@@ -380,7 +380,7 @@ class Int : public Object {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Int, impl::int_like, PyLong_Check)
     BERTRAND_OBJECT_OPERATORS(Int)
@@ -412,13 +412,13 @@ public:
     template <typename T> requires (std::integral<T>)
     Int(const T& value) : Base(nullptr, stolen_t{}) {
         if constexpr (sizeof(T) <= sizeof(long)) {
-            if constexpr (std::is_signed_v<T>) {
+            if constexpr (std::signed_integral<T>) {
                 m_ptr = PyLong_FromLong(value);
             } else {
                 m_ptr = PyLong_FromUnsignedLong(value);
             }
         } else {
-            if constexpr (std::is_signed_v<T>) {
+            if constexpr (std::signed_integral<T>) {
                 m_ptr = PyLong_FromLongLong(value);
             } else {
                 m_ptr = PyLong_FromUnsignedLongLong(value);
@@ -503,13 +503,13 @@ public:
     template <typename T> requires (!impl::python_like<T> && impl::int_like<T>)
     inline operator T() const {
         if constexpr (sizeof(T) <= sizeof(long)) {
-            if constexpr (std::is_signed_v<T>) {
+            if constexpr (std::signed_integral<T>) {
                 return PyLong_AsLong(m_ptr);
             } else {
                 return PyLong_AsUnsignedLong(m_ptr);
             }
         } else {
-            if constexpr (std::is_signed_v<T>) {
+            if constexpr (std::signed_integral<T>) {
                 return PyLong_AsLongLong(m_ptr);
             } else {
                 return PyLong_AsUnsignedLongLong(m_ptr);

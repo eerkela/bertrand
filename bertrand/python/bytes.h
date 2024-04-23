@@ -439,7 +439,7 @@ class Bytes : public impl::IBytes<Bytes>, public impl::SequenceOps<Bytes> {
     using Base = impl::IBytes<Bytes>;
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Bytes, impl::bytes_like, PyBytes_Check)
     BERTRAND_OBJECT_OPERATORS(Bytes)
@@ -543,7 +543,7 @@ protected:
 
     template <typename Return, typename L, typename R>
     inline static auto operator_add(const L& lhs, const R& rhs) {
-        if constexpr (std::is_base_of_v<Bytes, L>) {
+        if constexpr (std::derived_from<L, Bytes>) {
             Return result = lhs.copy();
             operator_iadd<Return>(result, rhs);
             return result;
@@ -571,7 +571,7 @@ class ByteArray : public impl::IBytes<ByteArray>, public impl::SequenceOps<ByteA
     using Base = impl::IBytes<ByteArray>;
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, ByteArray, impl::bytearray_like, PyByteArray_Check)
     BERTRAND_OBJECT_OPERATORS(ByteArray)
@@ -676,7 +676,7 @@ protected:
     template <typename Return, typename L, typename R>
     inline static auto operator_add(const L& lhs, const R& rhs) {
         PyObject* result;
-        if constexpr (std::is_base_of_v<ByteArray, L>) {
+        if constexpr (std::derived_from<L, ByteArray>) {
             result = PyByteArray_Concat(lhs.ptr(), ByteArray(rhs).ptr());
         } else {
             result = PyByteArray_Concat(ByteArray(lhs).ptr(), rhs.ptr());

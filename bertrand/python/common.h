@@ -84,7 +84,7 @@ class NoneType : public Object {
     using Base = Object;
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, NoneType, impl::none_like, Py_IsNone)
     BERTRAND_OBJECT_OPERATORS(NoneType)
@@ -113,7 +113,7 @@ class NotImplementedType : public Object {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool comptime_check = std::is_base_of_v<NotImplementedType, T>;
+    static constexpr bool comptime_check = std::derived_from<T, NotImplementedType>;
 
     inline static int runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(
@@ -127,7 +127,7 @@ class NotImplementedType : public Object {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, NotImplementedType, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(NotImplementedType)
@@ -151,7 +151,7 @@ class EllipsisType : public Object {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool comptime_check = std::is_base_of_v<EllipsisType, T>;
+    static constexpr bool comptime_check = std::derived_from<T, EllipsisType>;
 
     inline static int runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(
@@ -165,7 +165,7 @@ class EllipsisType : public Object {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, EllipsisType, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(EllipsisType)
@@ -283,7 +283,7 @@ class Slice : public Object {
     using Base = Object;
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Slice, impl::slice_like, PySlice_Check)
     BERTRAND_OBJECT_OPERATORS(Slice)
@@ -440,7 +440,7 @@ class Module : public Object {
     using Base = Object;
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Module, impl::module_like, PyModule_Check)
     BERTRAND_OBJECT_OPERATORS(Module)
@@ -743,7 +743,7 @@ namespace std {
     template <typename T> requires (bertrand::py::__hash__<T>::enable)
     struct hash<T> {
         static_assert(
-            std::is_same_v<typename bertrand::py::__hash__<T>::Return, size_t>,
+            std::same_as<typename bertrand::py::__hash__<T>::Return, size_t>,
             "std::hash<> must return size_t for compatibility with other C++ types.  "
             "Check your specialization of __hash__ for this type and ensure the "
             "Return type is set to size_t."

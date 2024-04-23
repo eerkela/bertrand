@@ -10,9 +10,6 @@
 #include "dict.h"
 
 
-// TODO: Type::of<T>(), where T is a registered pybind11 extension type.
-
-
 namespace bertrand {
 namespace py {
 
@@ -49,7 +46,7 @@ class Type : public Object {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Type, impl::type_like, PyType_Check)
     BERTRAND_OBJECT_OPERATORS(Type)
@@ -143,6 +140,12 @@ public:
     /* Implicitly convert to pybind11::type. */
     inline operator pybind11::type() const {
         return reinterpret_borrow<pybind11::type>(m_ptr);
+    }
+
+    /* Get the Python type of a registered pybind11 extension type. */
+    template <typename T>
+    static Type of() {
+        return reinterpret_steal<Type>(pybind11::type::of<T>().release());
     }
 
     #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 9)
@@ -470,7 +473,7 @@ class Super : public Object {
     using Base = Object;
 
     template <typename T>
-    static constexpr bool comptime_check = std::is_base_of_v<Super, T>;
+    static constexpr bool comptime_check = std::derived_from<T, Super>;
 
     inline static int runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(
@@ -484,7 +487,7 @@ class Super : public Object {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Super, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(Super)

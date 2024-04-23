@@ -249,7 +249,7 @@ namespace impl {
         inline static bool operator_contains(const L& self, const R& key) {
             int result = PySet_Contains(
                 self.ptr(),
-                detail::object_or_cast(key).ptr()
+                Object(key).ptr()
             );
             if (result == -1) {
                 Exception::from_python();
@@ -355,7 +355,7 @@ class FrozenSet : public impl::ISet<FrozenSet>, public impl::FrozenSetTag {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, FrozenSet, impl::frozenset_like, PyFrozenSet_Check)
     BERTRAND_OBJECT_OPERATORS(FrozenSet)
@@ -404,7 +404,7 @@ public:
         }
         try {
             while (first != last) {
-                if (PySet_Add(m_ptr, detail::object_or_cast(*first).ptr())) {
+                if (PySet_Add(m_ptr, Object(*first).ptr())) {
                     Exception::from_python();
                 }
                 ++first;
@@ -436,7 +436,7 @@ public:
             for (auto&& item : container) {
                 if (PySet_Add(
                     m_ptr,
-                    detail::object_or_cast(std::forward<decltype(item)>(item)).ptr())
+                    Object(std::forward<decltype(item)>(item)).ptr())
                 ) {
                     Exception::from_python();
                 }
@@ -456,10 +456,10 @@ public:
             Exception::from_python();
         }
         try {
-            if (PySet_Add(m_ptr, detail::object_or_cast(pair.first).ptr())) {
+            if (PySet_Add(m_ptr, Object(pair.first).ptr())) {
                 Exception::from_python();
             }
-            if (PySet_Add(m_ptr, detail::object_or_cast(pair.second).ptr())) {
+            if (PySet_Add(m_ptr, Object(pair.second).ptr())) {
                 Exception::from_python();
             }
         } catch (...) {
@@ -578,7 +578,7 @@ class Set : public impl::ISet<Set>, public impl::SetTag {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Set, impl::set_like, PySet_Check)
     BERTRAND_OBJECT_OPERATORS(Set)
@@ -627,7 +627,7 @@ public:
         }
         try {
             while (first != last) {
-                if (PySet_Add(m_ptr, detail::object_or_cast(*first).ptr())) {
+                if (PySet_Add(m_ptr, Object(*first).ptr())) {
                     Exception::from_python();
                 }
                 ++first;
@@ -659,7 +659,7 @@ public:
             for (auto&& item : contents) {
                 if (PySet_Add(
                     m_ptr,
-                    detail::object_or_cast(std::forward<decltype(item)>(item)).ptr())
+                    Object(std::forward<decltype(item)>(item)).ptr())
                 ) {
                     Exception::from_python();
                 }
@@ -679,10 +679,10 @@ public:
             Exception::from_python();
         }
         try {
-            if (PySet_Add(m_ptr, detail::object_or_cast(pair.first).ptr())) {
+            if (PySet_Add(m_ptr, Object(pair.first).ptr())) {
                 Exception::from_python();
             }
-            if (PySet_Add(m_ptr, detail::object_or_cast(pair.second).ptr())) {
+            if (PySet_Add(m_ptr, Object(pair.second).ptr())) {
                 Exception::from_python();
             }
         } catch (...) {
@@ -733,7 +733,7 @@ public:
     /* Equivalent to Python `set.add(key)`. */
     template <impl::is_hashable T>
     inline void add(const T& key) {
-        if (PySet_Add(this->ptr(), detail::object_or_cast(key).ptr())) {
+        if (PySet_Add(this->ptr(), Object(key).ptr())) {
             Exception::from_python();
         }
     }
@@ -741,7 +741,7 @@ public:
     /* Equivalent to Python `set.remove(key)`. */
     template <impl::is_hashable T>
     inline void remove(const T& key) {
-        Object obj = detail::object_or_cast(key);
+        Object obj = key;
         int result = PySet_Discard(this->ptr(), obj.ptr());
         if (result == -1) {
             Exception::from_python();
@@ -753,7 +753,7 @@ public:
     /* Equivalent to Python `set.discard(key)`. */
     template <impl::is_hashable T>
     inline void discard(const T& key) {
-        if (PySet_Discard(this->ptr(), detail::object_or_cast(key).ptr()) == -1) {
+        if (PySet_Discard(this->ptr(), Object(key).ptr()) == -1) {
             Exception::from_python();
         }
     }

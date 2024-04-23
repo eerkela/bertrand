@@ -105,7 +105,7 @@ nice for initializer-list syntax, enabling containers to be assigned to like thi
     /* Trigger implicit conversions to this type via the assignment operator. */        \
     template <std::convertible_to<cls> T>                                               \
     cls& operator=(T&& value) {                                                         \
-        if constexpr (std::is_same_v<cls, std::decay_t<T>>) {                           \
+        if constexpr (std::same_as<std::decay_t<T>, cls>) {                             \
             if (this != &value) {                                                       \
                 parent::operator=(std::forward<T>(value));                              \
             }                                                                           \
@@ -868,12 +868,12 @@ protected:
     }
 
 public:
-    static Type type;
+    static const Type type;
 
     /* Check whether the templated type is considered object-like at compile time. */
     template <typename T>
     static constexpr bool check() {
-        return std::is_base_of_v<Object, T> || std::is_base_of_v<pybind11::object, T>;
+        return std::derived_from<T, Object> || std::derived_from<T, pybind11::object>;
     }
 
     /* Check whether a C++ value is considered object-like at compile time. */

@@ -192,12 +192,12 @@ public:
     }
 
     template <typename T>
-        requires (!std::is_same_v<T, Wrapped> && std::is_convertible_v<Wrapped, T>)
+        requires (!std::same_as<T, Wrapped> && std::convertible_to<Wrapped, T>)
     operator T() const {
         return implicit_cast<T>(get_value());
     }
 
-    template <typename T> requires (!std::is_convertible_v<Wrapped, T>)
+    template <typename T> requires (!std::convertible_to<Wrapped, T>)
     explicit operator T() const {
         return static_cast<T>(get_value());
     }
@@ -241,7 +241,7 @@ class Attr : public Proxy<typename __getattr__<Obj, name>::Return, Attr<Obj, nam
 public:
     using Wrapped = typename __getattr__<Obj, name>::Return;
     static_assert(
-        std::is_base_of_v<Object, Wrapped>,
+        std::derived_from<Wrapped, Object>,
         "Attribute accessor must return a py::Object subclass.  Check your "
         "specialization of __getattr__ for this type and ensure the Return type is "
         "set to a subclass of py::Object."
@@ -528,7 +528,7 @@ class Item : public Proxy<typename __getitem__<Obj, Key>::Return, Item<Obj, Key>
 public:
     using Wrapped = typename __getitem__<Obj, Key>::Return;
     static_assert(
-        std::is_base_of_v<Object, Wrapped>,
+        std::derived_from<Wrapped, Object>,
         "index operator must return a subclass of py::Object.  Check your "
         "specialization of __getitem__ for these types and ensure the Return "
         "type is set to a subclass of py::Object."

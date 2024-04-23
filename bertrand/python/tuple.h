@@ -74,7 +74,7 @@ class Tuple : public Object, public impl::SequenceOps<Tuple>, public impl::Tuple
 public:
     // TODO: include a bevy of typedefs to conform to STL containers
 
-    static Type type;  // TODO: CTAD refactor requires this to be lifted to a base class.
+    static const Type type;;  // TODO: CTAD refactor requires this to be lifted to a base class.
     // -> type can be placed in TupleTag
 
     BERTRAND_OBJECT_COMMON(Base, Tuple, impl::tuple_like, PyTuple_Check)
@@ -133,7 +133,7 @@ public:
             Exception::from_python();
         }
         while (first != last) {
-            if (PyList_Append(list, detail::object_or_cast(*first).ptr())) {
+            if (PyList_Append(list, Object(*first).ptr())) {
                 Py_DECREF(list);
                 Exception::from_python();
             }
@@ -196,7 +196,7 @@ public:
             for (auto&& item : contents) {
                 if (PyList_Append(
                     list,
-                    detail::object_or_cast(std::forward<decltype(item)>(item)).ptr()
+                    Object(std::forward<decltype(item)>(item)).ptr()
                 )) {
                     Py_DECREF(list);
                     Exception::from_python();

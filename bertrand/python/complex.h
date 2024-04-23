@@ -112,7 +112,7 @@ class Complex : public Object {
     using Base = Object;
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Complex, impl::complex_like, PyComplex_Check)
     BERTRAND_OBJECT_OPERATORS(Complex)

@@ -55,7 +55,7 @@ class Range : public Object {
     }
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, Range, impl::range_like, runtime_check)
     BERTRAND_OBJECT_OPERATORS(Range)

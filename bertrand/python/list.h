@@ -95,7 +95,7 @@ class List : public Object, public impl::SequenceOps<List>, public impl::ListTag
     using Base = Object;
 
 public:
-    static Type type;
+    static const Type type;;
 
     BERTRAND_OBJECT_COMMON(Base, List, impl::list_like, PyList_Check)
     BERTRAND_OBJECT_OPERATORS(List)
