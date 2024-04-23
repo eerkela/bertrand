@@ -42,8 +42,7 @@ template <>
 struct __getitem__<Range, Slice>                            : Returns<Range> {};
 
 
-/* New subclass of pybind11::object that represents a range object at the Python
-level. */
+/* Represents a statically-typed Python `range` object in C++. */
 class Range : public Object {
     using Base = Object;
 
@@ -73,8 +72,9 @@ public:
     Range(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly construct a range from 0 to the given stop index (exclusive). */
-    explicit Range(const Int& stop) {
-        m_ptr = PyObject_CallOneArg((PyObject*) &PyRange_Type, stop.ptr());
+    explicit Range(const Int& stop) :
+        Base(PyObject_CallOneArg((PyObject*) &PyRange_Type, stop.ptr()))
+    {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -82,14 +82,16 @@ public:
 
     /* Explicitly construct a range from the given start and stop indices
     (exclusive), with an optional step size. */
-    explicit Range(const Int& start, const Int& stop, const Int& step = 1) {
-        m_ptr = PyObject_CallFunctionObjArgs(
+    explicit Range(const Int& start, const Int& stop, const Int& step = 1) : Base(
+        PyObject_CallFunctionObjArgs(
             (PyObject*) &PyRange_Type,
             start.ptr(),
             stop.ptr(),
             step.ptr(),
             nullptr
-        );
+        ),
+        stolen_t{}
+    ) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }

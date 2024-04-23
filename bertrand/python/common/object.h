@@ -103,7 +103,7 @@ nice for initializer-list syntax, enabling containers to be assigned to like thi
     }                                                                                   \
                                                                                         \
     /* Trigger implicit conversions to this type via the assignment operator. */        \
-    template <typename T> requires (std::is_convertible_v<T, cls>)                      \
+    template <std::convertible_to<cls> T>                                               \
     cls& operator=(T&& value) {                                                         \
         if constexpr (std::is_same_v<cls, std::decay_t<T>>) {                           \
             if (this != &value) {                                                       \
@@ -267,6 +267,13 @@ template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std:
 struct __xor__<L, R>                                        : Returns<Object> {};
 template <std::convertible_to<Object> R>
 struct __ixor__<Object, R>                                  : Returns<Object&> {};
+
+
+// TODO: Default constructor should initialize to None.  Use Base(nullptr, stolen_t{})
+// to avoid this in subclasses.  That means we should never need to worry about null
+// objects except for when an object has been moved from or via an improper use of
+// reinterpret_borrow/steal.  All normal Python code will be guaranteed to be free from
+// null pointers.
 
 
 /* A revised Python object interface that allows implicit conversions to subtypes
@@ -890,7 +897,7 @@ public:
     /* Default constructor.  Initializes to a null object, which should always be
     filled in before being returned to the user. NOTE: this has to be public for
     pybind11's type casters to work as intended. */
-    Object() = default;
+    Object() : m_ptr(Py_NewRef(Py_None)) {}
 
     /* reinterpret_borrow()/reinterpret_steal() constructors.  The tags themselves are
     protected and only accessible within subclasses of pybind11::object. */
@@ -948,7 +955,7 @@ public:
     }
 
     /* Trigger implicit conversions to this type via the assignment operator. */
-    template <typename T> requires (std::is_convertible_v<T, Object>)
+    template <std::convertible_to<Object> T>
     Object& operator=(T&& value) {
         PyObject* temp = m_ptr;
         if constexpr (impl::has_conversion_operator<std::remove_cvref_t<T>, Object>) {
@@ -1016,7 +1023,7 @@ public:
 
     /* Wrap an Object in a proxy class, which moves it into a managed buffer for
     granular control. */
-    template <typename T> requires (impl::proxy_like<T>)
+    template <impl::proxy_like T>
     operator T() const {
         return T(this->operator typename T::Wrapped());
     }

@@ -167,7 +167,7 @@ template <std::derived_from<Str> L, impl::int_like R>
 struct __imul__<L, R>                                           : Returns<Str> {};
 
 
-/* Bertrand equivalent for pybind11::str. */
+/* Represents a statically-typed Python string in C++. */
 class Str : public Object, public impl::SequenceOps<Str> {
     using Base = Object;
 
@@ -184,32 +184,6 @@ class Str : public Object, public impl::SequenceOps<Str> {
             return std::forward<T>(arg);
         }
     }
-
-    template <typename T>
-    static constexpr bool py_constructor = impl::python_like<T> && impl::str_like<T>;
-    template <typename T>
-    static constexpr bool c_string_constructor =
-        !impl::python_like<T> && std::is_convertible_v<T, const char*>;
-    template <typename T>
-    static constexpr bool cpp_string_constructor =
-        !impl::python_like<T> &&
-        !std::is_convertible_v<T, const char*> &&
-        std::is_convertible_v<T, std::string>;
-    template <typename T>
-    static constexpr bool cpp_string_view_constructor =
-        !impl::python_like<T> &&
-        !std::is_convertible_v<T, const char*> &&
-        !std::is_convertible_v<T, std::string> &&
-        std::is_convertible_v<T, std::string_view>;
-    template <typename T>
-    static constexpr bool py_converting_constructor =
-        impl::python_like<T> && !impl::str_like<T>;
-    template <typename T>
-    static constexpr bool cpp_converting_constructor =
-        !impl::python_like<T> &&
-        !std::is_convertible_v<T, const char*> &&
-        !std::is_convertible_v<T, std::string> &&
-        !std::is_convertible_v<T, std::string_view>;
 
 public:
     static Type type;
@@ -229,7 +203,7 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (py_constructor<T>)
+    template <typename T> requires (impl::python_like<T> && impl::str_like<T>)
     Str(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Implicitly convert a string literal into a py::Str object. */
@@ -244,7 +218,8 @@ public:
     }
 
     /* Implicitly convert a C-style string array into a py::Str object. */
-    template <typename T> requires (c_string_constructor<T>)
+    template <typename T>
+        requires (!impl::python_like<T> && std::is_convertible_v<T, const char*>)
     Str(const T& string) : Base(PyUnicode_FromString(string), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -252,8 +227,13 @@ public:
     }
 
     /* Implicitly convert a C++ std::string into a py::Str object. */
-    template <typename T> requires (cpp_string_constructor<T>)
-    Str(const T& string) {
+    template <typename T>
+        requires (
+            !impl::python_like<T> &&
+            !std::is_convertible_v<T, const char*> &&
+            std::is_convertible_v<T, std::string>
+        )
+    Str(const T& string) : Base(nullptr, stolen_t{}) {
         std::string s = string;
         m_ptr = PyUnicode_FromStringAndSize(s.c_str(), s.size());
         if (m_ptr == nullptr) {
@@ -262,8 +242,14 @@ public:
     }
 
     /* Implicitly convert a C++ std::string_view into a py::Str object. */
-    template <typename T> requires (cpp_string_view_constructor<T>)
-    Str(const T& string) {
+    template <typename T>
+        requires (
+            !impl::python_like<T> &&
+            !std::is_convertible_v<T, const char*> &&
+            !std::is_convertible_v<T, std::string> &&
+            std::is_convertible_v<T, std::string_view>
+        )
+    Str(const T& string) : Base(nullptr, stolen_t{}) {
         std::string_view s = string;
         m_ptr = PyUnicode_FromStringAndSize(s.data(), s.size());
         if (m_ptr == nullptr) {
@@ -272,7 +258,7 @@ public:
     }
 
     /* Explicitly convert an arbitrary Python object into a py::Str representation. */
-    template <typename T> requires (py_converting_constructor<T>)
+    template <typename T> requires (impl::python_like<T> && !impl::str_like<T>)
     explicit Str(const T& obj) : Base(PyObject_Str(obj.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -280,8 +266,13 @@ public:
     }
 
     /* Explicitly convert an arbitrary C++ object into a py::Str representation. */
-    template <typename T> requires (cpp_converting_constructor<T>)
-    explicit Str(const T& obj) : Base(PyObject_Str(pybind11::cast(obj).ptr()), stolen_t{}) {
+    template <typename T> requires (
+        !impl::python_like<T> &&
+        !std::is_convertible_v<T, const char*> &&
+        !std::is_convertible_v<T, std::string> &&
+        !std::is_convertible_v<T, std::string_view>
+    )
+    explicit Str(const T& obj) : Base(PyObject_Str(Object(obj).ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -292,7 +283,9 @@ public:
         /* Construct a Python unicode string from a std::format()-style interpolated
         string. */
         template <typename... Args> requires (sizeof...(Args) > 0)
-        explicit Str(const std::string_view& format, Args&&... args) {
+        explicit Str(const std::string_view& format, Args&&... args) :
+            Base(nullptr, stolen_t{})
+        {
             std::string result = std::vformat(
                 format,
                 std::make_format_args(std::forward<Args>(args))...
@@ -310,7 +303,7 @@ public:
             const std::locale& locale,
             const std::string_view& format,
             Args&&... args
-        ) {
+        ) : Base(nullptr, stolen_t{}) {
             std::string result = std::vformat(
                 locale,
                 format,
@@ -532,7 +525,6 @@ public:
     inline Str format_map(const T& mapping) const;
 
     /* Equivalent to Python `str.index(sub[, start[, end]])`. */
-    template <typename T>
     inline Py_ssize_t index(
         const Str& sub,
         Py_ssize_t start = 0,
@@ -642,16 +634,13 @@ public:
     inline Str lstrip(const Str& chars) const;
 
     /* Equivalent to Python (static) `str.maketrans(x)`. */
-    template <typename T>
-    inline static Dict maketrans(const T& x);
+    inline static Dict maketrans(const Object& x);
 
     /* Equivalent to Python (static) `str.maketrans(x, y)`. */
-    template <typename T, typename U>
-    inline static Dict maketrans(const T& x, const U& y);
+    inline static Dict maketrans(const Object& x, const Object& y);
 
     /* Equivalent to Python (static) `str.maketrans(x, y, z)`. */
-    template <typename T, typename U, typename V>
-    inline static Dict maketrans(const T& x, const U& y, const V& z);
+    inline static Dict maketrans(const Object& x, const Object& y, const Object& z);
 
     /* Equivalent to Python `str.partition(sep)`. */
     inline Tuple partition(const Str& sep) const;
@@ -820,8 +809,7 @@ public:
     inline Str title() const;
 
     /* Equivalent to Python `str.translate(table)`. */
-    template <typename T>
-    inline Str translate(const T& table) const;
+    inline Str translate(const Object& table) const;
 
     /* Equivalent to Python `str.upper()`. */
     inline Str upper() const;
@@ -837,8 +825,8 @@ protected:
     using impl::SequenceOps<Str>::operator_mul;
     using impl::SequenceOps<Str>::operator_imul;
 
-    template <typename Return, typename T>
-    inline static size_t operator_len(const T& self) {
+    template <typename Return, typename Self>
+    inline static size_t operator_len(const Self& self) {
         return static_cast<size_t>(PyUnicode_GET_LENGTH(self.ptr()));
     }
 

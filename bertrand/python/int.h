@@ -329,41 +329,9 @@ template <impl::int_like T>
 struct __ixor__<Int, T>                                         : Returns<Int&> {};
 
 
-/* Wrapper around pybind11::int_ that enables conversions from strings with different
-bases, similar to Python's `int()` constructor, as well as converting math operators
-that account for C++ inputs. */
+/* Represents a statically-typed Python integer in C++. */
 class Int : public Object {
     using Base = Object;
-
-    template <typename T>
-    static constexpr bool py_constructor = impl::int_like<T> && impl::python_like<T>;
-    template <typename T>
-    static constexpr bool cpp_constructor = std::is_integral_v<T>;
-    template <typename T>
-    static constexpr bool py_bool_constructor =
-        impl::bool_like<T> && impl::python_like<T>;
-    template <typename T>
-    static constexpr bool py_double_constructor =
-        impl::float_like<T> && impl::python_like<T>;
-    template <typename T>
-    static constexpr bool cpp_double_constructor =
-        impl::float_like<T> && !impl::python_like<T>;
-    template <typename T>
-    static constexpr bool py_converting_constructor = (
-        !impl::bool_like<T> &&
-        !impl::int_like<T> &&
-        !impl::float_like<T> &&
-        !impl::str_like<T> &&
-        impl::python_like<T>
-    );
-    template <typename T>
-    static constexpr bool cpp_converting_constructor = (
-        !impl::bool_like<T> &&
-        !impl::int_like<T> &&
-        !impl::float_like<T> &&
-        !impl::str_like<T> &&
-        !impl::python_like<T>
-    );
 
     /* Helper function allows explicit conversion from any C++ type that implements an
     implicit or explicit conversion to an integer. */
@@ -429,11 +397,11 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (py_constructor<T>)
+    template <typename T> requires (impl::python_like<T> && impl::int_like<T>)
     Int(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Implicitly promote Python booleans to py::Int. */
-    template <typename T> requires (py_bool_constructor<T>)
+    template <typename T> requires (impl::python_like<T> && impl::bool_like<T>)
     Int(const T& value) : Base(PyNumber_Long(value.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -441,8 +409,8 @@ public:
     }
 
     /* Implicitly convert C++ booleans and integers to py::Int. */
-    template <typename T> requires (cpp_constructor<T>)
-    Int(const T& value) {
+    template <typename T> requires (std::integral<T>)
+    Int(const T& value) : Base(nullptr, stolen_t{}) {
         if constexpr (sizeof(T) <= sizeof(long)) {
             if constexpr (std::is_signed_v<T>) {
                 m_ptr = PyLong_FromLong(value);
@@ -462,7 +430,7 @@ public:
     }
 
     /* Explicitly convert a Python float into a py::Int. */
-    template <typename T> requires (py_double_constructor<T>)
+    template <typename T> requires (impl::python_like<T> && impl::float_like<T>)
     explicit Int(const T& value) : Base(PyNumber_Long(value.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -470,7 +438,7 @@ public:
     }
 
     /* Explicitly convert a C++ float into a py::Int. */
-    template <typename T> requires (cpp_double_constructor<T>)
+    template <typename T> requires (!impl::python_like<T> && impl::float_like<T>)
     explicit Int(const T& value) : Base(PyLong_FromDouble(value), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -478,7 +446,14 @@ public:
     }
 
     /* Explicitly convert an arbitrary Python object into an integer. */
-    template <typename T> requires (py_converting_constructor<T>)
+    template <typename T>
+        requires (
+            impl::python_like<T> &&
+            !impl::bool_like<T> &&
+            !impl::int_like<T> &&
+            !impl::float_like<T> &&
+            !impl::str_like<T>
+        )
     explicit Int(const T& obj) : Base(PyNumber_Long(obj.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -486,7 +461,14 @@ public:
     }
 
     /* Trigger explicit conversion operators to C++ integer types. */
-    template <typename T> requires (cpp_converting_constructor<T>)
+    template <typename T>
+        requires (
+            !impl::python_like<T> &&
+            !impl::bool_like<T> &&
+            !impl::int_like<T> &&
+            !impl::float_like<T> &&
+            !impl::str_like<T>
+        )
     explicit Int(const T& value) : Int(trigger_explicit_conversions(value)) {}
 
     /* Explicitly convert a string literal with an optional base into a py::Int. */
@@ -536,7 +518,7 @@ public:
     }
 
     /* Implicitly convert a Python int into a C++ float. */
-    template <typename T> requires (std::is_floating_point_v<T>)
+    template <std::floating_point T>
     inline operator T() const {
         return PyLong_AsDouble(m_ptr);
     }

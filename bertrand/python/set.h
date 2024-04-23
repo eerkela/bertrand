@@ -23,24 +23,6 @@ namespace impl {
         inline Derived* self() { return static_cast<Derived*>(this); }
         inline const Derived* self() const { return static_cast<const Derived*>(this); }
 
-    protected:
-
-        template <typename T>
-        inline static void insert_from_tuple(PyObject* result, const T& item) {
-            if (PySet_Add(result, detail::object_or_cast(item).ptr())) {
-                Exception::from_python();
-            }
-        }
-
-        template <typename... Args, size_t... N>
-        inline static void unpack_tuple(
-            PyObject* result,
-            const std::tuple<Args...>& tuple,
-            std::index_sequence<N...>
-        ) {
-            (insert_from_tuple(result, std::get<N>(tuple)), ...);
-        }
-
     public:
         using Base::Base;
 
@@ -258,8 +240,8 @@ namespace impl {
 
     protected:
 
-        template <typename Return, typename T>
-        inline static size_t operator_len(const T& self) {
+        template <typename Return, typename Self>
+        inline static size_t operator_len(const Self& self) {
             return static_cast<size_t>(PySet_GET_SIZE(self.ptr()));
         }
 
@@ -362,8 +344,7 @@ struct __ixor__<L, R>                                           : Returns<L&> {}
 /////////////////////////
 
 
-/* Wrapper around pybind11::frozenset that allows it to be directly initialized using
-std::initializer_list and replicates the Python interface as closely as possible. */
+/* Represents a statically-typed Python `frozenset` object in C++. */
 class FrozenSet : public impl::ISet<FrozenSet>, public impl::FrozenSetTag {
     using Base = impl::ISet<FrozenSet>;
     friend Base;
@@ -436,7 +417,7 @@ public:
 
     /* Explicitly unpack an arbitrary Python container into a new py::FrozenSet. */
     template <typename T>
-        requires (impl::is_iterable<T> && impl::python_like<T> && !impl::frozenset_like<T>)
+        requires (impl::python_like<T> && !impl::frozenset_like<T> && impl::is_iterable<T>)
     explicit FrozenSet(const T& contents) :
         Base(PyFrozenSet_New(contents.ptr()), stolen_t{})
     {
@@ -446,9 +427,8 @@ public:
     }
 
     /* Explicitly unpack an arbitrary C++ container into a new py::FrozenSet. */
-    template <typename T> requires (impl::is_iterable<T> && !impl::python_like<T>)
-    explicit FrozenSet(T&& container) {
-        m_ptr = PyFrozenSet_New(nullptr);
+    template <typename T> requires (!impl::python_like<T> && impl::is_iterable<T>)
+    explicit FrozenSet(T&& container) : Base(PyFrozenSet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -496,8 +476,18 @@ public:
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
+
+        auto unpack_tuple = [&]<size_t... N>(std::index_sequence<N...>) {
+            auto insert = [](PyObject* m_ptr, const auto& item) {
+                if (PySet_Add(m_ptr, Object(item).ptr())) {
+                    Exception::from_python();
+                }
+            };
+            (insert(m_ptr, std::get<N>(tuple)), ...);
+        };
+
         try {
-            Base::unpack_tuple(m_ptr, tuple, std::index_sequence_for<Args...>{});
+            unpack_tuple(std::index_sequence_for<Args...>{});
         } catch (...) {
             Py_DECREF(m_ptr);
             throw;
@@ -577,8 +567,7 @@ template <std::derived_from<Set> T>
 struct __getattr__<T, "symmetric_difference_update">            : Returns<Function> {};
 
 
-/* Wrapper around pybind11::set that allows it to be directly initialized using
-std::initializer_list and replicates the Python interface as closely as possible. */
+/* Represents a statically-typed Python set in C++. */
 class Set : public impl::ISet<Set>, public impl::SetTag {
     using Base = impl::ISet<Set>;
     friend Base;
@@ -651,7 +640,7 @@ public:
 
     /* Explicitly unpack an arbitrary Python container into a new py::Set. */
     template <typename T>
-        requires (impl::is_iterable<T> && impl::python_like<T> && !impl::set_like<T>)
+        requires (impl::python_like<T> && !impl::set_like<T> && impl::is_iterable<T>)
     explicit Set(const T& contents) :
         Base(PySet_New(contents.ptr()), stolen_t{})
     {
@@ -661,7 +650,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary C++ container into a new py::Set. */
-    template <typename T> requires (impl::is_iterable<T> && !impl::python_like<T>)
+    template <typename T> requires (!impl::python_like<T> && impl::is_iterable<T>)
     explicit Set(T&& contents) : Base(PySet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -710,8 +699,18 @@ public:
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
+
+        auto unpack_tuple = [&]<size_t... N>(std::index_sequence<N...>) {
+            auto insert = [](PyObject* m_ptr, const auto& item) {
+                if (PySet_Add(m_ptr, Object(item).ptr())) {
+                    Exception::from_python();
+                }
+            };
+            (insert(m_ptr, std::get<N>(tuple)), ...);
+        };
+
         try {
-            Base::unpack_tuple(m_ptr, tuple, std::index_sequence_for<Args...>{});
+            unpack_tuple(std::index_sequence_for<Args...>{});
         } catch (...) {
             Py_DECREF(m_ptr);
             throw;

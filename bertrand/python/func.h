@@ -487,8 +487,9 @@ template <std::derived_from<Frame> T>
 struct __getattr__<T, "clear">                                  : Returns<Function> {};
 
 
-/* A new subclass of pybind11::object that represents a Python interpreter frame, which
-can be used to introspect its current state. */
+/* Represents a statically-typed Python frame object in C++.  These are the same frames
+returned by the `inspect` module and listed in exception tracebacks.  They can be used
+to run Python code in an interactive loop via the embedded code object. */
 class Frame : public Object {
     using Base = Object;
 
@@ -686,8 +687,10 @@ template <std::derived_from<Function> T>
 struct __getattr__<T, "__func__">                               : Returns<Function> {};
 
 
-/* Wrapper around a pybind11::Function that allows it to be constructed from a C++
-lambda or function pointer, and enables extra introspection via the C API. */
+/* Represents a statically-typed Python function in C++.  Note that this can either be
+a direct Python function or a C++ function wrapped to look like a Python function to
+calling code.  In the latter case, it will appear to Python as a built-in function, for
+which no code object will be compiled. */
 class Function : public Object {
     using Base = Object;
 
@@ -996,8 +999,10 @@ template <std::derived_from<ClassMethod> T>
 struct __getattr__<T, "__wrapped__">                            : Returns<Function> {};
 
 
-/* New subclass of pybind11::object that represents a bound classmethod at the Python
-level. */
+/* Represents a statically-typed Python `classmethod` object in C++.  Note that this
+is a pure descriptor class, and is not callable by itself.  It behaves similarly to the
+@classmethod decorator, and can be attached to py::Type objects through normal
+attribute assignment. */
 class ClassMethod : public Object {
     using Base = Object;
 
@@ -1054,8 +1059,10 @@ template <std::derived_from<StaticMethod> T>
 struct __getattr__<T, "__wrapped__">                            : Returns<Function> {};
 
 
-/* Wrapper around a pybind11::StaticMethod that allows it to be constructed from a
-C++ lambda or function pointer, and enables extra introspection via the C API. */
+/* Represents a statically-typed Python `staticmethod` object in C++.  Note that this
+is a pure descriptor class, and is not callable by itself.  It behaves similarly to the
+@staticmethod decorator, and can be attached to py::Type objects through normal
+attribute assignment. */
 class StaticMethod : public Object {
     using Base = Object;
 
@@ -1127,8 +1134,10 @@ template <std::derived_from<Property> T>
 struct __getattr__<T, "deleter">                                : Returns<Function> {};
 
 
-/* New subclass of pybind11::object that represents a property descriptor at the
-Python level. */
+/* Represents a statically-typed Python `property` object in C++.  Note that this is a
+pure descriptor class, and is not callable by itself.  It behaves similarly to the
+@property decorator, and can be attached to py::Type objects through normal attribute
+assignment. */
 class Property : public Object {
     using Base = Object;
 

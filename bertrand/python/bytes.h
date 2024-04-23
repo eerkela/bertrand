@@ -434,7 +434,7 @@ template <std::derived_from<impl::IBytesTag> L, impl::int_like R>
 struct __imul__<L, R>                                           : Returns<L&> {};
 
 
-/* Equivalent to Python `bytes` type. */
+/* Represents a statically-typed Python `bytes` object in C++. */
 class Bytes : public impl::IBytes<Bytes>, public impl::SequenceOps<Bytes> {
     using Base = impl::IBytes<Bytes>;
 
@@ -566,7 +566,7 @@ protected:
 };
 
 
-/* Equivalent to Python `bytearray` type. */
+/* Represents a statically-typed Python `bytearray` in C++. */
 class ByteArray : public impl::IBytes<ByteArray>, public impl::SequenceOps<ByteArray> {
     using Base = impl::IBytes<ByteArray>;
 
@@ -621,7 +621,9 @@ public:
     /* Get a bytes representation of a Python object that implements the buffer
     protocol. */
     template <impl::python_like T>
-    explicit ByteArray(const T& obj) : Base(PyByteArray_FromObject(obj.ptr()), stolen_t{}) {
+    explicit ByteArray(const T& obj) :
+        Base(PyByteArray_FromObject(obj.ptr()), stolen_t{})
+    {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }

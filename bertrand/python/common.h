@@ -79,7 +79,7 @@ template <>
 struct __hash__<NoneType>                                       : Returns<size_t> {};
 
 
-/* Object subclass that represents Python's global None singleton. */
+/* Represents the type of Python's `None` singleton in C++. */
 class NoneType : public Object {
     using Base = Object;
 
@@ -108,7 +108,7 @@ template <>
 struct __hash__<NotImplementedType>                             : Returns<size_t> {};
 
 
-/* Object subclass that represents Python's global NotImplemented singleton. */
+/* Represents the type of Python's `NotImplemented` singleton in C++. */
 class NotImplementedType : public Object {
     using Base = Object;
 
@@ -146,7 +146,7 @@ template <>
 struct __hash__<EllipsisType>                                   : Returns<size_t> {};
 
 
-/* Object subclass representing Python's global Ellipsis singleton. */
+/* Represents the type of Python's `Ellipsis` singleton in C++. */
 class EllipsisType : public Object {
     using Base = Object;
 
@@ -185,7 +185,6 @@ public:
 };
 
 
-/* Singletons for immortal Python objects. */
 static const NoneType None;
 static const EllipsisType Ellipsis;
 static const NotImplementedType NotImplemented;
@@ -273,9 +272,13 @@ template <impl::slice_like T>
 struct __gt__<Slice, T>                                         : Returns<bool> {};
 
 
-/* Wrapper around pybind11::slice that allows it to be instantiated with non-integer
-inputs in order to represent denormalized slices at the Python level, and provides more
-pythonic access to its members. */
+// TODO: if all Slice constructors accepted only integers and None, then I might not
+// need special syntax for initializer lists.  I could just accept a slice directly?
+// -> I would have to
+
+
+/* Represents a statically-typed Python `slice` object in C++.  Note that the start,
+stop, and step values do not strictly need to be integers. */
 class Slice : public Object {
     using Base = Object;
 
@@ -290,7 +293,10 @@ public:
     ////////////////////////////
 
     /* Default constructor.  Initializes to all Nones. */
-    Slice() : Base(PySlice_New(nullptr, nullptr, nullptr), stolen_t{}) {
+    Slice() : Base(
+        PySlice_New(nullptr, nullptr, nullptr),
+        stolen_t{}
+    ) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -300,8 +306,44 @@ public:
     template <typename T> requires (check<T>() && impl::python_like<T>)
     Slice(T&& other) : Base(std::forward<T>(other)) {}
 
-    /* Initializer list constructor. */
-    Slice(std::initializer_list<impl::SliceInitializer> indices) {
+    /* Explicitly construct a slice from a (possibly denormalized) stop object. */
+    explicit Slice(const Object& stop) : Base(
+        PySlice_New(nullptr, stop.ptr(), nullptr),
+        stolen_t{}
+    ) {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+    }
+
+    /* Explicitly construct a slice from (possibly denormalized) start and stop
+    objects. */
+    explicit Slice(const Object& start, const Object& stop) : Base(
+        PySlice_New(start.ptr(), stop.ptr(), nullptr),
+        stolen_t{}
+    ) {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+    }
+
+    /* Explicitly construct a slice from (possibly denormalized) start, stop, and step
+    objects. */
+    explicit Slice(const Object& start, const Object& stop, const Object& step) : Base(
+        PySlice_New(start.ptr(), stop.ptr(), step.ptr()),
+        stolen_t{}
+    ) {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+    }
+
+    /* Initializer list constructor.  Unlike the other constructors (which can accept
+    any kind of object), this syntax is restricted only to integers, py::None, and
+    std::nullopt. */
+    Slice(std::initializer_list<impl::SliceInitializer> indices) :
+        Base(nullptr, stolen_t{})
+    {
         if (indices.size() > 3) {
             throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
         }
@@ -311,43 +353,6 @@ public:
             params[i++] = item.value;
         }
         m_ptr = PySlice_New(params[0].ptr(), params[1].ptr(), params[2].ptr());
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly construct a slice from a (possibly denormalized) stop object. */
-    template <typename Stop>
-    explicit Slice(const Stop& stop) {
-        m_ptr = PySlice_New(nullptr, detail::object_or_cast(stop).ptr(), nullptr);
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly construct a slice from (possibly denormalized) start and stop
-    objects. */
-    template <typename Start, typename Stop>
-    explicit Slice(const Start& start, const Stop& stop) {
-        m_ptr = PySlice_New(
-            detail::object_or_cast(start).ptr(),
-            detail::object_or_cast(stop).ptr(),
-            nullptr
-        );
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly construct a slice from (possibly denormalized) start, stop, and step
-    objects. */
-    template <typename Start, typename Stop, typename Step>
-    explicit Slice(const Start& start, const Stop& stop, const Step& step) {
-        m_ptr = PySlice_New(
-            detail::object_or_cast(start).ptr(),
-            detail::object_or_cast(stop).ptr(),
-            detail::object_or_cast(step).ptr()
-        );
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -430,7 +435,7 @@ template <StaticStr name> requires (!impl::delattr_helper<name>::enable)
 struct __delattr__<Module, name>                                : Returns<void> {};
 
 
-/* Object subclass that represents an imported Python module. */
+/* Represents an imported Python module in C++. */
 class Module : public Object {
     using Base = Object;
 
@@ -444,6 +449,8 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
+    // TODO: Default module constructor initializes to None?
+
     /* Default module constructor deleted for clarity. */
     Module() = delete;
 
@@ -453,7 +460,9 @@ public:
 
     /* Explicitly create a new module object from a statically-allocated (but
     uninitialized) PyModuleDef struct. */
-    explicit Module(const char* name, const char* doc, PyModuleDef* def) {
+    explicit Module(const char* name, const char* doc, PyModuleDef* def) :
+        Base(nullptr, stolen_t{})
+    {
         def = new (def) PyModuleDef{
             /* m_base */ PyModuleDef_HEAD_INIT,
             /* m_name */ name,
@@ -557,24 +566,26 @@ impl::Attr<Object, name> Object::attr() const {
 }
 
 
-template <typename Return, typename T, typename Key>
-impl::Item<T, std::decay_t<Key>> Object::operator_getitem(const T& obj, Key&& key) {
-    return impl::Item<T, std::decay_t<Key>>(obj, std::forward<Key>(key));
+template <typename Return, typename Self, typename Key>
+auto Object::operator_getitem(const Self& self, Key&& key)
+    -> impl::Item<Self, std::decay_t<Key>>
+{
+    return impl::Item<Self, std::decay_t<Key>>(self, std::forward<Key>(key));
 }
 
 
-template <typename Return, typename T>
-impl::Item<T, Slice> Object::operator_getitem(
-    const T& obj,
+template <typename Return, typename Self>
+impl::Item<Self, Slice> Object::operator_getitem(
+    const Self& self,
     std::initializer_list<impl::SliceInitializer> slice
 ) {
-    return impl::Item<T, Slice>(obj, Slice(slice));
+    return impl::Item<Self, Slice>(self, Slice(slice));
 }
 
 
-template <typename Return, typename T>
-impl::Iterator<impl::GenericIter<Return>> Object::operator_begin(const T& obj) {
-    PyObject* iter = PyObject_GetIter(obj.ptr());
+template <typename Return, typename Self>
+impl::Iterator<impl::GenericIter<Return>> Object::operator_begin(const Self& self) {
+    PyObject* iter = PyObject_GetIter(self.ptr());
     if (iter == nullptr) {
         Exception::from_python();
     }
@@ -582,26 +593,26 @@ impl::Iterator<impl::GenericIter<Return>> Object::operator_begin(const T& obj) {
 }
 
 
-template <typename Return, typename T>
-impl::Iterator<impl::GenericIter<Return>> Object::operator_end(const T& obj) {
+template <typename Return, typename Self>
+impl::Iterator<impl::GenericIter<Return>> Object::operator_end(const Self& self) {
     return impl::Iterator<impl::GenericIter<Return>>();
 }
 
 
-template <typename Return, typename T>
-impl::Iterator<impl::GenericIter<Return>> Object::operator_rbegin(const T& obj) {
-    return impl::Iterator<impl::GenericIter<Return>>(obj.template attr<"__reversed__">()());
+template <typename Return, typename Self>
+impl::Iterator<impl::GenericIter<Return>> Object::operator_rbegin(const Self& self) {
+    return impl::Iterator<impl::GenericIter<Return>>(self.template attr<"__reversed__">()());
 }
 
 
-template <typename Return, typename T>
-impl::Iterator<impl::GenericIter<Return>> Object::operator_rend(const T& obj) {
+template <typename Return, typename Self>
+impl::Iterator<impl::GenericIter<Return>> Object::operator_rend(const Self& self) {
     return impl::Iterator<impl::GenericIter<Return>>();
 }
 
 
 template <typename Obj, typename Wrapped>
-template <typename T> requires (__getitem__<T, Slice>::enable)
+template <typename Self> requires (__getitem__<Self, Slice>::enable)
 auto impl::Proxy<Obj, Wrapped>::operator[](
     std::initializer_list<impl::SliceInitializer> slice
 ) const {

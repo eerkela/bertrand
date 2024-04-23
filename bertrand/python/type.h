@@ -38,9 +38,9 @@ template <StaticStr name> requires (!impl::delattr_helper<name>::enable)
 struct __delattr__<Type, name>                              : Returns<void> {};
 
 
-/* Wrapper around a pybind11::type that enables extra C API functionality, such as the
-ability to create new types on the fly by calling the type() metaclass, or directly
-querying PyTypeObject* fields. */
+/* Represents a statically-typed Python type object in C++.  Note that new types can be
+created on the fly by invoking the `type` metaclass directly, using an optional name,
+bases, and namespace. */
 class Type : public Object {
     using Base = Object;
 
@@ -465,7 +465,7 @@ template <StaticStr name> requires (!impl::delattr_helper<name>::enable)
 struct __delattr__<Super, name>                             : Returns<void> {};
 
 
-/* New subclass of pybind11::object that represents Python's built-in super() type. */
+/* Represents a statically-typed Python `super` object in C++. */
 class Super : public Object {
     using Base = Object;
 

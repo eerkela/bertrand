@@ -159,12 +159,19 @@ int test(const py::Object& obj) {
 
 
 
+struct Holder {
+    static int x;
+};
+
+
+inline int Holder::x = 3;
+
+
 template <typename T = py::Object>
-struct Foo : public py::List {
+struct Foo : public py::List, public Holder {
     using Wrapped = T;
 
     using py::List::List;
-
 };
 
 
@@ -179,14 +186,21 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
+
+
+
     py::Tuple t = {1, 2, "abc"};
-    py::print(t);
+    py::print(t[0]);
 
 
 
-    // Foo<py::Int> foo = {1, 2, 3, 4, 5};
+    // Foo foo = {1, 2, 3, 4, 5, "abc"};
     // Foo foo2 = foo;
     // py::print(typeid(decltype(foo2)::Wrapped).name());
+    // py::print(Foo<py::Int>::x);
+
+
+
 
 
     // py::List list = {1, 2, 3};

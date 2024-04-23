@@ -107,24 +107,9 @@ template <std::derived_from<Complex> L, impl::complex_like R>
 struct __itruediv__<L, R>                                       : Returns<L&> {};
 
 
-/* New subclass of pybind11::object that represents a complex number at the Python
-level. */
+/* Represents a statically-typed Python complex number in C++. */
 class Complex : public Object {
     using Base = Object;
-
-    template <typename T>
-    static constexpr bool py_constructor =
-        impl::complex_like<T> && impl::python_like<T>;
-    template <typename T>
-    static constexpr bool cpp_constructor =
-        impl::complex_like<T> && !impl::python_like<T>;
-    template <typename T>
-    static constexpr bool py_converting_constructor =
-        !impl::complex_like<T> && impl::python_like<T>;
-    template <typename T>
-    static constexpr bool cpp_converting_constructor =
-        !impl::complex_like<T> && !impl::python_like<T> &&
-        impl::explicitly_convertible_to<T, std::complex<double>>;
 
 public:
     static Type type;
@@ -144,7 +129,7 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (py_constructor<T>)
+    template <typename T> requires (impl::python_like<T> && impl::complex_like<T>)
     Complex(T&& value) : Base(std::forward<T>(value)) {}
 
     /* Explicitly convert a double into a py::Complex object as its real component. */
@@ -168,7 +153,7 @@ public:
 
     /* Implicitly convert any C++ type that implements `.real()` and `.imag()` into
     a py::Complex object. */
-    template <typename T> requires (cpp_constructor<T>)
+    template <typename T> requires (!impl::python_like<T> && impl::complex_like<T>)
     Complex(const T& value) : Base(
         PyComplex_FromDoubles(value.real(), value.imag()),
         stolen_t{}
@@ -179,8 +164,8 @@ public:
     }
 
     /* Explicitly convert an arbitrary Python object into a complex number. */
-    template <typename T> requires (py_converting_constructor<T>)
-    explicit Complex(const T& obj) {
+    template <typename T> requires (impl::python_like<T> && !impl::complex_like<T>)
+    explicit Complex(const T& obj) : Base(nullptr, stolen_t{}) {
         Py_complex complex = PyComplex_AsCComplex(obj.ptr());
         if (complex.real == -1.0 && PyErr_Occurred()) {
             Exception::from_python();
@@ -192,7 +177,12 @@ public:
     }
 
     /* Trigger explicit conversions to std::complex<double>. */
-    template <typename T> requires (cpp_converting_constructor<T>)
+    template <typename T>
+        requires (
+            !impl::python_like<T> &&
+            !impl::complex_like<T> &&
+            impl::explicitly_convertible_to<T, std::complex<double>>
+        )
     explicit Complex(const T& value) :
         Complex(static_cast<std::complex<double>>(value))
     {}

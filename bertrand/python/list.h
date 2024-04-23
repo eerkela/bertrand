@@ -90,23 +90,9 @@ template <impl::int_like T>
 struct __imul__<List, T>                                    : Returns<List&> {};
 
 
-/* Wrapper around pybind11::list that allows it to be directly initialized using
-std::initializer_list and replicates the Python interface as closely as possible. */
+/* Represents a statically-typed Python list in C++. */
 class List : public Object, public impl::SequenceOps<List>, public impl::ListTag {
     using Base = Object;
-
-    template <typename T>
-    static inline PyObject* convert_newref(const T& value) {
-        if constexpr (impl::python_like<T>) {
-            PyObject* result = value.ptr();
-            if (result == nullptr) {
-                result = Py_None;
-            }
-            return Py_NewRef(result);
-        } else {
-            return Object(value).release().ptr();
-        }
-    }
 
 public:
     static Type type;
@@ -139,11 +125,7 @@ public:
         try {
             size_t i = 0;
             for (const Object& item : contents) {
-                PyList_SET_ITEM(
-                    m_ptr,
-                    i++,
-                    const_cast<Object&>(item).release().ptr()
-                );
+                PyList_SET_ITEM(m_ptr, i++, Object(item).release().ptr());
             }
         } catch (...) {
             Py_DECREF(m_ptr);
@@ -170,7 +152,7 @@ public:
 
     /* Explicitly unpack an arbitrary Python container into a new py::List. */
     template <typename T>
-        requires (impl::is_iterable<T> && impl::python_like<T> && !impl::list_like<T>)
+        requires (impl::python_like<T> && !impl::list_like<T> && impl::is_iterable<T>)
     explicit List(const T& contents) :
         Base(PySequence_List(contents.ptr()), stolen_t{})
     {
@@ -180,8 +162,8 @@ public:
     }
 
     /* Explicitly unpack a generic C++ container into a new py::List. */
-    template <typename T> requires (impl::is_iterable<T> && !impl::python_like<T>)
-    explicit List(T&& contents) {
+    template <typename T> requires (!impl::python_like<T> && impl::is_iterable<T>)
+    explicit List(T&& contents) : Base(nullptr, stolen_t{}) {
         if constexpr (impl::has_size<T>) {
             size_t size = std::size(contents);
             m_ptr = PyList_New(size);  // TODO: this can potentially create an empty list
@@ -190,12 +172,8 @@ public:
             }
             try {
                 size_t i = 0;
-                for (auto&& item : contents) {
-                    PyList_SET_ITEM(
-                        m_ptr,
-                        i++,
-                        convert_newref(std::forward<decltype(item)>(item))
-                    );
+                for (const auto& item : contents) {
+                    PyList_SET_ITEM(m_ptr, i++, Object(item).release().ptr());
                 }
             } catch (...) {
                 Py_DECREF(m_ptr);
@@ -226,8 +204,8 @@ public:
             Exception::from_python();
         }
         try {
-            PyList_SET_ITEM(m_ptr, 0, convert_newref(pair.first));
-            PyList_SET_ITEM(m_ptr, 1, convert_newref(pair.second));
+            PyList_SET_ITEM(m_ptr, 0, Object(pair.first).release().ptr());
+            PyList_SET_ITEM(m_ptr, 1, Object(pair.second).release().ptr());
         } catch (...) {
             Py_DECREF(m_ptr);
             throw;
@@ -248,7 +226,7 @@ public:
                 PyList_SET_ITEM(
                     result,
                     Ns,
-                    convert_newref(std::get<Ns>(tuple))
+                    Object(std::get<Ns>(tuple)).release().ptr()
                 ),
                 ...
             );
@@ -320,7 +298,6 @@ public:
     NOTE: This steals a reference to `value` and does not clear the previous
     item if one is present.  This is dangerous, and should only be used to fill in
     a newly-allocated (empty) list. */
-    template <typename T>
     inline void SET_ITEM(Py_ssize_t index, PyObject* value) {
         PyList_SET_ITEM(this->ptr(), index, value);
     }
@@ -330,9 +307,8 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `list.append(value)`. */
-    template <typename T>
-    inline void append(const T& value) {
-        if (PyList_Append(this->ptr(), detail::object_or_cast(value).ptr())) {
+    inline void append(const Object& value) {
+        if (PyList_Append(this->ptr(), value.ptr())) {
             Exception::from_python();
         }
     }
@@ -350,9 +326,8 @@ public:
     }
 
     /* Equivalent to Python `list.insert(index, value)`. */
-    template <typename T>
-    inline void insert(Py_ssize_t index, const T& value) {
-        if (PyList_Insert(this->ptr(), index, detail::object_or_cast(value).ptr())) {
+    inline void insert(Py_ssize_t index, const Object& value) {
+        if (PyList_Insert(this->ptr(), index, value.ptr())) {
             Exception::from_python();
         }
     }
@@ -374,8 +349,7 @@ public:
     }
 
     /* Equivalent to Python `list.remove(value)`. */
-    template <typename T>
-    inline void remove(const T& value);
+    inline void remove(const Object& value);
 
     /* Equivalent to Python `list.pop([index])`. */
     inline Object pop(Py_ssize_t index = -1);
@@ -436,8 +410,8 @@ protected:
     using impl::SequenceOps<List>::operator_mul;
     using impl::SequenceOps<List>::operator_imul;
 
-    template <typename Return, typename T>
-    inline static size_t operator_len(const T& self) {
+    template <typename Return, typename Self>
+    inline static size_t operator_len(const Self& self) {
         return static_cast<size_t>(PyList_GET_SIZE(self.ptr()));
     }
 
@@ -455,11 +429,7 @@ protected:
                 ++i;
             }
             for (const Object& item : items) {
-                PyList_SET_ITEM(
-                    result,
-                    i++,
-                    const_cast<Object&>(item).release().ptr()
-                );
+                PyList_SET_ITEM(result, i++, Object(item).release().ptr());
             }
             return reinterpret_steal<List>(result);
         } catch (...) {
@@ -468,32 +438,32 @@ protected:
         }
     }
 
-    template <typename Return, typename T>
-    inline static auto operator_begin(const T& obj)
+    template <typename Return, typename Self>
+    inline static auto operator_begin(const Self& self)
         -> impl::Iterator<impl::ListIter<Return>>
     {
-        return impl::Iterator<impl::ListIter<Return>>(obj, 0);
+        return impl::Iterator<impl::ListIter<Return>>(self, 0);
     }
 
-    template <typename Return, typename T>
-    inline static auto operator_end(const T& obj)
+    template <typename Return, typename Self>
+    inline static auto operator_end(const Self& self)
         -> impl::Iterator<impl::ListIter<Return>>
     {
-        return impl::Iterator<impl::ListIter<Return>>(PyList_GET_SIZE(obj.ptr()));
+        return impl::Iterator<impl::ListIter<Return>>(PyList_GET_SIZE(self.ptr()));
     }
 
-    template <typename Return, typename T>
-    inline static auto operator_rbegin(const T& obj)
+    template <typename Return, typename Self>
+    inline static auto operator_rbegin(const Self& self)
         -> impl::ReverseIterator<impl::ListIter<Return>>
     {
         return impl::ReverseIterator<impl::ListIter<Return>>(
-            obj,
-            PyList_GET_SIZE(obj.ptr()) - 1
+            self,
+            PyList_GET_SIZE(self.ptr()) - 1
         );
     }
 
-    template <typename Return, typename T>
-    inline static auto operator_rend(const T& obj)
+    template <typename Return, typename Self>
+    inline static auto operator_rend(const Self& self)
         -> impl::ReverseIterator<impl::ListIter<Return>>
     {
         return impl::ReverseIterator<impl::ListIter<Return>>(-1);

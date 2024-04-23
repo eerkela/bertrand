@@ -67,26 +67,15 @@ template <impl::int_like T>
 struct __imul__<Tuple, T>                                       : Returns<Tuple&> {};
 
 
-/* Wrapper around pybind11::tuple that allows it to be directly initialized using
-std::initializer_list and replicates the Python interface as closely as possible. */
+/* Represents a statically-typed Python tuple in C++. */
 class Tuple : public Object, public impl::SequenceOps<Tuple>, public impl::TupleTag {
     using Base = Object;
 
-    template <typename T>
-    static inline PyObject* convert_newref(const T& value) {
-        if constexpr (impl::python_like<T>) {
-            PyObject* result = value.ptr();
-            if (result == nullptr) {
-                result = Py_None;
-            }
-            return Py_NewRef(result);
-        } else {
-            return Object(value).release().ptr();
-        }
-    }
-
 public:
-    static Type type;
+    // TODO: include a bevy of typedefs to conform to STL containers
+
+    static Type type;  // TODO: CTAD refactor requires this to be lifted to a base class.
+    // -> type can be placed in TupleTag
 
     BERTRAND_OBJECT_COMMON(Base, Tuple, impl::tuple_like, PyTuple_Check)
     BERTRAND_OBJECT_OPERATORS(Tuple)
@@ -102,9 +91,17 @@ public:
         }
     }
 
+    // TODO: make sure copy/move constructors work consistently with CTAD.  They should
+    // be able to widen the type of the contained object, but not narrow it.  Narrowing
+    // requires an explicit constructor call.
+    // TODO: might need to make copy/move constructors explicit (i.e. only for Tuple
+    // and pybind11::tuple (which is interpreted as Tuple<Object>))
+
     /* Copy/move constructors. */
     template <typename T> requires (check<T>() && impl::python_like<T>)
     Tuple(T&& other) : Base(std::forward<T>(other)) {}
+
+    // TODO: insert value type into initializer list
 
     /* Pack the contents of a braced initializer into a new Python tuple. */
     Tuple(const std::initializer_list<Object>& contents) :
@@ -116,11 +113,7 @@ public:
         try {
             size_t i = 0;
             for (const Object& item : contents) {
-                PyTuple_SET_ITEM(
-                    m_ptr,
-                    i++,
-                    const_cast<Object&>(item).release().ptr()
-                );
+                PyTuple_SET_ITEM(m_ptr, i++, Object(item).release().ptr());
             }
         } catch (...) {
             Py_DECREF(m_ptr);
@@ -128,9 +121,13 @@ public:
         }
     }
 
+    // TODO: call the templated type's constructor here rather than object_or_cast,
+    // in order to get better error diagnostics, or require that the iterator
+    // dereference type is convertible to that of the tuple.
+
     /* Construct a new tuple from a pair of input iterators. */
     template <typename Iter, std::sentinel_for<Iter> Sentinel>
-    explicit Tuple(Iter first, Sentinel last) {
+    explicit Tuple(Iter first, Sentinel last) : Base(nullptr, stolen_t{}) {
         PyObject* list = PyList_New(0);
         if (list == nullptr) {
             Exception::from_python();
@@ -148,6 +145,9 @@ public:
             Exception::from_python();
         }
     }
+
+    // TODO: apply a type check against the templated type if it is not listed as
+    // object.  If it is object, then the type check is unnecessary.
 
     /* Explicitly unpack a Python list into a py::Tuple directly using the C API. */
     template <typename T> requires (impl::python_like<T> && impl::list_like<T>)
@@ -168,9 +168,11 @@ public:
         }
     }
 
+    // TODO: similarly, this should call the templated type, not Object
+
     /* Explicitly unpack a generic C++ container into a new py::Tuple. */
     template <typename T> requires (impl::is_iterable<T> && !impl::python_like<T>)
-    explicit Tuple(T&& contents) {
+    explicit Tuple(T&& contents) : Base(nullptr, stolen_t{}) {
         if constexpr (impl::has_size<T>) {
             size_t size = std::size(contents);
             m_ptr = PyTuple_New(size);
@@ -179,12 +181,8 @@ public:
             }
             try {
                 size_t i = 0;
-                for (auto&& item : contents) {
-                    PyTuple_SET_ITEM(
-                        m_ptr,
-                        i++,
-                        convert_newref(std::forward<decltype(item)>(item))
-                    );
+                for (const auto& item : contents) {
+                    PyTuple_SET_ITEM(m_ptr, i++, Object(item).release().ptr());
                 }
             } catch (...) {
                 Py_DECREF(m_ptr);
@@ -221,8 +219,8 @@ public:
             Exception::from_python();
         }
         try {
-            PyTuple_SET_ITEM(m_ptr, 0, convert_newref(pair.first));
-            PyTuple_SET_ITEM(m_ptr, 1, convert_newref(pair.second));
+            PyTuple_SET_ITEM(m_ptr, 0, Object(pair.first).release().ptr());
+            PyTuple_SET_ITEM(m_ptr, 1, Object(pair.second).release().ptr());
         } catch (...) {
             Py_DECREF(m_ptr);
             throw;
@@ -243,7 +241,7 @@ public:
                 PyTuple_SET_ITEM(
                     result,
                     Ns,
-                    convert_newref(std::get<Ns>(tuple))
+                    Object(std::get<Ns>(tuple)).release().ptr()
                 ),
                 ...
             );
@@ -381,8 +379,8 @@ protected:
     using impl::SequenceOps<Tuple>::operator_mul;
     using impl::SequenceOps<Tuple>::operator_imul;
 
-    template <typename Return, typename T>
-    inline static size_t operator_len(const T& self) {
+    template <typename Return, typename Self>
+    inline static size_t operator_len(const Self& self) {
         return PyTuple_GET_SIZE(self.ptr());
     }
 
@@ -400,11 +398,7 @@ protected:
                 ++i;
             }
             for (const Object& item : items) {
-                PyTuple_SET_ITEM(
-                    result,
-                    i++,
-                    const_cast<Object&>(item).release().ptr()
-                );
+                PyTuple_SET_ITEM(result, i++, Object(item).release().ptr());
             }
             return reinterpret_steal<Tuple>(result);
         } catch (...) {
@@ -413,31 +407,32 @@ protected:
         }
     }
 
-    template <typename Return, typename T>
-    inline static auto operator_begin(const T& obj)
+    template <typename Return, typename Self>
+    inline static auto operator_begin(const Self& self)
         -> impl::Iterator<impl::TupleIter<Return>>
     {
-        return impl::Iterator<impl::TupleIter<Return>>(obj, 0);
+        return impl::Iterator<impl::TupleIter<Return>>(self, 0);
     }
 
-    template <typename Return, typename T>
-    inline static auto operator_end(const T& obj)
+    template <typename Return, typename Self>
+    inline static auto operator_end(const Self& self)
         -> impl::Iterator<impl::TupleIter<Return>>
     {
-        return impl::Iterator<impl::TupleIter<Return>>(PyTuple_GET_SIZE(obj.ptr()));
+        return impl::Iterator<impl::TupleIter<Return>>(PyTuple_GET_SIZE(self.ptr()));
     }
 
-    template <typename Return, typename T>
-    inline static auto operator_rbegin(const T& obj)
+    template <typename Return, typename Self>
+    inline static auto operator_rbegin(const Self& self)
         -> impl::ReverseIterator<impl::TupleIter<Return>>
     {
         return impl::ReverseIterator<impl::TupleIter<Return>>(
-            obj, PyTuple_GET_SIZE(obj.ptr()) - 1
+            self,
+            PyTuple_GET_SIZE(self.ptr()) - 1
         );
     }
 
-    template <typename Return, typename T>
-    inline static auto operator_rend(const T& obj)
+    template <typename Return, typename Self>
+    inline static auto operator_rend(const Self& self)
         -> impl::ReverseIterator<impl::TupleIter<Return>>
     {
         return impl::ReverseIterator<impl::TupleIter<Return>>(-1);

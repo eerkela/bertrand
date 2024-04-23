@@ -246,14 +246,18 @@ inline Int::Int(const T& str, int base) :
 }
 
 
-inline Float::Float(const Str& str) : Base(PyFloat_FromString(str.ptr()), stolen_t{}) {
+inline Float::Float(const Str& str) :
+    Base(PyFloat_FromString(str.ptr()), stolen_t{})
+{
     if (m_ptr == nullptr) {
         Exception::from_python();
     }
 }
 
 
-inline Type::Type(const Str& name, const Tuple& bases, const Dict& dict) {
+inline Type::Type(const Str& name, const Tuple& bases, const Dict& dict) :
+    Base(nullptr, stolen_t{})
+{
     m_ptr = PyObject_CallFunctionObjArgs(
         reinterpret_cast<PyObject*>(&PyType_Type),
         name.ptr(),
@@ -284,7 +288,7 @@ inline Type::Type(const Str& name, const Tuple& bases, const Dict& dict) {
 template <impl::is_iterable T>
 inline void List::extend(const T& items) {
     if constexpr (impl::python_like<T>) {
-        attr<"extend">()(detail::object_or_cast(items));
+        attr<"extend">()(items);
     } else {
         for (auto&& item : items) {
             append(std::forward<decltype(item)>(item));
@@ -293,9 +297,8 @@ inline void List::extend(const T& items) {
 }
 
 
-template <typename T>
-inline void List::remove(const T& value) {
-    attr<"remove">()(detail::object_or_cast(value));
+inline void List::remove(const Object& value) {
+    attr<"remove">()(value);
 }
 
 
@@ -353,9 +356,7 @@ inline bool impl::ISet<Derived>::issuperset(const T& other) const {
 template <typename Derived>
 template <impl::is_iterable T>
 inline bool impl::ISet<Derived>::issubset(const T& other) const {
-    return static_cast<bool>(self()->template attr<"issubset">()(
-        detail::object_or_cast(other)
-    ));
+    return static_cast<bool>(self()->template attr<"issubset">()(other));
 }
 
 
@@ -372,50 +373,40 @@ inline bool impl::ISet<Derived>::issubset(
 template <typename Derived>
 template <impl::is_iterable... Args>
 inline Derived impl::ISet<Derived>::union_(const Args&... others) const {
-    return self()->template attr<"union">()(
-        detail::object_or_cast(std::forward<Args>(others))...
-    );
+    return self()->template attr<"union">()(std::forward<Args>(others)...);
 }
 
 
 template <typename Derived>
 template <impl::is_iterable... Args>
 inline Derived impl::ISet<Derived>::intersection(const Args&... others) const {
-    return self()->template attr<"intersection">()(
-        detail::object_or_cast(std::forward<Args>(others))...
-    );
+    return self()->template attr<"intersection">()(std::forward<Args>(others)...);
 }
 
 
 template <typename Derived>
 template <impl::is_iterable... Args>
 inline Derived impl::ISet<Derived>::difference(const Args&... others) const {
-    return self()->template attr<"difference">()(
-        detail::object_or_cast(std::forward<Args>(others))...
-    );
+    return self()->template attr<"difference">()(std::forward<Args>(others)...);
 }
 
 
 template <typename Derived>
 template <impl::is_iterable T>
 inline Derived impl::ISet<Derived>::symmetric_difference(const T& other) const {
-    return self()->template attr<"symmetric_difference">()(
-        detail::object_or_cast(other)
-    );
+    return self()->template attr<"symmetric_difference">()(other);
 }
 
 
 template <impl::is_iterable... Args>
 inline void Set::update(const Args&... others) {
-    attr<"update">()(detail::object_or_cast(std::forward<Args>(others))...);
+    attr<"update">()(std::forward<Args>(others)...);
 }
 
 
 template <impl::is_iterable... Args>
 inline void Set::intersection_update(const Args&... others) {
-    attr<"intersection_update">()(
-        detail::object_or_cast(std::forward<Args>(others))...
-    );
+    attr<"intersection_update">()(std::forward<Args>(others)...);
 }
 
 
@@ -428,21 +419,19 @@ inline void Set::intersection_update(
 
 template <impl::is_iterable... Args>
 inline void Set::difference_update(const Args&... others) {
-    attr<"difference_update">()(
-        detail::object_or_cast(std::forward<Args>(others))...
-    );
+    attr<"difference_update">()(std::forward<Args>(others)...);
 }
 
 
 template <impl::is_iterable T>
 inline void Set::symmetric_difference_update(const T& other) {
-    attr<"symmetric_difference_update">()(detail::object_or_cast(other));
+    attr<"symmetric_difference_update">()(other);
 }
 
 
 template <impl::is_iterable T>
 inline bool KeysView::isdisjoint(const T& other) const {
-    return static_cast<bool>(attr<"isdisjoint">()(detail::object_or_cast(other)));
+    return static_cast<bool>(attr<"isdisjoint">()(other));
 }
 
 
@@ -458,9 +447,9 @@ inline Object Dict::popitem() {
 }
 
 
-inline KeysView::KeysView(const Dict& dict) {
-    m_ptr = dict.template attr<"keys">()().release().ptr();
-}
+inline KeysView::KeysView(const Dict& dict) :
+    Base(dict.template attr<"keys">()().release(), stolen_t{})
+{}
 
 
 inline KeysView Dict::keys() const {
@@ -468,9 +457,9 @@ inline KeysView Dict::keys() const {
 }
 
 
-inline ValuesView::ValuesView(const Dict& dict) {
-    m_ptr = dict.template attr<"values">()().release().ptr();
-}
+inline ValuesView::ValuesView(const Dict& dict) :
+    Base(dict.template attr<"values">()().release(), stolen_t{})
+{}
 
 
 inline ValuesView Dict::values() const {
@@ -478,9 +467,9 @@ inline ValuesView Dict::values() const {
 }
 
 
-inline ItemsView::ItemsView(const Dict& dict) {
-    m_ptr = dict.template attr<"items">()().release().ptr();
-}
+inline ItemsView::ItemsView(const Dict& dict) :
+    Base(dict.template attr<"items">()().release(), stolen_t{})
+{}
 
 
 inline ItemsView Dict::items() const {
@@ -495,16 +484,13 @@ inline Dict MappingProxy::copy() const {
 
 template <impl::is_hashable K>
 inline Object MappingProxy::get(const K& key) const {
-    return attr<"get">()(detail::object_or_cast(key), py::None);
+    return attr<"get">()(key, py::None);
 }
 
 
-template <impl::is_hashable K, typename V>
-inline Object MappingProxy::get(const K& key, const V& default_value) const {
-    return attr<"get">()(
-        detail::object_or_cast(key),
-        detail::object_or_cast(default_value)
-    );
+template <impl::is_hashable K>
+inline Object MappingProxy::get(const K& key, const Object& default_value) const {
+    return attr<"get">()(key, default_value);
 }
 
 
@@ -655,23 +641,21 @@ inline Str Str::lstrip(const Str& chars) const {
 }
 
 
-template <typename T>
-inline Dict Str::maketrans(const T& x) {
+inline Dict Str::maketrans(const Object& x) {
     return reinterpret_steal<Dict>(
         type.template attr<"maketrans">()(x).release()
     );
 }
 
 
-template <typename T, typename U>
-inline Dict Str::maketrans(const T& x, const U& y) {
+inline Dict Str::maketrans(const Object& x, const Object& y) {
     return reinterpret_steal<Dict>(
         type.template attr<"maketrans">()(x, y).release()
     );
 }
 
-template <typename T, typename U, typename V>
-inline Dict Str::maketrans(const T& x, const U& y, const V& z) {
+
+inline Dict Str::maketrans(const Object& x, const Object& y, const Object& z) {
     return reinterpret_steal<Dict>(
         type.template attr<"maketrans">()(x, y, z).release()
     );
@@ -748,11 +732,8 @@ inline Str Str::title() const {
 }
 
 
-template <typename T>
-inline Str Str::translate(const T& table) const {
-    return reinterpret_steal<Str>(
-        attr<"translate">()(detail::object_or_cast(table)).release()
-    );
+inline Str Str::translate(const Object& table) const {
+    return reinterpret_steal<Str>(attr<"translate">()(table).release());
 }
 
 

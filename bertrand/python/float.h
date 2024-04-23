@@ -140,24 +140,9 @@ template <impl::float_like T>
 struct __imod__<Float, T>                                       : Returns<Float&> {};
 
 
-/* Wrapper around pybind11::float_ that enables conversions from strings, similar to
-Python's `float()` constructor, as well as converting math operators that account for
-C++ inputs. */
+/* Represents a statically-typed Python float in C++. */
 class Float : public Object {
     using Base = Object;
-
-    template <typename T>
-    static constexpr bool py_constructor = impl::float_like<T> && impl::python_like<T>;
-    template <typename T>
-    static constexpr bool cpp_constructor =
-        impl::float_like<T> && !impl::python_like<T> && std::is_convertible_v<T, double>;
-    template <typename T>
-    static constexpr bool py_converting_constructor =
-        !impl::float_like<T> && impl::python_like<T>;
-    template <typename T>
-    static constexpr bool cpp_converting_constructor =
-        !impl::float_like<T> && !impl::python_like<T> &&
-        impl::explicitly_convertible_to<T, double>;
 
 public:
     static Type type;
@@ -177,12 +162,20 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (py_constructor<T>)
+    template <typename T> requires (impl::python_like<T> && impl::float_like<T>)
     Float(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Trigger implicit conversions to double. */
-    template <typename T> requires (cpp_constructor<T>)
+    template <typename T> requires (!impl::python_like<T> && impl::float_like<T>)
     Float(const T& value) : Base(PyFloat_FromDouble(value), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+    }
+
+    /* Construct from C++ integers/booleans. */
+    template <std::integral T>
+    Float(T value) : Base(PyFloat_FromDouble(value), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -191,7 +184,7 @@ public:
     // TODO: implicit conversion from Bool, Int
 
     /* Explicitly convert an arbitrary Python object to py::Float. */
-    template <typename T> requires (py_converting_constructor<T>)
+    template <typename T> requires (impl::python_like<T> && !impl::float_like<T>)
     explicit Float(const T& value) : Base(PyNumber_Float(value.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -199,7 +192,13 @@ public:
     }
 
     /* Trigger explicit conversions to double. */
-    template <typename T> requires (cpp_converting_constructor<T>)
+    template <typename T>
+        requires (
+            !impl::python_like<T> &&
+            !impl::float_like<T> &&
+            !std::integral<T> &&
+            impl::explicitly_convertible_to<T, double>
+        )
     explicit Float(const T& value) :
         Base(PyFloat_FromDouble(static_cast<double>(value)), stolen_t{})
     {
@@ -226,19 +225,19 @@ public:
     }
 
     /* Get the zero singleton. */
-    static const Float& zero() {
+    inline static const Float& zero() {
         static const Float val = 0.0;
         return val;
     }
 
     /* Get the half singleton. */
-    static const Float& half() {
+    inline static const Float& half() {
         static const Float val = 0.5;
         return val;
     }
 
     /* Get the one singleton. */
-    static const Float& one() {
+    inline static const Float& one() {
         static const Float val = 1.0;
         return val;
     }

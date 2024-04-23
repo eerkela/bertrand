@@ -287,7 +287,7 @@ template <std::derived_from<Bool> L, impl::bool_like R>
 struct __ixor__<L, R>                                           : Returns<Bool&> {};
 
 
-/* pybind11::bool_ equivalent with stronger type safety and cross-language support. */
+/* Represents a statically-typed Python boolean in C++. */
 class Bool : public Object {
     using Base = Object;
 
@@ -314,7 +314,7 @@ public:
 
     /* Explicitly convert an arbitrary Python object into a boolean. */
     template <typename T> requires (impl::python_like<T> && !impl::bool_like<T>)
-    explicit Bool(const T& obj) {
+    explicit Bool(const T& obj) : Base(nullptr, stolen_t{}) {
         int result = PyObject_IsTrue(obj.ptr());
         if (result == -1) {
             Exception::from_python();

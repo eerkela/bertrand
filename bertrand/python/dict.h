@@ -81,8 +81,7 @@ template <impl::anyset_like T>
 struct __xor__<KeysView, T>                                 : Returns<Set> {};
 
 
-/* New subclass of pybind11::object representing a view into the keys of a dictionary
-object. */
+/* Represents a statically-typed Python `dict.keys()` object in C++. */
 class KeysView : public Object, public impl::KeysTag {
     using Base = Object;
 
@@ -112,7 +111,7 @@ public:
     KeysView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a keys view on an existing dictionary. */
-    explicit KeysView(const pybind11::dict& dict) {
+    explicit KeysView(const pybind11::dict& dict) : Base(nullptr, stolen_t{}) {
         static const pybind11::str lookup = "keys";
         m_ptr = dict.attr(lookup)().release().ptr();
     }
@@ -205,8 +204,7 @@ template <typename T>
 struct __contains__<ValuesView, T>                          : Returns<bool> {};
 
 
-/* New subclass of pybind11::object representing a view into the values of a dictionary
-object. */
+/* Represents a statically-typed Python `dict.values()` object in C++. */
 class ValuesView : public Object, public impl::ValuesTag {
     using Base = Object;
 
@@ -236,7 +234,7 @@ public:
     ValuesView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a values view on an existing dictionary. */
-    explicit ValuesView(const pybind11::dict& dict) {
+    explicit ValuesView(const pybind11::dict& dict) : Base(nullptr, stolen_t{}) {
         static const pybind11::str lookup = "values";
         m_ptr = dict.attr(lookup)().release().ptr();
     }
@@ -272,8 +270,7 @@ template <impl::tuple_like T>
 struct __contains__<ItemsView, T>                           : Returns<bool> {};
 
 
-/* New subclass of pybind11::object representing a view into the items of a dictionary
-object. */
+/* Represents a statically-typed Python `dict.items()` object in C++. */
 class ItemsView : public Object, public impl::ItemsTag {
     using Base = Object;
 
@@ -303,7 +300,7 @@ public:
     ItemsView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create an items view on an existing dictionary. */
-    explicit ItemsView(const pybind11::dict& dict) {
+    explicit ItemsView(const pybind11::dict& dict) : Base(nullptr, stolen_t{}) {
         static const pybind11::str lookup = "items";
         m_ptr = dict.attr(lookup)().release().ptr();
     }
@@ -373,8 +370,7 @@ template <impl::dict_like T>
 struct __ior__<Dict, T>                                     : Returns<Dict&> {};
 
 
-/* Wrapper around pybind11::dict that allows it to be directly initialized using
-std::initializer_list and enables extra C API functionality. */
+/* Represents a statically-typed Python dictionary in C++. */
 class Dict : public Object, public impl::DictTag {
     using Base = Object;
 
@@ -400,8 +396,8 @@ public:
     Dict(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the given arguments into a dictionary using an initializer list. */
-    Dict(const std::initializer_list<impl::DictInitializer>& contents)
-        : Base(PyDict_New(), stolen_t{})
+    Dict(const std::initializer_list<impl::DictInitializer>& contents) :
+        Base(PyDict_New(), stolen_t{})
     {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -497,7 +493,7 @@ public:
     }
 
     /* Implicitly convert to a C++ dict type. */
-    template <typename T> requires (!impl::python_like<T> && impl::dict_like<T>)
+    template <impl::dict_like T> requires (!impl::python_like<T>)
     inline operator T() const {
         T result;
         PyObject* key;
@@ -526,7 +522,7 @@ public:
     }
 
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
-    template <typename T> requires (!impl::dict_like<T> && impl::is_iterable<T>)
+    template <impl::is_iterable T> requires (!impl::dict_like<T>)
     inline void merge(const T& items) {
         if (PyDict_MergeFromSeq2(
             this->ptr(),
@@ -672,8 +668,8 @@ public:
     }
 
     /* Equivalent to Python `dict.get(key, default_value)`. */
-    template <impl::is_hashable K, typename V>
-    inline Object get(const K& key, const V& default_value) const {
+    template <impl::is_hashable K>
+    inline Object get(const K& key, const Object& default_value) const {
         PyObject* result = PyDict_GetItemWithError(
             this->ptr(),
             detail::object_or_cast(key).ptr()
@@ -682,7 +678,7 @@ public:
             if (PyErr_Occurred()) {
                 Exception::from_python();
             }
-            return detail::object_or_cast(default_value);
+            return default_value;
         }
         return reinterpret_steal<Object>(result);
     }
@@ -707,8 +703,8 @@ public:
     }
 
     /* Equivalent to Python `dict.pop(key, default_value)`. */
-    template <impl::is_hashable K, typename V>
-    inline Object pop(const K& key, const V& default_value) {
+    template <impl::is_hashable K>
+    inline Object pop(const K& key, const Object& default_value) {
         PyObject* result = PyDict_GetItemWithError(
             this->ptr(),
             detail::object_or_cast(key).ptr()
@@ -717,7 +713,7 @@ public:
             if (PyErr_Occurred()) {
                 Exception::from_python();
             }
-            return detail::object_or_cast(default_value);
+            return default_value;
         }
         if (PyDict_DelItem(this->ptr(), result)) {
             Exception::from_python();
@@ -743,12 +739,12 @@ public:
     }
 
     /* Equivalent to Python `dict.setdefault(key, default_value)`. */
-    template <impl::is_hashable K, typename V>
-    inline Object setdefault(const K& key, const V& default_value) {
+    template <impl::is_hashable K>
+    inline Object setdefault(const K& key, const Object& default_value) {
         PyObject* result = PyDict_SetDefault(
             this->ptr(),
             detail::object_or_cast(key).ptr(),
-            detail::object_or_cast(default_value).ptr()
+            default_value.ptr()
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -765,7 +761,7 @@ public:
     }
 
     /* Equivalent to Python `dict.update(items)`. */
-    template <typename T> requires (!impl::dict_like<T> && impl::is_iterable<T>)
+    template <impl::is_iterable T> requires (!impl::dict_like<T>)
     inline void update(const T& items) {
         if constexpr (impl::python_like<T>) {
             if (PyDict_MergeFromSeq2(
@@ -830,8 +826,8 @@ public:
 
 protected:
 
-    template <typename Return, typename T>
-    inline static size_t operator_len(const T& self) {
+    template <typename Return, typename Self>
+    inline static size_t operator_len(const Self& self) {
         return static_cast<size_t>(PyDict_Size(self.ptr()));
     }
 
@@ -881,8 +877,8 @@ struct __or__<MappingProxy, Object>                         : Returns<Dict> {};
 template <impl::dict_like T>
 struct __or__<MappingProxy, T>                              : Returns<Dict> {};
 
-/* New subclass of pybind11::object representing a read-only proxy for a Python
-dictionary or other mapping. */
+
+/* Represents a statically-typed Python `MappingProxyType` object in C++. */
 class MappingProxy : public Object, public impl::MappingProxyTag {
     using Base = Object;
 
@@ -927,8 +923,8 @@ public:
     inline Object get(const K& key) const;
 
     /* Equivalent to Python `mappingproxy.get(key, default)`. */
-    template <impl::is_hashable K, typename V>
-    inline Object get(const K& key, const V& default_value) const;
+    template <impl::is_hashable K>
+    inline Object get(const K& key, const Object& default_value) const;
 
     /* Equivalent to Python `mappingproxy.keys()`. */
     inline KeysView keys() const;
