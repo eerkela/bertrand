@@ -438,10 +438,6 @@ struct __imul__<L, R>                                           : Returns<L&> {}
 class Bytes : public impl::IBytes<Bytes>, public impl::SequenceOps<Bytes> {
     using Base = impl::IBytes<Bytes>;
 
-    template <typename T>
-    static constexpr bool py_constructor =
-        impl::bytes_like<T> && impl::python_like<T>;
-
 public:
     static Type type;
 
@@ -463,7 +459,7 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (py_constructor<T>)
+    template <typename T> requires (impl::python_like<T> && impl::bytes_like<T>)
     Bytes(T&& obj) : Base(std::forward<T>(obj)) {}
 
     /* Implicitly convert a string literal into a py::Bytes object.  Note that this
@@ -574,10 +570,6 @@ protected:
 class ByteArray : public impl::IBytes<ByteArray>, public impl::SequenceOps<ByteArray> {
     using Base = impl::IBytes<ByteArray>;
 
-    template <typename T>
-    static constexpr bool py_constructor =
-        impl::bytearray_like<T> && impl::python_like<T>;
-
 public:
     static Type type;
 
@@ -599,7 +591,7 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (py_constructor<T>)
+    template <typename T> requires (impl::python_like<T> && impl::bytearray_like<T>)
     ByteArray(T&& obj) : Base(std::forward<T>(obj)) {}
 
     /* Implicitly convert a string literal into a py::ByteArray object.  Note that this

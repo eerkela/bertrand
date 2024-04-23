@@ -80,7 +80,7 @@ namespace impl {
             const std::initializer_list<impl::HashInitializer>& other
         ) const {
             for (const impl::HashInitializer& item : other) {
-                if (contains(item.first)) {
+                if (contains(item.value)) {
                     return false;
                 }
             }
@@ -107,7 +107,7 @@ namespace impl {
             const std::initializer_list<impl::HashInitializer>& other
         ) const {
             for (const impl::HashInitializer& item : other) {
-                if (!contains(item.first)) {
+                if (!contains(item.value)) {
                     return false;
                 }
             }
@@ -127,7 +127,7 @@ namespace impl {
             }
             try {
                 for (const impl::HashInitializer& item : other) {
-                    if (PySet_Add(result, item.first.ptr())) {
+                    if (PySet_Add(result, item.value.ptr())) {
                         Exception::from_python();
                     }
                 }
@@ -153,8 +153,8 @@ namespace impl {
             }
             try {
                 for (const impl::HashInitializer& item : other) {
-                    if (contains(item.first)) {
-                        if (PySet_Add(result, item.first.ptr())) {
+                    if (contains(item.value)) {
+                        if (PySet_Add(result, item.value.ptr())) {
                             Exception::from_python();
                         }
                     }
@@ -181,7 +181,7 @@ namespace impl {
             }
             try {
                 for (const impl::HashInitializer& item : other) {
-                    if (PySet_Discard(result, item.first.ptr()) == -1) {
+                    if (PySet_Discard(result, item.value.ptr()) == -1) {
                         Exception::from_python();
                     }
                 }
@@ -207,12 +207,12 @@ namespace impl {
             }
             try {
                 for (const impl::HashInitializer& item : other) {
-                    if (contains(item.first)) {
-                        if (PySet_Discard(result, item.first.ptr()) == -1) {
+                    if (contains(item.value)) {
+                        if (PySet_Discard(result, item.value.ptr()) == -1) {
                             Exception::from_python();
                         }
                     } else {
-                        if (PySet_Add(result, item.first.ptr())) {
+                        if (PySet_Add(result, item.value.ptr())) {
                             Exception::from_python();
                         }
                     }
@@ -364,7 +364,7 @@ struct __ixor__<L, R>                                           : Returns<L&> {}
 
 /* Wrapper around pybind11::frozenset that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
-class FrozenSet : public impl::ISet<FrozenSet> {
+class FrozenSet : public impl::ISet<FrozenSet>, public impl::FrozenSetTag {
     using Base = impl::ISet<FrozenSet>;
     friend Base;
 
@@ -403,7 +403,7 @@ public:
         }
         try {
             for (const impl::HashInitializer& item : contents) {
-                if (PySet_Add(m_ptr, item.first.ptr())) {
+                if (PySet_Add(m_ptr, item.value.ptr())) {
                     Exception::from_python();
                 }
             }
@@ -579,7 +579,7 @@ struct __getattr__<T, "symmetric_difference_update">            : Returns<Functi
 
 /* Wrapper around pybind11::set that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
-class Set : public impl::ISet<Set> {
+class Set : public impl::ISet<Set>, public impl::SetTag {
     using Base = impl::ISet<Set>;
     friend Base;
 
@@ -618,7 +618,7 @@ public:
         }
         try {
             for (const impl::HashInitializer& item : contents) {
-                if (PySet_Add(m_ptr, item.first.ptr())) {
+                if (PySet_Add(m_ptr, item.value.ptr())) {
                     Exception::from_python();
                 }
             }
@@ -782,7 +782,7 @@ public:
     /* Equivalent to Python `set.update(<braced initializer list>)`. */
     inline void update(const std::initializer_list<impl::HashInitializer>& other) {
         for (const impl::HashInitializer& item : other) {
-            add(item.first);
+            add(item.value);
         }
     }
 
@@ -791,7 +791,7 @@ public:
     inline void intersection_update(const Args&... others);
 
     /* Equivalent to Python `set.intersection_update(<braced initializer list>)`. */
-    inline void intersection_update(
+    void intersection_update(
         const std::initializer_list<impl::HashInitializer>& other
     );
 
@@ -804,7 +804,7 @@ public:
         const std::initializer_list<impl::HashInitializer>& other
     ) {
         for (const impl::HashInitializer& item : other) {
-            discard(item.first);
+            discard(item.value);
         }
     }
 
@@ -817,10 +817,10 @@ public:
         const std::initializer_list<impl::HashInitializer>& other
     ) {
         for (const impl::HashInitializer& item : other) {
-            if (contains(item.first)) {
-                discard(item.first);
+            if (contains(item.value)) {
+                discard(item.value);
             } else {
-                add(item.first);
+                add(item.value);
             }
         }
     }

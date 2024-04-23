@@ -65,15 +65,15 @@ namespace py {
         }                                                                               \
     }                                                                                   \
                                                                                         \
-    template <typename T = cls> requires (__getitem__<T, Slice>::enable)                \
+    template <typename Self = cls> requires (__getitem__<Self, Slice>::enable)          \
     auto operator[](std::initializer_list<impl::SliceInitializer> slice) const {        \
-        using Return = typename __getitem__<T, Slice>::Return;                          \
+        using Return = typename __getitem__<Self, Slice>::Return;                       \
         return operator_getitem<Return>(*this, slice);                                  \
     }                                                                                   \
                                                                                         \
-    template <typename T = cls> requires (__iter__<T>::enable)                          \
+    template <typename Self = cls> requires (__iter__<Self>::enable)                    \
     auto begin() const {                                                                \
-        using Return = typename __iter__<T>::Return;                                    \
+        using Return = typename __iter__<Self>::Return;                                 \
         static_assert(                                                                  \
             std::is_base_of_v<Object, Return>,                                          \
             "iterator must dereference to a subclass of Object.  Check your "           \
@@ -83,12 +83,12 @@ namespace py {
         return operator_begin<Return>(*this);                                           \
     }                                                                                   \
                                                                                         \
-    template <typename T = cls> requires (__iter__<T>::enable)                          \
-    auto cbegin() const { return begin<T>(); }                                          \
+    template <typename Self = cls> requires (__iter__<Self>::enable)                    \
+    auto cbegin() const { return begin<Self>(); }                                       \
                                                                                         \
-    template <typename T = cls> requires (__iter__<T>::enable)                          \
+    template <typename Self = cls> requires (__iter__<Self>::enable)                    \
     auto end() const {                                                                  \
-        using Return = typename __iter__<T>::Return;                                    \
+        using Return = typename __iter__<Self>::Return;                                 \
         static_assert(                                                                  \
             std::is_base_of_v<Object, Return>,                                          \
             "iterator must dereference to a subclass of Object.  Check your "           \
@@ -98,12 +98,12 @@ namespace py {
         return operator_end<Return>(*this);                                             \
     }                                                                                   \
                                                                                         \
-    template <typename T = cls> requires (__iter__<T>::enable)                          \
-    auto cend() const { return end<T>(); }                                              \
+    template <typename Self = cls> requires (__iter__<Self>::enable)                    \
+    auto cend() const { return end<Self>(); }                                           \
                                                                                         \
-    template <typename T = cls> requires (__reversed__<T>::enable)                      \
+    template <typename Self = cls> requires (__reversed__<Self>::enable)                \
     auto rbegin() const {                                                               \
-        using Return = typename __reversed__<T>::Return;                                \
+        using Return = typename __reversed__<Self>::Return;                             \
         static_assert(                                                                  \
             std::is_base_of_v<Object, Return>,                                          \
             "iterator must dereference to a subclass of Object.  Check your "           \
@@ -113,12 +113,12 @@ namespace py {
         return operator_rbegin<Return>(*this);                                          \
     }                                                                                   \
                                                                                         \
-    template <typename T = cls> requires (__reversed__<T>::enable)                      \
-    auto crbegin() const { return rbegin<T>(); }                                        \
+    template <typename Self = cls> requires (__reversed__<Self>::enable)                \
+    auto crbegin() const { return rbegin<Self>(); }                                     \
                                                                                         \
-    template <typename T = cls> requires (__reversed__<T>::enable)                      \
+    template <typename Self = cls> requires (__reversed__<Self>::enable)                \
     auto rend() const {                                                                 \
-        using Return = typename __reversed__<T>::Return;                                \
+        using Return = typename __reversed__<Self>::Return;                             \
         static_assert(                                                                  \
             std::is_base_of_v<Object, Return>,                                          \
             "iterator must dereference to a subclass of Object.  Check your "           \
@@ -128,28 +128,28 @@ namespace py {
         return operator_rend<Return>(*this);                                            \
     }                                                                                   \
                                                                                         \
-    template <typename T = cls> requires (__reversed__<T>::enable)                      \
-    auto crend() const { return rend<T>(); }                                            \
+    template <typename Self = cls> requires (__reversed__<Self>::enable)                \
+    auto crend() const { return rend<Self>(); }                                         \
                                                                                         \
-    template <typename T> requires (__contains__<cls, T>::enable)                       \
-    bool contains(const T& key) const {                                                 \
-        using Return = typename __contains__<cls, T>::Return;                           \
+    template <typename Self> requires (__contains__<cls, Self>::enable)                 \
+    bool contains(const Self& key) const {                                              \
+        using Return = typename __contains__<cls, Self>::Return;                        \
         static_assert(                                                                  \
             std::is_same_v<Return, bool>,                                               \
             "contains() operator must return a boolean value.  Check your "             \
             "specialization of __contains__ for these types and ensure the Return "     \
             "type is set to bool."                                                      \
         );                                                                              \
-        if constexpr (impl::proxy_like<T>) {                                            \
+        if constexpr (impl::proxy_like<Self>) {                                         \
             return this->contains(key.value());                                         \
         } else {                                                                        \
             return operator_contains<Return>(*this, key);                               \
         }                                                                               \
     }                                                                                   \
                                                                                         \
-    template <typename T = cls> requires (__len__<T>::enable)                           \
+    template <typename Self = cls> requires (__len__<Self>::enable)                     \
     size_t size() const {                                                               \
-        using Return = typename __len__<T>::Return;                                     \
+        using Return = typename __len__<Self>::Return;                                  \
         static_assert(                                                                  \
             std::is_same_v<Return, size_t>,                                             \
             "size() operator must return a size_t for compatibility with C++ "          \
@@ -161,29 +161,29 @@ namespace py {
                                                                                         \
 protected:                                                                              \
                                                                                         \
-    template <typename Return, typename T, typename... Args>                            \
-    friend auto impl::ops::operator_call(const T& self, Args&&... args);                \
-    template <typename Return, typename T, typename Key>                                \
-    friend auto impl::ops::operator_getitem(const T& self, const Key& key);             \
-    template <typename Return, typename T>                                              \
+    template <typename Return, typename Self, typename... Args>                         \
+    friend auto impl::ops::operator_call(const Self& self, Args&&... args);             \
+    template <typename Return, typename Self, typename Key>                             \
+    friend auto impl::ops::operator_getitem(const Self& self, const Key& key);          \
+    template <typename Return, typename Self>                                           \
     friend auto impl::ops::operator_getitem(                                            \
-        const T& self,                                                                  \
+        const Self& self,                                                               \
         std::initializer_list<impl::SliceInitializer> slice                             \
     );                                                                                  \
-    template <typename Return, typename T>                                              \
-    friend auto impl::ops::operator_begin(const T& obj);                                \
-    template <typename Return, typename T>                                              \
-    friend auto impl::ops::operator_end(const T& obj);                                  \
-    template <typename Return, typename T>                                              \
-    friend auto impl::ops::operator_rbegin(const T& obj);                               \
-    template <typename Return, typename T>                                              \
-    friend auto impl::ops::operator_rend(const T& obj);                                 \
-    template <typename Return, typename T, typename Key>                                \
-    friend auto impl::ops::operator_contains(const T& self, const Key& key);            \
-    template <typename Return, typename T>                                              \
-    friend auto impl::ops::operator_len(const T& self);                                 \
-    template <typename T>                                                               \
-    friend auto impl::ops::operator_dereference(const T& self);                         \
+    template <typename Return, typename Self>                                           \
+    friend auto impl::ops::operator_begin(const Self& obj);                             \
+    template <typename Return, typename Self>                                           \
+    friend auto impl::ops::operator_end(const Self& obj);                               \
+    template <typename Return, typename Self>                                           \
+    friend auto impl::ops::operator_rbegin(const Self& obj);                            \
+    template <typename Return, typename Self>                                           \
+    friend auto impl::ops::operator_rend(const Self& obj);                              \
+    template <typename Return, typename Self, typename Key>                             \
+    friend auto impl::ops::operator_contains(const Self& self, const Key& key);         \
+    template <typename Return, typename Self>                                           \
+    friend auto impl::ops::operator_len(const Self& self);                              \
+    template <typename Self>                                                            \
+    friend auto impl::ops::operator_dereference(const Self& self);                      \
     template <typename Return, typename L, typename R>                                  \
     friend auto impl::ops::operator_lt(const L& lhs, const R& rhs);                     \
     template <typename Return, typename L, typename R>                                  \
@@ -196,22 +196,22 @@ protected:                                                                      
     friend auto impl::ops::operator_ge(const L& lhs, const R& rhs);                     \
     template <typename Return, typename L, typename R>                                  \
     friend auto impl::ops::operator_gt(const L& lhs, const R& rhs);                     \
-    template <typename Return, typename T>                                              \
-    friend auto impl::ops::operator_abs(const T& self);                                 \
-    template <typename Return, typename T>                                              \
-    friend auto impl::ops::operator_invert(const T& self);                              \
-    template <typename Return, typename T>                                              \
-    friend auto impl::ops::operator_pos(const T& self);                                 \
-    template <typename Return, typename T>                                              \
-    friend auto impl::ops::operator_increment(T& self);                                 \
+    template <typename Return, typename Self>                                           \
+    friend auto impl::ops::operator_abs(const Self& self);                              \
+    template <typename Return, typename Self>                                           \
+    friend auto impl::ops::operator_invert(const Self& self);                           \
+    template <typename Return, typename Self>                                           \
+    friend auto impl::ops::operator_pos(const Self& self);                              \
+    template <typename Return, typename Self>                                           \
+    friend auto impl::ops::operator_increment(Self& self);                              \
     template <typename Return, typename L, typename R>                                  \
     friend auto impl::ops::operator_add(const L& lhs, const R& rhs);                    \
     template <typename Return, typename L, typename R>                                  \
     friend auto impl::ops::operator_iadd(L& lhs, const R& rhs);                         \
-    template <typename Return, typename T>                                              \
-    friend auto impl::ops::operator_neg(const T& self);                                 \
-    template <typename Return, typename T>                                              \
-    friend auto impl::ops::operator_decrement(T& self);                                 \
+    template <typename Return, typename Self>                                           \
+    friend auto impl::ops::operator_neg(const Self& self);                              \
+    template <typename Return, typename Self>                                           \
+    friend auto impl::ops::operator_decrement(Self& self);                              \
     template <typename Return, typename L, typename R>                                  \
     friend auto impl::ops::operator_sub(const L& lhs, const R& rhs);                    \
     template <typename Return, typename L, typename R>                                  \
@@ -271,57 +271,60 @@ namespace impl {
 
     namespace ops {
 
-        template <typename Return, typename T, typename... Args>
-        auto operator_call(const T& self, Args&&... args) {
-            return T::template operator_call<Return>(self, std::forward<Args>(args)...);
+        template <typename Return, typename Self, typename... Args>
+        auto operator_call(const Self& self, Args&&... args) {
+            return Self::template operator_call<Return>(
+                self,
+                std::forward<Args>(args)...
+            );
         }
 
-        template <typename Return, typename T, typename Key>
-        auto operator_getitem(const T& self, const Key& key) {
-            return T::template operator_getitem<Return>(self, key);
+        template <typename Return, typename Self, typename Key>
+        auto operator_getitem(const Self& self, const Key& key) {
+            return Self::template operator_getitem<Return>(self, key);
         }
 
-        template <typename Return, typename T>
+        template <typename Return, typename Self>
         auto operator_getitem(
-            const T& self,
+            const Self& self,
             std::initializer_list<impl::SliceInitializer> slice
         ) {
-            return T::template operator_getitem<Return>(self, slice);
+            return Self::template operator_getitem<Return>(self, slice);
         }
 
-        template <typename Return, typename T>
-        auto operator_begin(const T& obj) {
-            return T::template operator_begin<Return>(obj);
+        template <typename Return, typename Self>
+        auto operator_begin(const Self& obj) {
+            return Self::template operator_begin<Return>(obj);
         }
 
-        template <typename Return, typename T>
-        auto operator_end(const T& obj) {
-            return T::template operator_end<Return>(obj);
+        template <typename Return, typename Self>
+        auto operator_end(const Self& obj) {
+            return Self::template operator_end<Return>(obj);
         }
 
-        template <typename Return, typename T>
-        auto operator_rbegin(const T& obj) {
-            return T::template operator_rbegin<Return>(obj);
+        template <typename Return, typename Self>
+        auto operator_rbegin(const Self& obj) {
+            return Self::template operator_rbegin<Return>(obj);
         }
 
-        template <typename Return, typename T>
-        auto operator_rend(const T& obj) {
-            return T::template operator_rend<Return>(obj);
+        template <typename Return, typename Self>
+        auto operator_rend(const Self& obj) {
+            return Self::template operator_rend<Return>(obj);
         }
 
-        template <typename Return, typename T, typename Key>
-        auto operator_contains(const T& self, const Key& key) {
-            return T::template operator_contains<Return>(self, key);
+        template <typename Return, typename Self, typename Key>
+        auto operator_contains(const Self& self, const Key& key) {
+            return Self::template operator_contains<Return>(self, key);
         }
 
-        template <typename Return, typename T>
-        auto operator_len(const T& self) {
-            return T::template operator_len<Return>(self);
+        template <typename Return, typename Self>
+        auto operator_len(const Self& self) {
+            return Self::template operator_len<Return>(self);
         }
 
-        template <typename T>
-        auto operator_dereference(const T& self) {
-            return T::template operator_dereference(self);
+        template <typename Self>
+        auto operator_dereference(const Self& self) {
+            return Self::template operator_dereference(self);
         }
 
         template <typename Return, typename L, typename R>
@@ -378,24 +381,24 @@ namespace impl {
             }
         }
 
-        template <typename Return, typename T>
-        auto operator_abs(const T& self) {
-            return T::template operator_abs<Return>(self);
+        template <typename Return, typename Self>
+        auto operator_abs(const Self& self) {
+            return Self::template operator_abs<Return>(self);
         }
 
-        template <typename Return, typename T>
-        auto operator_invert(const T& self) {
-            return T::template operator_invert<Return>(self);
+        template <typename Return, typename Self>
+        auto operator_invert(const Self& self) {
+            return Self::template operator_invert<Return>(self);
         }
 
-        template <typename Return, typename T>
-        auto operator_pos(const T& self) {
-            return T::template operator_pos<Return>(self);
+        template <typename Return, typename Self>
+        auto operator_pos(const Self& self) {
+            return Self::template operator_pos<Return>(self);
         }
 
-        template <typename Return, typename T>
-        auto operator_increment(T& self) {
-            return T::template operator_increment<Return>(self);
+        template <typename Return, typename Self>
+        auto operator_increment(Self& self) {
+            return Self::template operator_increment<Return>(self);
         }
 
         template <typename Return, typename L, typename R>
@@ -412,14 +415,14 @@ namespace impl {
             return L::template operator_iadd<Return>(lhs, rhs);
         }
 
-        template <typename Return, typename T>
-        auto operator_neg(const T& self) {
-            return T::template operator_neg<Return>(self);
+        template <typename Return, typename Self>
+        auto operator_neg(const Self& self) {
+            return Self::template operator_neg<Return>(self);
         }
 
-        template <typename Return, typename T>
-        auto operator_decrement(T& self) {
-            return T::template operator_decrement<Return>(self);
+        template <typename Return, typename Self>
+        auto operator_decrement(Self& self) {
+            return Self::template operator_decrement<Return>(self);
         }
 
         template <typename Return, typename L, typename R>

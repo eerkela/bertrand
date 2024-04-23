@@ -57,9 +57,7 @@ namespace py {
 *     https://pybind11.readthedocs.io/en/stable/
 */
 
-
 // TODO: account for all relevant binding functions inherited from pybind11
-
 
 // binding functions
 using pybind11::init;
@@ -117,7 +115,28 @@ namespace detail = pybind11::detail;
 /////////////////////
 
 
-// wrapper types
+namespace impl {
+
+    struct InitializerTag {};
+    struct ProxyTag {};
+
+    struct TupleTag {};
+    struct ListTag {};
+    struct SetTag {};
+    struct FrozenSetTag {};
+    struct KeysTag {};
+    struct ValuesTag {};
+    struct ItemsTag {};
+    struct DictTag {};
+    struct MappingProxyTag {};
+
+    struct SliceInitializer;
+    struct HashInitializer;
+    struct DictInitializer;
+
+}
+
+
 template <typename... Args>
 using Class = pybind11::class_<Args...>;
 using Handle = pybind11::handle;
@@ -161,26 +180,6 @@ class Timezone;
 class Date;
 class Time;
 class Datetime;
-
-// TODO: Regex should be placed in bertrand:: namespace.  It doesn't actually wrap a
-// python object, so it shouldn't be in the py:: namespace
-
-class Regex;  // TODO: incorporate more fully (write pybind11 bindings so that it can be passed into Python scripts)
-
-// Regex bindings would allow users to directly use PCRE2 regular expressions in Python.
-
-// -> Regex class itself should be in bertrand:: namespace, but 2-way Python bindings
-// are listed under py::Regex.
-
-
-namespace impl {
-
-    /* Tag class to identify object proxies during SFINAE checks. */
-    struct ProxyTag {};
-
-    struct SliceInitializer;
-
-}
 
 
 /////////////////////////

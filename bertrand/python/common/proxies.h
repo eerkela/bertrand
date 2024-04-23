@@ -442,7 +442,7 @@ struct ItemPolicy {
 
 /* A specialization of ItemPolicy that is specifically optimized for integer
 indices into Python tuple objects. */
-template <std::derived_from<Tuple> Obj, std::integral Key>
+template <std::derived_from<TupleTag> Obj, std::integral Key>
 struct ItemPolicy<Obj, Key> {
     Handle obj;
     Py_ssize_t key;
@@ -472,7 +472,7 @@ struct ItemPolicy<Obj, Key> {
 
 /* A specialization of ItemPolicy that is specifically optimized for integer
 indices into Python list objects. */
-template <std::derived_from<List> Obj, std::integral Key>
+template <std::derived_from<ListTag> Obj, std::integral Key>
 struct ItemPolicy<Obj, Key> {
     Handle obj;
     Py_ssize_t key;

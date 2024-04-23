@@ -179,9 +179,14 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-    Foo<py::Int> foo = {1, 2, 3, 4, 5};
-    Foo foo2 = foo;
-    py::print(typeid(decltype(foo2)::Wrapped).name());
+    py::Tuple t = {1, 2, "abc"};
+    py::print(t);
+
+
+
+    // Foo<py::Int> foo = {1, 2, 3, 4, 5};
+    // Foo foo2 = foo;
+    // py::print(typeid(decltype(foo2)::Wrapped).name());
 
 
     // py::List list = {1, 2, 3};

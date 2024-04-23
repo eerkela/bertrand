@@ -12,10 +12,11 @@ namespace bertrand {
 namespace py {
 namespace impl {
 
+
     /* Helper function triggers implicit conversion operators and/or implicit
     constructors, but not explicit ones.  In contrast, static_cast<>() will trigger
     explicit constructors on the target type, which can give unexpected results and
-    violate bertrand's strict type safety. */
+    violate strict type safety. */
     template <typename U>
     static decltype(auto) implicit_cast(U&& value) {
         return std::forward<U>(value);
@@ -119,12 +120,15 @@ namespace impl {
 
     template <typename T>
     concept python_like = (
-        detail::is_pyobject<std::remove_cvref_t<T>>::value ||
-        std::is_base_of_v<Object, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, pybind11::object> ||
+        std::derived_from<std::remove_cvref_t<T>, Object>
     );
 
     template <typename T>
-    concept proxy_like = std::is_base_of_v<ProxyTag, std::remove_cvref_t<T>>;
+    concept proxy_like = std::derived_from<std::remove_cvref_t<T>, ProxyTag>;
+
+    template <typename T>
+    concept initializer_like = std::derived_from<std::remove_cvref_t<T>, InitializerTag>;
 
     template <typename T>
     concept accessor_like = requires(const T& t) {
@@ -150,45 +154,45 @@ namespace impl {
 
     template <typename T>
     concept none_like = (
-        std::is_same_v<std::nullptr_t, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<py::NoneType, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::none, std::remove_cvref_t<T>>
+        std::same_as<std::remove_cvref_t<T>, std::nullptr_t> ||
+        std::derived_from<std::remove_cvref_t<T>, NoneType> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::none>
     );
 
     template <typename T>
     concept slice_like = (
-        std::is_base_of_v<Slice, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::slice, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, Slice> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::slice>
     );
 
     template <typename T>
     concept module_like = (
-        std::is_base_of_v<py::Module, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::module, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, Module> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::module>
     );
 
     template <typename T>
     concept bool_like = (
-        std::is_same_v<bool, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<py::Bool, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::bool_, std::remove_cvref_t<T>>
+        std::same_as<std::remove_cvref_t<T>, bool> ||
+        std::derived_from<std::remove_cvref_t<T>, Bool> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::bool_>
     );
 
     template <typename T>
     concept int_like = (
-        std::is_base_of_v<Int, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::int_, std::remove_cvref_t<T>> ||
+        std::derived_from<std::remove_cvref_t<T>, Int> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::int_> ||
         (
-            std::is_integral_v<std::remove_cvref_t<T>> &&
-            !std::is_same_v<bool, std::remove_cvref_t<T>>
+            std::integral<std::remove_cvref_t<T>> &&
+            !std::same_as<std::remove_cvref_t<T>, bool>
         )
     );
 
     template <typename T>
     concept float_like = (
-        std::is_floating_point_v<std::remove_cvref_t<T>> ||
-        std::is_base_of_v<Float, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::float_, std::remove_cvref_t<T>>
+        std::floating_point<std::remove_cvref_t<T>> ||
+        std::derived_from<std::remove_cvref_t<T>, Float> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::float_>
     );
 
     template <typename T>
@@ -205,27 +209,27 @@ namespace impl {
     template <typename T>
     concept str_like = (
         string_literal<std::remove_cvref_t<T>> ||
-        std::is_same_v<const char*, std::remove_cvref_t<T>> ||
-        std::is_same_v<std::string, std::remove_cvref_t<T>> ||
-        std::is_same_v<std::string_view, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<Str, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::str, std::remove_cvref_t<T>>
+        std::same_as<std::remove_cvref_t<T>, const char*> ||
+        std::same_as<std::remove_cvref_t<T>, std::string> ||
+        std::same_as<std::remove_cvref_t<T>, std::string_view> ||
+        std::derived_from<std::remove_cvref_t<T>, Str> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::str>
     );
 
     template <typename T>
     concept bytes_like = (
         string_literal<std::remove_cvref_t<T>> ||
-        std::is_same_v<void*, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<Bytes, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::bytes, std::remove_cvref_t<T>>
+        std::same_as<std::remove_cvref_t<T>, void*> ||
+        std::derived_from<std::remove_cvref_t<T>, Bytes> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::bytes>
     );
 
     template <typename T>
     concept bytearray_like = (
         string_literal<std::remove_cvref_t<T>> ||
-        std::is_same_v<std::remove_cvref_t<T>, void*> ||
-        std::is_base_of_v<ByteArray, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::bytearray, std::remove_cvref_t<T>>
+        std::same_as<std::remove_cvref_t<T>, void*> ||
+        std::derived_from<std::remove_cvref_t<T>, ByteArray> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::bytearray>
     );
 
     template <typename T>
@@ -234,64 +238,64 @@ namespace impl {
     template <typename T>
     concept timedelta_like = (
         categories::Traits<std::remove_cvref_t<T>>::timedeltalike ||
-        std::is_base_of_v<Timedelta, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, Timedelta>
     );
 
     template <typename T>
     concept timezone_like = (
         categories::Traits<std::remove_cvref_t<T>>::timezonelike ||
-        std::is_base_of_v<Timezone, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, Timezone>
     );
 
     template <typename T>
     concept date_like = (
         categories::Traits<std::remove_cvref_t<T>>::datelike ||
-        std::is_base_of_v<Date, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, Date>
     );
 
     template <typename T>
     concept time_like = (
         categories::Traits<std::remove_cvref_t<T>>::timelike ||
-        std::is_base_of_v<Time, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, Time>
     );
 
     template <typename T>
     concept datetime_like = (
         categories::Traits<std::remove_cvref_t<T>>::datetimelike ||
-        std::is_base_of_v<Datetime, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, Datetime>
     );
 
     template <typename T>
     concept range_like = (
-        std::is_base_of_v<Range, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, Range>
     );
 
     template <typename T>
     concept tuple_like = (
         categories::Traits<std::remove_cvref_t<T>>::tuplelike ||
-        std::is_base_of_v<Tuple, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::tuple, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, TupleTag> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::tuple>
     );
 
     template <typename T>
     concept list_like = (
         categories::Traits<std::remove_cvref_t<T>>::listlike ||
-        std::is_base_of_v<List, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::list, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, ListTag> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::list>
     );
 
     template <typename T>
     concept set_like = (
         categories::Traits<std::remove_cvref_t<T>>::setlike ||
-        std::is_base_of_v<Set, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::set, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, SetTag> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::set>
     );
 
     template <typename T>
     concept frozenset_like = (
         categories::Traits<std::remove_cvref_t<T>>::setlike ||
-        std::is_base_of_v<FrozenSet, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::frozenset, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, FrozenSetTag> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::frozenset>
     );
 
     template <typename T>
@@ -300,14 +304,14 @@ namespace impl {
     template <typename T>
     concept dict_like = (
         categories::Traits<std::remove_cvref_t<T>>::dictlike ||
-        std::is_base_of_v<Dict, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::dict, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, DictTag> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::dict>
     );
 
     template <typename T>
     concept mappingproxy_like = (
         categories::Traits<std::remove_cvref_t<T>>::dictlike ||
-        std::is_base_of_v<MappingProxy, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, MappingProxyTag>
     );
 
     template <typename T>
@@ -315,8 +319,8 @@ namespace impl {
 
     template <typename T>
     concept type_like = (
-        std::is_base_of_v<Type, std::remove_cvref_t<T>> ||
-        std::is_base_of_v<pybind11::type, std::remove_cvref_t<T>>
+        std::derived_from<std::remove_cvref_t<T>, Type> ||
+        std::derived_from<std::remove_cvref_t<T>, pybind11::type>
     );
 
     template <typename From, typename To>
@@ -387,6 +391,7 @@ namespace impl {
         std::is_function_v<std::remove_pointer_t<std::decay_t<T>>> ||
         std::is_member_function_pointer_v<std::decay_t<T>> ||
         has_call_operator<T>;
+
 
 }  // namespace impl
 }  // namespace py

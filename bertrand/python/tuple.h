@@ -69,7 +69,7 @@ struct __imul__<Tuple, T>                                       : Returns<Tuple&
 
 /* Wrapper around pybind11::tuple that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
-class Tuple : public Object, public impl::SequenceOps<Tuple> {
+class Tuple : public Object, public impl::SequenceOps<Tuple>, public impl::TupleTag {
     using Base = Object;
 
     template <typename T>
@@ -107,7 +107,7 @@ public:
     Tuple(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the contents of a braced initializer into a new Python tuple. */
-    Tuple(const std::initializer_list<impl::Initializer>& contents) :
+    Tuple(const std::initializer_list<Object>& contents) :
         Base(PyTuple_New(contents.size()), stolen_t{})
     {
         if (m_ptr == nullptr) {
@@ -115,11 +115,11 @@ public:
         }
         try {
             size_t i = 0;
-            for (const impl::Initializer& item : contents) {
+            for (const Object& item : contents) {
                 PyTuple_SET_ITEM(
                     m_ptr,
                     i++,
-                    const_cast<impl::Initializer&>(item).first.release().ptr()
+                    const_cast<Object&>(item).release().ptr()
                 );
             }
         } catch (...) {
@@ -354,13 +354,13 @@ public:
 
     inline friend Tuple operator+(
         const Tuple& self,
-        const std::initializer_list<impl::Initializer>& items
+        const std::initializer_list<Object>& items
     ) {
         return self.concat(items);
     }
 
     inline friend Tuple operator+(
-        const std::initializer_list<impl::Initializer>& items,
+        const std::initializer_list<Object>& items,
         const Tuple& self
     ) {
         return self.concat(items);
@@ -368,7 +368,7 @@ public:
 
     inline friend Tuple& operator+=(
         Tuple& self,
-        const std::initializer_list<impl::Initializer>& items
+        const std::initializer_list<Object>& items
     ) {
         self = self.concat(items);
         return self;
@@ -386,7 +386,7 @@ protected:
         return PyTuple_GET_SIZE(self.ptr());
     }
 
-    inline Tuple concat(const std::initializer_list<impl::Initializer>& items) const {
+    inline Tuple concat(const std::initializer_list<Object>& items) const {
         PyObject* result = PyTuple_New(size() + items.size());
         if (result == nullptr) {
             Exception::from_python();
@@ -399,11 +399,11 @@ protected:
                 PyTuple_SET_ITEM(result, i, Py_NewRef(array[i]));
                 ++i;
             }
-            for (const impl::Initializer& item : items) {
+            for (const Object& item : items) {
                 PyTuple_SET_ITEM(
                     result,
                     i++,
-                    const_cast<impl::Initializer&>(item).first.release().ptr()
+                    const_cast<Object&>(item).release().ptr()
                 );
             }
             return reinterpret_steal<Tuple>(result);

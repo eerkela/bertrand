@@ -92,7 +92,7 @@ struct __imul__<List, T>                                    : Returns<List&> {};
 
 /* Wrapper around pybind11::list that allows it to be directly initialized using
 std::initializer_list and replicates the Python interface as closely as possible. */
-class List : public Object, public impl::SequenceOps<List> {
+class List : public Object, public impl::SequenceOps<List>, public impl::ListTag {
     using Base = Object;
 
     template <typename T>
@@ -130,7 +130,7 @@ public:
     List(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the contents of a braced initializer list into a new Python list. */
-    List(const std::initializer_list<impl::Initializer>& contents) :
+    List(const std::initializer_list<Object>& contents) :
         Base(PyList_New(contents.size()), stolen_t{})
     {
         if (m_ptr == nullptr) {
@@ -138,11 +138,11 @@ public:
         }
         try {
             size_t i = 0;
-            for (const impl::Initializer& item : contents) {
+            for (const Object& item : contents) {
                 PyList_SET_ITEM(
                     m_ptr,
                     i++,
-                    const_cast<impl::Initializer&>(item).first.release().ptr()
+                    const_cast<Object&>(item).release().ptr()
                 );
             }
         } catch (...) {
@@ -343,9 +343,9 @@ public:
 
     /* Equivalent to Python `list.extend(items)`, where items are given as a braced
     initializer list. */
-    inline void extend(const std::initializer_list<impl::Initializer>& items) {
-        for (const impl::Initializer& item : items) {
-            append(item.first);
+    inline void extend(const std::initializer_list<Object>& items) {
+        for (const Object& item : items) {
+            append(item);
         }
     }
 
@@ -409,13 +409,13 @@ public:
 
     inline friend List operator+(
         const List& self,
-        const std::initializer_list<impl::Initializer>& items
+        const std::initializer_list<Object>& items
     ) {
         return self.concat(items);
     }
 
     inline friend List operator+(
-        const std::initializer_list<impl::Initializer>& items,
+        const std::initializer_list<Object>& items,
         const List& self
     ) {
         return self.concat(items);
@@ -423,7 +423,7 @@ public:
 
     inline friend List& operator+=(
         List& self,
-        const std::initializer_list<impl::Initializer>& items
+        const std::initializer_list<Object>& items
     ) {
         self.extend(items);
         return self;
@@ -441,7 +441,7 @@ protected:
         return static_cast<size_t>(PyList_GET_SIZE(self.ptr()));
     }
 
-    inline List concat(const std::initializer_list<impl::Initializer>& items) const {
+    inline List concat(const std::initializer_list<Object>& items) const {
         PyObject* result = PyList_New(size() + items.size());
         if (result == nullptr) {
             Exception::from_python();
@@ -454,11 +454,11 @@ protected:
                 PyList_SET_ITEM(result, i, Py_NewRef(array[i]));
                 ++i;
             }
-            for (const impl::Initializer& item : items) {
+            for (const Object& item : items) {
                 PyList_SET_ITEM(
                     result,
                     i++,
-                    const_cast<impl::Initializer&>(item).first.release().ptr()
+                    const_cast<Object&>(item).release().ptr()
                 );
             }
             return reinterpret_steal<List>(result);

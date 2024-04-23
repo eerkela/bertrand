@@ -622,9 +622,7 @@ public:
 
     /* Equivalent of Python `str.join(iterable)`, where iterable is given as a
     braced initializer list. */
-    inline Str join(
-        const std::initializer_list<impl::StringInitializer>& iterable
-    ) const {
+    inline Str join(const std::initializer_list<Str>& iterable) const {
         return join(py::List(iterable));
     }
 

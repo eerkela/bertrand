@@ -22,7 +22,7 @@ CPython API. */
 template <typename Policy>
 class Iterator {
     static_assert(
-        std::is_base_of_v<Object, typename Policy::value_type>,
+        std::derived_from<typename Policy::value_type, Object>,
         "Iterator must dereference to a subclass of py::Object.  Check your "
         "specialization of __iter__ for this type and ensure the Return type is "
         "derived from py::Object."
@@ -44,8 +44,8 @@ public:
     using iterator_category        = Policy::iterator_category;
     using difference_type          = Policy::difference_type;
     using value_type               = Policy::value_type;
-    using pointer                  = Policy::pointer;
-    using reference                = Policy::reference;
+    using pointer                  = value_type*;
+    using reference                = value_type&;
 
     /* Default constructor.  Initializes to a sentinel iterator. */
     template <typename... Args>
@@ -284,8 +284,6 @@ public:
     using iterator_category         = std::input_iterator_tag;
     using difference_type           = std::ptrdiff_t;
     using value_type                = Deref;
-    using pointer                   = Deref*;
-    using reference                 = Deref&;
 
     /* Default constructor.  Initializes to a sentinel iterator. */
     GenericIter() :
@@ -380,8 +378,6 @@ public:
     using iterator_category         = std::random_access_iterator_tag;
     using difference_type           = std::ptrdiff_t;
     using value_type                = Deref;
-    using pointer                   = Deref*;
-    using reference                 = Deref&;
 
     /* Sentinel constructor. */
     TupleIter(Py_ssize_t index = -1) :
@@ -489,8 +485,6 @@ public:
     using iterator_category         = std::random_access_iterator_tag;
     using difference_type           = std::ptrdiff_t;
     using value_type                = Deref;
-    using pointer                   = Deref*;
-    using reference                 = Deref&;
 
     /* Sentinel constructor. */
     ListIter(Py_ssize_t index = -1) :
@@ -597,8 +591,6 @@ public:
     using iterator_category         = std::input_iterator_tag;
     using difference_type           = std::ptrdiff_t;
     using value_type                = Deref;
-    using pointer                   = Deref*;
-    using reference                 = Deref&;
 
     /* Default constructor.  Initializes to a sentinel iterator. */
     KeyIter() :
@@ -683,8 +675,6 @@ public:
     using iterator_category         = std::input_iterator_tag;
     using difference_type           = std::ptrdiff_t;
     using value_type                = Deref;
-    using pointer                   = Deref*;
-    using reference                 = Deref&;
 
     /* Default constructor.  Initializes to a sentinel iterator. */
     ValueIter() :
@@ -771,8 +761,6 @@ public:
     using iterator_category         = std::input_iterator_tag;
     using difference_type           = std::ptrdiff_t;
     using value_type                = Deref;
-    using pointer                   = Deref*;
-    using reference                 = Deref&;
 
     /* Default constructor.  Initializes to a sentinel iterator. */
     ItemIter() :

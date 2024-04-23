@@ -68,15 +68,15 @@ namespace py {
 
 
 template <>
-struct __hash__<Handle>                                 : Returns<size_t> {};
+struct __hash__<Handle>                                         : Returns<size_t> {};
 template <>
-struct __hash__<Capsule>                                : Returns<size_t> {};
+struct __hash__<Capsule>                                        : Returns<size_t> {};
 template <>
-struct __hash__<WeakRef>                                : Returns<size_t> {};
+struct __hash__<WeakRef>                                        : Returns<size_t> {};
 
 
 template <>
-struct __hash__<NoneType>                                   : Returns<size_t> {};
+struct __hash__<NoneType>                                       : Returns<size_t> {};
 
 
 /* Object subclass that represents Python's global None singleton. */
@@ -105,7 +105,7 @@ public:
 
 
 template <>
-struct __hash__<NotImplementedType>                         : Returns<size_t> {};
+struct __hash__<NotImplementedType>                             : Returns<size_t> {};
 
 
 /* Object subclass that represents Python's global NotImplemented singleton. */
@@ -143,7 +143,7 @@ public:
 
 
 template <>
-struct __hash__<EllipsisType>                               : Returns<size_t> {};
+struct __hash__<EllipsisType>                                   : Returns<size_t> {};
 
 
 /* Object subclass representing Python's global Ellipsis singleton. */
@@ -193,88 +193,84 @@ static const NotImplementedType NotImplemented;
 
 namespace impl {
 
-    /* A simple struct that converts a generic C++ object into a Python equivalent in
-    its constructor.  This is used in conjunction with std::initializer_list to parse
-    mixed-type lists in a type-safe manner. */
-    struct Initializer {
-        Object first;
-        template <typename T> requires (!std::is_same_v<std::decay_t<T>, Handle>)
-        Initializer(T&& value) : first(std::forward<T>(value)) {}
-    };
-
-    /* An Initializer that explicitly requires a string argument. */
-    struct StringInitializer : Initializer {
-        template <typename T> requires (impl::str_like<std::decay_t<T>>)
-        StringInitializer(T&& value) : Initializer(std::forward<T>(value)) {}
-    };
+    // TODO: initializers have to be nested classes in order to properly account for
+    // template types.
+    // -> Actually, as long as I'm careful about how I write the constructor, then it
+    // does actually work.  I just need to make sure to forward to the templated type
+    // using a secondarily templated constructor, rather than just using the top-level
+    // template type.
+    // -> In fact, I might be able to do away with these entirely if I forward the
+    // template type to the initializer_list directly.  If I static assert that the
+    // element type is hashable and derived from Object, then this should achieve the
+    // same effect.  DictInitializer just uses std::pair, so we don't need any changes.
 
     /* An initializer that explicitly requires an integer or None. */
-    struct SliceInitializer : Initializer {
+    struct SliceInitializer {
+        Object value;
         template <typename T>
             requires (
                 impl::int_like<std::decay_t<T>> ||
-                std::is_same_v<std::decay_t<T>, std::nullopt_t> ||
-                std::is_same_v<std::decay_t<T>, NoneType>
+                std::same_as<std::decay_t<T>, std::nullopt_t> ||
+                std::same_as<std::decay_t<T>, NoneType>
             )
-        SliceInitializer(T&& value) : Initializer(std::forward<T>(value)) {}
+        SliceInitializer(T&& value) : value(std::forward<T>(value)) {}
     };
 
     /* An Initializer that converts its argument to a python object and asserts that it
     is hashable, for static analysis. */
-    struct HashInitializer : Initializer {
+    struct HashInitializer {
+        Object value;
         template <typename K>
             requires (
-                !std::is_same_v<std::decay_t<K>, Handle> &&
+                !std::same_as<std::decay_t<K>, Handle> &&
                 impl::is_hashable<std::decay_t<K>>
             )
-        HashInitializer(K&& key) : Initializer(std::forward<K>(key)) {}
+        HashInitializer(K&& key) : value(std::forward<K>(key)) {}
     };
 
     /* A hashed Initializer that also stores a second item for dict-like access. */
-    struct DictInitializer : Initializer {
-        Object second;
+    struct DictInitializer {
+        Object key;
+        Object value;
         template <typename K, typename V>
             requires (
-                !std::is_same_v<std::decay_t<K>, Handle> &&
-                !std::is_same_v<std::decay_t<V>, Handle> &&
+                !std::same_as<std::decay_t<K>, Handle> &&
+                !std::same_as<std::decay_t<V>, Handle> &&
                 impl::is_hashable<std::decay_t<K>>
             )
         DictInitializer(K&& key, V&& value) :
-            Initializer(std::forward<K>(key)), second(std::forward<V>(value))
+            key(std::forward<K>(key)), value(std::forward<V>(value))
         {}
     };
-
-    template <typename T>
-    constexpr bool is_initializer = std::is_base_of_v<Initializer, T>;
 
 }
 
 
 template <std::derived_from<Slice> T>
-struct __getattr__<T, "indices">                            : Returns<Function> {};
+struct __getattr__<T, "indices">                                : Returns<Function> {};
 template <std::derived_from<Slice> T>
-struct __getattr__<T, "start">                              : Returns<Object> {};
+struct __getattr__<T, "start">                                  : Returns<Object> {};
 template <std::derived_from<Slice> T>
-struct __getattr__<T, "stop">                               : Returns<Object> {};
+struct __getattr__<T, "stop">                                   : Returns<Object> {};
 template <std::derived_from<Slice> T>
-struct __getattr__<T, "step">                               : Returns<Object> {};
+struct __getattr__<T, "step">                                   : Returns<Object> {};
 
 template <>
-struct __lt__<Slice, Object>                                : Returns<bool> {};
+struct __lt__<Slice, Object>                                    : Returns<bool> {};
 template <impl::slice_like T>
-struct __lt__<Slice, T>                                     : Returns<bool> {};
+struct __lt__<Slice, T>                                         : Returns<bool> {};
 template <>
-struct __le__<Slice, Object>                                : Returns<bool> {};
+struct __le__<Slice, Object>                                    : Returns<bool> {};
 template <impl::slice_like T>
-struct __le__<Slice, T>                                     : Returns<bool> {};
+struct __le__<Slice, T>                                         : Returns<bool> {};
 template <>
-struct __ge__<Slice, Object>                                : Returns<bool> {};
+struct __ge__<Slice, Object>                                    : Returns<bool> {};
 template <impl::slice_like T>
-struct __ge__<Slice, T>                                     : Returns<bool> {};
+struct __ge__<Slice, T>                                         : Returns<bool> {};
 template <>
-struct __gt__<Slice, Object>                                : Returns<bool> {};
+struct __gt__<Slice, Object>                                    : Returns<bool> {};
 template <impl::slice_like T>
-struct __gt__<Slice, T>                                     : Returns<bool> {};
+struct __gt__<Slice, T>                                         : Returns<bool> {};
 
 
 /* Wrapper around pybind11::slice that allows it to be instantiated with non-integer
@@ -312,7 +308,7 @@ public:
         size_t i = 0;
         std::array<Object, 3> params {None, None, None};
         for (const impl::SliceInitializer& item : indices) {
-            params[i++] = item.first;
+            params[i++] = item.value;
         }
         m_ptr = PySlice_New(params[0].ptr(), params[1].ptr(), params[2].ptr());
         if (m_ptr == nullptr) {
@@ -425,13 +421,13 @@ public:
 
 
 template <>
-struct __hash__<Module>                                     : Returns<size_t> {};
+struct __hash__<Module>                                         : Returns<size_t> {};
 template <StaticStr name> requires (!impl::getattr_helper<name>::enable)
-struct __getattr__<Module, name>                            : Returns<Object> {};
+struct __getattr__<Module, name>                                : Returns<Object> {};
 template <StaticStr name, typename Value> requires (!impl::setattr_helper<name>::enable)
-struct __setattr__<Module, name, Value>                     : Returns<void> {};
+struct __setattr__<Module, name, Value>                         : Returns<void> {};
 template <StaticStr name> requires (!impl::delattr_helper<name>::enable)
-struct __delattr__<Module, name>                            : Returns<void> {};
+struct __delattr__<Module, name>                                : Returns<void> {};
 
 
 /* Object subclass that represents an imported Python module. */
@@ -676,6 +672,7 @@ std::string repr(const T& obj) {
 namespace pybind11 {
 namespace detail {
 
+
 template <std::derived_from<bertrand::py::Object> T>
 struct type_caster<T> {
     PYBIND11_TYPE_CASTER(T, const_name("Object"));
@@ -713,6 +710,7 @@ struct type_caster<T> {
 
 };
 
+
 }  // namespace detail
 }  // namespace pybind11
 
@@ -745,24 +743,22 @@ namespace std {
         }
     };
 
+    #define BERTRAND_STD_EQUAL_TO(cls)                                                  \
+        template <>                                                                     \
+        struct equal_to<cls> {                                                          \
+            bool operator()(const cls& a, const cls& b) const {                         \
+                return a.equal(b);                                                      \
+            }                                                                           \
+        };                                                                              \
+
+    BERTRAND_STD_EQUAL_TO(bertrand::py::Handle)
+    BERTRAND_STD_EQUAL_TO(bertrand::py::WeakRef)
+    BERTRAND_STD_EQUAL_TO(bertrand::py::Capsule)
+
+
+    #undef BERTRAND_STD_EQUAL_TO
+
 };
 
 
-#define BERTRAND_STD_EQUAL_TO(cls)                                                      \
-namespace std {                                                                         \
-    template <>                                                                         \
-    struct equal_to<cls> {                                                              \
-        bool operator()(const cls& a, const cls& b) const {                             \
-            return a.equal(b);                                                          \
-        }                                                                               \
-    };                                                                                  \
-}                                                                                       \
-
-
-BERTRAND_STD_EQUAL_TO(bertrand::py::Handle)
-BERTRAND_STD_EQUAL_TO(bertrand::py::WeakRef)
-BERTRAND_STD_EQUAL_TO(bertrand::py::Capsule)
-
-
-#undef BERTRAND_STD_EQUAL_TO
 #endif // BERTRAND_PYTHON_COMMON_H

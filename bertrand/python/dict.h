@@ -83,7 +83,7 @@ struct __xor__<KeysView, T>                                 : Returns<Set> {};
 
 /* New subclass of pybind11::object representing a view into the keys of a dictionary
 object. */
-class KeysView : public Object {
+class KeysView : public Object, public impl::KeysTag {
     using Base = Object;
 
     template <typename T>
@@ -207,7 +207,7 @@ struct __contains__<ValuesView, T>                          : Returns<bool> {};
 
 /* New subclass of pybind11::object representing a view into the values of a dictionary
 object. */
-class ValuesView : public Object {
+class ValuesView : public Object, public impl::ValuesTag {
     using Base = Object;
 
     template <typename T>
@@ -274,7 +274,7 @@ struct __contains__<ItemsView, T>                           : Returns<bool> {};
 
 /* New subclass of pybind11::object representing a view into the items of a dictionary
 object. */
-class ItemsView : public Object {
+class ItemsView : public Object, public impl::ItemsTag {
     using Base = Object;
 
     template <typename T>
@@ -375,7 +375,7 @@ struct __ior__<Dict, T>                                     : Returns<Dict&> {};
 
 /* Wrapper around pybind11::dict that allows it to be directly initialized using
 std::initializer_list and enables extra C API functionality. */
-class Dict : public Object {
+class Dict : public Object, public impl::DictTag {
     using Base = Object;
 
 public:
@@ -408,7 +408,7 @@ public:
         }
         try {
             for (const impl::DictInitializer& item : contents) {
-                if (PyDict_SetItem(m_ptr, item.first.ptr(), item.second.ptr())) {
+                if (PyDict_SetItem(m_ptr, item.key.ptr(), item.value.ptr())) {
                     Exception::from_python();
                 }
             }
@@ -589,7 +589,7 @@ public:
             for (const impl::HashInitializer& init : keys) {
                 if (PyDict_SetItem(
                     result,
-                    init.first.ptr(),
+                    init.value.ptr(),
                     Py_None
                 )) {
                     Exception::from_python();
@@ -642,7 +642,7 @@ public:
             for (const impl::HashInitializer& init : keys) {
                 if (PyDict_SetItem(
                     result,
-                    init.first.ptr(),
+                    init.value.ptr(),
                     converted.ptr()
                 )) {
                     Exception::from_python();
@@ -791,7 +791,7 @@ public:
     /* Equivalent to Python `dict.update(<braced initializer list>)`. */
     inline void update(const std::initializer_list<impl::DictInitializer>& items) {
         for (const impl::DictInitializer& item : items) {
-            if (PyDict_SetItem(this->ptr(), item.first.ptr(), item.second.ptr())) {
+            if (PyDict_SetItem(this->ptr(), item.key.ptr(), item.value.ptr())) {
                 Exception::from_python();
             }
         }
@@ -883,7 +883,7 @@ struct __or__<MappingProxy, T>                              : Returns<Dict> {};
 
 /* New subclass of pybind11::object representing a read-only proxy for a Python
 dictionary or other mapping. */
-class MappingProxy : public Object {
+class MappingProxy : public Object, public impl::MappingProxyTag {
     using Base = Object;
 
     inline static bool runtime_check(PyObject* obj) {

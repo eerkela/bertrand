@@ -41,140 +41,6 @@ namespace impl {
         return TypeError(msg.str());
     }
 
-    /* Mixin holding operator overloads for types implementing the sequence protocol,
-    which makes them both concatenatable and repeatable. */
-    template <typename Derived>
-    class SequenceOps {
-
-        inline Derived& self() { return static_cast<Derived&>(*this); }
-        inline const Derived& self() const { return static_cast<const Derived&>(*this); }
-
-    public:
-        /* Equivalent to Python `sequence.count(value)`, but also takes optional
-        start/stop indices similar to `sequence.index()`. */
-        template <typename T>
-        inline Py_ssize_t count(
-            const T& value,
-            Py_ssize_t start = 0,
-            Py_ssize_t stop = -1
-        ) const {
-            if (start != 0 || stop != -1) {
-                PyObject* slice = PySequence_GetSlice(self().ptr(), start, stop);
-                if (slice == nullptr) {
-                    Exception::from_python();
-                }
-                Py_ssize_t result = PySequence_Count(
-                    slice,
-                    detail::object_or_cast(value).ptr()
-                );
-                Py_DECREF(slice);
-                if (result == -1 && PyErr_Occurred()) {
-                    Exception::from_python();
-                }
-                return result;
-            } else {
-                Py_ssize_t result = PySequence_Count(
-                    self().ptr(),
-                    detail::object_or_cast(value).ptr()
-                );
-                if (result == -1 && PyErr_Occurred()) {
-                    Exception::from_python();
-                }
-                return result;
-            }
-        }
-
-        /* Equivalent to Python `s.index(value[, start[, stop]])`. */
-        template <typename T>
-        inline Py_ssize_t index(
-            const T& value,
-            Py_ssize_t start = 0,
-            Py_ssize_t stop = -1
-        ) const {
-            if (start != 0 || stop != -1) {
-                PyObject* slice = PySequence_GetSlice(self().ptr(), start, stop);
-                if (slice == nullptr) {
-                    Exception::from_python();
-                }
-                Py_ssize_t result = PySequence_Index(
-                    slice,
-                    detail::object_or_cast(value).ptr()
-                );
-                Py_DECREF(slice);
-                if (result == -1 && PyErr_Occurred()) {
-                    Exception::from_python();
-                }
-                return result;
-            } else {
-                Py_ssize_t result = PySequence_Index(
-                    self().ptr(),
-                    detail::object_or_cast(value).ptr()
-                );
-                if (result == -1 && PyErr_Occurred()) {
-                    Exception::from_python();
-                }
-                return result;
-            }
-        }
-
-    protected:
-
-        template <typename Return, typename L, typename R>
-        static auto operator_add(const L& lhs, const R& rhs) {
-            PyObject* result = PySequence_Concat(
-                detail::object_or_cast(lhs).ptr(),
-                detail::object_or_cast(rhs).ptr()
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Return>(result);
-        }
-
-        template <typename Return, typename L, typename R>
-        static void operator_iadd(L& lhs, const R& rhs) {
-            PyObject* result = PySequence_InPlaceConcat(
-                lhs.ptr(),
-                detail::object_or_cast(rhs).ptr()
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == lhs.ptr()) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<L>(result);
-            }
-        }
-
-        template <typename Return, typename L>
-        static auto operator_mul(const L& lhs, Py_ssize_t repetitions) {
-            PyObject* result = PySequence_Repeat(
-                detail::object_or_cast(lhs).ptr(),
-                repetitions
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Return>(result);
-        }
-
-        template <typename Return, typename L>
-        static void operator_imul(L& lhs, Py_ssize_t repetitions) {
-            PyObject* result = PySequence_InPlaceRepeat(
-                lhs.ptr(),
-                repetitions
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == lhs.ptr()) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<L>(result);
-            }
-        }
-
-    };
-
 }
 
 
@@ -198,84 +64,84 @@ nice for initializer-list syntax, enabling containers to be assigned to like thi
     py::List list = {1, 2, 3, 4, 5};
     list = {5, 4, 3, 2, 1};
 */
-#define BERTRAND_OBJECT_COMMON(parent, cls, comptime_check, runtime_check)          \
-    /* Implement check() for compile-time C++ types. */                             \
-    template <typename T>                                                           \
-    static consteval bool check() { return comptime_check<T>; }                     \
-                                                                                    \
-    /* Implement check() for runtime C++ values. */                                 \
-    template <typename T> requires (!impl::python_like<T>)                          \
-    static consteval bool check(const T&) {                                         \
-        return check<T>();                                                          \
-    }                                                                               \
-                                                                                    \
-    /* Implement check() for runtime Python values. */                              \
-    template <typename T> requires (impl::python_like<T>)                           \
-    static bool check(const T& obj) {                                               \
-        return obj.ptr() != nullptr && runtime_check(obj.ptr());                    \
-    }                                                                               \
-                                                                                    \
-    /* pybind11 expects check_ internally, but the idea is the same. */             \
-    template <typename T> requires (impl::python_like<T>)                           \
-    static constexpr bool check_(const T& value) { return check(value); }           \
-    template <typename T> requires (!impl::python_like<T>)                          \
-    static constexpr bool check_(const T& value) { return check(value); }           \
-                                                                                    \
-    /* Inherit tagged borrow/steal constructors. */                                 \
-    cls(Handle h, const borrowed_t& t) : parent(h, t) {}                            \
-    cls(Handle h, const stolen_t& t) : parent(h, t) {}                              \
-                                                                                    \
-    /* Convert a pybind11 accessor into this type. */                               \
-    template <typename Policy>                                                      \
-    cls(const detail::accessor<Policy>& accessor) {                                 \
-        pybind11::object obj(accessor);                                             \
-        if (check(obj)) {                                                           \
-            m_ptr = obj.release().ptr();                                            \
-        } else {                                                                    \
-            throw impl::noconvert<cls>(obj.ptr());                                  \
-        }                                                                           \
-    }                                                                               \
-                                                                                    \
-    /* Trigger implicit conversions to this type via the assignment operator. */    \
-    template <typename T> requires (std::is_convertible_v<T, cls>)                  \
-    cls& operator=(T&& value) {                                                     \
-        if constexpr (std::is_same_v<cls, std::decay_t<T>>) {                       \
-            if (this != &value) {                                                   \
-                parent::operator=(std::forward<T>(value));                          \
-            }                                                                       \
-        } else if constexpr (impl::has_conversion_operator<std::decay_t<T>, cls>) { \
-            parent::operator=(value.operator cls());                                \
-        } else {                                                                    \
-            parent::operator=(cls(std::forward<T>(value)));                         \
-        }                                                                           \
-        return *this;                                                               \
-    }                                                                               \
-                                                                                    \
-    /* Convert to a pybind11 handle. */                                             \
-    inline operator pybind11::handle() const {                                      \
-        return pybind11::handle(m_ptr);                                             \
-    }                                                                               \
-                                                                                    \
-    /* Convert to a pybind11 object. */                                             \
-    inline operator pybind11::object() const {                                      \
-        return pybind11::reinterpret_borrow<pybind11::object>(m_ptr);               \
-    }                                                                               \
-                                                                                    \
-    /* Delete type narrowing operator inherited from Object. */                     \
-    template <std::derived_from<Object> T>                                          \
-    operator T() const = delete;                                                    \
-                                                                                    \
-    /* Mark pybind11::cast operator as explicit for subclasses. */                  \
-    template <typename T>                                                           \
-        requires (!impl::proxy_like<T> && !std::derived_from<T, Object>)            \
-    explicit operator T() const {                                                   \
-        return parent::operator T();                                                \
-    }                                                                               \
-                                                                                    \
-    template <StaticStr name>                                                       \
-    impl::Attr<cls, name> attr() const {                                            \
-        return impl::Attr<cls, name>(*this);                                        \
-    }                                                                               \
+#define BERTRAND_OBJECT_COMMON(parent, cls, comptime_check, runtime_check)              \
+    /* Implement check() for compile-time C++ types. */                                 \
+    template <typename T>                                                               \
+    static consteval bool check() { return comptime_check<T>; }                         \
+                                                                                        \
+    /* Implement check() for runtime C++ values. */                                     \
+    template <typename T> requires (!impl::python_like<T>)                              \
+    static consteval bool check(const T&) {                                             \
+        return check<T>();                                                              \
+    }                                                                                   \
+                                                                                        \
+    /* Implement check() for runtime Python values. */                                  \
+    template <typename T> requires (impl::python_like<T>)                               \
+    static bool check(const T& obj) {                                                   \
+        return obj.ptr() != nullptr && runtime_check(obj.ptr());                        \
+    }                                                                                   \
+                                                                                        \
+    /* pybind11 expects check_ internally, but the idea is the same. */                 \
+    template <typename T> requires (impl::python_like<T>)                               \
+    static constexpr bool check_(const T& value) { return check(value); }               \
+    template <typename T> requires (!impl::python_like<T>)                              \
+    static constexpr bool check_(const T& value) { return check(value); }               \
+                                                                                        \
+    /* Inherit tagged borrow/steal constructors. */                                     \
+    cls(Handle h, const borrowed_t& t) : parent(h, t) {}                                \
+    cls(Handle h, const stolen_t& t) : parent(h, t) {}                                  \
+                                                                                        \
+    /* Convert a pybind11 accessor into this type. */                                   \
+    template <typename Policy>                                                          \
+    cls(const detail::accessor<Policy>& accessor) {                                     \
+        pybind11::object obj(accessor);                                                 \
+        if (check(obj)) {                                                               \
+            m_ptr = obj.release().ptr();                                                \
+        } else {                                                                        \
+            throw impl::noconvert<cls>(obj.ptr());                                      \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
+    /* Trigger implicit conversions to this type via the assignment operator. */        \
+    template <typename T> requires (std::is_convertible_v<T, cls>)                      \
+    cls& operator=(T&& value) {                                                         \
+        if constexpr (std::is_same_v<cls, std::decay_t<T>>) {                           \
+            if (this != &value) {                                                       \
+                parent::operator=(std::forward<T>(value));                              \
+            }                                                                           \
+        } else if constexpr (impl::has_conversion_operator<std::decay_t<T>, cls>) {     \
+            parent::operator=(value.operator cls());                                    \
+        } else {                                                                        \
+            parent::operator=(cls(std::forward<T>(value)));                             \
+        }                                                                               \
+        return *this;                                                                   \
+    }                                                                                   \
+                                                                                        \
+    /* Convert to a pybind11 handle. */                                                 \
+    inline operator pybind11::handle() const {                                          \
+        return pybind11::handle(m_ptr);                                                 \
+    }                                                                                   \
+                                                                                        \
+    /* Convert to a pybind11 object. */                                                 \
+    inline operator pybind11::object() const {                                          \
+        return pybind11::reinterpret_borrow<pybind11::object>(m_ptr);                   \
+    }                                                                                   \
+                                                                                        \
+    /* Delete type narrowing operator inherited from Object. */                         \
+    template <std::derived_from<Object> T>                                              \
+    operator T() const = delete;                                                        \
+                                                                                        \
+    /* Mark pybind11::cast operator as explicit for subclasses. */                      \
+    template <typename T>                                                               \
+        requires (!impl::proxy_like<T> && !std::derived_from<T, Object>)                \
+    explicit operator T() const {                                                       \
+        return parent::operator T();                                                    \
+    }                                                                                   \
+                                                                                        \
+    template <StaticStr name>                                                           \
+    impl::Attr<cls, name> attr() const {                                                \
+        return impl::Attr<cls, name>(*this);                                            \
+    }                                                                                   \
 
 
 // NOTE: Object implicitly allows all operators, but will defer to a subclass if
@@ -403,16 +269,9 @@ template <std::convertible_to<Object> R>
 struct __ixor__<Object, R>                                  : Returns<Object&> {};
 
 
-// TODO: maybe place unsafe hooks for the protected helpers in the impl:: namespace
-// so that they can be used from outside the Object class for optimization purposes
-// in rounding algorithms, etc.  The base operators would then call these hooks, and
-// the BERTRAND_OPERATORS macro would specify them as friends.  This satisfies the
-// visibility issue for both the operators and rounding strategies.
-
-
-/* A revised pybind11::object interface that allows implicit conversions to subtypes
-(applying a type check on the way), explicit conversions to arbitrary C++ types via
-static_cast<>, cross-language math operators, and generalized slice/attr syntax. */
+/* A revised Python object interface that allows implicit conversions to subtypes
+(applying a type check on the way), explicit conversions to arbitrary C++ types,
+type-safe operators, and generalized slice/attr syntax. */
 class Object {
 protected:
     PyObject* m_ptr;
@@ -427,8 +286,8 @@ protected:
     template <std::derived_from<Object> T>
     friend T reinterpret_steal(Handle);
 
-    template <typename Return, typename T, typename... Args>
-    static Return operator_call(const T& obj, Args&&... args) {
+    template <typename Return, typename Self, typename... Args>
+    static Return operator_call(const Self& obj, Args&&... args) {
         try {
             if constexpr (std::is_void_v<Return>) {
                 Handle(obj.ptr())(std::forward<Args>(args)...);
@@ -443,26 +302,26 @@ protected:
         }
     }
 
-    template <typename Return, typename T, typename Key>
-    static impl::Item<T, std::decay_t<Key>> operator_getitem(
-        const T& obj,
+    template <typename Return, typename Self, typename Key>
+    static impl::Item<Self, std::decay_t<Key>> operator_getitem(
+        const Self& obj,
         Key&& key
     );
 
-    template <typename Return, typename T>
-    static impl::Item<T, Slice> operator_getitem(
-        const T& obj,
+    template <typename Return, typename Self>
+    static impl::Item<Self, Slice> operator_getitem(
+        const Self& obj,
         std::initializer_list<impl::SliceInitializer> slice
     );
 
-    template <typename Return, typename T>
-    static impl::Iterator<impl::GenericIter<Return>> operator_begin(const T& obj);
-    template <typename Return, typename T>
-    static impl::Iterator<impl::GenericIter<Return>> operator_end(const T& obj);
-    template <typename Return, typename T>
-    static impl::Iterator<impl::GenericIter<Return>> operator_rbegin(const T& obj);
-    template <typename Return, typename T>
-    static impl::Iterator<impl::GenericIter<Return>> operator_rend(const T& obj);
+    template <typename Return, typename Self>
+    static impl::Iterator<impl::GenericIter<Return>> operator_begin(const Self& obj);
+    template <typename Return, typename Self>
+    static impl::Iterator<impl::GenericIter<Return>> operator_end(const Self& obj);
+    template <typename Return, typename Self>
+    static impl::Iterator<impl::GenericIter<Return>> operator_rbegin(const Self& obj);
+    template <typename Return, typename Self>
+    static impl::Iterator<impl::GenericIter<Return>> operator_rend(const Self& obj);
 
     template <typename Return, typename L, typename R>
     static bool operator_contains(const L& lhs, const R& rhs) {
@@ -476,8 +335,8 @@ protected:
         return result;
     }
 
-    template <typename Return, typename T>
-    static size_t operator_len(const T& obj) {
+    template <typename Return, typename Self>
+    static size_t operator_len(const Self& obj) {
         Py_ssize_t size = PyObject_Size(obj.ptr());
         if (size < 0) {
             Exception::from_python();
@@ -485,8 +344,8 @@ protected:
         return size;
     }
 
-    template <typename T>
-    static auto operator_dereference(const T& obj) {
+    template <typename Self>
+    static auto operator_dereference(const Self& obj) {
         try {
             return *Handle(obj.ptr());
         } catch (...) {
@@ -572,8 +431,8 @@ protected:
         return result;
     }
 
-    template <typename Return, typename T>
-    static auto operator_abs(const T& obj) {
+    template <typename Return, typename Self>
+    static auto operator_abs(const Self& obj) {
         PyObject* result = PyNumber_Absolute(obj.ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -581,8 +440,8 @@ protected:
         return Return(result, stolen_t{});
     }
 
-    template <typename Return, typename T>
-    static auto operator_invert(const T& obj) {
+    template <typename Return, typename Self>
+    static auto operator_invert(const Self& obj) {
         PyObject* result = PyNumber_Invert(detail::object_or_cast(obj).ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -590,8 +449,8 @@ protected:
         return Return(result, stolen_t{});
     }
 
-    template <typename Return, typename T>
-    static auto operator_pos(const T& obj) {
+    template <typename Return, typename Self>
+    static auto operator_pos(const Self& obj) {
         PyObject* result = PyNumber_Positive(detail::object_or_cast(obj).ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -599,8 +458,8 @@ protected:
         return Return(result, stolen_t{});
     }
 
-    template <typename Return, typename T>
-    static void operator_increment(T& obj) {
+    template <typename Return, typename Self>
+    static void operator_increment(Self& obj) {
         static const pybind11::int_ one = 1;
         PyObject* result = PyNumber_InPlaceAdd(
             detail::object_or_cast(obj).ptr(),
@@ -643,8 +502,8 @@ protected:
         }
     }
 
-    template <typename Return, typename T>
-    static auto operator_neg(const T& obj) {
+    template <typename Return, typename Self>
+    static auto operator_neg(const Self& obj) {
         PyObject* result = PyNumber_Negative(detail::object_or_cast(obj).ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -652,8 +511,8 @@ protected:
         return Return(result, stolen_t{});
     }
 
-    template <typename Return, typename T>
-    static void operator_decrement(T& obj) {
+    template <typename Return, typename Self>
+    static void operator_decrement(Self& obj) {
         static const pybind11::int_ one = 1;
         PyObject* result = PyNumber_InPlaceSubtract(
             detail::object_or_cast(obj).ptr(),
@@ -1282,6 +1141,135 @@ T reinterpret_steal(Handle obj) {
 template <std::derived_from<pybind11::object> T>
 T reinterpret_steal(Handle obj) {
     return pybind11::reinterpret_steal<T>(obj);
+}
+
+
+namespace impl {
+
+    // TODO: make this accept an extra template argument for the value stored within
+    // the container.  index() and count() should account for this
+
+    /* Mixin holding operator overloads for types implementing the sequence protocol,
+    which makes them both concatenatable and repeatable. */
+    template <typename Derived>
+    class SequenceOps {
+
+        inline Derived& self() { return static_cast<Derived&>(*this); }
+        inline const Derived& self() const { return static_cast<const Derived&>(*this); }
+
+    public:
+        /* Equivalent to Python `sequence.count(value)`, but also takes optional
+        start/stop indices similar to `sequence.index()`. */
+        inline Py_ssize_t count(
+            const Object& value,
+            Py_ssize_t start = 0,
+            Py_ssize_t stop = -1
+        ) const {
+            if (start != 0 || stop != -1) {
+                PyObject* slice = PySequence_GetSlice(self().ptr(), start, stop);
+                if (slice == nullptr) {
+                    Exception::from_python();
+                }
+                Py_ssize_t result = PySequence_Count(slice, value.ptr());
+                Py_DECREF(slice);
+                if (result == -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                return result;
+            } else {
+                Py_ssize_t result = PySequence_Count(self().ptr(), value.ptr());
+                if (result == -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                return result;
+            }
+        }
+
+        /* Equivalent to Python `s.index(value[, start[, stop]])`. */
+        inline Py_ssize_t index(
+            const Object& value,
+            Py_ssize_t start = 0,
+            Py_ssize_t stop = -1
+        ) const {
+            if (start != 0 || stop != -1) {
+                PyObject* slice = PySequence_GetSlice(self().ptr(), start, stop);
+                if (slice == nullptr) {
+                    Exception::from_python();
+                }
+                Py_ssize_t result = PySequence_Index(slice, value.ptr());
+                Py_DECREF(slice);
+                if (result == -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                return result;
+            } else {
+                Py_ssize_t result = PySequence_Index(self().ptr(), value.ptr());
+                if (result == -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                return result;
+            }
+        }
+
+    protected:
+
+        template <typename Return, typename L, typename R>
+        static auto operator_add(const L& lhs, const R& rhs) {
+            PyObject* result = PySequence_Concat(
+                detail::object_or_cast(lhs).ptr(),
+                detail::object_or_cast(rhs).ptr()
+            );
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+
+        template <typename Return, typename L, typename R>
+        static void operator_iadd(L& lhs, const R& rhs) {
+            PyObject* result = PySequence_InPlaceConcat(
+                lhs.ptr(),
+                detail::object_or_cast(rhs).ptr()
+            );
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+
+        template <typename Return, typename L>
+        static auto operator_mul(const L& lhs, Py_ssize_t repetitions) {
+            PyObject* result = PySequence_Repeat(
+                detail::object_or_cast(lhs).ptr(),
+                repetitions
+            );
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+
+        template <typename Return, typename L>
+        static void operator_imul(L& lhs, Py_ssize_t repetitions) {
+            PyObject* result = PySequence_InPlaceRepeat(
+                lhs.ptr(),
+                repetitions
+            );
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+
+    };
+
+
 }
 
 
