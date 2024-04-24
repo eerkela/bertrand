@@ -149,8 +149,8 @@ namespace impl {
         inline static Dict maketrans(const Derived& from, const Derived& to);
 
         /* Equivalent to Python `bytes.partition(sep)`. */
-        inline Tuple partition(const Derived& sep) const {
-            return reinterpret_steal<Tuple>(attr<"partition">()(sep).release());
+        inline Tuple<Derived> partition(const Derived& sep) const {
+            return reinterpret_steal<Tuple<Derived>>(attr<"partition">()(sep).release());
         }
 
         /* Equivalent to Python `bytes.removeprefix(prefix)`. */
@@ -211,8 +211,8 @@ namespace impl {
         }
 
         /* Equivalent to Python `bytes.rpartition(sep)`. */
-        inline Tuple rpartition(const Derived& sep) const {
-            return reinterpret_steal<Tuple>(attr<"rpartition">()(sep).release());
+        inline Tuple<Derived> rpartition(const Derived& sep) const {
+            return reinterpret_steal<Tuple<Derived>>(attr<"rpartition">()(sep).release());
         }
 
         /* Equivalent to Python `bytes.rsplit()`. */

@@ -192,7 +192,7 @@ public:
     }
 
     template <typename T>
-        requires (!std::same_as<T, Wrapped> && std::convertible_to<Wrapped, T>)
+        requires (!std::same_as<Wrapped, T> && std::convertible_to<Wrapped, T>)
     operator T() const {
         return implicit_cast<T>(get_value());
     }

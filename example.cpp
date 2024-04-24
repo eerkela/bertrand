@@ -159,26 +159,17 @@ int test(const py::Object& obj) {
 
 
 
-struct Holder {
-    static int x;
-};
 
 
-inline int Holder::x = 3;
 
 
-template <typename T = py::Object>
-struct Foo : public py::List, public Holder {
-    using Wrapped = T;
-
-    using py::List::List;
-};
+void func(const py::Tuple<>& arg) {
+    // do stuff
+}
 
 
-template <typename T>
-Foo(const std::initializer_list<T>&) -> Foo<py::Object>;
-template <typename... Args>
-Foo(Args&&...) -> Foo<py::Object>;
+
+
 
 
 void run() {
@@ -186,11 +177,34 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
+    // py::Tuple tuple;
+    // py::Tuple tuple2(tuple);  // TODO: this should be calling the templated copy constructor
+    // py::print(tuple);
+    // py::print(typeid(decltype(tuple)::value_type).name());
 
 
 
-    py::Tuple t = {1, 2, "abc"};
-    py::print(t[0]);
+
+
+
+
+
+
+    // py::Tuple<py::Int> x = {1, 2, 3};
+    // // py::Tuple<py::Str> y = x;
+    // // py::Tuple<py::Object> t = x;  // TODO: enable this
+    // py::Tuple t = x;
+    // py::print(t[0]);
+    // py::print(typeid(decltype(t)::value_type).name());
+    // py::print(typeid(decltype(t[0].value())).name());
+
+
+    // for (auto&& item : t) {
+    //     py::print(item);
+    // }
+
+
+
 
 
 

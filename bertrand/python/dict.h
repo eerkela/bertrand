@@ -263,9 +263,9 @@ struct __getattr__<ItemsView, "mapping">                    : Returns<MappingPro
 template <>
 struct __len__<ItemsView>                                   : Returns<size_t> {};
 template <>
-struct __iter__<ItemsView>                                  : Returns<Tuple> {};
+struct __iter__<ItemsView>                                  : Returns<Tuple<Object>> {};  // TODO: should yield Tuple<Key, Value> or std::pair<Key, Value> instead
 template <>
-struct __reversed__<ItemsView>                              : Returns<Tuple> {};
+struct __reversed__<ItemsView>                              : Returns<Tuple<Object>> {};  // TODO: should yield Tuple<Key, Value> or std::pair<Key, Value> instead
 template <impl::tuple_like T>
 struct __contains__<ItemsView, T>                           : Returns<bool> {};
 
@@ -769,6 +769,62 @@ public:
             }
         }
     }
+
+    /////////////////////
+    ////    VIEWS    ////
+    /////////////////////
+
+    // TODO: do these store a const Dict& ?  If so, then copy/move constructors are
+    // disabled.  This probably isn't a bad thing.
+
+    struct Keys {
+        const Dict& dict;
+
+        Keys(const Dict& dict) : dict(dict) {}
+
+        // inline MappingProxy mapping() const {
+        //     return MappingProxy(dict);
+        // }
+
+        // template <impl::is_iterable T>
+        // inline bool isdisjoint(const T& other) const;
+
+        // inline bool isdisjoint(
+        //     const std::initializer_list<impl::HashInitializer>& other
+        // ) const;
+
+        // TODO: implement size(), begin(), end(), rbegin(), rend(), <, <=, ==, !=, >=,
+        // >, |, &, -, ^
+
+        inline auto begin() const {
+            return impl::Iterator<impl::KeyIter<Object>>(dict);
+        }
+
+        inline auto end() const {
+            return impl::Iterator<impl::KeyIter<Object>>();
+        }
+
+        // TODO: reverse iterators over dictionaries are somewhat complicated, since
+        // keys are always yielded in forward order.  We'd need to make a temporary
+        // stack to iterate over them in reverse order.
+
+        // inline auto rbegin() const {
+        //     return impl::ReverseIterator<impl::KeyIter<Object>>(dict);
+        // }
+
+        // inline auto rend() const {
+        //     return impl::ReverseIterator<impl::KeyIter<Object>>(dict);
+        // }
+
+    };
+
+    struct Values {
+
+    };
+
+    struct Items {
+
+    };
 
     /* Equivalent to Python `dict.keys()`. */
     inline KeysView keys() const;

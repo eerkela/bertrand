@@ -21,7 +21,6 @@
 #include "python/math.h"
 #include "python/type.h"
 
-
 #include "regex.h"
 
 
@@ -154,7 +153,7 @@ inline const Type Complex::type = reinterpret_borrow<Type>((PyObject*) &PyComple
 inline const Type Slice::type = reinterpret_borrow<Type>((PyObject*) &PySlice_Type);
 inline const Type Range::type = reinterpret_borrow<Type>((PyObject*) &PyRange_Type);
 inline const Type List::type = reinterpret_borrow<Type>((PyObject*) &PyList_Type);
-inline const Type Tuple::type = reinterpret_borrow<Type>((PyObject*) &PyTuple_Type);
+inline const Type impl::TupleTag::type = reinterpret_borrow<Type>((PyObject*) &PyTuple_Type);
 inline const Type Set::type = reinterpret_borrow<Type>((PyObject*) &PySet_Type);
 inline const Type FrozenSet::type = reinterpret_borrow<Type>((PyObject*) &PyFrozenSet_Type);
 inline const Type Dict::type = reinterpret_borrow<Type>((PyObject*) &PyDict_Type);
@@ -255,7 +254,7 @@ inline Float::Float(const Str& str) :
 }
 
 
-inline Type::Type(const Str& name, const Tuple& bases, const Dict& dict) :
+inline Type::Type(const Str& name, const Tuple<Type>& bases, const Dict& dict) :
     Base(nullptr, stolen_t{})
 {
     m_ptr = PyObject_CallFunctionObjArgs(
@@ -499,7 +498,6 @@ inline KeysView MappingProxy::keys() const {
 }
 
 
-
 inline ValuesView MappingProxy::values() const {
     return reinterpret_steal<ValuesView>(attr<"values">()().release());
 }
@@ -662,8 +660,8 @@ inline Dict Str::maketrans(const Object& x, const Object& y, const Object& z) {
 }
 
 
-inline Tuple Str::partition(const Str& sep) const {
-    return reinterpret_steal<Tuple>(attr<"partition">()(sep).release());
+inline Tuple<Str> Str::partition(const Str& sep) const {
+    return reinterpret_steal<Tuple<Str>>(attr<"partition">()(sep).release());
 }
 
 
@@ -687,8 +685,8 @@ inline Str Str::rjust(const Int& width, const Str& fillchar) const {
 }
 
 
-inline Tuple Str::rpartition(const Str& sep) const {
-    return reinterpret_steal<Tuple>(attr<"rpartition">()(sep).release());
+inline Tuple<Str> Str::rpartition(const Str& sep) const {
+    return reinterpret_steal<Tuple<Str>>(attr<"rpartition">()(sep).release());
 }
 
 
@@ -1754,7 +1752,7 @@ inline Dict vars(const Object& object) {
 auto Regex::Match::group(const py::args& args) const
     -> std::vector<std::optional<std::string>>
 {
-    auto tuple = py::Tuple::from_args(args);
+    auto tuple = py::Tuple<py::Object>::from_args(args);
     std::vector<std::optional<std::string>> result;
     result.reserve(tuple.size());
 

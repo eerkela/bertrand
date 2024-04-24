@@ -119,13 +119,10 @@ namespace impl {
     }
 
     template <typename T>
-    concept python_like = (
-        std::derived_from<std::remove_cvref_t<T>, pybind11::object> ||
-        std::derived_from<std::remove_cvref_t<T>, Object>
-    );
+    concept proxy_like = std::derived_from<std::remove_cvref_t<T>, ProxyTag>;
 
     template <typename T>
-    concept proxy_like = std::derived_from<std::remove_cvref_t<T>, ProxyTag>;
+    concept not_proxy_like = !proxy_like<T>;
 
     template <typename T>
     concept initializer_like = std::derived_from<std::remove_cvref_t<T>, InitializerTag>;
@@ -134,6 +131,12 @@ namespace impl {
     concept accessor_like = requires(const T& t) {
         { []<typename Policy>(const detail::accessor<Policy>){}(t) } -> std::same_as<void>;
     };
+
+    template <typename T>
+    concept python_like = (
+        std::derived_from<std::remove_cvref_t<T>, pybind11::object> ||
+        std::derived_from<std::remove_cvref_t<T>, Object>
+    );
 
     template <typename T>
     concept sequence_like = requires(const T& t) {

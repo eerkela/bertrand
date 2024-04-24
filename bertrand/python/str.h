@@ -629,7 +629,7 @@ public:
     inline static Dict maketrans(const Object& x, const Object& y, const Object& z);
 
     /* Equivalent to Python `str.partition(sep)`. */
-    inline Tuple partition(const Str& sep) const;
+    inline Tuple<Str> partition(const Str& sep) const;
 
     /* Equivalent to Python `str.removeprefix(prefix)`. */
     inline Str removeprefix(const Str& prefix) const;
@@ -722,7 +722,7 @@ public:
     inline Str rjust(const Int& width, const Str& fillchar) const;
 
     /* Equivalent to Python `str.rpartition(sep)`. */
-    inline Tuple rpartition(const Str& sep) const;
+    inline Tuple<Str> rpartition(const Str& sep) const;
 
     /* Equivalent to Python `str.rsplit()`. */
     inline List rsplit() const;

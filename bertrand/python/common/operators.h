@@ -43,6 +43,11 @@ namespace py {
 */
 
 #define BERTRAND_OBJECT_OPERATORS(cls)                                                  \
+    template <StaticStr name>                                                           \
+    impl::Attr<cls, name> attr() const {                                                \
+        return impl::Attr<cls, name>(*this);                                            \
+    }                                                                                   \
+                                                                                        \
     template <typename... Args> requires (__call__<cls, Args...>::enable)               \
     auto operator()(Args&&... args) const {                                             \
         using Return = typename __call__<cls, Args...>::Return;                         \
@@ -624,7 +629,7 @@ namespace impl {
     template <> struct getattr_helper<"__class__">          : Returns<Type> {};
     template <> struct setattr_helper<"__class__">          : Returns<void> {};
     template <> struct delattr_helper<"__class__">          : Returns<void> {};
-    template <> struct getattr_helper<"__bases__">          : Returns<Tuple> {};
+    template <> struct getattr_helper<"__bases__">          : Returns<Tuple<Type>> {};
     template <> struct setattr_helper<"__bases__">          : Returns<void> {};
     template <> struct delattr_helper<"__bases__">          : Returns<void> {};
     template <> struct getattr_helper<"__name__">           : Returns<Str> {};
@@ -636,7 +641,7 @@ namespace impl {
     template <> struct getattr_helper<"__type_params__">    : Returns<Object> {};  // type?
     template <> struct setattr_helper<"__type_params__">    : Returns<void> {};
     template <> struct delattr_helper<"__type_params__">    : Returns<void> {};
-    template <> struct getattr_helper<"__mro__">            : Returns<Tuple> {};
+    template <> struct getattr_helper<"__mro__">            : Returns<Tuple<Type>> {};
     template <> struct setattr_helper<"__mro__">            : Returns<void> {};
     template <> struct delattr_helper<"__mro__">            : Returns<void> {};
     template <> struct getattr_helper<"__subclasses__">     : Returns<Function> {};
@@ -729,7 +734,7 @@ namespace impl {
     template <> struct getattr_helper<"__exit__">           : Returns<Function> {};
     template <> struct setattr_helper<"__exit__">           : Returns<void> {};
     template <> struct delattr_helper<"__exit__">           : Returns<void> {};
-    template <> struct getattr_helper<"__match_args__">     : Returns<Tuple> {};
+    template <> struct getattr_helper<"__match_args__">     : Returns<Tuple<Object>> {};
     template <> struct setattr_helper<"__match_args__">     : Returns<void> {};
     template <> struct delattr_helper<"__match_args__">     : Returns<void> {};
     template <> struct getattr_helper<"__buffer__">         : Returns<Function> {};
@@ -758,6 +763,19 @@ namespace impl {
     concept object_operand =
         std::derived_from<L, Object> || std::derived_from<R, Object>;
 
+    template <typename T>
+    struct unwrap_proxy_helper {
+        using type = T;
+    };
+
+    template <proxy_like T>
+    struct unwrap_proxy_helper<T> {
+        using type = typename T::Wrapped;
+    };
+
+    template <typename T>
+    using unwrap_proxy = typename unwrap_proxy_helper<T>::type;
+
 }
 
 
@@ -775,8 +793,13 @@ namespace impl {
 
 template <typename T, typename... Args>
 struct __call__ { static constexpr bool enable = false; };
+template <typename T, typename... Args> requires (impl::proxy_like<Args> || ...)
+struct __call__<T, Args...> : __call__<T, impl::unwrap_proxy<Args>...> {};
 template <impl::proxy_like T, typename... Args>
-struct __call__<T, Args...> : __call__<typename T::Wrapped, Args...> {};
+struct __call__<T, Args...> : __call__<impl::unwrap_proxy<T>, Args...> {};
+template <impl::proxy_like T, typename... Args> requires (impl::proxy_like<Args> || ...)
+struct __call__<T, Args...> : __call__<impl::unwrap_proxy<T>, impl::unwrap_proxy<Args>...> {};
+
 
 
 ////////////////////
@@ -805,27 +828,28 @@ namespace impl {
 
 template <typename T, StaticStr name>
 struct __getattr__ { static constexpr bool enable = false; };
-template <impl::proxy_like T, StaticStr name>
-struct __getattr__<T, name> : __getattr__<typename T::Wrapped, name> {};
-template <std::derived_from<Object> T, StaticStr name>
-    requires (impl::getattr_helper<name>::enable)
+template <std::derived_from<Object> T, StaticStr name> requires (impl::getattr_helper<name>::enable)
 struct __getattr__<T, name> : Returns<typename impl::getattr_helper<name>::Return> {};
+template <impl::proxy_like T, StaticStr name>
+struct __getattr__<T, name> : __getattr__<impl::unwrap_proxy<T>, name> {};
 
 template <typename T, StaticStr name, typename Value>
 struct __setattr__ { static constexpr bool enable = false; };
-template <impl::proxy_like T, StaticStr name, typename Value>
-struct __setattr__<T, name, Value> : __setattr__<typename T::Wrapped, name, Value> {};
-template <std::derived_from<Object> T, StaticStr name, typename Value>
-    requires (impl::setattr_helper<name>::enable)
+template <std::derived_from<Object> T, StaticStr name, typename Value> requires (impl::setattr_helper<name>::enable)
 struct __setattr__<T, name, Value> : Returns<typename impl::setattr_helper<name>::Return> {};
+template <impl::proxy_like T, StaticStr name, impl::not_proxy_like Value>
+struct __setattr__<T, name, Value> : __setattr__<impl::unwrap_proxy<T>, name, Value> {};
+template <impl::not_proxy_like T, StaticStr name, impl::proxy_like Value>
+struct __setattr__<T, name, Value> : __setattr__<T, name, impl::unwrap_proxy<Value>> {};
+template <impl::proxy_like T, StaticStr name, impl::proxy_like Value>
+struct __setattr__<T, name, Value> : __setattr__<impl::unwrap_proxy<T>, name, impl::unwrap_proxy<Value>> {};
 
 template <typename T, StaticStr name>
 struct __delattr__ { static constexpr bool enable = false; };
-template <impl::proxy_like T, StaticStr name>
-struct __delattr__<T, name> : __delattr__<typename T::Wrapped, name> {};
-template <std::derived_from<Object> T, StaticStr name>
-    requires (impl::delattr_helper<name>::enable)
+template <std::derived_from<Object> T, StaticStr name> requires (impl::delattr_helper<name>::enable)
 struct __delattr__<T, name> : Returns<typename impl::delattr_helper<name>::Return> {};
+template <impl::proxy_like T, StaticStr name>
+struct __delattr__<T, name> : __delattr__<impl::unwrap_proxy<T>, name> {};
 
 
 ////////////////////
@@ -854,18 +878,38 @@ namespace impl {
 
 template <typename T, typename Key>
 struct __getitem__ { static constexpr bool enable = false; };
-template <impl::proxy_like T, typename Key>
-struct __getitem__<T, Key> : __getitem__<typename T::Wrapped, Key> {};
+template <impl::proxy_like T, impl::not_proxy_like Key>
+struct __getitem__<T, Key> : __getitem__<impl::unwrap_proxy<T>, Key> {};
+template <impl::not_proxy_like T, impl::proxy_like Key>
+struct __getitem__<T, Key> : __getitem__<T, impl::unwrap_proxy<Key>> {};
+template <impl::proxy_like T, impl::proxy_like Key>
+struct __getitem__<T, Key> : __getitem__<impl::unwrap_proxy<T>, impl::unwrap_proxy<Key>> {};
 
 template <typename T, typename Key, typename Value>
 struct __setitem__ { static constexpr bool enable = false; };
-template <impl::proxy_like T, typename Key, typename Value>
-struct __setitem__<T, Key, Value> : __setitem__<typename T::Wrapped, Key, Value> {};
+template <impl::proxy_like T, impl::not_proxy_like Key, impl::not_proxy_like Value>
+struct __setitem__<T, Key, Value> : __setitem__<impl::unwrap_proxy<T>, Key, Value> {};
+template <impl::not_proxy_like T, impl::proxy_like Key, impl::not_proxy_like Value>
+struct __setitem__<T, Key, Value> : __setitem__<T, impl::unwrap_proxy<Key>, Value> {};
+template <impl::not_proxy_like T, impl::not_proxy_like Key, impl::proxy_like Value>
+struct __setitem__<T, Key, Value> : __setitem__<T, Key, impl::unwrap_proxy<Value>> {};
+template <impl::proxy_like T, impl::proxy_like Key, impl::not_proxy_like Value>
+struct __setitem__<T, Key, Value> : __setitem__<impl::unwrap_proxy<T>, impl::unwrap_proxy<Key>, Value> {};
+template <impl::proxy_like T, impl::not_proxy_like Key, impl::proxy_like Value>
+struct __setitem__<T, Key, Value> : __setitem__<impl::unwrap_proxy<T>, Key, Value> {};
+template <impl::not_proxy_like T, impl::proxy_like Key, impl::proxy_like Value>
+struct __setitem__<T, Key, Value> : __setitem__<T, impl::unwrap_proxy<Key>, Value> {};
+template <impl::proxy_like T, impl::proxy_like Key, impl::proxy_like Value>
+struct __setitem__<T, Key, Value> : __setitem__<impl::unwrap_proxy<T>, impl::unwrap_proxy<Key>, impl::unwrap_proxy<Value>> {};
 
 template <typename T, typename Key>
 struct __delitem__ { static constexpr bool enable = false; };
-template <impl::proxy_like T, typename Key>
-struct __delitem__<T, Key> : __delitem__<typename T::Wrapped, Key> {};
+template <impl::proxy_like T, impl::not_proxy_like Key>
+struct __delitem__<T, Key> : __delitem__<impl::unwrap_proxy<T>, Key> {};
+template <impl::not_proxy_like T, impl::proxy_like Key>
+struct __delitem__<T, Key> : __delitem__<T, impl::unwrap_proxy<Key>> {};
+template <impl::proxy_like T, impl::proxy_like Key>
+struct __delitem__<T, Key> : __delitem__<impl::unwrap_proxy<T>, impl::unwrap_proxy<Key>> {};
 
 
 ////////////////////
@@ -887,7 +931,7 @@ namespace impl {
 template <typename T>
 struct __len__ { static constexpr bool enable = false; };
 template <impl::proxy_like T>
-struct __len__<T> : __len__<typename T::Wrapped> {};
+struct __len__<T> : __len__<impl::unwrap_proxy<T>> {};
 
 
 ////////////////////
@@ -913,12 +957,12 @@ namespace impl {
 template <typename T>
 struct __iter__ { static constexpr bool enable = false; };
 template <impl::proxy_like T>
-struct __iter__<T> : __iter__<typename T::Wrapped> {};
+struct __iter__<T> : __iter__<impl::unwrap_proxy<T>> {};
 
 template <typename T>
 struct __reversed__ { static constexpr bool enable = false; };
 template <impl::proxy_like T>
-struct __reversed__<T> : __reversed__<typename T::Wrapped> {};
+struct __reversed__<T> : __reversed__<impl::unwrap_proxy<T>> {};
 
 
 ////////////////////////
@@ -935,8 +979,12 @@ namespace impl {
 
 template <typename T, typename Key>
 struct __contains__ { static constexpr bool enable = false; };
-template <impl::proxy_like T, typename Key>
-struct __contains__<T, Key> : __contains__<typename T::Wrapped, Key> {};
+template <impl::proxy_like T, impl::not_proxy_like Key>
+struct __contains__<T, Key> : __contains__<impl::unwrap_proxy<T>, Key> {};
+template <impl::not_proxy_like T, impl::proxy_like Key>
+struct __contains__<T, Key> : __contains__<T, impl::unwrap_proxy<Key>> {};
+template <impl::proxy_like T, impl::proxy_like Key>
+struct __contains__<T, Key> : __contains__<impl::unwrap_proxy<T>, impl::unwrap_proxy<Key>> {};
 
 
 ///////////////////////////
@@ -969,7 +1017,7 @@ namespace impl {
 template <typename T>
 struct __hash__ { static constexpr bool enable = false; };
 template <impl::proxy_like T>
-struct __hash__<T> : __hash__<typename T::Wrapped> {};
+struct __hash__<T> : __hash__<impl::unwrap_proxy<T>> {};
 
 
 /////////////////////////
@@ -986,12 +1034,12 @@ namespace impl {
 
 template <typename L, typename R>
 struct __lt__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __lt__<L, R> : __lt__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __lt__<L, R> : __lt__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __lt__<L, R> : __lt__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __lt__<L, R> : __lt__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __lt__<L, R> : __lt__<typename L::Wrapped, typename R::Wrapped> {};
+struct __lt__<L, R> : __lt__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R> requires (__lt__<L, R>::enable)
@@ -1032,12 +1080,12 @@ namespace impl {
 
 template <typename L, typename R>
 struct __le__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __le__<L, R> : __le__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __le__<L, R> : __le__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __le__<L, R> : __le__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __le__<L, R> : __le__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __le__<L, R> : __le__<typename L::Wrapped, typename R::Wrapped> {};
+struct __le__<L, R> : __le__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R> requires (__le__<L, R>::enable)
@@ -1078,12 +1126,12 @@ namespace impl {
 
 template <typename L, typename R>
 struct __eq__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __eq__<L, R> : __eq__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __eq__<L, R> : __eq__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __eq__<L, R> : __eq__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __eq__<L, R> : __eq__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __eq__<L, R> : __eq__<typename L::Wrapped, typename R::Wrapped> {};
+struct __eq__<L, R> : __eq__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R> requires (__eq__<L, R>::enable)
@@ -1124,12 +1172,12 @@ namespace impl {
 
 template <typename L, typename R>
 struct __ne__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __ne__<L, R> : __ne__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __ne__<L, R> : __ne__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __ne__<L, R> : __ne__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __ne__<L, R> : __ne__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __ne__<L, R> : __ne__<typename L::Wrapped, typename R::Wrapped> {};
+struct __ne__<L, R> : __ne__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R> requires (__ne__<L, R>::enable)
@@ -1170,12 +1218,12 @@ namespace impl {
 
 template <typename L, typename R>
 struct __ge__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __ge__<L, R> : __ge__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __ge__<L, R> : __ge__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __ge__<L, R> : __ge__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __ge__<L, R> : __ge__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __ge__<L, R> : __ge__<typename L::Wrapped, typename R::Wrapped> {};
+struct __ge__<L, R> : __ge__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R> requires (__ge__<L, R>::enable)
@@ -1216,12 +1264,12 @@ namespace impl {
 
 template <typename L, typename R>
 struct __gt__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __gt__<L, R> : __gt__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __gt__<L, R> : __gt__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __gt__<L, R> : __gt__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __gt__<L, R> : __gt__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __gt__<L, R> : __gt__<typename L::Wrapped, typename R::Wrapped> {};
+struct __gt__<L, R> : __gt__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R> requires (__gt__<L, R>::enable)
@@ -1263,7 +1311,7 @@ namespace impl {
 template <typename T>
 struct __abs__ { static constexpr bool enable = false; };
 template <impl::proxy_like T>
-struct __abs__<T> : __abs__<typename T::Wrapped> {};
+struct __abs__<T> : __abs__<impl::unwrap_proxy<T>> {};
 
 
 /* Equivalent to Python `abs(obj)` for any object that specializes the __abs__ control
@@ -1308,7 +1356,7 @@ namespace impl {
 template <typename T>
 struct __invert__ { static constexpr bool enable = false; };
 template <impl::proxy_like T>
-struct __invert__<T> : __invert__<typename T::Wrapped> {};
+struct __invert__<T> : __invert__<impl::unwrap_proxy<T>> {};
 
 
 template <typename T> requires (__invert__<T>::enable)
@@ -1347,7 +1395,7 @@ namespace impl {
 template <typename T>
 struct __pos__ { static constexpr bool enable = false; };
 template <impl::proxy_like T>
-struct __pos__<T> : __pos__<typename T::Wrapped> {};
+struct __pos__<T> : __pos__<impl::unwrap_proxy<T>> {};
 
 
 template <typename T> requires (__pos__<T>::enable)
@@ -1386,7 +1434,7 @@ namespace impl {
 template <typename T>
 struct __neg__ { static constexpr bool enable = false; };
 template <impl::proxy_like T>
-struct __neg__<T> : __neg__<typename T::Wrapped> {};
+struct __neg__<T> : __neg__<impl::unwrap_proxy<T>> {};
 
 
 template <typename T> requires (__neg__<T>::enable)
@@ -1418,7 +1466,7 @@ auto operator-(const T& self) = delete;
 template <typename T>
 struct __increment__ { static constexpr bool enable = false; };
 template <impl::proxy_like T>
-struct __increment__<T> : __increment__<typename T::Wrapped> {};
+struct __increment__<T> : __increment__<impl::unwrap_proxy<T>> {};
 
 
 template <typename T> requires (__increment__<T>::enable)
@@ -1474,7 +1522,7 @@ T operator++(T& self, int) = delete;
 template <typename T>
 struct __decrement__ { static constexpr bool enable = false; };
 template <impl::proxy_like T>
-struct __decrement__<T> : __decrement__<typename T::Wrapped> {};
+struct __decrement__<T> : __decrement__<impl::unwrap_proxy<T>> {};
 
 
 template <typename T> requires (__decrement__<T>::enable)
@@ -1544,21 +1592,21 @@ namespace impl {
 
 template <typename L, typename R>
 struct __add__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __add__<L, R> : __add__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __add__<L, R> : __add__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __add__<L, R> : __add__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __add__<L, R> : __add__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __add__<L, R> : __add__<typename L::Wrapped, typename R::Wrapped> {};
+struct __add__<L, R> : __add__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 template <typename L, typename R>
 struct __iadd__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __iadd__<L, R> : __iadd__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __iadd__<L, R> : __iadd__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __iadd__<L, R> : __iadd__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __iadd__<L, R> : __iadd__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __iadd__<L, R> : __iadd__<typename L::Wrapped, typename R::Wrapped> {};
+struct __iadd__<L, R> : __iadd__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R> requires (__add__<L, R>::enable)
@@ -1631,21 +1679,21 @@ namespace impl {
 
 template <typename L, typename R>
 struct __sub__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __sub__<L, R> : __sub__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __sub__<L, R> : __sub__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __sub__<L, R> : __sub__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __sub__<L, R> : __sub__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __sub__<L, R> : __sub__<typename L::Wrapped, typename R::Wrapped> {};
+struct __sub__<L, R> : __sub__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 template <typename L, typename R>
 struct __isub__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __isub__<L, R> : __isub__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __isub__<L, R> : __isub__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __isub__<L, R> : __isub__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __isub__<L, R> : __isub__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __isub__<L, R> : __isub__<typename L::Wrapped, typename R::Wrapped> {};
+struct __isub__<L, R> : __isub__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R> requires (__sub__<L, R>::enable)
@@ -1729,21 +1777,21 @@ namespace impl {
 
 template <typename L, typename R>
 struct __mul__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __mul__<L, R> : __mul__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __mul__<L, R> : __mul__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __mul__<L, R> : __mul__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __mul__<L, R> : __mul__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __mul__<L, R> : __mul__<typename L::Wrapped, typename R::Wrapped> {};
+struct __mul__<L, R> : __mul__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 template <typename L, typename R>
 struct __imul__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __imul__<L, R> : __imul__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __imul__<L, R> : __imul__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __imul__<L, R> : __imul__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __imul__<L, R> : __imul__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __imul__<L, R> : __imul__<typename L::Wrapped, typename R::Wrapped> {};
+struct __imul__<L, R> : __imul__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R> requires (__mul__<L, R>::enable)
@@ -1828,30 +1876,30 @@ namespace impl {
 
 template <typename L, typename R>
 struct __truediv__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __truediv__<L, R> : __truediv__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __truediv__<L, R> : __truediv__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __truediv__<L, R> : __truediv__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __truediv__<L, R> : __truediv__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __truediv__<L, R> : __truediv__<typename L::Wrapped, typename R::Wrapped> {};
+struct __truediv__<L, R> : __truediv__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 template <typename L, typename R>
 struct __floordiv__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __floordiv__<L, R> : __floordiv__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __floordiv__<L, R> : __floordiv__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __floordiv__<L, R> : __floordiv__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __floordiv__<L, R> : __floordiv__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __floordiv__<L, R> : __floordiv__<typename L::Wrapped, typename R::Wrapped> {};
+struct __floordiv__<L, R> : __floordiv__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 template <typename L, typename R>
 struct __itruediv__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __itruediv__<L, R> : __itruediv__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __itruediv__<L, R> : __itruediv__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __itruediv__<L, R> : __itruediv__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __itruediv__<L, R> : __itruediv__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __itruediv__<L, R> : __itruediv__<typename L::Wrapped, typename R::Wrapped> {};
+struct __itruediv__<L, R> : __itruediv__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R> requires (__truediv__<L, R>::enable)
@@ -1936,21 +1984,21 @@ namespace impl {
 
 template <typename L, typename R>
 struct __mod__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __mod__<L, R> : __mod__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __mod__<L, R> : __mod__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __mod__<L, R> : __mod__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __mod__<L, R> : __mod__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __mod__<L, R> : __mod__<typename L::Wrapped, typename R::Wrapped> {};
+struct __mod__<L, R> : __mod__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 template <typename L, typename R>
 struct __imod__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __imod__<L, R> : __imod__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __imod__<L, R> : __imod__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __imod__<L, R> : __imod__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __imod__<L, R> : __imod__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __imod__<L, R> : __imod__<typename L::Wrapped, typename R::Wrapped> {};
+struct __imod__<L, R> : __imod__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R> requires (__mod__<L, R>::enable)
@@ -2047,12 +2095,12 @@ namespace impl {
 
 template <typename base, typename exponent>
 struct __pow__ { static constexpr bool enable = false; };
-template <impl::proxy_like base, typename exponent> requires (!impl::proxy_like<exponent>)
-struct __pow__<base, exponent> : __pow__<typename base::Wrapped, exponent> {};
-template <typename base, impl::proxy_like exponent> requires (!impl::proxy_like<base>)
-struct __pow__<base, exponent> : __pow__<base, typename exponent::Wrapped> {};
+template <impl::proxy_like base, impl::not_proxy_like exponent>
+struct __pow__<base, exponent> : __pow__<impl::unwrap_proxy<base>, exponent> {};
+template <impl::not_proxy_like base, impl::proxy_like exponent>
+struct __pow__<base, exponent> : __pow__<base, impl::unwrap_proxy<exponent>> {};
 template <impl::proxy_like base, impl::proxy_like exponent>
-struct __pow__<base, exponent> : __pow__<typename base::Wrapped, typename exponent::Wrapped> {};
+struct __pow__<base, exponent> : __pow__<impl::unwrap_proxy<base>, impl::unwrap_proxy<exponent>> {};
 
 
 /* Equivalent to Python `base ** exp` (exponentiation). */
@@ -2160,21 +2208,21 @@ namespace impl {
 
 template <typename L, typename R>
 struct __lshift__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __lshift__<L, R> : __lshift__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __lshift__<L, R> : __lshift__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __lshift__<L, R> : __lshift__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __lshift__<L, R> : __lshift__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __lshift__<L, R> : __lshift__<typename L::Wrapped, typename R::Wrapped> {};
+struct __lshift__<L, R> : __lshift__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 template <typename L, typename R>
 struct __ilshift__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __ilshift__<L, R> : __ilshift__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __ilshift__<L, R> : __ilshift__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __ilshift__<L, R> : __ilshift__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __ilshift__<L, R> : __ilshift__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __ilshift__<L, R> : __ilshift__<typename L::Wrapped, typename R::Wrapped> {};
+struct __ilshift__<L, R> : __ilshift__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R>
@@ -2273,21 +2321,21 @@ namespace impl {
 
 template <typename L, typename R>
 struct __rshift__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __rshift__<L, R> : __rshift__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __rshift__<L, R> : __rshift__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __rshift__<L, R> : __rshift__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __rshift__<L, R> : __rshift__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __rshift__<L, R> : __rshift__<typename L::Wrapped, typename R::Wrapped> {};
+struct __rshift__<L, R> : __rshift__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 template <typename L, typename R>
 struct __irshift__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __irshift__<L, R> : __irshift__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __irshift__<L, R> : __irshift__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __irshift__<L, R> : __irshift__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __irshift__<L, R> : __irshift__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __irshift__<L, R> : __irshift__<typename L::Wrapped, typename R::Wrapped> {};
+struct __irshift__<L, R> : __irshift__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R> requires (__rshift__<L, R>::enable)
@@ -2360,21 +2408,21 @@ namespace impl {
 
 template <typename L, typename R>
 struct __and__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __and__<L, R> : __and__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __and__<L, R> : __and__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __and__<L, R> : __and__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __and__<L, R> : __and__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __and__<L, R> : __and__<typename L::Wrapped, typename R::Wrapped> {};
+struct __and__<L, R> : __and__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 template <typename L, typename R>
 struct __iand__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __iand__<L, R> : __iand__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __iand__<L, R> : __iand__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __iand__<L, R> : __iand__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __iand__<L, R> : __iand__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __iand__<L, R> : __iand__<typename L::Wrapped, typename R::Wrapped> {};
+struct __iand__<L, R> : __iand__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R> requires (__and__<L, R>::enable)
@@ -2447,21 +2495,21 @@ namespace impl {
 
 template <typename L, typename R>
 struct __or__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __or__<L, R> : __or__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __or__<L, R> : __or__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __or__<L, R> : __or__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __or__<L, R> : __or__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __or__<L, R> : __or__<typename L::Wrapped, typename R::Wrapped> {};
+struct __or__<L, R> : __or__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 template <typename L, typename R>
 struct __ior__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __ior__<L, R> : __ior__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __ior__<L, R> : __ior__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __ior__<L, R> : __ior__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __ior__<L, R> : __ior__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __ior__<L, R> : __ior__<typename L::Wrapped, typename R::Wrapped> {};
+struct __ior__<L, R> : __ior__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R>
@@ -2548,21 +2596,21 @@ namespace impl {
 
 template <typename L, typename R>
 struct __xor__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __xor__<L, R> : __xor__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __xor__<L, R> : __xor__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __xor__<L, R> : __xor__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __xor__<L, R> : __xor__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __xor__<L, R> : __xor__<typename L::Wrapped, typename R::Wrapped> {};
+struct __xor__<L, R> : __xor__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 template <typename L, typename R>
 struct __ixor__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, typename R> requires (!impl::proxy_like<R>)
-struct __ixor__<L, R> : __ixor__<typename L::Wrapped, R> {};
-template <typename L, impl::proxy_like R> requires (!impl::proxy_like<L>)
-struct __ixor__<L, R> : __ixor__<L, typename R::Wrapped> {};
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __ixor__<L, R> : __ixor__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __ixor__<L, R> : __ixor__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
-struct __ixor__<L, R> : __ixor__<typename L::Wrapped, typename R::Wrapped> {};
+struct __ixor__<L, R> : __ixor__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 template <typename L, typename R> requires (__xor__<L, R>::enable)

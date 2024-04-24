@@ -560,12 +560,6 @@ public:
 ////////////////////////////////////
 
 
-template <bertrand::StaticStr name>
-impl::Attr<Object, name> Object::attr() const {
-    return impl::Attr<Object, name>(*this);
-}
-
-
 template <typename Return, typename Self, typename Key>
 auto Object::operator_getitem(const Self& self, Key&& key)
     -> impl::Item<Self, std::decay_t<Key>>

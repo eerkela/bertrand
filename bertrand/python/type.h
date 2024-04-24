@@ -69,7 +69,7 @@ public:
     {}
 
     /* Dynamically create a new Python type by calling the type() metaclass. */
-    explicit Type(const Str& name, const Tuple& bases = {}, const Dict& dict = {});
+    explicit Type(const Str& name, const Tuple<Type>& bases = {}, const Dict& dict = {});
 
     /* Create a new heap type from a CPython PyType_Spec*.  Note that this is not
     exactly interchangeable with a standard call to the type metaclass directly, as it
@@ -84,7 +84,7 @@ public:
     /* Create a new heap type from a CPython PyType_Spec and bases.  See
     Type(PyType_Spec*) for more information. */
     template <typename T>
-    explicit Type(PyType_Spec* spec, const Tuple& bases) :
+    explicit Type(PyType_Spec* spec, const Tuple<Type>& bases) :
         Base(PyType_FromSpecWithBases(spec, bases.ptr()), stolen_t{})
     {
         if (m_ptr == nullptr) {
@@ -97,7 +97,7 @@ public:
         /* Create a new heap type from a module name, CPython PyType_Spec, and bases.
         See Type(PyType_Spec*) for more information. */
         template <typename T, typename U>
-        explicit Type(const Module& module, PyType_Spec* spec, const Tuple& bases) :
+        explicit Type(const Module& module, PyType_Spec* spec, const Tuple<Type>& bases) :
             Base(PyType_FromModuleAndSpec(module.ptr(), spec, bases.ptr()), stolen_t{})
         {
             if (m_ptr == nullptr) {
@@ -116,7 +116,7 @@ public:
             const Type& metaclass,
             const Module& module,
             PyType_Spec* spec,
-            const Tuple& bases
+            const Tuple<Type>& bases
         ) : Base(
             PyType_FromMetaClass(
                 reinterpret_cast<PyTypeObject*>(metaclass.ptr()),
@@ -321,13 +321,13 @@ public:
     }
 
     /* Get the type's tp_bases slot. */
-    inline Tuple bases() const noexcept {
-        return reinterpret_borrow<Tuple>(self()->tp_bases);
+    inline Tuple<Type> bases() const noexcept {
+        return reinterpret_borrow<Tuple<Type>>(self()->tp_bases);
     }
 
     /* Get the type's tp_mro slot. */
-    inline Tuple mro() const noexcept {
-        return reinterpret_borrow<Tuple>(self()->tp_mro);
+    inline Tuple<Type> mro() const noexcept {
+        return reinterpret_borrow<Tuple<Type>>(self()->tp_mro);
     }
 
     /* Get the type's tp_finalize slot. */

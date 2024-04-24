@@ -373,6 +373,7 @@ class TupleIter {
     Object tuple;
     PyObject* curr;
     Py_ssize_t index;
+    Py_ssize_t size;
 
 public:
     using iterator_category         = std::random_access_iterator_tag;
@@ -381,14 +382,15 @@ public:
 
     /* Sentinel constructor. */
     TupleIter(Py_ssize_t index = -1) :
-        tuple(reinterpret_steal<Object>(nullptr)), curr(nullptr), index(index)
+        tuple(reinterpret_steal<Object>(nullptr)), curr(nullptr), index(index),
+        size(0)
     {}
 
     /* Construct an iterator from a tuple and a starting index. */
     TupleIter(const Object& tuple, Py_ssize_t index) :
-        tuple(tuple), index(index)
+        tuple(tuple), index(index), size(PyTuple_GET_SIZE(tuple.ptr()))
     {
-        if (index >= 0 && index < PyTuple_GET_SIZE(tuple.ptr())) {
+        if (index >= 0 && index < size) {
             curr = PyTuple_GET_ITEM(tuple.ptr(), index);
         } else {
             curr = nullptr;
@@ -397,12 +399,13 @@ public:
 
     /* Copy constructor. */
     TupleIter(const TupleIter& other) :
-        tuple(other.tuple), curr(other.curr), index(other.index)
+        tuple(other.tuple), curr(other.curr), index(other.index), size(other.size)
     {}
 
     /* Move constructor. */
     TupleIter(TupleIter&& other) :
-        tuple(std::move(other.tuple)), curr(other.curr), index(other.index)
+        tuple(std::move(other.tuple)), curr(other.curr), index(other.index),
+        size(other.size)
     {
         other.curr = nullptr;
     }
@@ -413,6 +416,7 @@ public:
             tuple = other.tuple;
             curr = other.curr;
             index = other.index;
+            size = other.size;
         }
         return *this;
     }
@@ -423,6 +427,7 @@ public:
             tuple = other.tuple;
             curr = other.curr;
             index = other.index;
+            size = other.size;
             other.curr = nullptr;
         }
         return *this;
@@ -439,7 +444,7 @@ public:
     /* Advance the iterator. */
     inline void advance(Py_ssize_t n = 1) {
         index += n;
-        if (index >= 0 && index < PyTuple_GET_SIZE(tuple.ptr())) {
+        if (index >= 0 && index < size) {
             curr = PyTuple_GET_ITEM(tuple.ptr(), index);
         } else {
             curr = nullptr;
@@ -454,7 +459,7 @@ public:
     /* Retreat the iterator. */
     inline void retreat(Py_ssize_t n = 1) {
         index -= n;
-        if (index >= 0 && index < PyTuple_GET_SIZE(tuple.ptr())) {
+        if (index >= 0 && index < size) {
             curr = PyTuple_GET_ITEM(tuple.ptr(), index);
         } else {
             curr = nullptr;
@@ -480,6 +485,7 @@ class ListIter {
     Object list;
     PyObject* curr;
     Py_ssize_t index;
+    Py_ssize_t size;
 
 public:
     using iterator_category         = std::random_access_iterator_tag;
@@ -488,14 +494,15 @@ public:
 
     /* Sentinel constructor. */
     ListIter(Py_ssize_t index = -1) :
-        list(reinterpret_steal<Object>(nullptr)), curr(nullptr), index(index)
+        list(reinterpret_steal<Object>(nullptr)), curr(nullptr), index(index),
+        size(0)
     {}
 
     /* Construct an iterator from a list and a starting index. */
     ListIter(const Object& list, Py_ssize_t index) :
-        list(list), index(index)
+        list(list), index(index), size(PyList_GET_SIZE(list.ptr()))
     {
-        if (index >= 0 && index < PyList_GET_SIZE(list.ptr())) {
+        if (index >= 0 && index < size) {
             curr = PyList_GET_ITEM(list.ptr(), index);
         } else {
             curr = nullptr;
@@ -504,12 +511,13 @@ public:
 
     /* Copy constructor. */
     ListIter(const ListIter& other) :
-        list(other.list), curr(other.curr), index(other.index)
+        list(other.list), curr(other.curr), index(other.index), size(other.size)
     {}
 
     /* Move constructor. */
     ListIter(ListIter&& other) :
-        list(std::move(other.list)), curr(other.curr), index(other.index)
+        list(std::move(other.list)), curr(other.curr), index(other.index),
+        size(other.size)
     {
         other.curr = nullptr;
     }
@@ -520,6 +528,7 @@ public:
             list = other.list;
             curr = other.curr;
             index = other.index;
+            size = other.size;
         }
         return *this;
     }
@@ -530,6 +539,7 @@ public:
             list = other.list;
             curr = other.curr;
             index = other.index;
+            size = other.size;
             other.curr = nullptr;
         }
         return *this;
@@ -546,7 +556,7 @@ public:
     /* Advance the iterator. */
     inline void advance(Py_ssize_t n = 1) {
         index += n;
-        if (index >= 0 && index < PyList_GET_SIZE(list.ptr())) {
+        if (index >= 0 && index < size) {
             curr = PyList_GET_ITEM(list.ptr(), index);
         } else {
             curr = nullptr;
@@ -561,7 +571,7 @@ public:
     /* Retreat the iterator. */
     inline void retreat(Py_ssize_t n = 1) {
         index -= n;
-        if (index >= 0 && index < PyList_GET_SIZE(list.ptr())) {
+        if (index >= 0 && index < size) {
             curr = PyList_GET_ITEM(list.ptr(), index);
         } else {
             curr = nullptr;

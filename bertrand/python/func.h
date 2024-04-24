@@ -37,17 +37,17 @@ struct __getattr__<T, "co_kwonlyargcount">                      : Returns<Int> {
 template <std::derived_from<Code> T>
 struct __getattr__<T, "co_nlocals">                             : Returns<Int> {};
 template <std::derived_from<Code> T>
-struct __getattr__<T, "co_varnames">                            : Returns<Tuple> {};
+struct __getattr__<T, "co_varnames">                            : Returns<Tuple<Str>> {};
 template <std::derived_from<Code> T>
-struct __getattr__<T, "co_cellvars">                            : Returns<Tuple> {};
+struct __getattr__<T, "co_cellvars">                            : Returns<Tuple<Str>> {};
 template <std::derived_from<Code> T>
-struct __getattr__<T, "co_freevars">                            : Returns<Tuple> {};
+struct __getattr__<T, "co_freevars">                            : Returns<Tuple<Str>> {};
 template <std::derived_from<Code> T>
 struct __getattr__<T, "co_code">                                : Returns<Bytes> {};
 template <std::derived_from<Code> T>
-struct __getattr__<T, "co_consts">                              : Returns<Tuple> {};
+struct __getattr__<T, "co_consts">                              : Returns<Tuple<Object>> {};
 template <std::derived_from<Code> T>
-struct __getattr__<T, "co_names">                               : Returns<Tuple> {};
+struct __getattr__<T, "co_names">                               : Returns<Tuple<Str>> {};
 template <std::derived_from<Code> T>
 struct __getattr__<T, "co_filename">                            : Returns<Str> {};
 template <std::derived_from<Code> T>
@@ -404,20 +404,20 @@ public:
 
     /* Get a tuple containing the names of the local variables in the function,
     starting with parameter names. */
-    inline Tuple varnames() const {
+    inline Tuple<Str> varnames() const {
         return attr<"co_varnames">();
     }
 
     /* Get a tuple containing the names of local variables that are referenced by
     nested functions within this function (i.e. those that are stored in a
     PyCell). */
-    inline Tuple cellvars() const {
+    inline Tuple<Str> cellvars() const {
         return attr<"co_cellvars">();
     }
 
     /* Get a tuple containing the names of free variables in the function (i.e.
     those that are not stored in a PyCell). */
-    inline Tuple freevars() const {
+    inline Tuple<Str> freevars() const {
         return attr<"co_freevars">();
     }
 
@@ -431,13 +431,13 @@ public:
     inline Bytes bytecode() const;  // defined in func.h
 
     /* Get a tuple containing the literals used by the bytecode in the function. */
-    inline Tuple consts() const {
-        return reinterpret_borrow<Tuple>(self()->co_consts);
+    inline Tuple<Object> consts() const {
+        return reinterpret_borrow<Tuple<Object>>(self()->co_consts);
     }
 
     /* Get a tuple containing the names used by the bytecode in the function. */
-    inline Tuple names() const {
-        return reinterpret_borrow<Tuple>(self()->co_names);
+    inline Tuple<Str> names() const {
+        return reinterpret_borrow<Tuple<Str>>(self()->co_names);
     }
 
     /* Get an integer encoding flags for the Python interpreter. */
@@ -674,9 +674,9 @@ struct __call__<Function, Args...>                              : Returns<Object
 template <std::derived_from<Function> T>
 struct __getattr__<T, "__globals__">                            : Returns<Dict> {};
 template <std::derived_from<Function> T>
-struct __getattr__<T, "__closure__">                            : Returns<Tuple> {};
+struct __getattr__<T, "__closure__">                            : Returns<Tuple<Object>> {};
 template <std::derived_from<Function> T>
-struct __getattr__<T, "__defaults__">                           : Returns<Tuple> {};
+struct __getattr__<T, "__defaults__">                           : Returns<Tuple<Object>> {};
 template <std::derived_from<Function> T>
 struct __getattr__<T, "__code__">                               : Returns<Code> {};
 template <std::derived_from<Function> T>
@@ -716,16 +716,26 @@ public:
     BERTRAND_OBJECT_COMMON(Base, Function, impl::is_callable_any, runtime_check)
     BERTRAND_OBJECT_OPERATORS(Function)
 
+    //////////////////////
+    ////    COMMON    ////
+    //////////////////////
+
+    /* Copy constructor. */
+    Function(const Function& other) : Base(other.ptr(), borrowed_t{}) {}
+
+    /* Move constructor. */
+    Function(Function&& other) : Base(other.release(), stolen_t{}) {}
+
+    /* Copy/move constructor from equivalent pybind11 type(s). */
+    template <typename T> requires (check<T>() && impl::python_like<T>)
+    Function(T&& other) : Base(std::forward<T>(other)) {}
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Default constructor deleted to avoid confusion + possibility of nulls. */
+    /* Functions have no default constructor. */
     Function() = delete;
-
-    /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
-    Function(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Implicitly convert a C++ function or callable object into a py::Function. */
     template <typename T>
@@ -832,9 +842,9 @@ public:
 
         // extract positional defaults
         size_t argcount = code.argcount();
-        Tuple defaults = reinterpret_borrow<Tuple>(pos_defaults);
-        Tuple names = code.varnames()[{argcount - defaults.size(), argcount}];
-        Dict result = {};
+        Tuple<Object> defaults = reinterpret_borrow<Tuple<Object>>(pos_defaults);
+        Tuple<Str> names = code.varnames()[{argcount - defaults.size(), argcount}];
+        Dict result;
         for (size_t i = 0; i < defaults.size(); ++i) {
             result[names[i]] = defaults[i];
         }
@@ -867,9 +877,9 @@ public:
     //     PyObject* pos_defaults = PyFunction_GetDefaults(self());
     //     if (pos_defaults != nullptr) {
     //         size_t argcount = code.argcount();
-    //         Tuple defaults = reinterpret_borrow<Tuple>(pos_defaults);
-    //         Tuple names = code.varnames()[{argcount - defaults.size(), argcount}];
-    //         Dict positional_defaults = {};
+    //         Tuple<Object> defaults = reinterpret_borrow<Tuple<Object>>(pos_defaults);
+    //         Tuple<Str> names = code.varnames()[{argcount - defaults.size(), argcount}];
+    //         Dict positional_defaults;
     //         for (size_t i = 0; i < defaults.size(); ++i) {
     //             positional_defaults[*names[i]] = *defaults[i];
     //         }
@@ -930,7 +940,7 @@ public:
 
     //     } else {  // update annotations in-place
     //         Code code = this->code();
-    //         Tuple args = code.varnames()[{0, code.argcount() + code.kwonlyargcount()}];
+    //         Tuple<Str> args = code.varnames()[{0, code.argcount() + code.kwonlyargcount()}];
     //         MappingProxy existing = this->annotations();
 
     //         // build new dict
@@ -968,17 +978,17 @@ public:
 
     /* Get the closure associated with the function.  This is a Tuple of cell objects
     containing data captured by the function. */
-    inline Tuple closure() const {
+    inline Tuple<Object> closure() const {
         PyObject* result = PyFunction_GetClosure(self());
         if (result == nullptr) {
             return {};
         }
-        return reinterpret_borrow<Tuple>(result);
+        return reinterpret_borrow<Tuple<Object>>(result);
     }
 
     /* Set the closure associated with the function.  If nullopt is given, then the
     closure will be deleted. */
-    inline void closure(std::optional<Tuple> closure) {
+    inline void closure(std::optional<Tuple<Object>> closure) {
         PyObject* item = closure ? closure.value().ptr() : Py_None;
         if (PyFunction_SetClosure(self(), item)) {
             Exception::from_python();

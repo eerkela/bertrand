@@ -44,6 +44,17 @@ namespace impl {
 }
 
 
+// TODO: for some reason, including this in OBJECT_COMMON causes a template ambiguity
+// on gcc.  It's not clear why.
+
+    // /* Implement check() for runtime C++ values. */
+    // template <typename T> requires (!impl::python_like<T>)
+    // static consteval bool check(const T&) {
+    //     return check<T>();
+    // }
+
+
+
 /* All subclasses of py::Object must define these constructors, which are taken
 directly from PYBIND11_OBJECT_COMMON and cover the basic object creation and
 conversion logic.
@@ -69,12 +80,6 @@ nice for initializer-list syntax, enabling containers to be assigned to like thi
     template <typename T>                                                               \
     static consteval bool check() { return comptime_check<T>; }                         \
                                                                                         \
-    /* Implement check() for runtime C++ values. */                                     \
-    template <typename T> requires (!impl::python_like<T>)                              \
-    static consteval bool check(const T&) {                                             \
-        return check<T>();                                                              \
-    }                                                                                   \
-                                                                                        \
     /* Implement check() for runtime Python values. */                                  \
     template <typename T> requires (impl::python_like<T>)                               \
     static bool check(const T& obj) {                                                   \
@@ -82,9 +87,7 @@ nice for initializer-list syntax, enabling containers to be assigned to like thi
     }                                                                                   \
                                                                                         \
     /* pybind11 expects check_ internally, but the idea is the same. */                 \
-    template <typename T> requires (impl::python_like<T>)                               \
-    static constexpr bool check_(const T& value) { return check(value); }               \
-    template <typename T> requires (!impl::python_like<T>)                              \
+    template <typename T>                                                               \
     static constexpr bool check_(const T& value) { return check(value); }               \
                                                                                         \
     /* Inherit tagged borrow/steal constructors. */                                     \
@@ -102,24 +105,30 @@ nice for initializer-list syntax, enabling containers to be assigned to like thi
         }                                                                               \
     }                                                                                   \
                                                                                         \
-    /* Trigger implicit conversions to this type via the assignment operator. */        \
-    template <std::convertible_to<cls> T>                                               \
-    cls& operator=(T&& value) {                                                         \
-        if constexpr (std::same_as<std::decay_t<T>, cls>) {                             \
-            if (this != &value) {                                                       \
-                parent::operator=(std::forward<T>(value));                              \
-            }                                                                           \
-        } else if constexpr (impl::has_conversion_operator<std::decay_t<T>, cls>) {     \
-            parent::operator=(value.operator cls());                                    \
-        } else {                                                                        \
-            parent::operator=(cls(std::forward<T>(value)));                             \
+    /* Copy/move assignment operators. */                                               \
+    cls& operator=(const cls& other) {                                                  \
+        if (this != &other) {                                                           \
+            PyObject* temp = m_ptr;                                                     \
+            m_ptr = Py_XNewRef(other.m_ptr);                                            \
+            Py_XDECREF(temp);                                                           \
+        }                                                                               \
+        return *this;                                                                   \
+    }                                                                                   \
+                                                                                        \
+    /* Move assignment operator. */                                                     \
+    cls& operator=(cls&& other) {                                                       \
+        if (this != &other) {                                                           \
+            PyObject* temp = m_ptr;                                                     \
+            m_ptr = other.m_ptr;                                                        \
+            other.m_ptr = nullptr;                                                      \
+            Py_XDECREF(temp);                                                           \
         }                                                                               \
         return *this;                                                                   \
     }                                                                                   \
                                                                                         \
     /* Convert to a pybind11 handle. */                                                 \
     inline operator pybind11::handle() const {                                          \
-        return pybind11::handle(m_ptr);                                                 \
+        return m_ptr;                                                                   \
     }                                                                                   \
                                                                                         \
     /* Convert to a pybind11 object. */                                                 \
@@ -132,15 +141,9 @@ nice for initializer-list syntax, enabling containers to be assigned to like thi
     operator T() const = delete;                                                        \
                                                                                         \
     /* Mark pybind11::cast operator as explicit for subclasses. */                      \
-    template <typename T>                                                               \
-        requires (!impl::proxy_like<T> && !std::derived_from<T, Object>)                \
+    template <impl::not_proxy_like T> requires (!std::derived_from<T, Object>)          \
     explicit operator T() const {                                                       \
         return parent::operator T();                                                    \
-    }                                                                                   \
-                                                                                        \
-    template <StaticStr name>                                                           \
-    impl::Attr<cls, name> attr() const {                                                \
-        return impl::Attr<cls, name>(*this);                                            \
     }                                                                                   \
 
 
@@ -954,19 +957,6 @@ public:
         return *this;
     }
 
-    /* Trigger implicit conversions to this type via the assignment operator. */
-    template <std::convertible_to<Object> T>
-    Object& operator=(T&& value) {
-        PyObject* temp = m_ptr;
-        if constexpr (impl::has_conversion_operator<std::remove_cvref_t<T>, Object>) {
-            m_ptr = value.operator Object().release().ptr();
-        } else {
-            m_ptr = Object(std::forward<T>(value)).release().ptr();
-        }
-        Py_XDECREF(temp);
-        return *this;
-    }
-
     /* Destructor allows any object to be stored with static duration. */
     ~Object() noexcept {
         if (Py_IsInitialized()) {
@@ -1039,8 +1029,7 @@ public:
     }
 
     /* Explicitly convert to any other type using pybind11's type casting mechanism. */
-    template <typename T>
-        requires (!impl::proxy_like<T> && !std::derived_from<T, Object>)
+    template <impl::not_proxy_like T> requires (!std::derived_from<T, Object>)
     operator T() const {
         try {
             return Handle(m_ptr).template cast<T>();
@@ -1116,9 +1105,6 @@ public:
     /////////////////////////
 
     BERTRAND_OBJECT_OPERATORS(Object)
-
-    template <StaticStr name>
-    impl::Attr<Object, name> attr() const;
 
 };
 
