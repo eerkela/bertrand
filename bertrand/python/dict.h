@@ -97,7 +97,7 @@ class KeysView : public Object, public impl::KeysTag {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, KeysView, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(KeysView)
@@ -107,7 +107,7 @@ public:
     ////////////////////////////
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     KeysView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a keys view on an existing dictionary. */
@@ -220,7 +220,7 @@ class ValuesView : public Object, public impl::ValuesTag {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, ValuesView, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(ValuesView)
@@ -230,7 +230,7 @@ public:
     ////////////////////////////
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     ValuesView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a values view on an existing dictionary. */
@@ -286,7 +286,7 @@ class ItemsView : public Object, public impl::ItemsTag {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, ItemsView, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(ItemsView)
@@ -296,7 +296,7 @@ public:
     ////////////////////////////
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     ItemsView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create an items view on an existing dictionary. */
@@ -375,7 +375,7 @@ class Dict : public Object, public impl::DictTag {
     using Base = Object;
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Dict, impl::dict_like, PyDict_Check)
     BERTRAND_OBJECT_OPERATORS(Dict)
@@ -392,7 +392,7 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     Dict(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the given arguments into a dictionary using an initializer list. */
@@ -439,8 +439,8 @@ public:
     }
 
     /* Explicitly unpack an arbitrary Python container into a new py::Dict. */
-    template <typename T>
-        requires (impl::is_iterable<T> && impl::python_like<T> && !impl::dict_like<T>)
+    template <impl::python_like T>
+        requires (impl::is_iterable<T> && !impl::dict_like<T>)
     explicit Dict(const T& contents) :
         Base(PyObject_CallOneArg((PyObject*) &PyDict_Type, contents.ptr()), stolen_t{})
     {
@@ -450,7 +450,7 @@ public:
     }
 
     /* Explicitly unpack a arbitrary C++ container into a new py::Dict. */
-    template <typename T> requires (impl::is_iterable<T> && !impl::python_like<T>)
+    template <impl::cpp_like T> requires (impl::is_iterable<T>)
     explicit Dict(T&& container) : Base(PyDict_New(), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -493,7 +493,7 @@ public:
     }
 
     /* Implicitly convert to a C++ dict type. */
-    template <impl::dict_like T> requires (!impl::python_like<T>)
+    template <impl::cpp_like T> requires (impl::dict_like<T>)
     inline operator T() const {
         T result;
         PyObject* key;
@@ -921,7 +921,7 @@ class MappingProxy : public Object, public impl::MappingProxyTag {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, MappingProxy, impl::mappingproxy_like, runtime_check)
     BERTRAND_OBJECT_OPERATORS(MappingProxy)
@@ -931,7 +931,7 @@ public:
     ////////////////////////////
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     MappingProxy(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly construct a read-only view on an existing dictionary. */

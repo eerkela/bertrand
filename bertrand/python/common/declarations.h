@@ -185,28 +185,6 @@ namespace impl {
 }
 
 
-////////////////////////////////
-////    DEDUCTION GUIDES    ////
-////////////////////////////////
-
-
-// NOTE: deduction guides cause templated containers to default to py::Object when no
-// explicit element type is provided.  Without these, containers would be deduced based
-// on the constructor inputs, which can cause static assertions to fail on C++ values.
-
-
-Tuple() -> Tuple<Object>;
-template <typename T>
-Tuple(const Tuple<T>&) -> Tuple<T>;
-template <typename T>
-Tuple(Tuple<T>&&) -> Tuple<T>;
-template <typename T, typename... Args>
-    requires (!std::derived_from<std::decay_t<T>, impl::TupleTag>)
-Tuple(T&&, Args&&...) -> Tuple<Object>;
-template <typename T>
-Tuple(const std::initializer_list<T>&) -> Tuple<Object>;
-
-
 /////////////////////////
 ////    FUNCTIONS    ////
 /////////////////////////

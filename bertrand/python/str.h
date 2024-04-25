@@ -172,7 +172,7 @@ class Str : public Object, public impl::SequenceOps<Str> {
     using Base = Object;
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Str, impl::str_like, PyUnicode_Check)
     BERTRAND_OBJECT_OPERATORS(Str)
@@ -189,7 +189,7 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (impl::python_like<T> && impl::str_like<T>)
+    template <impl::python_like T> requires (impl::str_like<T>)
     Str(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Implicitly convert a string literal into a py::Str object. */
@@ -204,8 +204,7 @@ public:
     }
 
     /* Implicitly convert a C-style string array into a py::Str object. */
-    template <typename T>
-        requires (!impl::python_like<T> && std::convertible_to<T, const char*>)
+    template <impl::cpp_like T> requires (std::convertible_to<T, const char*>)
     Str(const T& string) : Base(PyUnicode_FromString(string), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -213,9 +212,8 @@ public:
     }
 
     /* Implicitly convert a C++ std::string into a py::Str object. */
-    template <typename T>
+    template <impl::cpp_like T>
         requires (
-            !impl::python_like<T> &&
             !std::convertible_to<T, const char*> &&
             std::convertible_to<T, std::string>
         )
@@ -228,9 +226,8 @@ public:
     }
 
     /* Implicitly convert a C++ std::string_view into a py::Str object. */
-    template <typename T>
+    template <impl::cpp_like T>
         requires (
-            !impl::python_like<T> &&
             !std::convertible_to<T, const char*> &&
             !std::convertible_to<T, std::string> &&
             std::convertible_to<T, std::string_view>
@@ -244,7 +241,7 @@ public:
     }
 
     /* Explicitly convert an arbitrary Python object into a py::Str representation. */
-    template <typename T> requires (impl::python_like<T> && !impl::str_like<T>)
+    template <impl::python_like T> requires (!impl::str_like<T>)
     explicit Str(const T& obj) : Base(PyObject_Str(obj.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -252,12 +249,12 @@ public:
     }
 
     /* Explicitly convert an arbitrary C++ object into a py::Str representation. */
-    template <typename T> requires (
-        !impl::python_like<T> &&
-        !std::convertible_to<T, const char*> &&
-        !std::convertible_to<T, std::string> &&
-        !std::convertible_to<T, std::string_view>
-    )
+    template <impl::cpp_like T>
+        requires (
+            !std::convertible_to<T, const char*> &&
+            !std::convertible_to<T, std::string> &&
+            !std::convertible_to<T, std::string_view>
+        )
     explicit Str(const T& obj) : Base(PyObject_Str(Object(obj).ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -304,8 +301,8 @@ public:
         /* Construct a Python unicode string from a std::format()-style interpolated string.
         This overload is chosen when the format string is given as a Python unicode
         string. */
-        template <typename T, typename... Args>
-            requires (sizeof...(Args) > 0 && impl::str_like<T> && impl::python_like<T>)
+        template <impl::python_like T, typename... Args>
+            requires (sizeof...(Args) > 0 && impl::str_like<T>)
         explicit Str(const T& format, Args&&... args) : Str(
             format.template cast<std::string>(),
             std::forward<Args>(args)...
@@ -313,8 +310,8 @@ public:
 
         /* Construct a Python unicode string from a std::format()-style interpolated string
         with an optional locale. */
-        template <typename T, typename... Args>
-            requires (sizeof...(Args) > 0 && impl::str_like<T> && impl::python_like<T>)
+        template <impl::python_like T, typename... Args>
+            requires (sizeof...(Args) > 0 && impl::str_like<T>)
         explicit Str(
             const std::locale& locale,
             const T& format,

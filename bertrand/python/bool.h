@@ -288,13 +288,30 @@ struct __ixor__<L, R>                                           : Returns<Bool&>
 
 
 /* Represents a statically-typed Python boolean in C++. */
-class Bool : public Object {
-    using Base = Object;
+class Bool : public Inherits<Bool, Object> {
+    using Base = Inherits<Bool, Object>;
 
 public:
-    static const Type type;;
+    static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Bool, impl::bool_like, PyBool_Check)
+    template <typename T>
+    static consteval bool check() { return impl::bool_like<T>; }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyBool_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
+
+    //////////////////////
+    ////    COMMON    ////
+    //////////////////////
+
+    using Base::Base;
+
     BERTRAND_OBJECT_OPERATORS(Bool)
 
     ////////////////////////////
@@ -304,16 +321,12 @@ public:
     /* Default constructor.  Initializes to False. */
     Bool() : Base(Py_False, borrowed_t{}) {}
 
-    /* Copy/move constructors. */
-    template <typename T> requires (impl::python_like<T> && impl::bool_like<T>)
-    Bool(T&& other) : Base(std::forward<T>(other)) {}
-
     /* Implicitly convert C++ booleans into py::Bool. */
-    template <typename T> requires (!impl::python_like<T> && impl::bool_like<T>)
+    template <impl::cpp_like T> requires (impl::bool_like<T>)
     Bool(const T& value) : Base(value ? Py_True : Py_False, borrowed_t{}) {}
 
     /* Explicitly convert an arbitrary Python object into a boolean. */
-    template <typename T> requires (impl::python_like<T> && !impl::bool_like<T>)
+    template <impl::python_like T> requires (!impl::bool_like<T>)
     explicit Bool(const T& obj) : Base(nullptr, stolen_t{}) {
         int result = PyObject_IsTrue(obj.ptr());
         if (result == -1) {
@@ -323,19 +336,14 @@ public:
     }
 
     /* Trigger explicit conversion operators to bool. */
-    template <typename T>
-        requires (
-            !impl::python_like<T> &&
-            !impl::bool_like<T> &&
-            impl::explicitly_convertible_to<T, bool>
-        )
+    template <impl::cpp_like T>
+        requires (!impl::bool_like<T> && impl::explicitly_convertible_to<T, bool>)
     explicit Bool(const T& value) : Bool(static_cast<bool>(value)) {}
 
     /* Explicitly convert any C++ object that implements a `.size()` method into a
     py::Bool. */
-    template <typename T>
+    template <impl::cpp_like T>
         requires (
-            !impl::python_like<T> &&
             !impl::bool_like<T> &&
             !impl::explicitly_convertible_to<T, bool> &&
             impl::has_size<T>
@@ -344,9 +352,8 @@ public:
 
     /* Explicitly convert any C++ object that implements a `.empty()` method into a
     py::Bool. */
-    template <typename T>
+    template <impl::cpp_like T>
         requires (
-            !impl::python_like<T> &&
             !impl::bool_like<T> &&
             !impl::explicitly_convertible_to<T, bool> &&
             !impl::has_size<T> &&
@@ -358,6 +365,9 @@ public:
     template <typename... Args>
     explicit Bool(const std::tuple<Args...>& obj) : Bool(sizeof...(Args) > 0) {}
 
+    // TODO: Bool(const char* str) needs to be templated to avoid implicitly converting
+    // py::Str, etc.
+
     /* Explicitly convert a string literal into a py::Bool. */
     explicit Bool(const char* str) : Bool(std::strcmp(str, "") != 0) {}
 
@@ -365,10 +375,10 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
-    /* Implicitly convert to a pybind11::bool. */
-    inline operator pybind11::bool_() const {
-        return reinterpret_borrow<pybind11::bool_>(m_ptr);
-    }
+    // /* Implicitly convert to a pybind11::bool. */
+    // inline operator pybind11::bool_() const {
+    //     return reinterpret_borrow<pybind11::bool_>(m_ptr);
+    // }
 
     /* Implicitly convert to a C++ boolean. */
     inline operator bool() const {

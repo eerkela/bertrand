@@ -128,15 +128,16 @@ namespace impl {
     concept initializer_like = std::derived_from<std::remove_cvref_t<T>, InitializerTag>;
 
     template <typename T>
-    concept accessor_like = requires(const T& t) {
-        { []<typename Policy>(const detail::accessor<Policy>){}(t) } -> std::same_as<void>;
-    };
+    concept pybind11_like = pybind11::detail::is_pyobject<std::remove_cvref_t<T>>::value;
 
     template <typename T>
     concept python_like = (
-        std::derived_from<std::remove_cvref_t<T>, pybind11::object> ||
+        pybind11_like<std::remove_cvref_t<T>> ||
         std::derived_from<std::remove_cvref_t<T>, Object>
     );
+
+    template <typename T>
+    concept cpp_like = !python_like<T>;
 
     template <typename T>
     concept sequence_like = requires(const T& t) {

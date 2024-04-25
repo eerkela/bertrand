@@ -62,17 +62,17 @@ namespace py {
  */
 
 
-///////////////////////////////
-////    PRIMITIVE TYPES    ////
-///////////////////////////////
-
-
 template <>
 struct __hash__<Handle>                                         : Returns<size_t> {};
 template <>
 struct __hash__<Capsule>                                        : Returns<size_t> {};
 template <>
 struct __hash__<WeakRef>                                        : Returns<size_t> {};
+
+
+////////////////////
+////    NONE    ////
+////////////////////
 
 
 template <>
@@ -84,24 +84,26 @@ class NoneType : public Object {
     using Base = Object;
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, NoneType, impl::none_like, Py_IsNone)
     BERTRAND_OBJECT_OPERATORS(NoneType)
 
-    /* Default constructor.  Initializes to Python's global None singleton. */
     NoneType() : Base(Py_None, borrowed_t{}) {}
 
-    /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     NoneType(T&& other) : Base(std::forward<T>(other)) {}
 
-    /* Implicitly convert to pybind11::none. */
     operator pybind11::none() const {
         return reinterpret_borrow<pybind11::none>(m_ptr);
     }
 
 };
+
+
+//////////////////////////////
+////    NOTIMPLEMENTED    ////
+//////////////////////////////
 
 
 template <>
@@ -115,7 +117,7 @@ class NotImplementedType : public Object {
     template <typename T>
     static constexpr bool comptime_check = std::derived_from<T, NotImplementedType>;
 
-    inline static int runtime_check(PyObject* obj) {
+    static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(
             obj,
             (PyObject*) Py_TYPE(Py_NotImplemented)
@@ -127,19 +129,22 @@ class NotImplementedType : public Object {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, NotImplementedType, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(NotImplementedType)
 
-    /* Default constructor.  Initializes to Python's global NotImplemented singleton. */
     NotImplementedType() : Base(Py_NotImplemented, borrowed_t{}) {}
 
-    /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     NotImplementedType(T&& other) : Base(std::forward<T>(other)) {}
 
 };
+
+
+////////////////////////
+////    ELLIPSIS    ////
+////////////////////////
 
 
 template <>
@@ -153,7 +158,7 @@ class EllipsisType : public Object {
     template <typename T>
     static constexpr bool comptime_check = std::derived_from<T, EllipsisType>;
 
-    inline static int runtime_check(PyObject* obj) {
+    static bool runtime_check(PyObject* obj) {
         int result = PyObject_IsInstance(
             obj,
             (PyObject*) Py_TYPE(Py_Ellipsis)
@@ -165,19 +170,16 @@ class EllipsisType : public Object {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, EllipsisType, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(EllipsisType)
 
-    /* Default constructor.  Initializes to Python's global Ellipsis singleton. */
     EllipsisType() : Base(Py_Ellipsis, borrowed_t{}) {}
 
-    /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     EllipsisType(T&& other) : Base(std::forward<T>(other)) {}
 
-    /* Implicitly convert to pybind11::ellipsis. */
     operator pybind11::ellipsis() const {
         return reinterpret_borrow<pybind11::ellipsis>(m_ptr);
     }
@@ -193,7 +195,7 @@ static const NotImplementedType NotImplemented;
 namespace impl {
 
     // TODO: initializers have to be nested classes in order to properly account for
-    // template types.
+    // template types?
     // -> Actually, as long as I'm careful about how I write the constructor, then it
     // does actually work.  I just need to make sure to forward to the templated type
     // using a secondarily templated constructor, rather than just using the top-level
@@ -245,6 +247,11 @@ namespace impl {
 }
 
 
+/////////////////////
+////    SLICE    ////
+/////////////////////
+
+
 template <std::derived_from<Slice> T>
 struct __getattr__<T, "indices">                                : Returns<Function> {};
 template <std::derived_from<Slice> T>
@@ -272,18 +279,13 @@ template <impl::slice_like T>
 struct __gt__<Slice, T>                                         : Returns<bool> {};
 
 
-// TODO: if all Slice constructors accepted only integers and None, then I might not
-// need special syntax for initializer lists.  I could just accept a slice directly?
-// -> I would have to
-
-
 /* Represents a statically-typed Python `slice` object in C++.  Note that the start,
 stop, and step values do not strictly need to be integers. */
 class Slice : public Object {
     using Base = Object;
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Slice, impl::slice_like, PySlice_Check)
     BERTRAND_OBJECT_OPERATORS(Slice)
@@ -302,8 +304,8 @@ public:
         }
     }
 
-    /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    /* Copy/move constructors from equivalent pybind11 types. */
+    template <impl::python_like T> requires (check<T>())
     Slice(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly construct a slice from a (possibly denormalized) stop object. */
@@ -358,9 +360,9 @@ public:
         }
     }
 
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
 
     /* Implicitly convert to pybind11::slice. */
     operator pybind11::slice() const {
@@ -386,14 +388,6 @@ public:
         return attr<"step">();
     }
 
-    /* Data struct containing normalized indices obtained from a py::Slice object. */
-    struct Indices {
-        Py_ssize_t start;
-        Py_ssize_t stop;
-        Py_ssize_t step;
-        Py_ssize_t length;
-    };
-
     /* Normalize the indices of this slice against a container of the given length.
     This accounts for negative indices and clips those that are out of bounds.
     Returns a simple data struct with the following fields:
@@ -407,7 +401,14 @@ public:
 
         auto [start, stop, step, length] = slice.indices(size);
     */
-    inline Indices indices(size_t size) const {
+    inline auto indices(size_t size) const {
+        struct Indices {
+            Py_ssize_t start;
+            Py_ssize_t stop;
+            Py_ssize_t step;
+            Py_ssize_t length;
+        };
+
         Py_ssize_t start, stop, step, length = 0;
         if (PySlice_GetIndicesEx(
             this->ptr(),
@@ -419,7 +420,7 @@ public:
         )) {
             Exception::from_python();
         }
-        return {start, stop, step, length};
+        return Indices{start, stop, step, length};
     }
 
 };
@@ -440,7 +441,7 @@ class Module : public Object {
     using Base = Object;
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Module, impl::module_like, PyModule_Check)
     BERTRAND_OBJECT_OPERATORS(Module)
@@ -449,14 +450,8 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    // TODO: Default module constructor initializes to None?
-
     /* Default module constructor deleted for clarity. */
     Module() = delete;
-
-    /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
-    Module(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a new module object from a statically-allocated (but
     uninitialized) PyModuleDef struct. */

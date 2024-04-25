@@ -55,7 +55,7 @@ class Range : public Object {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Range, impl::range_like, runtime_check)
     BERTRAND_OBJECT_OPERATORS(Range)
@@ -68,7 +68,7 @@ public:
     Range() : Range(Int::zero()) {}
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     Range(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly construct a range from 0 to the given stop index (exclusive). */

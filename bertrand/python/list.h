@@ -95,7 +95,7 @@ class List : public Object, public impl::SequenceOps<List>, public impl::ListTag
     using Base = Object;
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, List, impl::list_like, PyList_Check)
     BERTRAND_OBJECT_OPERATORS(List)
@@ -112,7 +112,7 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     List(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the contents of a braced initializer list into a new Python list. */
@@ -151,8 +151,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary Python container into a new py::List. */
-    template <typename T>
-        requires (impl::python_like<T> && !impl::list_like<T> && impl::is_iterable<T>)
+    template <impl::python_like T> requires (!impl::list_like<T> && impl::is_iterable<T>)
     explicit List(const T& contents) :
         Base(PySequence_List(contents.ptr()), stolen_t{})
     {
@@ -162,7 +161,7 @@ public:
     }
 
     /* Explicitly unpack a generic C++ container into a new py::List. */
-    template <typename T> requires (!impl::python_like<T> && impl::is_iterable<T>)
+    template <impl::cpp_like T> requires (impl::is_iterable<T>)
     explicit List(T&& contents) : Base(nullptr, stolen_t{}) {
         if constexpr (impl::has_size<T>) {
             size_t size = std::size(contents);
@@ -271,7 +270,7 @@ public:
 
     /* Implicitly convert a Python list into a C++ vector, deque, list, or forward
     list. */
-    template <typename T> requires (!impl::python_like<T> && impl::list_like<T>)
+    template <impl::cpp_like T> requires (impl::list_like<T>)
     inline operator T() const {
         T result;
         if constexpr (impl::has_reserve<T>) {

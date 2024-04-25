@@ -28,123 +28,43 @@ namespace impl {
     template <typename Deref>
     class GenericIter;
 
-    /* Standardized error message for type narrowing via pybind11 accessors or the
-    generic Object wrapper. */
-    template <typename Derived>
-    TypeError noconvert(PyObject* obj) {
-        std::ostringstream msg;
-        msg << "cannot convert python object from type '"
-            << Py_TYPE(obj)->tp_name
-            << "' to type '"
-            << reinterpret_cast<PyTypeObject*>(Derived::type.ptr())->tp_name
-            << "'";
-        return TypeError(msg.str());
-    }
+    // TODO: this could maybe necessitate a CRTP intermediate class to correctly
+    // resolve conversion operators.  It could also account for member operator
+    // overloads at the same time.
+
+    // class Tuple : public impl::Inherits<Tuple, Object> {}
+
+
+    #define BERTRAND_OBJECT_COMMON(Base, cls, comptime_check, runtime_check)            \
+        template <typename T>                                                           \
+        static consteval bool check() { return comptime_check<T>; }                     \
+                                                                                        \
+        template <typename T>                                                           \
+        static constexpr bool check(const T& obj) {                                     \
+            if constexpr (impl::python_like<T>) {                                       \
+                return obj.ptr() != nullptr && runtime_check(obj.ptr());                \
+            } else {                                                                    \
+                return check<T>();                                                      \
+            }                                                                           \
+        }                                                                               \
+                                                                                        \
+        cls(Handle h, const borrowed_t& t) : Base(h, t) {}                              \
+        cls(Handle h, const stolen_t& t) : Base(h, t) {}                                \
+                                                                                        \
+        template <typename Policy>                                                      \
+        cls(const detail::accessor<Policy>& accessor) : Base(nullptr, stolen_t{}) {     \
+            pybind11::object obj(accessor);                                             \
+            if (check(obj)) {                                                           \
+                m_ptr = obj.release().ptr();                                            \
+            } else {                                                                    \
+                throw impl::noconvert<cls>(obj.ptr());                                  \
+            }                                                                           \
+        }                                                                               \
+                                                                                        \
+        template <std::derived_from<Object> T> requires (!std::derived_from<T, cls>)    \
+        operator T() const = delete;                                                    \
 
 }
-
-
-// TODO: for some reason, including this in OBJECT_COMMON causes a template ambiguity
-// on gcc.  It's not clear why.
-
-    // /* Implement check() for runtime C++ values. */
-    // template <typename T> requires (!impl::python_like<T>)
-    // static consteval bool check(const T&) {
-    //     return check<T>();
-    // }
-
-
-
-/* All subclasses of py::Object must define these constructors, which are taken
-directly from PYBIND11_OBJECT_COMMON and cover the basic object creation and
-conversion logic.
-
-The check() function will be called whenever a generic Object wrapper is implicitly
-converted to this type.  It should return true if and only if the object has a
-compatible type, and it will never be passed a null pointer.  If it returns false,
-a TypeError will be raised during the assignment.
-
-Also included are generic copy and move constructors that work with any object type
-that is like this one.  It depends on each type implementing the `like` trait
-before invoking this macro.
-
-Lastly, a generic assignment operator is provided that triggers implicit
-conversions to this type for any inputs that support them.  This is especially
-nice for initializer-list syntax, enabling containers to be assigned to like this:
-
-    py::List list = {1, 2, 3, 4, 5};
-    list = {5, 4, 3, 2, 1};
-*/
-#define BERTRAND_OBJECT_COMMON(parent, cls, comptime_check, runtime_check)              \
-    /* Implement check() for compile-time C++ types. */                                 \
-    template <typename T>                                                               \
-    static consteval bool check() { return comptime_check<T>; }                         \
-                                                                                        \
-    /* Implement check() for runtime Python values. */                                  \
-    template <typename T> requires (impl::python_like<T>)                               \
-    static bool check(const T& obj) {                                                   \
-        return obj.ptr() != nullptr && runtime_check(obj.ptr());                        \
-    }                                                                                   \
-                                                                                        \
-    /* pybind11 expects check_ internally, but the idea is the same. */                 \
-    template <typename T>                                                               \
-    static constexpr bool check_(const T& value) { return check(value); }               \
-                                                                                        \
-    /* Inherit tagged borrow/steal constructors. */                                     \
-    cls(Handle h, const borrowed_t& t) : parent(h, t) {}                                \
-    cls(Handle h, const stolen_t& t) : parent(h, t) {}                                  \
-                                                                                        \
-    /* Convert a pybind11 accessor into this type. */                                   \
-    template <typename Policy>                                                          \
-    cls(const detail::accessor<Policy>& accessor) {                                     \
-        pybind11::object obj(accessor);                                                 \
-        if (check(obj)) {                                                               \
-            m_ptr = obj.release().ptr();                                                \
-        } else {                                                                        \
-            throw impl::noconvert<cls>(obj.ptr());                                      \
-        }                                                                               \
-    }                                                                                   \
-                                                                                        \
-    /* Copy/move assignment operators. */                                               \
-    cls& operator=(const cls& other) {                                                  \
-        if (this != &other) {                                                           \
-            PyObject* temp = m_ptr;                                                     \
-            m_ptr = Py_XNewRef(other.m_ptr);                                            \
-            Py_XDECREF(temp);                                                           \
-        }                                                                               \
-        return *this;                                                                   \
-    }                                                                                   \
-                                                                                        \
-    /* Move assignment operator. */                                                     \
-    cls& operator=(cls&& other) {                                                       \
-        if (this != &other) {                                                           \
-            PyObject* temp = m_ptr;                                                     \
-            m_ptr = other.m_ptr;                                                        \
-            other.m_ptr = nullptr;                                                      \
-            Py_XDECREF(temp);                                                           \
-        }                                                                               \
-        return *this;                                                                   \
-    }                                                                                   \
-                                                                                        \
-    /* Convert to a pybind11 handle. */                                                 \
-    inline operator pybind11::handle() const {                                          \
-        return m_ptr;                                                                   \
-    }                                                                                   \
-                                                                                        \
-    /* Convert to a pybind11 object. */                                                 \
-    inline operator pybind11::object() const {                                          \
-        return pybind11::reinterpret_borrow<pybind11::object>(m_ptr);                   \
-    }                                                                                   \
-                                                                                        \
-    /* Delete type narrowing operator inherited from Object. */                         \
-    template <std::derived_from<Object> T>                                              \
-    operator T() const = delete;                                                        \
-                                                                                        \
-    /* Mark pybind11::cast operator as explicit for subclasses. */                      \
-    template <impl::not_proxy_like T> requires (!std::derived_from<T, Object>)          \
-    explicit operator T() const {                                                       \
-        return parent::operator T();                                                    \
-    }                                                                                   \
 
 
 // NOTE: Object implicitly allows all operators, but will defer to a subclass if
@@ -272,11 +192,8 @@ template <std::convertible_to<Object> R>
 struct __ixor__<Object, R>                                  : Returns<Object&> {};
 
 
-// TODO: Default constructor should initialize to None.  Use Base(nullptr, stolen_t{})
-// to avoid this in subclasses.  That means we should never need to worry about null
-// objects except for when an object has been moved from or via an improper use of
-// reinterpret_borrow/steal.  All normal Python code will be guaranteed to be free from
-// null pointers.
+// TODO: maybe check() should not check for nullptr?  This might make them more
+// composable?
 
 
 /* A revised Python object interface that allows implicit conversions to subtypes
@@ -873,51 +790,35 @@ protected:
 public:
     static const Type type;
 
+    //////////////////////
+    ////    COMMON    ////
+    //////////////////////
+
     /* Check whether the templated type is considered object-like at compile time. */
     template <typename T>
     static constexpr bool check() {
         return std::derived_from<T, Object> || std::derived_from<T, pybind11::object>;
     }
 
-    /* Check whether a C++ value is considered object-like at compile time. */
-    template <typename T> requires (!impl::python_like<T>)
-    static constexpr bool check(const T& value) { return check<T>(); }
+    /* Check whether a Python/C++ value is considered object-like at compile time. */
+    template <typename T>
+    static constexpr bool check(const T& value) {
+        if constexpr (impl::python_like<T>) {
+            return value.ptr() != nullptr;
+        } else {
+            return check<T>();
+        }
+    }
 
-    /* Check whether a Python value is considered object-like at runtime. */
-    template <typename T> requires (impl::python_like<T>)
-    static constexpr bool check(const T& value) { return value.ptr() != nullptr; }
-
-    /* Identical to the above, but pybind11 expects a method of this name. */
-    template <typename T> requires (!impl::python_like<T>)
-    static constexpr bool check_(const T& value) { return check(value); }
-    template <typename T> requires (impl::python_like<T>)
-    static constexpr bool check_(const T& value) { return check(value); }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Default constructor.  Initializes to a null object, which should always be
-    filled in before being returned to the user. NOTE: this has to be public for
-    pybind11's type casters to work as intended. */
-    Object() : m_ptr(Py_NewRef(Py_None)) {}
-
-    /* reinterpret_borrow()/reinterpret_steal() constructors.  The tags themselves are
-    protected and only accessible within subclasses of pybind11::object. */
+    /* reinterpret_borrow() constructor.  Borrows a reference to a raw Python handle. */
     Object(Handle ptr, const borrowed_t&) : m_ptr(Py_XNewRef(ptr.ptr())) {}
+
+    /* reinterpret_steal() constructor.  Steals a reference to a raw Python handle. */
     Object(Handle ptr, const stolen_t&) : m_ptr(ptr.ptr()) {}
-
-    /* Copy constructor.  Borrows a reference to an existing object. */
-    Object(const Object& other) : m_ptr(Py_XNewRef(other.m_ptr)) {}
-    Object(const pybind11::object& other) : m_ptr(Py_XNewRef(other.ptr())) {}
-
-    /* Move constructor.  Steals a reference to a temporary object. */
-    Object(Object&& other) : m_ptr(other.m_ptr) { other.m_ptr = nullptr; }
-    Object(pybind11::object&& other) : m_ptr(other.release().ptr()) {}
 
     /* Convert a pybind11 accessor into a generic Object. */
     template <typename Policy>
-    Object(const detail::accessor<Policy>& accessor) {
+    Object(const detail::accessor<Policy>& accessor) : m_ptr(nullptr) {
         pybind11::object obj(accessor);
         if (check(obj)) {
             m_ptr = obj.release().ptr();
@@ -926,18 +827,15 @@ public:
         }
     }
 
-    /* Convert any C++ value into a generic python object. */
-    template <typename T> requires (!impl::python_like<T>)
-    Object(const T& value) : m_ptr([&value] {
-        try {
-            return pybind11::cast(value).release().ptr();
-        } catch (...) {
-            Exception::from_pybind11();
-        }
-    }()) {}
+    /* Copy constructor.  Borrows a reference to an existing object. */
+    Object(const Object& other) : m_ptr(Py_XNewRef(other.m_ptr)) {}
+
+    /* Move constructor.  Steals a reference to a temporary object. */
+    Object(Object&& other) : m_ptr(other.m_ptr) { other.m_ptr = nullptr; }
 
     /* Copy assignment operator. */
     Object& operator=(const Object& other) {
+        std::cout << "object copy assignment\n";
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = Py_XNewRef(other.m_ptr);
@@ -948,6 +846,7 @@ public:
 
     /* Move assignment operator. */
     Object& operator=(Object&& other) {
+        std::cout << "object move assignment\n";
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = other.m_ptr;
@@ -963,6 +862,31 @@ public:
             Py_XDECREF(m_ptr);
         }
     }
+
+    BERTRAND_OBJECT_OPERATORS(Object)
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Default constructor.  Initializes to None. */
+    Object() : m_ptr(Py_NewRef(Py_None)) {}
+
+    /* Copy constructor from equivalent pybind11 type. */
+    Object(const pybind11::object& other) : m_ptr(Py_XNewRef(other.ptr())) {}
+
+    /* Move constructor from equivalent pybind11 type. */
+    Object(pybind11::object&& other) : m_ptr(other.release().ptr()) {}
+
+    /* Convert any C++ value into a generic python object. */
+    template <impl::cpp_like T>
+    Object(const T& value) : m_ptr([&value] {
+        try {
+            return pybind11::cast(value).release().ptr();
+        } catch (...) {
+            Exception::from_pybind11();
+        }
+    }()) {}
 
     ///////////////////////////
     ////    CONVERSIONS    ////
@@ -1003,7 +927,7 @@ public:
 
     /* Implicitly convert an Object into a pybind11::handle. */
     inline operator pybind11::handle() const {
-        return pybind11::handle(m_ptr);
+        return m_ptr;
     }
 
     /* Implicitly convert an Object into a pybind11::object. */
@@ -1011,43 +935,17 @@ public:
         return pybind11::reinterpret_borrow<pybind11::object>(m_ptr);
     }
 
-    /* Wrap an Object in a proxy class, which moves it into a managed buffer for
-    granular control. */
-    template <impl::proxy_like T>
-    operator T() const {
-        return T(this->operator typename T::Wrapped());
-    }
-
-    /* Narrow an Object into one of its subclasses, applying a runtime type check
-    against its value. */
-    template <std::derived_from<Object> T>
-    operator T() const {
-        if (!T::check(*this)) {
-            throw impl::noconvert<T>(m_ptr);
+    /* Contextually convert an Object into a boolean value for use in if/else 
+    statements, with the same semantics as in Python. */
+    inline explicit operator bool() const {
+        int result = PyObject_IsTrue(m_ptr);
+        if (result == -1) {
+            Exception::from_python();
         }
-        return T(m_ptr, borrowed_t{});
+        return result;
     }
 
-    /* Explicitly convert to any other type using pybind11's type casting mechanism. */
-    template <impl::not_proxy_like T> requires (!std::derived_from<T, Object>)
-    operator T() const {
-        try {
-            return Handle(m_ptr).template cast<T>();
-        } catch (...) {
-            Exception::from_pybind11();
-        }
-    }
-
-    // TODO: this could bely a more general solution for conversions.  Implicit
-    // conversions are always type safe, but static_cast<>() can also be used to
-    // perform an explicit conversion no matter the type.  I could, for instance,
-    // explicitly convert to any container type by just static_cast<>()ing to it
-    // after converting the object to a corresponding Python type (say, by calling)
-    // the list() constructor on it.  That would be pretty cool, and would allow
-    // conversions to both Python types and C++ types in a single line of readable
-    // code.
-
-    /* Implicitly cast to a string representation.  Equivalent to Python `str(obj)`. */
+    /* Explicitly cast to a string representation.  Equivalent to Python `str(obj)`. */
     inline explicit operator std::string() const {
         PyObject* str = PyObject_Str(m_ptr);
         if (str == nullptr) {
@@ -1064,14 +962,32 @@ public:
         return result;
     }
 
-    /* Contextually convert an Object into a boolean value for use in if/else 
-    statements, with the same semantics as in Python. */
-    inline explicit operator bool() const {
-        int result = PyObject_IsTrue(m_ptr);
-        if (result == -1) {
-            Exception::from_python();
+    /* Wrap an Object in a proxy class, which moves it into a managed buffer for
+    granular control. */
+    template <impl::proxy_like T>
+    operator T() const {
+        return T(static_cast<typename T::Wrapped>(*this));
+    }
+
+    template <std::derived_from<Object> T>
+    operator T() const {
+        if (!T::check(*this)) {
+            throw impl::noconvert<T>(m_ptr);
         }
-        return result;
+        return T(m_ptr, borrowed_t{});
+    }
+
+    template <impl::not_proxy_like T>
+        requires (
+            !std::derived_from<T, Object> &&
+            !std::derived_from<T, pybind11::arg>
+        )
+    operator T() const {
+        try {
+            return Handle(m_ptr).template cast<T>();
+        } catch (...) {
+            Exception::from_pybind11();
+        }
     }
 
     ////////////////////////////
@@ -1099,12 +1015,6 @@ public:
     inline bool is(const Object& other) const {
         return m_ptr == other.ptr();
     }
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-    BERTRAND_OBJECT_OPERATORS(Object)
 
 };
 
@@ -1137,10 +1047,29 @@ T reinterpret_steal(Handle obj) {
 }
 
 
+template <impl::not_proxy_like T>
+    requires (!std::derived_from<T, Object> && !std::derived_from<T, pybind11::arg>)
+struct __implicit_cast__<Object, T> {
+    static constexpr bool enable = true;
+    static T cast(const Object& self) {
+        try {
+            return Handle(self.ptr()).template cast<T>();
+        } catch (...) {
+            Exception::from_pybind11();
+        }
+    }
+};
+
+
 namespace impl {
 
     // TODO: make this accept an extra template argument for the value stored within
     // the container.  index() and count() should account for this
+
+    // TODO: this could be a subclass of Inherits<> that adds in sequence protocol
+    // operators automatically.
+    // -> Get count()/index() type from __iter__?  Also maybe assert that the type
+    // implements __iter__?
 
     /* Mixin holding operator overloads for types implementing the sequence protocol,
     which makes them both concatenatable and repeatable. */
@@ -1262,8 +1191,154 @@ namespace impl {
 
     };
 
-
 }
+
+
+/* Helper struct for defining a subclass of py::Object.  This ensures correct template
+ * deduction for operator overloads and conversions, and separates internal pybind11
+ * integrations from the subclass definition.  It includes:
+ *
+ *      1. Internal constructors for reinterpret_borrow/steal.
+ *      2. Copy/move constructors and assignment operators.
+ *      3. Implicit conversion from internal pybind11 types, like accessor.
+ *      4. Implicit conversion operators to bool, std::string, equivalent pybind11
+ *         types, and subclasses of this type.
+ *      5. Explicit conversion operators to any other type via pybind11::cast().
+ *      6. Operator redefinitions to apply correct template constraints for control
+ *         structs and their associated return types.
+ *
+ * Some of this may become obsolete when C++23's "deducing this" feature is more
+ * widespread, but for now it's the only way to ensure correct template deduction
+ * across the board without resorting to preprocessor macros. */
+template <typename Derived, typename Base>
+struct Inherits : public Base {
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    /* Inherit reinterpret_borrow, reinterpret_steal constructors. */
+    Inherits(Handle h, const Object::borrowed_t& t) : Base(h, t) {}
+    Inherits(Handle h, const Object::stolen_t& t) : Base(h, t) {}
+
+    // TODO: pybind11 conversion cannot be part of this class since py::Tuple and other
+    // generic containers restrict conversions based on template conditions.
+    // -> maybe I can just adjust the output of check<> based on value type? 
+
+    /* Copy/move from equivalent pybind11 types. */
+    template <impl::pybind11_like T> requires (Derived::template check<T>())
+    Inherits(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Inherit implicit conversion from pybind11 accessor. */
+    template <typename Policy>
+    Inherits(const detail::accessor<Policy>& accessor) :
+        Base(nullptr, Object::stolen_t{})
+    {
+        pybind11::object obj(accessor);
+        if (Derived::check(obj)) {
+            Base::m_ptr = obj.release().ptr();
+        } else {
+            throw impl::noconvert<Derived>(obj.ptr());
+        }
+    }
+
+    ///////////////////////////
+    ////    CONVERSIONS    ////
+    ///////////////////////////
+
+    // TODO: the only way I can think of to handle this in a generic way is to only
+    // include 2 conversion operators, one that handles implicit conversions and one
+    // that handles explicit conversions instead.
+
+
+    template <typename T> requires (__implicit_cast__<Derived, T>::enable)
+    operator T() const {
+        return __implicit_cast__<Derived, T>::cast(static_cast<const Derived&>(*this));
+    }
+
+    template <typename T> requires (!__implicit_cast__<Derived, T>::enable)
+    explicit operator T() const {
+        try {
+            return Handle(Base::m_ptr).template cast<T>();
+        } catch (...) {
+            Exception::from_pybind11();
+        }
+    }
+
+
+    /* Inherit explicit conversion to bool. */
+    inline explicit operator bool() const {
+        return Base::operator bool();
+    }
+
+    /* Inherit explicit conversion to std::string. */
+    inline explicit operator std::string() const {
+        return Base::operator std::string();
+    }
+
+    /* Inherit implicit conversion to pybind11::handle. */
+    inline operator pybind11::handle() const {
+        return Base::operator pybind11::handle();
+    }
+
+    /* Inherit implicit conversion to pybind11::object. */
+    inline operator pybind11::object() const {
+        return Base::operator pybind11::object();
+    }
+
+    // /* Implicitly convert to equivalent pybind11 type. */
+    // template <impl::pybind11_like T> requires (Derived::template check<T>())
+    // operator T() const {
+    //     return reinterpret_borrow<T>(Base::m_ptr);
+    // }
+
+    // /* Implicitly convert to subclasses of this type, applying a Python-level type
+    // check on the way. */
+    // template <std::derived_from<Derived> T>
+    // operator T() const {
+    //     if (!T::check(*this)) {
+    //         throw impl::noconvert<T>(Base::m_ptr);
+    //     }
+    //     return T(Base::m_ptr, Object::borrowed_t{});
+    // }
+
+    // /* Inherit implicit conversion to proxy objects. */
+    // template <impl::proxy_like T>
+    //     requires (std::convertible_to<Derived, typename T::Wrapped>)
+    // operator T() const {
+    //     return T(static_cast<typename T::Wrapped>(static_cast<const Derived&>(*this)));
+    // }
+
+    // /* Mark pybind11::cast() conversions as explicit in the subclass.  They require
+    // the user to specify them using `static_cast<T>(obj)` or similar. */
+    // template <impl::not_proxy_like T>
+    //     requires (
+    //         !impl::pybind11_like<T> &&
+    //         !std::derived_from<T, Object> &&
+    //         !std::derived_from<T, pybind11::arg>
+    //     )
+    // inline explicit operator T() const {
+    //     return Base::operator T();
+    // }
+
+    /////////////////////////
+    ////    OPERATORS    ////
+    /////////////////////////
+
+
+    // TODO: implement operator overloads here and reduce BERTRAND_OPERATORS down to
+    // friend declarations that can be replicated in each subclass.
+
+    // TODO: this means replicating the operators in Object, but this isn't necessarily
+    // a bad thing, since it gives us the opportunity to fully document them.
+
+    // TODO: After this refactor, BERTRAND_OPERATORS should only need to be invoked if
+    // you're changing the low-level API calls that are used for the object, which
+    // should never happen.  It could actually not even escape the python.h header,
+    // which would mean that no macros are exported from the python.h header besides
+    // the ones exposed by PYBIND11 and bertrand/common.h.
+
+};
 
 
 }  // namespace py

@@ -235,7 +235,7 @@ inline Module Module::def_submodule(const char* name, const char* doc) {
 }
 
 
-template <typename T> requires (impl::python_like<T> && impl::str_like<T>)
+template <impl::python_like T> requires (impl::str_like<T>)
 inline Int::Int(const T& str, int base) :
     Base(PyLong_FromUnicodeObject(str.ptr(), base), stolen_t{})
 {
@@ -882,7 +882,7 @@ namespace impl {
         using Return = typename GetReturn<Func>::type;
 
         /* Implicitly convert the tag to a constexpr bool. */
-        template <typename T = Func> requires (!python_like<T>)
+        template <typename T = Func> requires (cpp_like<T>)
         inline constexpr operator bool() const {
             return std::is_invocable_v<Func, Args...>;
         }
@@ -973,7 +973,7 @@ namespace impl {
         // access it will result in a compile error.
 
         /* Implicitly convert the tag to a constexpr bool. */
-        template <typename T = Func> requires (!python_like<T>)
+        template <typename T = Func> requires (cpp_like<T>)
         inline constexpr operator bool() const {
             return is_callable_any<Func>;
         }

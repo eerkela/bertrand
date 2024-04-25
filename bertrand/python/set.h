@@ -31,7 +31,7 @@ namespace impl {
         /////////////////////////////
 
         /* Implicitly convert a py::FrozenSet into a C++ set or unordered_set. */
-        template <typename T> requires (!impl::python_like<T> && impl::anyset_like<T>)
+        template <impl::cpp_like T> requires (impl::anyset_like<T>)
         inline operator T() const {
             T result;
             for (auto&& item : *self()) {
@@ -355,7 +355,7 @@ class FrozenSet : public impl::ISet<FrozenSet>, public impl::FrozenSetTag {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, FrozenSet, impl::frozenset_like, PyFrozenSet_Check)
     BERTRAND_OBJECT_OPERATORS(FrozenSet)
@@ -372,7 +372,7 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     FrozenSet(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the contents of a braced initializer list into a new Python frozenset. */
@@ -416,8 +416,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary Python container into a new py::FrozenSet. */
-    template <typename T>
-        requires (impl::python_like<T> && !impl::frozenset_like<T> && impl::is_iterable<T>)
+    template <impl::python_like T> requires (!impl::frozenset_like<T> && impl::is_iterable<T>)
     explicit FrozenSet(const T& contents) :
         Base(PyFrozenSet_New(contents.ptr()), stolen_t{})
     {
@@ -427,7 +426,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary C++ container into a new py::FrozenSet. */
-    template <typename T> requires (!impl::python_like<T> && impl::is_iterable<T>)
+    template <impl::cpp_like T> requires (impl::is_iterable<T>)
     explicit FrozenSet(T&& container) : Base(PyFrozenSet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -578,7 +577,7 @@ class Set : public impl::ISet<Set>, public impl::SetTag {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Set, impl::set_like, PySet_Check)
     BERTRAND_OBJECT_OPERATORS(Set)
@@ -595,7 +594,7 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     Set(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the contents of a braced initializer list into a new Python set. */
@@ -639,8 +638,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary Python container into a new py::Set. */
-    template <typename T>
-        requires (impl::python_like<T> && !impl::set_like<T> && impl::is_iterable<T>)
+    template <impl::python_like T> requires (!impl::set_like<T> && impl::is_iterable<T>)
     explicit Set(const T& contents) :
         Base(PySet_New(contents.ptr()), stolen_t{})
     {
@@ -650,7 +648,7 @@ public:
     }
 
     /* Explicitly unpack an arbitrary C++ container into a new py::Set. */
-    template <typename T> requires (!impl::python_like<T> && impl::is_iterable<T>)
+    template <impl::cpp_like T> requires (impl::is_iterable<T>)
     explicit Set(T&& contents) : Base(PySet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();

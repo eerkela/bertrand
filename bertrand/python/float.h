@@ -145,7 +145,7 @@ class Float : public Object {
     using Base = Object;
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Float, impl::float_like, PyFloat_Check)
     BERTRAND_OBJECT_OPERATORS(Float)
@@ -162,11 +162,11 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (impl::python_like<T> && impl::float_like<T>)
+    template <impl::python_like T> requires (impl::float_like<T>)
     Float(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Trigger implicit conversions to double. */
-    template <typename T> requires (!impl::python_like<T> && impl::float_like<T>)
+    template <impl::cpp_like T> requires (impl::float_like<T>)
     Float(const T& value) : Base(PyFloat_FromDouble(value), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -184,7 +184,7 @@ public:
     // TODO: implicit conversion from Bool, Int
 
     /* Explicitly convert an arbitrary Python object to py::Float. */
-    template <typename T> requires (impl::python_like<T> && !impl::float_like<T>)
+    template <impl::python_like T> requires (!impl::float_like<T>)
     explicit Float(const T& value) : Base(PyNumber_Float(value.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -192,9 +192,8 @@ public:
     }
 
     /* Trigger explicit conversions to double. */
-    template <typename T>
+    template <impl::cpp_like T>
         requires (
-            !impl::python_like<T> &&
             !impl::float_like<T> &&
             !std::integral<T> &&
             impl::explicitly_convertible_to<T, double>

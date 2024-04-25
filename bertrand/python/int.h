@@ -380,7 +380,7 @@ class Int : public Object {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Int, impl::int_like, PyLong_Check)
     BERTRAND_OBJECT_OPERATORS(Int)
@@ -397,11 +397,11 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (impl::python_like<T> && impl::int_like<T>)
+    template <impl::python_like T> requires (impl::int_like<T>)
     Int(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Implicitly promote Python booleans to py::Int. */
-    template <typename T> requires (impl::python_like<T> && impl::bool_like<T>)
+    template <impl::python_like T> requires (impl::bool_like<T>)
     Int(const T& value) : Base(PyNumber_Long(value.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -430,7 +430,7 @@ public:
     }
 
     /* Explicitly convert a Python float into a py::Int. */
-    template <typename T> requires (impl::python_like<T> && impl::float_like<T>)
+    template <impl::python_like T> requires (impl::float_like<T>)
     explicit Int(const T& value) : Base(PyNumber_Long(value.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -438,7 +438,7 @@ public:
     }
 
     /* Explicitly convert a C++ float into a py::Int. */
-    template <typename T> requires (!impl::python_like<T> && impl::float_like<T>)
+    template <impl::cpp_like T> requires (impl::float_like<T>)
     explicit Int(const T& value) : Base(PyLong_FromDouble(value), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -446,9 +446,8 @@ public:
     }
 
     /* Explicitly convert an arbitrary Python object into an integer. */
-    template <typename T>
+    template <impl::python_like T>
         requires (
-            impl::python_like<T> &&
             !impl::bool_like<T> &&
             !impl::int_like<T> &&
             !impl::float_like<T> &&
@@ -461,9 +460,8 @@ public:
     }
 
     /* Trigger explicit conversion operators to C++ integer types. */
-    template <typename T>
+    template <impl::cpp_like T>
         requires (
-            !impl::python_like<T> &&
             !impl::bool_like<T> &&
             !impl::int_like<T> &&
             !impl::float_like<T> &&
@@ -487,7 +485,7 @@ public:
     explicit Int(const std::string_view& str, int base = 0) : Int(str.data(), base) {}
 
     /* Explicitly convert a Python string with an optional base into a py::Int. */
-    template <typename T> requires (impl::python_like<T> && impl::str_like<T>)
+    template <impl::python_like T> requires (impl::str_like<T>)
     explicit Int(const T& str, int base = 0);
 
     /////////////////////////////
@@ -500,7 +498,7 @@ public:
     }
 
     /* Implicitly convert a Python int into a C++ integer. */
-    template <typename T> requires (!impl::python_like<T> && impl::int_like<T>)
+    template <impl::cpp_like T> requires (impl::int_like<T>)
     inline operator T() const {
         if constexpr (sizeof(T) <= sizeof(long)) {
             if constexpr (std::signed_integral<T>) {

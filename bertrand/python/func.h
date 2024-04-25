@@ -275,7 +275,7 @@ class Code : public Object {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Code, comptime_check, PyCode_Check)
     BERTRAND_OBJECT_OPERATORS(Code)
@@ -289,7 +289,7 @@ public:
     Code() = delete;
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     Code(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Compile a Python source file into an interactive code object. */
@@ -501,7 +501,7 @@ class Frame : public Object {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Frame, comptime_check, PyFrame_Check)
     BERTRAND_OBJECT_OPERATORS(Frame)
@@ -518,7 +518,7 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     Frame(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Construct an empty frame from a function name, file name, and line number.  This
@@ -711,24 +711,10 @@ class Function : public Object {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Function, impl::is_callable_any, runtime_check)
     BERTRAND_OBJECT_OPERATORS(Function)
-
-    //////////////////////
-    ////    COMMON    ////
-    //////////////////////
-
-    /* Copy constructor. */
-    Function(const Function& other) : Base(other.ptr(), borrowed_t{}) {}
-
-    /* Move constructor. */
-    Function(Function&& other) : Base(other.release(), stolen_t{}) {}
-
-    /* Copy/move constructor from equivalent pybind11 type(s). */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
-    Function(T&& other) : Base(std::forward<T>(other)) {}
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -737,9 +723,13 @@ public:
     /* Functions have no default constructor. */
     Function() = delete;
 
+
+    /* Copy/move constructor from equivalent pybind11 type(s). */
+    template <impl::python_like T> requires (check<T>())
+    Function(T&& other) : Base(std::forward<T>(other)) {}
+
     /* Implicitly convert a C++ function or callable object into a py::Function. */
-    template <typename T>
-        requires (check<std::decay_t<T>>() && !impl::python_like<std::decay_t<T>>)
+    template <impl::cpp_like T> requires (check<T>())
     Function(T&& func) :
         Base(pybind11::cpp_function(std::forward<T>(func)).release(), stolen_t{})
     {}
@@ -1031,7 +1021,7 @@ class ClassMethod : public Object {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, ClassMethod, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(ClassMethod)
@@ -1040,7 +1030,7 @@ public:
     ClassMethod() = delete;
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     ClassMethod(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Wrap an existing Python function as a classmethod descriptor. */
@@ -1091,7 +1081,7 @@ class StaticMethod : public Object {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, StaticMethod, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(StaticMethod)
@@ -1100,7 +1090,7 @@ public:
     StaticMethod() = delete;
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     StaticMethod(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Wrap an existing Python function as a staticmethod descriptor. */
@@ -1163,7 +1153,7 @@ class Property : public Object {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Property, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(Property)
@@ -1172,7 +1162,7 @@ public:
     Property() = delete;
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     Property(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Wrap an existing Python function as a getter in a property descriptor. */

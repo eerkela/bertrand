@@ -776,7 +776,63 @@ namespace impl {
     template <typename T>
     using unwrap_proxy = typename unwrap_proxy_helper<T>::type;
 
+    /* Standardized error message for type narrowing via pybind11 accessors or the
+    generic Object wrapper. */
+    template <typename Derived>
+    TypeError noconvert(PyObject* obj) {
+        std::ostringstream msg;
+        msg << "cannot convert python object from type '"
+            << Py_TYPE(obj)->tp_name
+            << "' to type '"
+            << reinterpret_cast<PyTypeObject*>(Derived::type.ptr())->tp_name
+            << "'";
+        return TypeError(msg.str());
+    }
+
 }
+
+
+///////////////////////
+////    CONVERT    ////
+///////////////////////
+
+
+template <typename Self, typename T>
+struct __implicit_cast__ { static constexpr bool enable = false; };
+
+template <typename Self>
+struct __implicit_cast__<Self, pybind11::handle> {
+    static constexpr bool enable = true;
+    static pybind11::handle cast(const Self& self) {
+        return self.ptr();
+    }
+};
+
+template <typename Self>
+struct __implicit_cast__<Self, pybind11::object> {
+    static constexpr bool enable = true;
+    static pybind11::object cast(const Self& self) {
+        return pybind11::reinterpret_borrow<pybind11::object>(self.ptr());
+    }
+};
+
+template <typename Self, std::derived_from<Self> T>
+struct __implicit_cast__<Self, T> {
+    static constexpr bool enable = true;
+    static T cast(const Self& self) {
+        if (!T::check(self)) {
+            throw impl::noconvert<T>(self);
+        }
+        return reinterpret_borrow<T>(self.ptr());
+    }
+};
+
+template <typename Self, impl::proxy_like T>
+struct __implicit_cast__<Self, T> : __implicit_cast__<Self, impl::unwrap_proxy<T>> {
+    static T cast(const Self& self) {
+        return T(static_cast<const typename T::Wrapped&>(self));
+    }
+};
 
 
 ////////////////////
@@ -1335,7 +1391,7 @@ auto abs(const T& obj) {
 
 /* Equivalent to Python `abs(obj)`, except that it takes a C++ value and applies
 std::abs() for identical semantics. */
-template <typename T> requires (!impl::python_like<T>)
+template <impl::cpp_like T>
 auto abs(const T& value) {
     return std::abs(value);
 }

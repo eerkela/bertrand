@@ -44,6 +44,10 @@
  */
 
 
+// TODO: UnicodeDecodeError requires extra arguments besides PyErr_SetString.  See
+// PyUnicodeDecodeError_Create() for details.
+
+
 namespace bertrand {
 namespace py {
 

@@ -439,7 +439,7 @@ class Bytes : public impl::IBytes<Bytes>, public impl::SequenceOps<Bytes> {
     using Base = impl::IBytes<Bytes>;
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Bytes, impl::bytes_like, PyBytes_Check)
     BERTRAND_OBJECT_OPERATORS(Bytes)
@@ -459,7 +459,7 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (impl::python_like<T> && impl::bytes_like<T>)
+    template <impl::python_like T> requires (impl::bytes_like<T>)
     Bytes(T&& obj) : Base(std::forward<T>(obj)) {}
 
     /* Implicitly convert a string literal into a py::Bytes object.  Note that this
@@ -571,7 +571,7 @@ class ByteArray : public impl::IBytes<ByteArray>, public impl::SequenceOps<ByteA
     using Base = impl::IBytes<ByteArray>;
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, ByteArray, impl::bytearray_like, PyByteArray_Check)
     BERTRAND_OBJECT_OPERATORS(ByteArray)
@@ -591,7 +591,7 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (impl::python_like<T> && impl::bytearray_like<T>)
+    template <impl::python_like T> requires (impl::bytearray_like<T>)
     ByteArray(T&& obj) : Base(std::forward<T>(obj)) {}
 
     /* Implicitly convert a string literal into a py::ByteArray object.  Note that this

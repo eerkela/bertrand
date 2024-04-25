@@ -176,22 +176,66 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
+    // CTAD problems:
+    // py::Tuple<py::Int> a("abc");  // this should not compile
+    // py::Tuple<py::Str> b = {"a", "b", "c"};
+    // py::Tuple<> c = b;  // this should not cause a clangd error
+    // py::Tuple<py::Int> d = b;  // this should not cause an ambiguity, it should just fail to compile
 
-    // py::Tuple tuple;
-    // py::Tuple tuple2(tuple);  // TODO: this should be calling the templated copy constructor
+
+    // py::Bool a = true;
+    // py::Bool b = py::reinterpret_borrow<py::Bool>(a.ptr());
+    // bool c = b;
+    // std::string d = static_cast<std::string>(b);
+    // // auto e = static_cast<std::vector<int>>(b);
+    // py::print(a, b, c, d);
+
+
+    // auto x = py::arg("x") = py::Object(1);
+
+
+    py::Bool x = true;
+    py::Str y = x;
+    py::print(y);
+
+
+
+    // py::Tuple<py::Str> tuple("abc");
+    // py::Tuple<> tuple2 = tuple;
+    // py::Tuple<> tuple3 = {1, 2, 3};
+    // tuple = tuple3;
     // py::print(tuple);
-    // py::print(typeid(decltype(tuple)::value_type).name());
+    // py::print(tuple2);
+    // py::print(typeid(decltype(tuple2)::value_type).name());
+
+
+
+    // py::Tuple<py::Str> x("xyz");
+    // py::Tuple y = x;
+    // x = {"a", "b", "c"};
+    // // y = {1, true, 3.0};
+    // py::print(y);
+    // py::print(x);
+    // py::print(typeid(decltype(y)::value_type).name());
+
+    // for (const auto& item : y) {
+    //     py::print(item);
+    // }
+
+    // py::Tuple<py::Str> x = {"a", "b", "c"};
+    // std::vector<std::string> vec = x;
+    // for (const auto& item : vec) {
+    //     py::print(item);
+    // }
+
+
+    // py::Tuple x = 1;
 
 
 
 
 
-
-
-
-
-    // py::Tuple<py::Int> x = {1, 2, 3};
-    // // py::Tuple<py::Str> y = x;
+    // py::Tuple<py::Str> y = x;
     // // py::Tuple<py::Object> t = x;  // TODO: enable this
     // py::Tuple t = x;
     // py::print(t[0]);

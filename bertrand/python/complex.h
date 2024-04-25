@@ -112,7 +112,7 @@ class Complex : public Object {
     using Base = Object;
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Complex, impl::complex_like, PyComplex_Check)
     BERTRAND_OBJECT_OPERATORS(Complex)
@@ -129,7 +129,7 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (impl::python_like<T> && impl::complex_like<T>)
+    template <impl::python_like T> requires (impl::complex_like<T>)
     Complex(T&& value) : Base(std::forward<T>(value)) {}
 
     /* Explicitly convert a double into a py::Complex object as its real component. */
@@ -153,7 +153,7 @@ public:
 
     /* Implicitly convert any C++ type that implements `.real()` and `.imag()` into
     a py::Complex object. */
-    template <typename T> requires (!impl::python_like<T> && impl::complex_like<T>)
+    template <impl::cpp_like T> requires (impl::complex_like<T>)
     Complex(const T& value) : Base(
         PyComplex_FromDoubles(value.real(), value.imag()),
         stolen_t{}
@@ -164,7 +164,7 @@ public:
     }
 
     /* Explicitly convert an arbitrary Python object into a complex number. */
-    template <typename T> requires (impl::python_like<T> && !impl::complex_like<T>)
+    template <impl::python_like T> requires (!impl::complex_like<T>)
     explicit Complex(const T& obj) : Base(nullptr, stolen_t{}) {
         Py_complex complex = PyComplex_AsCComplex(obj.ptr());
         if (complex.real == -1.0 && PyErr_Occurred()) {
@@ -177,9 +177,8 @@ public:
     }
 
     /* Trigger explicit conversions to std::complex<double>. */
-    template <typename T>
+    template <impl::cpp_like T>
         requires (
-            !impl::python_like<T> &&
             !impl::complex_like<T> &&
             impl::explicitly_convertible_to<T, std::complex<double>>
         )

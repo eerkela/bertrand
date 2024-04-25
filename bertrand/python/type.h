@@ -46,7 +46,7 @@ class Type : public Object {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Type, impl::type_like, PyType_Check)
     BERTRAND_OBJECT_OPERATORS(Type)
@@ -59,7 +59,7 @@ public:
     Type() : Base((PyObject*) &PyType_Type, borrowed_t{}) {}
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     Type(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly detect the type of an arbitrary Python object. */
@@ -487,7 +487,7 @@ class Super : public Object {
     }
 
 public:
-    static const Type type;;
+    static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Super, comptime_check, runtime_check)
     BERTRAND_OBJECT_OPERATORS(Super)
@@ -504,7 +504,7 @@ public:
     }
 
     /* Copy/move constructors. */
-    template <typename T> requires (check<T>() && impl::python_like<T>)
+    template <impl::python_like T> requires (check<T>())
     Super(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicit constructor.  Equivalent to Python `super(type, self)` with 2
