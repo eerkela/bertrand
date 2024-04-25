@@ -288,8 +288,8 @@ struct __ixor__<L, R>                                           : Returns<Bool&>
 
 
 /* Represents a statically-typed Python boolean in C++. */
-class Bool : public Inherits<Bool, Object> {
-    using Base = Inherits<Bool, Object>;
+class Bool : public Object {
+    using Base = Object;
 
 public:
     static const Type type;
@@ -310,7 +310,26 @@ public:
     ////    COMMON    ////
     //////////////////////
 
-    using Base::Base;
+    /* Inherit reinterpret_borrow, reinterpret_steal constructors. */
+    Bool(Handle h, const Object::borrowed_t& t) : Base(h, t) {}
+    Bool(Handle h, const Object::stolen_t& t) : Base(h, t) {}
+
+    /* Copy/move from equivalent pybind11 types. */
+    template <impl::pybind11_like T> requires (check<T>())
+    Bool(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Inherit implicit conversion from pybind11 accessor. */
+    template <typename Policy>
+    Bool(const detail::accessor<Policy>& accessor) :
+        Base(nullptr, Object::stolen_t{})
+    {
+        pybind11::object obj(accessor);
+        if (check(obj)) {
+            Base::m_ptr = obj.release().ptr();
+        } else {
+            throw impl::noconvert<Bool>(obj.ptr());
+        }
+    }
 
     BERTRAND_OBJECT_OPERATORS(Bool)
 
@@ -375,15 +394,15 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
-    // /* Implicitly convert to a pybind11::bool. */
-    // inline operator pybind11::bool_() const {
-    //     return reinterpret_borrow<pybind11::bool_>(m_ptr);
-    // }
-
     /* Implicitly convert to a C++ boolean. */
     inline operator bool() const {
         return Base::operator bool();
     }
+
+    // /* Implicitly convert to a pybind11::bool. */
+    // inline operator pybind11::bool_() const {
+    //     return reinterpret_borrow<pybind11::bool_>(m_ptr);
+    // }
 
 };
 

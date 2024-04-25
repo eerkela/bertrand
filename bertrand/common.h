@@ -10,10 +10,8 @@
 /* std::format is part of the C++20 standard, but was not fully implemented until GCC 
 13+, clang 18+, or MSVC 19.29+. */
 #if defined(__GNUC__)
-    #if defined(__clang__) && __clang_major__ >= 18
-        #ifndef LINTER
-            #define BERTRAND_HAS_STD_FORMAT
-        #endif
+    #if defined(__clang__) && __clang_major__ >= 19
+        #define BERTRAND_HAS_STD_FORMAT
     #elif (__GNUC__ >= 13)
         #define BERTRAND_HAS_STD_FORMAT
     #endif

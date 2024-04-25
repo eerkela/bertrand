@@ -87,14 +87,14 @@ class Extension(Pybind11Extension):
     def __init__(
         self,
         *args: Any,
-        cxx_std: int = 20,
+        cxx_std: int = 23,
         clangd: bool = True,
         traceback: bool = True,
         **kwargs: Any
     ) -> None:
-        if cxx_std < 20:
+        if cxx_std < 23:
             raise ValueError(
-                "C++ standard must be at least C++20 to enable bertrand features"
+                "C++ standard must be at least C++23 to enable bertrand features"
             )
 
         super().__init__(*args, **kwargs)

@@ -75,100 +75,38 @@
 ///////////////////////
 
 
-#include "bertrand/python.h"
-#include <bertrand/bertrand.h>
+// #include <bertrand/bertrand.h>
 
 #include <chrono>
 #include <iostream>
 #include <string>
 
-#include <cpptrace/cpptrace.hpp>
+
+// namespace py = bertrand::py;
+// using namespace py::literals;
 
 
-namespace py = bertrand::py;
-using namespace py::literals;
+// static const py::Module np = py::import<"numpy">();
+// static const py::Function array = np.attr<"array">();
+// static const py::Type dtype = np.attr<"dtype">();
 
 
-static const py::Module np = py::import<"numpy">();
-static const py::Function array = np.attr<"array">();
-static const py::Type dtype = np.attr<"dtype">();
+#include <pybind11/pybind11.h>
 
 
-void helper() {
-    throw py::TypeError("abc");
-}
+struct Foo {
+
+    template <typename Self>
+    void func(this Self&& self) {
+        std::cout << typeid(self).name() << std::endl;
+    }
+
+};
 
 
-void throws_an_error() {
-    // throw py::TypeError("test error");
+struct Bar : public Foo {
 
-    // PyErr_SetString(PyExc_TypeError, "test error");
-    // py::Exception::from_python();
-
-    // static py::Code script = R"(
-    //     def foo():
-    //         raise TypeError("test error")
-
-    //     foo()
-    // )"_python;
-
-    // script();
-
-    // try {
-    //     script();
-    // } catch (const py::TypeError& e) {
-    //     py::print("Caught a TypeError in C++!");
-    //     py::print(e.what());
-    // }
-
-    static py::Code script = R"(
-        import traceback
-
-        def foo():
-            func()
-
-        # try:
-        #     foo()
-        # except TypeError as err:
-        #     print("Caught a TypeError in Python!")
-        #     traceback.print_exception(err)
-        #     raise err from err
-
-        foo()
-    )"_python;
-
-    script({{"func", py::Function(helper)}});
-}
-
-
-void get_pattern(const bertrand::Regex& re) {
-    py::print(re.pattern());
-}
-
-
-bertrand::Regex from_cpp() {
-    return bertrand::Regex("abc");
-}
-
-
-int test(const py::Object& obj) {
-    py::print(obj);
-    return 3;
-}
-
-
-
-
-
-
-
-
-void func(const py::Tuple<>& arg) {
-    // do stuff
-}
-
-
-
+};
 
 
 
@@ -193,10 +131,18 @@ void run() {
 
     // auto x = py::arg("x") = py::Object(1);
 
+    Foo f;
+    Bar b;
+    f.func();
+    b.func();
 
-    py::Bool x = true;
-    py::Str y = x;
-    py::print(y);
+
+
+
+    // py::Bool x = true;
+    // pybind11::bool_ y = x;
+    // py::Str y = x;
+    // py::print(y);
 
 
 
@@ -867,6 +813,4 @@ void run() {
 PYBIND11_MODULE(example, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring
     m.def("run", &run, "A test function to demonstrate pybind11");
-    m.def("get_pattern", &get_pattern, "catch a Python regex pattern in C++");
-    m.def("from_cpp", &from_cpp, "return a Python regex from C++");
 }

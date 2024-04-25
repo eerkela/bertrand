@@ -5,50 +5,124 @@ import subprocess
 import sys
 from typing import Any
 
-import numpy
-from Cython.Build import cythonize  # type: ignore
-from setuptools import Extension, setup  # type: ignore
-from pybind11.setup_helpers import Pybind11Extension, build_ext
+from setuptools import setup  # type: ignore
+from bertrand import Extension, BuildExt
 
 
-TRUTHY = {
-    "1", "true", "t", "yes", "y", "ok", "sure", "yep", "yap", "yup", "yeah", "indeed",
-    "aye", "roger", "absolutely", "certainly", "definitely", "positively", "positive",
-    "affirmative",
-}
-FALSY = {
-    "0", "false", "f", "no", "n", "nah", "nope", "nop", "nay", "never", "negative",
-    "negatory", "zip", "zilch", "nada", "nil", "null", "none",
-}
+# NOTE: C++ users have to execute $(python3 -m bertrand -I) to compile against bertrand.h
+# g++ foo.cpp -o foo.out $(python3 -m bertrand -I)
+
+# NOTE: Python users writing C++ extensions should use bertrand's custom Extension
+# class to add the necessary linkages to the bertrand library, and to enable clangd
+# support through compile_commands.json.
 
 
-# TODO: C++ users have to execute $(python3 -m bertrand -I) to compile against bertrand.h
-# c++ foo.cpp -o foo.out $(python3 -m bertrand -I)
+# NOTE: Bertrand uses C++23 features only found in GCC 14+ and Clang 18+ (MSVC is not
+# yet fully supported).  Users must first install these compilers to use the library.
+# Here are the steps to do so:
 
-# TODO: Python users writing C++ extensions should add
-# include_dirs=[bertrand.get_include()] to their Extension objects and/or setup() call.
+# GCC:
+
+# NOTE: if you have Ubuntu 24.04 or later, then you can install gcc-14 directly using
+# the package manager:
+#       sudo apt-get install build-essential
+
+# Otherwise:
+
+# 1. clone the git repository to a local directory:
+#       git clone git://gcc.gnu.org/git/gcc.git some/local/directory
+#       cd some/local/directory
+# 2. checkout the GCC 14 release branch:
+#       git checkout releases/gcc-14
+# 3. download prerequisites and install dependencies
+#       ./contrib/download_prerequisites
+#       sudo apt-get install g++-multilib flex bison
+# 4. create a build directory and configure the build:
+#       mkdir build
+#       cd build
+#       ../configure --disable-werror --disable-bootstrap
+# 5. run the build (takes about 20 minutes):
+#       make -j$(nproc)
+# 6. install:
+#       sudo make install
+# 7. (optional) add as default compiler:
+#       sudo update-alternatives --install /usr/bin/c++ c++ /usr/local/bin/c++ 100
+#       sudo update-alternatives --install /usr/bin/g++ g++ /usr/local/bin/g++ 100
+#       sudo update-alternatives --install /usr/bin/gcc gcc /usr/local/bin/gcc 100
+#       sudo update-alternatives --install /usr/bin/cpp cpp /usr/local/bin/cpp 100
+# 8. Check the version:
+#       gcc --version
 
 
-# NOTE: bertrand users environment variables to control the build process:
-#   $ DEBUG=true pip install bertrand
-#       build with logging enabled
+# Clang:
+
+# 1. clone the git repository to a local directory:
+#       git clone https://github.com/llvm/llvm-project.git some/local/directory
+#       cd some/local/directory
+# 2. checkout the clang 18 release branch:
+#       git checkout release/18.x
+# 3. create a build directory and configure the build:
+#       mkdir build
+#       cd build
+#       cmake -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_BUILD_TYPE=Release -G "Unix Makefiles" ../llvm
+# 4. run the build (takes about 30 minutes):
+#       make -j$(nproc)
+# 5. (optional) add as default compiler:
+#       sudo update-alternatives --install /usr/bin/clang clang $(pwd)/bin/clang 100
+#       sudo update-alternatives --install /usr/bin/clang++ clang++ $(pwd)/bin/clang++ 100
+#       sudo update-alternatives --install /usr/bin/clang-cpp clang-cpp $(pwd)/bin/clang-cpp 100
+# 6. Check the version:
+#       clang --version
+
+
+# NOTE: after building the C++ compiler, it's a good idea to build Python from source
+# as well to prevent any ABI incompatibilities and get the best possible performance.
+# Here's how to do that:
+#
+# 1. clone the git repository to a local directory:
+#       git clone https://github.com/python/cpython.git some/local/directory
+#       cd some/local/directory
+# 2. checkout the latest release branch:
+#       git checkout 3.12
+# 3. download prerequisites and install dependencies
+#       sudo apt-get install build-essential gdb lcov pkg-config \
+#         libbz2-dev libffi-dev libgdbm-dev libgdbm-compat-dev liblzma-dev \
+#         libncurses5-dev libreadline6-dev libsqlite3-dev libssl-dev \
+#         lzma lzma-dev tk-dev uuid-dev zlib1g-dev
+# 4. create a build directory and configure the build:
+#       mkdir build
+#       cd build
+#       ../configure --enable-shared --enable-optimizations --with-lto \
+#           --with-ensurepip=upgrade --prefix=/usr/local LDFLAGS="-Wl,-rpath=usr/local"
+# 5. run the build (takes about 30 minutes):
+#       make -s -j$(nproc)
+# 6. install:  # TODO: the rest of these might not be necessary.  Check later with a fresh install of ubuntu
+#       sudo make altinstall
+# 7. Add shared libraries to the system path:
+#       echo $(pwd) | sudo tee -a /etc/ld.so.conf.d/local.conf
+#       sudo ldconfig
+# 8. (optional) add as default Python:
+#       sudo update-alternatives --install /usr/bin/python python /usr/local/bin/python3.12 100
+#       sudo update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python3.12 100
+
+
+
+# NOTE: building Python from source allows integration with other C++ tools, like
+# valgrind (./configure --with-valgrind).  I can also manually configure the CFLAGS and
+# LDFLAGS to enable more warnings and optimizations.
+
 
 
 # NOTE: See setuptools for more info on how extensions are built:
 # https://setuptools.pypa.io/en/latest/userguide/ext_modules.html
 
 
-DEBUG: bool
-fdebug = os.environ.get("DEBUG", "0").lower()
-if fdebug in TRUTHY:
-    DEBUG = True
-elif fdebug in FALSY:
-    DEBUG = False
-else:
-    raise ValueError(f"DEBUG={repr(fdebug)} is not a valid boolean value")
+
+# os.environ["CC"] = "g++"  # NOTE: use GCC latest.  Set to clang-18 for Clang.
 
 
-class BuildExt(build_ext):
+
+class build_ext(BuildExt):
     """A custom build_ext command that installs third-party C++ packages and builds C++
     unit tests as part of pip install.
     """
@@ -206,49 +280,28 @@ class BuildExt(build_ext):
 
 
 EXTENSIONS = [
-    Pybind11Extension(
-        "bertrand.structs.linked",
-        sources=["bertrand/structs/linked.cpp"],
-        extra_compile_args=["-O3"]
-    ),
-#     Extension(
-#         "*",
-#         sources=["bertrand/**/*.pyx"],
-#         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
-#     ),
+    # Pybind11Extension(
+    #     "bertrand.structs.linked",
+    #     sources=["bertrand/structs/linked.cpp"],
+    #     extra_compile_args=["-O3"]
+    # ),
+    # Extension(
+    #     "*",
+    #     sources=["bertrand/**/*.pyx"],
+    #     define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+    # ),
+    Extension("example", ["example.cpp"]),
+    # Extension("bertrand.regex", ["bertrand/regex.cpp"])
 ]
 
 
-def apply_debug_flags(extensions: list[Extension]) -> None:
-    """Apply debug flags to extensions if DEBUG=True.
-
-    Parameters
-    ----------
-    extensions : list[Extension]
-        The list of extensions to modify.
-    """
-    for ext in extensions:
-        ext.extra_compile_args.extend(["-g", "-DBERTRAND_DEBUG"])
-        ext.extra_link_args.extend(["-g", "-DBERTRAND_DEBUG"])
-
-
-if DEBUG:
-    apply_debug_flags(EXTENSIONS)
-
-
 setup(
-    long_description=Path("README.rst").read_text("utf-8"),
-    ext_modules=cythonize(
-        EXTENSIONS,
-        language_level="3",
-        compiler_directives={
-            "embedsignature": True,
-        },
-    ),
-    include_dirs=[
-        "bertrand/",
-        numpy.get_include(),
-    ],
-    zip_safe=False,  # TODO: maybe true without cython?
-    cmdclass={"build_ext": BuildExt},
+    # long_description=Path("README.rst").read_text("utf-8"),
+    ext_modules=EXTENSIONS,
+    # include_dirs=[
+    #     "bertrand/",
+    #     numpy.get_include(),
+    # ],
+    # zip_safe=False,  # TODO: maybe true without cython?
+    cmdclass={"build_ext": build_ext},
 )

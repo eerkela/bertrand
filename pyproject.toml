@@ -1,5 +1,12 @@
 [build-system]
-requires = ["setuptools>=42", "wheel", "cython >= 3.0.0", "cmake>=3.18", "numpy"]
+requires = [
+    "setuptools>=42",
+    "wheel",
+    "pybind11>=2.6.1",
+    "cython >= 3.0.0",
+    "cmake>=3.18",
+    "numpy"
+]
 build-backend = "setuptools.build_meta:__legacy__"
 
 [tool.setuptools.packages.find]

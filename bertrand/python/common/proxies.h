@@ -273,6 +273,8 @@ private:
 
 public:
 
+    Attr() {}  // TODO: compiler explodes if this is not defined
+
     explicit Attr(const Object& obj) : obj(obj) {}
     Attr(const Attr& other) : Base(other), obj(other.obj) {}
     Attr(Attr&& other) : Base(std::move(other)), obj(std::move(other.obj)) {}

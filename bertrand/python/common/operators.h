@@ -48,6 +48,22 @@ namespace py {
         return impl::Attr<cls, name>(*this);                                            \
     }                                                                                   \
                                                                                         \
+    /* Redirect implicit conversion conversion operators to derived class. */           \
+    template <typename T> requires (__cast__<cls, T>::enable)                           \
+    operator T() const {                                                                \
+        return __cast__<cls, T>::cast(*this);                                           \
+    }                                                                                   \
+                                                                                        \
+    /* Redirect explicit conversion operators to derived class. */                      \
+    template <typename T> requires (!__cast__<cls, T>::enable)                          \
+    explicit operator T() const {                                                       \
+        try {                                                                           \
+            return Handle(m_ptr).template cast<T>();                                    \
+        } catch (...) {                                                                 \
+            Exception::from_pybind11();                                                 \
+        }                                                                               \
+    }                                                                                   \
+                                                                                        \
     template <typename... Args> requires (__call__<cls, Args...>::enable)               \
     auto operator()(Args&&... args) const {                                             \
         using Return = typename __call__<cls, Args...>::Return;                         \
@@ -798,39 +814,60 @@ namespace impl {
 
 
 template <typename Self, typename T>
-struct __implicit_cast__ { static constexpr bool enable = false; };
+struct __cast__ { static constexpr bool enable = false; };
 
+
+/* Implicitly convert all objects to pybind11::handle. */
 template <typename Self>
-struct __implicit_cast__<Self, pybind11::handle> {
+struct __cast__<Self, pybind11::handle> {
     static constexpr bool enable = true;
     static pybind11::handle cast(const Self& self) {
         return self.ptr();
     }
 };
 
+
+/* Implicitly convert all objects to pybind11::object */
 template <typename Self>
-struct __implicit_cast__<Self, pybind11::object> {
+struct __cast__<Self, pybind11::object> {
     static constexpr bool enable = true;
     static pybind11::object cast(const Self& self) {
         return pybind11::reinterpret_borrow<pybind11::object>(self.ptr());
     }
 };
 
+
+/* Implicitly convert all objects to equivalent pybind11 type. */
+template <typename Self, impl::pybind11_like T> requires (Self::template check<T>())
+struct __cast__<Self, T> {
+    static constexpr bool enable = true;
+    static T cast(const Self& self) {
+        return pybind11::reinterpret_borrow<T>(self.ptr());
+    }
+};
+
+
+/* Implicitly convert all objects to one of their subclasses by applying a type check. */
 template <typename Self, std::derived_from<Self> T>
-struct __implicit_cast__<Self, T> {
+struct __cast__<Self, T> {
     static constexpr bool enable = true;
     static T cast(const Self& self) {
         if (!T::check(self)) {
-            throw impl::noconvert<T>(self);
+            throw impl::noconvert<T>(self.ptr());
         }
         return reinterpret_borrow<T>(self.ptr());
     }
 };
 
+
+/* Implicitly convert all objects to a proxy by converting to its wrapped type and then
+moving the result into a managed buffer. */
 template <typename Self, impl::proxy_like T>
-struct __implicit_cast__<Self, T> : __implicit_cast__<Self, impl::unwrap_proxy<T>> {
+    requires (__cast__<Self, impl::unwrap_proxy<T>>::enable)
+struct __cast__<Self, T> {
+    static constexpr bool enable = true;
     static T cast(const Self& self) {
-        return T(static_cast<const typename T::Wrapped&>(self));
+        return T(__cast__<Self, impl::unwrap_proxy<T>>::cast(self));
     }
 };
 

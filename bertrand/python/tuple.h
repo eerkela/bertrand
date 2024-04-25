@@ -459,10 +459,6 @@ public:
     ////    CONVERSIONS    ////
     ///////////////////////////
 
-    inline operator pybind11::tuple() const {
-        return reinterpret_borrow<pybind11::tuple>(m_ptr);
-    }
-
     template <typename First, typename Second>
         requires (
             std::convertible_to<value_type, First> &&
