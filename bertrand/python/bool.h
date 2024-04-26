@@ -294,44 +294,7 @@ class Bool : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    static consteval bool check() { return impl::bool_like<T>; }
-
-    template <typename T>
-    static constexpr bool check(const T& obj) {
-        if constexpr (impl::python_like<T>) {
-            return obj.ptr() != nullptr && PyBool_Check(obj.ptr());
-        } else {
-            return check<T>();
-        }
-    }
-
-    //////////////////////
-    ////    COMMON    ////
-    //////////////////////
-
-    /* Inherit reinterpret_borrow, reinterpret_steal constructors. */
-    Bool(Handle h, const Object::borrowed_t& t) : Base(h, t) {}
-    Bool(Handle h, const Object::stolen_t& t) : Base(h, t) {}
-
-    /* Copy/move from equivalent pybind11 types. */
-    template <impl::pybind11_like T> requires (check<T>())
-    Bool(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Inherit implicit conversion from pybind11 accessor. */
-    template <typename Policy>
-    Bool(const detail::accessor<Policy>& accessor) :
-        Base(nullptr, Object::stolen_t{})
-    {
-        pybind11::object obj(accessor);
-        if (check(obj)) {
-            Base::m_ptr = obj.release().ptr();
-        } else {
-            throw impl::noconvert<Bool>(obj.ptr());
-        }
-    }
-
-    BERTRAND_OBJECT_OPERATORS(Bool)
+    BERTRAND_OBJECT_COMMON(Base, Bool, impl::bool_like, PyBool_Check)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -384,31 +347,28 @@ public:
     template <typename... Args>
     explicit Bool(const std::tuple<Args...>& obj) : Bool(sizeof...(Args) > 0) {}
 
-    // TODO: Bool(const char* str) needs to be templated to avoid implicitly converting
-    // py::Str, etc.
-
     /* Explicitly convert a string literal into a py::Bool. */
-    explicit Bool(const char* str) : Bool(std::strcmp(str, "") != 0) {}
+    template <size_t N>
+    explicit Bool(const char(&string)[N]) : Bool(N > 1) {}
 
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
-
-    /* Implicitly convert to a C++ boolean. */
-    inline operator bool() const {
-        return Base::operator bool();
-    }
-
-    // /* Implicitly convert to a pybind11::bool. */
-    // inline operator pybind11::bool_() const {
-    //     return reinterpret_borrow<pybind11::bool_>(m_ptr);
-    // }
+    /* Explicitly convert a C string into a py::Bool. */
+    template <std::same_as<const char*> T>
+    explicit Bool(T str) : Bool(std::strcmp(str, "") != 0) {}
 
 };
 
 
 static const Bool True = reinterpret_borrow<Bool>(Py_True);
 static const Bool False = reinterpret_borrow<Bool>(Py_False);
+
+
+template <std::derived_from<Bool> Self>
+struct __cast__<Self, bool> {
+    static constexpr bool enable = true;
+    static bool cast(const Self& obj) {
+        return __cast__<Object, bool>::cast(obj);
+    }
+};
 
 
 }  // namespace py

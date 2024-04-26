@@ -49,7 +49,6 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Type, impl::type_like, PyType_Check)
-    BERTRAND_OBJECT_OPERATORS(Type)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -70,68 +69,6 @@ public:
 
     /* Dynamically create a new Python type by calling the type() metaclass. */
     explicit Type(const Str& name, const Tuple<Type>& bases = {}, const Dict& dict = {});
-
-    /* Create a new heap type from a CPython PyType_Spec*.  Note that this is not
-    exactly interchangeable with a standard call to the type metaclass directly, as it
-    does not invoke any of the __init__(), __new__(), __init_subclass__(), or
-    __set_name__() methods for the type or any of its bases. */
-    explicit Type(PyType_Spec* spec) : Base(PyType_FromSpec(spec), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Create a new heap type from a CPython PyType_Spec and bases.  See
-    Type(PyType_Spec*) for more information. */
-    template <typename T>
-    explicit Type(PyType_Spec* spec, const Tuple<Type>& bases) :
-        Base(PyType_FromSpecWithBases(spec, bases.ptr()), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 9)
-
-        /* Create a new heap type from a module name, CPython PyType_Spec, and bases.
-        See Type(PyType_Spec*) for more information. */
-        template <typename T, typename U>
-        explicit Type(const Module& module, PyType_Spec* spec, const Tuple<Type>& bases) :
-            Base(PyType_FromModuleAndSpec(module.ptr(), spec, bases.ptr()), stolen_t{})
-        {
-            if (m_ptr == nullptr) {
-                Exception::from_python();
-            }
-        }
-
-    #endif
-
-    #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
-
-        /* Create a new heap type from a full CPython metaclass, module name,
-        PyType_Spec and bases.  See Type(PyType_Spec*) for more information. */
-        template <typename T, typename U, typename V>
-        explicit Type(
-            const Type& metaclass,
-            const Module& module,
-            PyType_Spec* spec,
-            const Tuple<Type>& bases
-        ) : Base(
-            PyType_FromMetaClass(
-                reinterpret_cast<PyTypeObject*>(metaclass.ptr()),
-                module.ptr(),
-                spec,
-                bases.ptr()
-            ),
-            stolen_t{}
-        ) {
-            if (m_ptr == nullptr) {
-                Exception::from_python();
-            }
-        }
-
-    #endif
 
     /////////////////////////////
     ////    C++ INTERFACE    ////
@@ -490,7 +427,6 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Super, comptime_check, runtime_check)
-    BERTRAND_OBJECT_OPERATORS(Super)
 
     /* Default constructor.  Equivalent to Python `super()` with no arguments, which
     uses the calling context's inheritance hierarchy. */

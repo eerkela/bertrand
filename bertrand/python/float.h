@@ -148,7 +148,6 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Float, impl::float_like, PyFloat_Check)
-    BERTRAND_OBJECT_OPERATORS(Float)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -160,10 +159,6 @@ public:
             Exception::from_python();
         }
     }
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (impl::float_like<T>)
-    Float(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Trigger implicit conversions to double. */
     template <impl::cpp_like T> requires (impl::float_like<T>)
@@ -212,11 +207,6 @@ public:
     /////////////////////////////
     ////    C++ INTERFACE    ////
     /////////////////////////////
-
-    /* Implicitly convert to pybind11::float_. */
-    inline operator pybind11::float_() const {
-        return reinterpret_borrow<pybind11::float_>(m_ptr);
-    }
 
     /* Implicitly convert a Python float into a C++ float. */
     inline operator double() const {

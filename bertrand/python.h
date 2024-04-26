@@ -29,6 +29,18 @@
 // - decorators (?)
 
 
+// TODO: after upgrading to gcc-14, these are now supported:
+// - static operator()
+// - static operator[]
+// - multidimensional operator[]
+// - std::format()
+// - std::stacktrace()
+// - std::ranges::zip() and zip_transform()
+// - std::expected
+// - user-generated static assertions
+
+
+
 // TODO: numpy types can be implemented as constexpr structs that have an internal
 // flyweight cache (which might be difficult wrt allocations).  They would inherit from
 // a virtual base class that implements the full type interface.  This would allow me

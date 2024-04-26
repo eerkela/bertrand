@@ -58,7 +58,6 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Range, impl::range_like, runtime_check)
-    BERTRAND_OBJECT_OPERATORS(Range)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -66,10 +65,6 @@ public:
 
     /* Default constructor.  Initializes to an empty range. */
     Range() : Range(Int::zero()) {}
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
-    Range(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly construct a range from 0 to the given stop index (exclusive). */
     explicit Range(const Int& stop) :

@@ -338,6 +338,11 @@ namespace impl {
     };
 
     template <typename T>
+    concept has_abs = requires(const T& t) {
+        { std::abs(t) };
+    };
+
+    template <typename T>
     concept has_size = requires(const T& t) {
         { std::size(t) } -> std::convertible_to<size_t>;
     };

@@ -115,7 +115,6 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Complex, impl::complex_like, PyComplex_Check)
-    BERTRAND_OBJECT_OPERATORS(Complex)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -127,10 +126,6 @@ public:
             Exception::from_python();
         }
     }
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (impl::complex_like<T>)
-    Complex(T&& value) : Base(std::forward<T>(value)) {}
 
     /* Explicitly convert a double into a py::Complex object as its real component. */
     explicit Complex(double real) :
@@ -186,20 +181,6 @@ public:
         Complex(static_cast<std::complex<double>>(value))
     {}
 
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
-
-    /* Implicitly convert a Complex number into a C++ std::complex. */
-    template <typename T>
-    operator std::complex<T>() const {
-        Py_complex complex = PyComplex_AsCComplex(this->ptr());
-        if (complex.real == -1.0 && PyErr_Occurred()) {
-            Exception::from_python();
-        }
-        return std::complex<T>(complex.real, complex.imag);
-    }
-
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
@@ -223,6 +204,19 @@ public:
         return Complex(complex.real, -complex.imag);
     }
 
+};
+
+
+template <std::derived_from<Complex> Self, typename T>
+struct __cast__<Self, std::complex<T>> {
+    static constexpr bool enable = true;
+    static std::complex<T> cast(const Self& self) {
+        Py_complex complex = PyComplex_AsCComplex(self.ptr());
+        if (complex.real == -1.0 && PyErr_Occurred()) {
+            Exception::from_python();
+        }
+        return std::complex<T>(complex.real, complex.imag);
+    }
 };
 
 

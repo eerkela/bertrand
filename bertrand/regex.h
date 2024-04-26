@@ -23,6 +23,12 @@
 #include <pybind11/pybind11.h>
 
 
+// TODO: compile-time regular expressions are in fact possible using PCRE.
+
+// https://github.com/hanickadot/compile-time-regular-expressions
+
+
+
 namespace bertrand {
 
 

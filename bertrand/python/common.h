@@ -85,19 +85,8 @@ class NoneType : public Object {
 
 public:
     static const Type type;
-
     BERTRAND_OBJECT_COMMON(Base, NoneType, impl::none_like, Py_IsNone)
-    BERTRAND_OBJECT_OPERATORS(NoneType)
-
     NoneType() : Base(Py_None, borrowed_t{}) {}
-
-    template <impl::python_like T> requires (check<T>())
-    NoneType(T&& other) : Base(std::forward<T>(other)) {}
-
-    operator pybind11::none() const {
-        return reinterpret_borrow<pybind11::none>(m_ptr);
-    }
-
 };
 
 
@@ -130,15 +119,8 @@ class NotImplementedType : public Object {
 
 public:
     static const Type type;
-
     BERTRAND_OBJECT_COMMON(Base, NotImplementedType, comptime_check, runtime_check)
-    BERTRAND_OBJECT_OPERATORS(NotImplementedType)
-
     NotImplementedType() : Base(Py_NotImplemented, borrowed_t{}) {}
-
-    template <impl::python_like T> requires (check<T>())
-    NotImplementedType(T&& other) : Base(std::forward<T>(other)) {}
-
 };
 
 
@@ -171,19 +153,8 @@ class EllipsisType : public Object {
 
 public:
     static const Type type;
-
     BERTRAND_OBJECT_COMMON(Base, EllipsisType, comptime_check, runtime_check)
-    BERTRAND_OBJECT_OPERATORS(EllipsisType)
-
     EllipsisType() : Base(Py_Ellipsis, borrowed_t{}) {}
-
-    template <impl::python_like T> requires (check<T>())
-    EllipsisType(T&& other) : Base(std::forward<T>(other)) {}
-
-    operator pybind11::ellipsis() const {
-        return reinterpret_borrow<pybind11::ellipsis>(m_ptr);
-    }
-
 };
 
 
@@ -252,14 +223,14 @@ namespace impl {
 /////////////////////
 
 
-template <std::derived_from<Slice> T>
-struct __getattr__<T, "indices">                                : Returns<Function> {};
-template <std::derived_from<Slice> T>
-struct __getattr__<T, "start">                                  : Returns<Object> {};
-template <std::derived_from<Slice> T>
-struct __getattr__<T, "stop">                                   : Returns<Object> {};
-template <std::derived_from<Slice> T>
-struct __getattr__<T, "step">                                   : Returns<Object> {};
+template <std::derived_from<Slice> Self>
+struct __getattr__<Self, "indices">                             : Returns<Function> {};
+template <std::derived_from<Slice> Self>
+struct __getattr__<Self, "start">                               : Returns<Object> {};
+template <std::derived_from<Slice> Self>
+struct __getattr__<Self, "stop">                                : Returns<Object> {};
+template <std::derived_from<Slice> Self>
+struct __getattr__<Self, "step">                                : Returns<Object> {};
 
 template <>
 struct __lt__<Slice, Object>                                    : Returns<bool> {};
@@ -288,7 +259,6 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Slice, impl::slice_like, PySlice_Check)
-    BERTRAND_OBJECT_OPERATORS(Slice)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -303,10 +273,6 @@ public:
             Exception::from_python();
         }
     }
-
-    /* Copy/move constructors from equivalent pybind11 types. */
-    template <impl::python_like T> requires (check<T>())
-    Slice(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly construct a slice from a (possibly denormalized) stop object. */
     explicit Slice(const Object& stop) : Base(
@@ -343,7 +309,7 @@ public:
     /* Initializer list constructor.  Unlike the other constructors (which can accept
     any kind of object), this syntax is restricted only to integers, py::None, and
     std::nullopt. */
-    Slice(std::initializer_list<impl::SliceInitializer> indices) :
+    Slice(const std::initializer_list<impl::SliceInitializer>& indices) :
         Base(nullptr, stolen_t{})
     {
         if (indices.size() > 3) {
@@ -358,15 +324,6 @@ public:
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
-    }
-
-    ///////////////////////////
-    ////    CONVERSIONS    ////
-    ///////////////////////////
-
-    /* Implicitly convert to pybind11::slice. */
-    operator pybind11::slice() const {
-        return reinterpret_borrow<pybind11::slice>(m_ptr);
     }
 
     ////////////////////////////////
@@ -403,24 +360,24 @@ public:
     */
     inline auto indices(size_t size) const {
         struct Indices {
-            Py_ssize_t start;
-            Py_ssize_t stop;
-            Py_ssize_t step;
-            Py_ssize_t length;
+            Py_ssize_t start = 0;
+            Py_ssize_t stop = 0;
+            Py_ssize_t step = 0;
+            Py_ssize_t length = 0;
         };
 
-        Py_ssize_t start, stop, step, length = 0;
+        Indices result;
         if (PySlice_GetIndicesEx(
             this->ptr(),
-            static_cast<Py_ssize_t>(size),
-            &start,
-            &stop,
-            &step,
-            &length
+            size,
+            &result.start,
+            &result.stop,
+            &result.step,
+            &result.length
         )) {
             Exception::from_python();
         }
-        return Indices{start, stop, step, length};
+        return result;
     }
 
 };
@@ -444,7 +401,6 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Module, impl::module_like, PyModule_Check)
-    BERTRAND_OBJECT_OPERATORS(Module)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -487,11 +443,6 @@ public:
     //////////////////////////////////
     ////    PYBIND11 INTERFACE    ////
     //////////////////////////////////
-
-    /* Implicitly convert to pybind11::module_. */
-    operator pybind11::module_() const {
-        return reinterpret_borrow<pybind11::module_>(m_ptr);
-    }
 
     /* Equivalent to pybind11::module_::def(). */
     template <typename Func, typename... Extra>
@@ -555,25 +506,24 @@ public:
 ////////////////////////////////////
 
 
+
 template <typename Return, typename Self, typename Key>
-auto Object::operator_getitem(const Self& self, Key&& key)
-    -> impl::Item<Self, std::decay_t<Key>>
-{
+auto impl::ops::getitem(const Self& self, Key&& key) {
     return impl::Item<Self, std::decay_t<Key>>(self, std::forward<Key>(key));
 }
 
 
 template <typename Return, typename Self>
-impl::Item<Self, Slice> Object::operator_getitem(
+auto impl::ops::getitem(
     const Self& self,
-    std::initializer_list<impl::SliceInitializer> slice
+    const std::initializer_list<impl::SliceInitializer>& slice
 ) {
     return impl::Item<Self, Slice>(self, Slice(slice));
 }
 
 
 template <typename Return, typename Self>
-impl::Iterator<impl::GenericIter<Return>> Object::operator_begin(const Self& self) {
+auto impl::ops::begin(const Self& self) {
     PyObject* iter = PyObject_GetIter(self.ptr());
     if (iter == nullptr) {
         Exception::from_python();
@@ -583,19 +533,21 @@ impl::Iterator<impl::GenericIter<Return>> Object::operator_begin(const Self& sel
 
 
 template <typename Return, typename Self>
-impl::Iterator<impl::GenericIter<Return>> Object::operator_end(const Self& self) {
+auto impl::ops::end(const Self& self) {
     return impl::Iterator<impl::GenericIter<Return>>();
 }
 
 
 template <typename Return, typename Self>
-impl::Iterator<impl::GenericIter<Return>> Object::operator_rbegin(const Self& self) {
-    return impl::Iterator<impl::GenericIter<Return>>(self.template attr<"__reversed__">()());
+auto impl::ops::rbegin(const Self& self) {
+    return impl::Iterator<impl::GenericIter<Return>>(
+        self.template attr<"__reversed__">()()
+    );
 }
 
 
 template <typename Return, typename Self>
-impl::Iterator<impl::GenericIter<Return>> Object::operator_rend(const Self& self) {
+auto impl::ops::rend(const Self& self) {
     return impl::Iterator<impl::GenericIter<Return>>();
 }
 
@@ -603,7 +555,7 @@ impl::Iterator<impl::GenericIter<Return>> Object::operator_rend(const Self& self
 template <typename Obj, typename Wrapped>
 template <typename Self> requires (__getitem__<Self, Slice>::enable)
 auto impl::Proxy<Obj, Wrapped>::operator[](
-    std::initializer_list<impl::SliceInitializer> slice
+    const std::initializer_list<impl::SliceInitializer>& slice
 ) const {
     return get_value()[slice];
 }

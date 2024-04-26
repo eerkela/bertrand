@@ -175,7 +175,6 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Str, impl::str_like, PyUnicode_Check)
-    BERTRAND_OBJECT_OPERATORS(Str)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -187,10 +186,6 @@ public:
             Exception::from_python();
         }
     }
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (impl::str_like<T>)
-    Str(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Implicitly convert a string literal into a py::Str object. */
     template <size_t N>
@@ -327,11 +322,6 @@ public:
     /////////////////////////////
     ////    C++ INTERFACE    ////
     /////////////////////////////
-
-    /* Implicitly convert to a pybind11::str. */
-    inline operator pybind11::str() const {
-        return reinterpret_borrow<pybind11::str>(m_ptr);
-    }
 
     /* Implicitly convert a py::Str into a C++ std::string. */
     inline operator std::string() const {

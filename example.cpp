@@ -75,38 +75,20 @@
 ///////////////////////
 
 
-// #include <bertrand/bertrand.h>
+#include <bertrand/python.h>
 
 #include <chrono>
 #include <iostream>
 #include <string>
 
 
-// namespace py = bertrand::py;
-// using namespace py::literals;
+namespace py = bertrand::py;
+using namespace py::literals;
 
 
 // static const py::Module np = py::import<"numpy">();
 // static const py::Function array = np.attr<"array">();
 // static const py::Type dtype = np.attr<"dtype">();
-
-
-#include <pybind11/pybind11.h>
-
-
-struct Foo {
-
-    template <typename Self>
-    void func(this Self&& self) {
-        std::cout << typeid(self).name() << std::endl;
-    }
-
-};
-
-
-struct Bar : public Foo {
-
-};
 
 
 
@@ -131,10 +113,22 @@ void run() {
 
     // auto x = py::arg("x") = py::Object(1);
 
-    Foo f;
-    Bar b;
-    f.func();
-    b.func();
+    // std::cout << cpptrace::generate_trace();
+    // std::cout << std::stacktrace::current();
+
+    // static const bertrand::Regex re("(?P<group>hello)");
+    // std::cout << re.match("hello, world!") << std::endl;
+
+    // std::cout << "abc\n";
+
+
+
+    py::Bool x = true;
+    py::Bool y = x;
+    py::print("abc" + x);
+
+    // std::cout << "hello, world!\n";
+
 
 
 

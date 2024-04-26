@@ -383,7 +383,6 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Int, impl::int_like, PyLong_Check)
-    BERTRAND_OBJECT_OPERATORS(Int)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -395,10 +394,6 @@ public:
             Exception::from_python();
         }
     }
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (impl::int_like<T>)
-    Int(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Implicitly promote Python booleans to py::Int. */
     template <impl::python_like T> requires (impl::bool_like<T>)
@@ -491,11 +486,6 @@ public:
     /////////////////////////////
     ////    C++ INTERFACE    ////
     /////////////////////////////
-
-    /* Implicitly convert to pybind11::int_. */
-    inline operator pybind11::int_() const {
-        return reinterpret_borrow<pybind11::int_>(m_ptr);
-    }
 
     /* Implicitly convert a Python int into a C++ integer. */
     template <impl::cpp_like T> requires (impl::int_like<T>)

@@ -14,271 +14,6 @@ namespace bertrand {
 namespace py {
 
 
-/* By default, all generic operators are disabled for subclasses of py::Object.
-* This means we have to specifically enable them for each type we want to support,
-* which promotes explicitness and type safety by design.  The following structs
-* allow users to easily assign static types to any of these operators, which will
-* automatically be preferred when operands of those types are detected at compile
-* time.  By using template specialization, we allow users to do this from outside
-* the class itself, allowing the type system to grow as needed to cover any
-* environment.  Here's an example:
-*
-*      template <>
-*      struct py::__add__<py::Bool, int> : py::Returns<py::Int> {};
-*
-* It's that simple.  Now, whenever we call `py::Bool + int`, it will successfully
-* compile and interpret the result as a strict `py::Int` type, eliminating runtime
-* overhead and granting static type safety.  It is also possible to apply C++20
-* template constraints to these types using an optional second template parameter,
-* which allows users to enable or disable whole categories of types at once.
-* Here's another example:
-*
-*      template <py::impl::int_like T>
-*      struct py::__add__<py::Bool, T> : py::Returns<py::Int> {};
-*
-* As long as the constraint does not conflict with any other existing template
-* overloads, this will compile and work as expected.  Note that specific overloads
-* will always take precedence over generic ones, and any ambiguities between
-* templates will result in compile errors when used.
-*/
-
-#define BERTRAND_OBJECT_OPERATORS(cls)                                                  \
-    template <StaticStr name>                                                           \
-    impl::Attr<cls, name> attr() const {                                                \
-        return impl::Attr<cls, name>(*this);                                            \
-    }                                                                                   \
-                                                                                        \
-    /* Redirect implicit conversion conversion operators to derived class. */           \
-    template <typename T> requires (__cast__<cls, T>::enable)                           \
-    operator T() const {                                                                \
-        return __cast__<cls, T>::cast(*this);                                           \
-    }                                                                                   \
-                                                                                        \
-    /* Redirect explicit conversion operators to derived class. */                      \
-    template <typename T> requires (!__cast__<cls, T>::enable)                          \
-    explicit operator T() const {                                                       \
-        try {                                                                           \
-            return Handle(m_ptr).template cast<T>();                                    \
-        } catch (...) {                                                                 \
-            Exception::from_pybind11();                                                 \
-        }                                                                               \
-    }                                                                                   \
-                                                                                        \
-    template <typename... Args> requires (__call__<cls, Args...>::enable)               \
-    auto operator()(Args&&... args) const {                                             \
-        using Return = typename __call__<cls, Args...>::Return;                         \
-        static_assert(                                                                  \
-            std::is_void_v<Return> || std::derived_from<Return, Object>,                \
-            "Call operator must return either void or a py::Object subclass.  "         \
-            "Check your specialization of __call__ for the given arguments and "        \
-            "ensure that it is derived from py::Object."                                \
-        );                                                                              \
-        return operator_call<Return>(*this, std::forward<Args>(args)...);               \
-    }                                                                                   \
-                                                                                        \
-    template <typename Key> requires (__getitem__<cls, Key>::enable)                    \
-    auto operator[](const Key& key) const {                                             \
-        using Return = typename __getitem__<cls, Key>::Return;                          \
-        if constexpr (impl::proxy_like<Key>) {                                          \
-            return (*this)[key.value()];                                                \
-        } else {                                                                        \
-            return operator_getitem<Return>(*this, key);                                \
-        }                                                                               \
-    }                                                                                   \
-                                                                                        \
-    template <typename Self = cls> requires (__getitem__<Self, Slice>::enable)          \
-    auto operator[](std::initializer_list<impl::SliceInitializer> slice) const {        \
-        using Return = typename __getitem__<Self, Slice>::Return;                       \
-        return operator_getitem<Return>(*this, slice);                                  \
-    }                                                                                   \
-                                                                                        \
-    template <typename Self = cls> requires (__iter__<Self>::enable)                    \
-    auto begin() const {                                                                \
-        using Return = typename __iter__<Self>::Return;                                 \
-        static_assert(                                                                  \
-            std::derived_from<Return, Object>,                                          \
-            "iterator must dereference to a subclass of Object.  Check your "           \
-            "specialization of __iter__ for this types and ensure the Return type "     \
-            "is a subclass of py::Object."                                              \
-        );                                                                              \
-        return operator_begin<Return>(*this);                                           \
-    }                                                                                   \
-                                                                                        \
-    template <typename Self = cls> requires (__iter__<Self>::enable)                    \
-    auto cbegin() const { return begin<Self>(); }                                       \
-                                                                                        \
-    template <typename Self = cls> requires (__iter__<Self>::enable)                    \
-    auto end() const {                                                                  \
-        using Return = typename __iter__<Self>::Return;                                 \
-        static_assert(                                                                  \
-            std::derived_from<Return, Object>,                                          \
-            "iterator must dereference to a subclass of Object.  Check your "           \
-            "specialization of __iter__ for this types and ensure the Return type "     \
-            "is a subclass of py::Object."                                              \
-        );                                                                              \
-        return operator_end<Return>(*this);                                             \
-    }                                                                                   \
-                                                                                        \
-    template <typename Self = cls> requires (__iter__<Self>::enable)                    \
-    auto cend() const { return end<Self>(); }                                           \
-                                                                                        \
-    template <typename Self = cls> requires (__reversed__<Self>::enable)                \
-    auto rbegin() const {                                                               \
-        using Return = typename __reversed__<Self>::Return;                             \
-        static_assert(                                                                  \
-            std::derived_from<Return, Object>,                                          \
-            "iterator must dereference to a subclass of Object.  Check your "           \
-            "specialization of __reversed__ for this types and ensure the Return "      \
-            "type is a subclass of py::Object."                                         \
-        );                                                                              \
-        return operator_rbegin<Return>(*this);                                          \
-    }                                                                                   \
-                                                                                        \
-    template <typename Self = cls> requires (__reversed__<Self>::enable)                \
-    auto crbegin() const { return rbegin<Self>(); }                                     \
-                                                                                        \
-    template <typename Self = cls> requires (__reversed__<Self>::enable)                \
-    auto rend() const {                                                                 \
-        using Return = typename __reversed__<Self>::Return;                             \
-        static_assert(                                                                  \
-            std::derived_from<Return, Object>,                                          \
-            "iterator must dereference to a subclass of Object.  Check your "           \
-            "specialization of __reversed__ for this types and ensure the Return "      \
-            "type is a subclass of py::Object."                                         \
-        );                                                                              \
-        return operator_rend<Return>(*this);                                            \
-    }                                                                                   \
-                                                                                        \
-    template <typename Self = cls> requires (__reversed__<Self>::enable)                \
-    auto crend() const { return rend<Self>(); }                                         \
-                                                                                        \
-    template <typename Self> requires (__contains__<cls, Self>::enable)                 \
-    bool contains(const Self& key) const {                                              \
-        using Return = typename __contains__<cls, Self>::Return;                        \
-        static_assert(                                                                  \
-            std::same_as<Return, bool>,                                                 \
-            "contains() operator must return a boolean value.  Check your "             \
-            "specialization of __contains__ for these types and ensure the Return "     \
-            "type is set to bool."                                                      \
-        );                                                                              \
-        if constexpr (impl::proxy_like<Self>) {                                         \
-            return this->contains(key.value());                                         \
-        } else {                                                                        \
-            return operator_contains<Return>(*this, key);                               \
-        }                                                                               \
-    }                                                                                   \
-                                                                                        \
-    template <typename Self = cls> requires (__len__<Self>::enable)                     \
-    size_t size() const {                                                               \
-        using Return = typename __len__<Self>::Return;                                  \
-        static_assert(                                                                  \
-            std::same_as<Return, size_t>,                                               \
-            "size() operator must return a size_t for compatibility with C++ "          \
-            "containers.  Check your specialization of __len__ for these types "        \
-            "and ensure the Return type is set to size_t."                              \
-        );                                                                              \
-        return operator_len<Return>(*this);                                             \
-    }                                                                                   \
-                                                                                        \
-protected:                                                                              \
-                                                                                        \
-    template <typename Return, typename Self, typename... Args>                         \
-    friend auto impl::ops::operator_call(const Self& self, Args&&... args);             \
-    template <typename Return, typename Self, typename Key>                             \
-    friend auto impl::ops::operator_getitem(const Self& self, const Key& key);          \
-    template <typename Return, typename Self>                                           \
-    friend auto impl::ops::operator_getitem(                                            \
-        const Self& self,                                                               \
-        std::initializer_list<impl::SliceInitializer> slice                             \
-    );                                                                                  \
-    template <typename Return, typename Self>                                           \
-    friend auto impl::ops::operator_begin(const Self& obj);                             \
-    template <typename Return, typename Self>                                           \
-    friend auto impl::ops::operator_end(const Self& obj);                               \
-    template <typename Return, typename Self>                                           \
-    friend auto impl::ops::operator_rbegin(const Self& obj);                            \
-    template <typename Return, typename Self>                                           \
-    friend auto impl::ops::operator_rend(const Self& obj);                              \
-    template <typename Return, typename Self, typename Key>                             \
-    friend auto impl::ops::operator_contains(const Self& self, const Key& key);         \
-    template <typename Return, typename Self>                                           \
-    friend auto impl::ops::operator_len(const Self& self);                              \
-    template <typename Self>                                                            \
-    friend auto impl::ops::operator_dereference(const Self& self);                      \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_lt(const L& lhs, const R& rhs);                     \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_le(const L& lhs, const R& rhs);                     \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_eq(const L& lhs, const R& rhs);                     \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_ne(const L& lhs, const R& rhs);                     \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_ge(const L& lhs, const R& rhs);                     \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_gt(const L& lhs, const R& rhs);                     \
-    template <typename Return, typename Self>                                           \
-    friend auto impl::ops::operator_abs(const Self& self);                              \
-    template <typename Return, typename Self>                                           \
-    friend auto impl::ops::operator_invert(const Self& self);                           \
-    template <typename Return, typename Self>                                           \
-    friend auto impl::ops::operator_pos(const Self& self);                              \
-    template <typename Return, typename Self>                                           \
-    friend auto impl::ops::operator_increment(Self& self);                              \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_add(const L& lhs, const R& rhs);                    \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_iadd(L& lhs, const R& rhs);                         \
-    template <typename Return, typename Self>                                           \
-    friend auto impl::ops::operator_neg(const Self& self);                              \
-    template <typename Return, typename Self>                                           \
-    friend auto impl::ops::operator_decrement(Self& self);                              \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_sub(const L& lhs, const R& rhs);                    \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_isub(L& lhs, const R& rhs);                         \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_mul(const L& lhs, const R& rhs);                    \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_imul(L& lhs, const R& rhs);                         \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_truediv(const L& lhs, const R& rhs);                \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_itruediv(L& lhs, const R& rhs);                     \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_floordiv(const L& lhs, const R& rhs);               \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_mod(const L& lhs, const R& rhs);                    \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_imod(L& lhs, const R& rhs);                         \
-    template <typename Return, typename Base, typename Exp>                             \
-    friend auto impl::ops::operator_pow(const Base& base, const Exp& exp);              \
-    template <typename Return, typename Base, typename Exp, typename Mod>               \
-    friend auto impl::ops::operator_pow(const Base& base, const Exp& exp, const Mod& mod);\
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_lshift(const L& lhs, const R& rhs);                 \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_ilshift(L& lhs, const R& rhs);                      \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_rshift(const L& lhs, const R& rhs);                 \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_irshift(L& lhs, const R& rhs);                      \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_and(const L& lhs, const R& rhs);                    \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_iand(L& lhs, const R& rhs);                         \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_or(const L& lhs, const R& rhs);                     \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_ior(L& lhs, const R& rhs);                          \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_xor(const L& lhs, const R& rhs);                    \
-    template <typename Return, typename L, typename R>                                  \
-    friend auto impl::ops::operator_ixor(L& lhs, const R& rhs);                         \
-                                                                                        \
-public:                                                                                 \
-
-
 /* Base class for enabled operators.  Encodes the return type as a template
 parameter. */
 template <typename T>
@@ -292,326 +27,454 @@ namespace impl {
 
     namespace ops {
 
+        static const pybind11::int_ one = 1;
+
         template <typename Return, typename Self, typename... Args>
-        auto operator_call(const Self& self, Args&&... args) {
-            return Self::template operator_call<Return>(
-                self,
-                std::forward<Args>(args)...
-            );
+        auto call(const Self& self, Args&&... args) {
+            try {
+                if constexpr (std::is_void_v<Return>) {
+                    Handle(self.ptr())(std::forward<Args>(args)...);
+                } else {
+                    return reinterpret_steal<Return>(
+                        Handle(self.ptr())(std::forward<Args>(args)...).release()
+                    );
+                }
+            } catch (...) {
+                Exception::from_pybind11();
+            }
         }
 
         template <typename Return, typename Self, typename Key>
-        auto operator_getitem(const Self& self, const Key& key) {
-            return Self::template operator_getitem<Return>(self, key);
-        }
-
+        auto getitem(const Self& self, Key&& key);
         template <typename Return, typename Self>
-        auto operator_getitem(
+        auto getitem(
             const Self& self,
-            std::initializer_list<impl::SliceInitializer> slice
-        ) {
-            return Self::template operator_getitem<Return>(self, slice);
-        }
-
-        template <typename Return, typename Self>
-        auto operator_begin(const Self& obj) {
-            return Self::template operator_begin<Return>(obj);
-        }
-
-        template <typename Return, typename Self>
-        auto operator_end(const Self& obj) {
-            return Self::template operator_end<Return>(obj);
-        }
-
-        template <typename Return, typename Self>
-        auto operator_rbegin(const Self& obj) {
-            return Self::template operator_rbegin<Return>(obj);
-        }
-
-        template <typename Return, typename Self>
-        auto operator_rend(const Self& obj) {
-            return Self::template operator_rend<Return>(obj);
-        }
+            const std::initializer_list<impl::SliceInitializer>& slice
+        );
 
         template <typename Return, typename Self, typename Key>
-        auto operator_contains(const Self& self, const Key& key) {
-            return Self::template operator_contains<Return>(self, key);
+        auto contains(const Self& self, const Key& key) {
+            int result = PySequence_Contains(self.ptr(), key.ptr());
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
         }
 
         template <typename Return, typename Self>
-        auto operator_len(const Self& self) {
-            return Self::template operator_len<Return>(self);
+        auto len(const Self& self) {
+            Py_ssize_t size = PyObject_Size(self.ptr());
+            if (size < 0) {
+                Exception::from_python();
+            }
+            return size;
         }
+
+        template <typename Return, typename Self>
+        auto begin(const Self& obj);
+        template <typename Return, typename Self>
+        auto end(const Self& obj);
+        template <typename Return, typename Self>
+        auto rbegin(const Self& obj);
+        template <typename Return, typename Self>
+        auto rend(const Self& obj);
 
         template <typename Self>
-        auto operator_dereference(const Self& self) {
-            return Self::template operator_dereference(self);
-        }
-
-        template <typename Return, typename L, typename R>
-        auto operator_lt(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_lt<Return>(lhs, rhs);
-            } else {
-                return R::template operator_lt<Return>(lhs, rhs);
+        auto dereference(const Self& self) {
+            try {
+                return *Handle(self.ptr());
+            } catch (...) {
+                Exception::from_pybind11();
             }
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_le(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_le<Return>(lhs, rhs);
+        auto lt(const L& lhs, const R& rhs) {
+            int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_LT);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+
+        template <typename Return, typename L, typename R>
+        auto le(const L& lhs, const R& rhs) {
+            int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_LE);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+
+        template <typename Return, typename L, typename R>
+        auto eq(const L& lhs, const R& rhs) {
+            int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_EQ);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+
+        template <typename Return, typename L, typename R>
+        auto ne(const L& lhs, const R& rhs) {
+            int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_NE);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+
+        template <typename Return, typename L, typename R>
+        auto ge(const L& lhs, const R& rhs) {
+            int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_GE);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+
+        template <typename Return, typename L, typename R>
+        auto gt(const L& lhs, const R& rhs) {
+            int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_GT);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+
+        template <typename Return, typename Self>
+        auto abs(const Self& self) {
+            PyObject* result = PyNumber_Absolute(self.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+
+        template <typename Return, typename Self>
+        auto invert(const Self& self) {
+            PyObject* result = PyNumber_Invert(self.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+
+        template <typename Return, typename Self>
+        auto pos(const Self& self) {
+            PyObject* result = PyNumber_Positive(self.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+
+        template <typename Return, typename Self>
+        auto increment(Self& self) {
+            PyObject* result = PyNumber_InPlaceAdd(self.ptr(), one.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            if (result == self.ptr()) {
+                Py_DECREF(result);
             } else {
-                return R::template operator_le<Return>(lhs, rhs);
+                self = reinterpret_steal<Return>(result);
             }
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_eq(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_eq<Return>(lhs, rhs);
-            } else {
-                return R::template operator_eq<Return>(lhs, rhs);
+        auto add(const L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_Add(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
             }
+            return reinterpret_steal<Return>(result);
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_ne(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_ne<Return>(lhs, rhs);
+        auto iadd(L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_InPlaceAdd(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
             } else {
-                return R::template operator_ne<Return>(lhs, rhs);
-            }
-        }
-
-        template <typename Return, typename L, typename R>
-        auto operator_ge(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_ge<Return>(lhs, rhs);
-            } else {
-                return R::template operator_ge<Return>(lhs, rhs);
-            }
-        }
-
-        template <typename Return, typename L, typename R>
-        auto operator_gt(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_gt<Return>(lhs, rhs);
-            } else {
-                return R::template operator_gt<Return>(lhs, rhs);
+                lhs = reinterpret_steal<L>(result);
             }
         }
 
         template <typename Return, typename Self>
-        auto operator_abs(const Self& self) {
-            return Self::template operator_abs<Return>(self);
+        auto neg(const Self& self) {
+            PyObject* result = PyNumber_Negative(self.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
         }
 
         template <typename Return, typename Self>
-        auto operator_invert(const Self& self) {
-            return Self::template operator_invert<Return>(self);
-        }
-
-        template <typename Return, typename Self>
-        auto operator_pos(const Self& self) {
-            return Self::template operator_pos<Return>(self);
-        }
-
-        template <typename Return, typename Self>
-        auto operator_increment(Self& self) {
-            return Self::template operator_increment<Return>(self);
-        }
-
-        template <typename Return, typename L, typename R>
-        auto operator_add(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_add<Return>(lhs, rhs);
+        auto decrement(Self& self) {
+            PyObject* result = PyNumber_InPlaceSubtract(self.ptr(), one.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            if (result == self.ptr()) {
+                Py_DECREF(result);
             } else {
-                return R::template operator_add<Return>(lhs, rhs);
+                self = reinterpret_steal<Return>(result);
             }
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_iadd(L& lhs, const R& rhs) {
-            return L::template operator_iadd<Return>(lhs, rhs);
-        }
-
-        template <typename Return, typename Self>
-        auto operator_neg(const Self& self) {
-            return Self::template operator_neg<Return>(self);
-        }
-
-        template <typename Return, typename Self>
-        auto operator_decrement(Self& self) {
-            return Self::template operator_decrement<Return>(self);
+        auto sub(const L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_Subtract(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_sub(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_sub<Return>(lhs, rhs);
+        auto isub(L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_InPlaceAdd(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
             } else {
-                return R::template operator_sub<Return>(lhs, rhs);
+                lhs = reinterpret_steal<L>(result);
             }
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_isub(L& lhs, const R& rhs) {
-            return L::template operator_isub<Return>(lhs, rhs);
+        auto mul(const L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_Multiply(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_mul(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_mul<Return>(lhs, rhs);
+        auto imul(L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_InPlaceMultiply(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
             } else {
-                return R::template operator_mul<Return>(lhs, rhs);
+                lhs = reinterpret_steal<L>(result);
             }
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_imul(L& lhs, const R& rhs) {
-            return L::template operator_imul<Return>(lhs, rhs);
+        auto truediv(const L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_TrueDivide(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_truediv(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_truediv<Return>(lhs, rhs);
+        auto itruediv(L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_InPlaceTrueDivide(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
             } else {
-                return R::template operator_truediv<Return>(lhs, rhs);
+                lhs = reinterpret_steal<L>(result);
             }
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_itruediv(L& lhs, const R& rhs) {
-            return L::template operator_itruediv<Return>(lhs, rhs);
+        auto floordiv(const L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_FloorDivide(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_floordiv(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_floordiv<Return>(lhs, rhs);
+        auto ifloordiv(L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_InPlaceFloorDivide(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
             } else {
-                return R::template operator_floordiv<Return>(lhs, rhs);
+                lhs = reinterpret_steal<L>(result);
             }
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_ifloordiv(L& lhs, const R& rhs) {
-            return L::template operator_ifloordiv<Return>(lhs, rhs);
-        }
-
-        template <typename Return, typename L, typename R>
-        auto operator_mod(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_mod<Return>(lhs, rhs);
-            } else {
-                return R::template operator_mod<Return>(lhs, rhs);
+        auto mod(const L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_Remainder(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
             }
+            return reinterpret_steal<Return>(result);
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_imod(L& lhs, const R& rhs) {
-            return L::template operator_imod<Return>(lhs, rhs);
+        auto imod(L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_InPlaceRemainder(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
         }
 
         template <typename Return, typename Base, typename Exp>
-        auto operator_pow(const Base& base, const Exp& exp) {
-            if constexpr (std::derived_from<Base, Object>) {
-                return Base::template operator_pow<Return>(base, exp);
+        auto pow(const Base& base, const Exp& exp) {
+            PyObject* result = PyNumber_Power(base.ptr(), exp.ptr(), Py_None);
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+
+        template <typename Return, typename Base, typename Exp, typename Mod>
+        auto pow(const Base& base, const Exp& exp, const Mod& mod) {
+            PyObject* result = PyNumber_Power(base.ptr(), exp.ptr(), mod.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+
+        template <typename Return, typename Base, typename Exp>
+        auto ipow(Base& base, const Exp& exp) {
+            PyObject* result = PyNumber_InPlacePower(base.ptr(), exp.ptr(), Py_None);
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == base.ptr()) {
+                Py_DECREF(result);
             } else {
-                return Exp::template operator_pow<Return>(base, exp);
+                base = reinterpret_steal<Base>(result);
             }
         }
 
         template <typename Return, typename Base, typename Exp, typename Mod>
-        auto operator_pow(const Base& base, const Exp& exp, const Mod& mod) {
-            if constexpr (std::derived_from<Base, Object>) {
-                return Base::template operator_pow<Return>(base, exp, mod);
+        auto ipow(Base& base, const Exp& exp, const Mod& mod) {
+            PyObject* result = PyNumber_InPlacePower(base.ptr(), exp.ptr(), mod.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == base.ptr()) {
+                Py_DECREF(result);
             } else {
-                return Exp::template operator_pow<Return>(base, exp, mod);
-            }
-        }
-
-        template <typename Return, typename Base, typename Exp>
-        auto operator_ipow(Base& base, const Exp& exp) {
-            return Base::template operator_ipow<Return>(base, exp);
-        }
-
-        template <typename Return, typename Base, typename Exp, typename Mod>
-        auto operator_ipow(Base& base, const Exp& exp, const Mod& mod) {
-            return Base::template operator_ipow<Return>(base, exp, mod);
-        }
-
-        template <typename Return, typename L, typename R>
-        auto operator_lshift(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_lshift<Return>(lhs, rhs);
-            } else {
-                return R::template operator_lshift<Return>(lhs, rhs);
+                base = reinterpret_steal<Base>(result);
             }
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_ilshift(L& lhs, const R& rhs) {
-            return L::template operator_ilshift<Return>(lhs, rhs);
+        auto lshift(const L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_Lshift(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_rshift(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_rshift<Return>(lhs, rhs);
+        auto ilshift(L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_InPlaceLshift(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
             } else {
-                return R::template operator_rshift<Return>(lhs, rhs);
+                lhs = reinterpret_steal<L>(result);
             }
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_irshift(L& lhs, const R& rhs) {
-            return L::template operator_irshift<Return>(lhs, rhs);
+        auto rshift(const L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_Rshift(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_and(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_and<Return>(lhs, rhs);
+        auto irshift(L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_InPlaceRshift(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
             } else {
-                return R::template operator_and<Return>(lhs, rhs);
+                lhs = reinterpret_steal<L>(result);
             }
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_iand(L& lhs, const R& rhs) {
-            return L::template operator_iand<Return>(lhs, rhs);
+        auto and_(const L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_And(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_or(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_or<Return>(lhs, rhs);
+        auto iand(L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_InPlaceAnd(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
             } else {
-                return R::template operator_or<Return>(lhs, rhs);
+                lhs = reinterpret_steal<L>(result);
             }
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_ior(L& lhs, const R& rhs) {
-            return L::template operator_ior<Return>(lhs, rhs);
+        auto or_(const L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_Or(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_xor(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Object>) {
-                return L::template operator_xor<Return>(lhs, rhs);
+        auto ior(L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_InPlaceOr(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
             } else {
-                return R::template operator_xor<Return>(lhs, rhs);
+                lhs = reinterpret_steal<L>(result);
             }
         }
 
         template <typename Return, typename L, typename R>
-        auto operator_ixor(L& lhs, const R& rhs) {
-            return L::template operator_ixor<Return>(lhs, rhs);
+        auto xor_(const L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_Xor(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+
+        template <typename Return, typename L, typename R>
+        auto ixor(L& lhs, const R& rhs) {
+            PyObject* result = PyNumber_InPlaceXor(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
         }
 
     }
@@ -1089,8 +952,10 @@ template <typename T> requires (__iter__<T>::enable)
 auto operator*(const T& obj) {
     if constexpr (impl::proxy_like<T>) {
         return *obj.value();
+    } else if constexpr (impl::python_like<T>) {
+        return impl::ops::dereference(obj);
     } else {
-        return impl::ops::operator_dereference(obj);
+        return impl::ops::dereference(detail::object_or_cast(obj));
     }
 }
 
@@ -1149,7 +1014,27 @@ auto operator<(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs < rhs.value();
     } else {
-        return impl::ops::operator_lt<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::lt<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::lt<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::lt<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::lt<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -1195,7 +1080,27 @@ auto operator<=(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs <= rhs.value();
     } else {
-        return impl::ops::operator_le<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::le<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::le<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::le<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::le<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -1241,7 +1146,27 @@ auto operator==(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs == rhs.value();
     } else {
-        return impl::ops::operator_eq<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::eq<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::eq<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::eq<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::eq<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -1287,7 +1212,27 @@ auto operator!=(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs != rhs.value();
     } else {
-        return impl::ops::operator_ne<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::ne<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::ne<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::ne<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::ne<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -1333,7 +1278,27 @@ auto operator>=(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs >= rhs.value();
     } else {
-        return impl::ops::operator_ge<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::ge<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::ge<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::ge<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::ge<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -1379,7 +1344,27 @@ auto operator>(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs > rhs.value();
     } else {
-        return impl::ops::operator_gt<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::gt<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::gt<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::gt<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::gt<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -1421,14 +1406,18 @@ auto abs(const T& obj) {
     if constexpr (impl::proxy_like<T>) {
         return abs(obj.value());
     } else {
-        return impl::ops::operator_abs<Return>(obj);
+        if constexpr (impl::python_like<T>) {
+            return impl::ops::abs<Return>(obj);
+        } else {
+            return impl::ops::abs<Return>(detail::object_or_cast(obj));
+        }
     }
 }
 
 
 /* Equivalent to Python `abs(obj)`, except that it takes a C++ value and applies
 std::abs() for identical semantics. */
-template <impl::cpp_like T>
+template <impl::has_abs T> requires (!__abs__<T>::enable)
 auto abs(const T& value) {
     return std::abs(value);
 }
@@ -1464,7 +1453,11 @@ auto operator~(const T& self) {
     if constexpr (impl::proxy_like<T>) {
         return ~self.value();
     } else {
-        return impl::ops::operator_invert<Return>(self);
+        if constexpr (impl::python_like<T>) {
+            return impl::ops::invert<Return>(self);
+        } else {
+            return impl::ops::invert<Return>(detail::object_or_cast(self));
+        }
     }
 }
 
@@ -1503,7 +1496,11 @@ auto operator+(const T& self) {
     if constexpr (impl::proxy_like<T>) {
         return +self.value();
     } else {
-        return impl::ops::operator_pos<Return>(self);
+        if constexpr (impl::python_like<T>) {
+            return impl::ops::pos<Return>(self);
+        } else {
+            return impl::ops::pos<Return>(detail::object_or_cast(self));
+        }
     }
 }
 
@@ -1542,7 +1539,11 @@ auto operator-(const T& self) {
     if constexpr (impl::proxy_like<T>) {
         return -self.value();
     } else {
-        return impl::ops::operator_neg<Return>(self);
+        if constexpr (impl::python_like<T>) {
+            return impl::ops::neg<Return>(self);
+        } else {
+            return impl::ops::neg<Return>(detail::object_or_cast(self));
+        }
     }
 }
 
@@ -1574,7 +1575,8 @@ T& operator++(T& self) {
     if constexpr (impl::proxy_like<T>) {
         ++self.value();
     } else {
-        impl::ops::operator_increment<Return>(self);
+        static_assert(impl::python_like<T>, "Increment operator requires a Python object.");
+        impl::ops::increment<Return>(self);
     }
     return self;
 }
@@ -1593,7 +1595,8 @@ T operator++(T& self, int) {
     if constexpr (impl::proxy_like<T>) {
         ++self.value();
     } else {
-        impl::ops::operator_increment<Return>(self);
+        static_assert(impl::python_like<T>, "Increment operator requires a Python object.");
+        impl::ops::increment<Return>(self);
     }
     return copy;
 }
@@ -1630,7 +1633,8 @@ T& operator--(T& self) {
     if constexpr (impl::proxy_like<T>) {
         --self.value();
     } else {
-        impl::ops::operator_decrement<Return>(self);
+        static_assert(impl::python_like<T>, "Decrement operator requires a Python object.");
+        impl::ops::decrement<Return>(self);
     }
     return self;
 }
@@ -1649,7 +1653,8 @@ T operator--(T& self, int) {
     if constexpr (impl::proxy_like<T>) {
         --self.value();
     } else {
-        impl::ops::operator_decrement<Return>(self);
+        static_assert(impl::python_like<T>, "Decrement operator requires a Python object.");
+        impl::ops::decrement<Return>(self);
     }
     return copy;
 }
@@ -1716,7 +1721,27 @@ auto operator+(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs + rhs.value();
     } else {
-        return impl::ops::operator_add<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::add<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::add<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::add<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::add<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -1735,7 +1760,12 @@ L& operator+=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs += rhs.value();
     } else {
-        impl::ops::operator_iadd<Return>(lhs, rhs);
+        static_assert(impl::python_like<L>, "In-place addition operator requires a Python object.");
+        if constexpr (impl::python_like<R>) {
+            impl::ops::iadd<Return>(lhs, rhs);
+        } else {
+            impl::ops::iadd<Return>(lhs, detail::object_or_cast(rhs));
+        }
     }
     return lhs;
 }
@@ -1803,7 +1833,27 @@ auto operator-(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs - rhs.value();
     } else {
-        return impl::ops::operator_sub<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::sub<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::sub<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::sub<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::sub<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -1822,7 +1872,12 @@ L& operator-=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs -= rhs.value();
     } else {
-        impl::ops::operator_isub<Return>(lhs, rhs);
+        static_assert(impl::python_like<L>, "In-place addition operator requires a Python object.");
+        if constexpr (impl::python_like<R>) {
+            impl::ops::isub<Return>(lhs, rhs);
+        } else {
+            impl::ops::isub<Return>(lhs, detail::object_or_cast(rhs));
+        }
     }
     return lhs;
 }
@@ -1901,7 +1956,27 @@ auto operator*(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs * rhs.value();
     } else {
-        return impl::ops::operator_mul<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::mul<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::mul<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::mul<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::mul<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -1920,7 +1995,12 @@ L& operator*=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs *= rhs.value();
     } else {
-        impl::ops::operator_imul<Return>(lhs, rhs);
+        static_assert(impl::python_like<L>, "In-place multiplication operator requires a Python object.");
+        if constexpr (impl::python_like<R>) {
+            impl::ops::imul<Return>(lhs, rhs);
+        } else {
+            impl::ops::imul<Return>(lhs, detail::object_or_cast(rhs));
+        }
     }
     return lhs;
 }
@@ -2009,7 +2089,27 @@ auto operator/(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs / rhs.value();
     } else {
-        return impl::ops::operator_truediv<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::truediv<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::truediv<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::truediv<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::truediv<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -2028,7 +2128,12 @@ L& operator/=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs /= rhs.value();
     } else {
-        impl::ops::operator_itruediv<Return>(lhs, rhs);
+        static_assert(impl::python_like<L>, "In-place true division operator requires a Python object.");
+        if constexpr (impl::python_like<R>) {
+            impl::ops::itruediv<Return>(lhs, rhs);
+        } else {
+            impl::ops::itruediv<Return>(lhs, detail::object_or_cast(rhs));
+        }
     }
     return lhs;
 }
@@ -2108,7 +2213,27 @@ auto operator%(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs % rhs.value();
     } else {
-        return impl::ops::operator_mod<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::mod<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::mod<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::mod<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::mod<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -2127,7 +2252,12 @@ L& operator%=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs %= rhs.value();
     } else {
-        impl::ops::operator_imod<Return>(lhs, rhs);
+        static_assert(impl::python_like<L>, "In-place modulus operator requires a Python object.");
+        if constexpr (impl::python_like<R>) {
+            impl::ops::imod<Return>(lhs, rhs);
+        } else {
+            impl::ops::imod<Return>(lhs, detail::object_or_cast(rhs));
+        }
     }
     return lhs;
 }
@@ -2211,7 +2341,27 @@ auto pow(const Base& base, const Exp& exp) {
     } else if constexpr (impl::proxy_like<Exp>) {
         return pow(base, exp.value());
     } else {
-        return impl::ops::operator_pow<Return>(base, exp);
+        if constexpr (impl::python_like<Base> && impl::python_like<Exp>) {
+            return impl::ops::pow<Return>(
+                base,
+                exp
+            );
+        } else if constexpr (impl::python_like<Base>) {
+            return impl::ops::pow<Return>(
+                base,
+                detail::object_or_cast(exp)
+            );
+        } else if constexpr (impl::python_like<Exp>) {
+            return impl::ops::pow<Return>(
+                detail::object_or_cast(base),
+                exp
+            );
+        } else {
+            return impl::ops::pow<Return>(
+                detail::object_or_cast(base),
+                detail::object_or_cast(exp)
+            );
+        }
     }
 }
 
@@ -2257,7 +2407,59 @@ auto pow(const Base& base, const Exp& exp, const Mod& mod) {
     } else if constexpr (impl::proxy_like<Exp>) {
         return pow(base, exp.value(), mod);
     } else {
-        return impl::ops::operator_pow<Return>(base, exp, mod);
+        if constexpr (
+            impl::python_like<Base> &&
+            impl::python_like<Exp> &&
+            impl::python_like<Mod>
+        ) {
+            return impl::ops::pow<Return>(
+                base,
+                exp,
+                mod
+            );
+        } else if constexpr (impl::python_like<Base> && impl::python_like<Exp>) {
+            return impl::ops::pow<Return>(
+                base,
+                exp,
+                detail::object_or_cast(mod)
+            );
+        } else if constexpr (impl::python_like<Base> && impl::python_like<Mod>) {
+            return impl::ops::pow<Return>(
+                base,
+                detail::object_or_cast(exp),
+                mod
+            );
+        } else if constexpr (impl::python_like<Exp> && impl::python_like<Mod>) {
+            return impl::ops::pow<Return>(
+                detail::object_or_cast(base),
+                exp,
+                mod
+            );
+        } else if constexpr (impl::python_like<Base>) {
+            return impl::ops::pow<Return>(
+                base,
+                detail::object_or_cast(exp),
+                detail::object_or_cast(mod)
+            );
+        } else if constexpr (impl::python_like<Exp>) {
+            return impl::ops::pow<Return>(
+                detail::object_or_cast(base),
+                exp,
+                detail::object_or_cast(mod)
+            );
+        } else if constexpr (impl::python_like<Mod>) {
+            return impl::ops::pow<Return>(
+                detail::object_or_cast(base),
+                detail::object_or_cast(exp),
+                mod
+            );
+        } else {
+            return impl::ops::pow<Return>(
+                detail::object_or_cast(base),
+                detail::object_or_cast(exp),
+                detail::object_or_cast(mod)
+            );
+        }
     }
 }
 
@@ -2333,7 +2535,27 @@ auto operator<<(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs << rhs.value();
     } else {
-        return impl::ops::operator_lshift<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::lshift<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::lshift<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::lshift<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::lshift<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -2377,7 +2599,12 @@ L& operator<<=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs <<= rhs.value();
     } else {
-        impl::ops::operator_ilshift<Return>(lhs, rhs);
+        static_assert(impl::python_like<L>, "In-place left shift operator requires a Python object.");
+        if constexpr (impl::python_like<R>) {
+            impl::ops::ilshift<Return>(lhs, rhs);
+        } else {
+            impl::ops::ilshift<Return>(lhs, detail::object_or_cast(rhs));
+        }
     }
     return lhs;
 }
@@ -2445,7 +2672,27 @@ auto operator>>(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs >> rhs.value();
     } else {
-        return impl::ops::operator_rshift<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::rshift<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::rshift<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::rshift<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::rshift<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -2464,7 +2711,12 @@ L& operator>>=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs >>= rhs.value();
     } else {
-        impl::ops::operator_irshift<Return>(lhs, rhs);
+        static_assert(impl::python_like<L>, "In-place right shift operator requires a Python object.");
+        if constexpr (impl::python_like<R>) {
+            impl::ops::irshift<Return>(lhs, rhs);
+        } else {
+            impl::ops::irshift<Return>(lhs, detail::object_or_cast(rhs));
+        }
     }
     return lhs;
 }
@@ -2532,7 +2784,27 @@ auto operator&(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs & rhs.value();
     } else {
-        return impl::ops::operator_and<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::and_<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::and_<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::and_<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::and_<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -2551,7 +2823,12 @@ L& operator&=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs &= rhs.value();
     } else {
-        impl::ops::operator_iand<Return>(lhs, rhs);
+        static_assert(impl::python_like<L>, "In-place bitwise AND operator requires a Python object.");
+        if constexpr (impl::python_like<R>) {
+            impl::ops::iand<Return>(lhs, rhs);
+        } else {
+            impl::ops::iand<Return>(lhs, detail::object_or_cast(rhs));
+        }
     }
     return lhs;
 }
@@ -2620,7 +2897,27 @@ auto operator|(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs | rhs.value();
     } else {
-        return impl::ops::operator_or<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::or_<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::or_<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::or_<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::or_<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -2652,7 +2949,12 @@ L& operator|=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs |= rhs.value();
     } else {
-        impl::ops::operator_ior<Return>(lhs, rhs);
+        static_assert(impl::python_like<L>, "In-place bitwise OR operator requires a Python object.");
+        if constexpr (impl::python_like<R>) {
+            impl::ops::ior<Return>(lhs, rhs);
+        } else {
+            impl::ops::ior<Return>(lhs, detail::object_or_cast(rhs));
+        }
     }
     return lhs;
 }
@@ -2720,7 +3022,27 @@ auto operator^(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs ^ rhs.value();
     } else {
-        return impl::ops::operator_xor<Return>(lhs, rhs);
+        if constexpr (impl::python_like<L> && impl::python_like<R>) {
+            return impl::ops::xor_<Return>(
+                lhs,
+                rhs
+            );
+        } else if constexpr (impl::python_like<L>) {
+            return impl::ops::xor_<Return>(
+                lhs,
+                detail::object_or_cast(rhs)
+            );
+        } else if constexpr (impl::python_like<R>) {
+            return impl::ops::xor_<Return>(
+                detail::object_or_cast(lhs),
+                rhs
+            );
+        } else {
+            return impl::ops::xor_<Return>(
+                detail::object_or_cast(lhs),
+                detail::object_or_cast(rhs)
+            );
+        }
     }
 }
 
@@ -2739,7 +3061,12 @@ L& operator^=(L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         lhs ^= rhs.value();
     } else {
-        impl::ops::operator_ixor<Return>(lhs, rhs);
+        static_assert(impl::python_like<L>, "In-place bitwise XOR operator requires a Python object.");
+        if constexpr (impl::python_like<R>) {
+            impl::ops::ixor<Return>(lhs, rhs);
+        } else {
+            impl::ops::ixor<Return>(lhs, detail::object_or_cast(rhs));
+        }
     }
     return lhs;
 }

@@ -217,7 +217,7 @@ public:
     }
 
     template <typename T = Wrapped> requires (__getitem__<T, Slice>::enable)
-    auto operator[](std::initializer_list<impl::SliceInitializer> slice) const;
+    auto operator[](const std::initializer_list<impl::SliceInitializer>& slice) const;
 
     template <typename T>
     inline auto contains(const T& key) const { return get_value().contains(key); }

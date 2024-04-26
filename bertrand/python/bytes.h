@@ -434,6 +434,11 @@ template <std::derived_from<impl::IBytesTag> L, impl::int_like R>
 struct __imul__<L, R>                                           : Returns<L&> {};
 
 
+/////////////////////
+////    BYTES    ////
+/////////////////////
+
+
 /* Represents a statically-typed Python `bytes` object in C++. */
 class Bytes : public impl::IBytes<Bytes>, public impl::SequenceOps<Bytes> {
     using Base = impl::IBytes<Bytes>;
@@ -442,45 +447,37 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Bytes, impl::bytes_like, PyBytes_Check)
-    BERTRAND_OBJECT_OPERATORS(Bytes)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
     /* Default constructor.  Initializes to an empty string with zero bytes. */
-    Bytes(size_t size = 0) : Base(
-        PyBytes_FromStringAndSize(nullptr, size),
-        stolen_t{}
-    ) {
+    Bytes(size_t size = 0) :
+        Base(PyBytes_FromStringAndSize(nullptr, size), stolen_t{})
+    {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
     }
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (impl::bytes_like<T>)
-    Bytes(T&& obj) : Base(std::forward<T>(obj)) {}
 
     /* Implicitly convert a string literal into a py::Bytes object.  Note that this
     interprets the string as raw binary data rather than text, and it automatically
     excludes the terminating null byte.  This is primary useful for hardcoded binary
     data, rather than as a replacement for py::Str. */
     template <size_t N>
-    Bytes(const char (&string)[N]) : Base(
-        PyBytes_FromStringAndSize(string, N - 1),
-        stolen_t{}
-    ) {
+    Bytes(const char (&string)[N]) :
+        Base(PyBytes_FromStringAndSize(string, N - 1), stolen_t{})
+    {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
     }
 
     /* Implicitly convert a raw sequence of bytes into a py::Bytes object. */
-    Bytes(const void* data, size_t size) : Base(
-        PyBytes_FromStringAndSize(static_cast<const char*>(data), size),
-        stolen_t{}
-    ) {
+    Bytes(const void* data, size_t size) :
+        Base(PyBytes_FromStringAndSize(static_cast<const char*>(data), size), stolen_t{})
+    {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -488,21 +485,19 @@ public:
 
     /* Get a bytes representation of a Python object that implements the buffer
     protocol. */
-    template <impl::python_like T>
+    template <impl::python_like T> requires (!impl::bytes_like<T>)
     explicit Bytes(const T& obj) : Base(PyBytes_FromObject(obj.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
     }
 
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
 
-    /* Implicitly convert to pybind11::bytes. */
-    inline operator pybind11::bytes() const {
-        return reinterpret_borrow<pybind11::bytes>(m_ptr);
-    }
+    /* Equivalent to Python (static) `bytes.fromhex(string)`. */
+    inline static Bytes fromhex(const Str& string);
 
     /* Access the internal buffer of the bytes object.  Note that this implicitly
     includes an extra null byte at the end of the buffer, regardless of any nulls that
@@ -520,50 +515,51 @@ public:
         ));
     }
 
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
-
-    /* Equivalent to Python (static) `bytes.fromhex(string)`. */
-    inline static Bytes fromhex(const Str& string);
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-protected:
-
-    using impl::SequenceOps<Bytes>::operator_mul;
-    using impl::SequenceOps<Bytes>::operator_imul;
-
-    template <typename Return>
-    inline static auto operator_len(const Bytes& obj) {
-        return static_cast<size_t>(PyBytes_GET_SIZE(obj.ptr()));
-    }
-
-    template <typename Return, typename L, typename R>
-    inline static auto operator_add(const L& lhs, const R& rhs) {
-        if constexpr (std::derived_from<L, Bytes>) {
-            Return result = lhs.copy();
-            operator_iadd<Return>(result, rhs);
-            return result;
-        } else {
-            Return result = rhs.copy();
-            operator_iadd<Return>(result, lhs);
-            return result;
-        }
-    }
-
-    template <typename Return, typename L, typename R>
-    inline static void operator_iadd(L& lhs, const R& rhs) {
-        PyObject* result = lhs.ptr();
-        PyBytes_Concat(&result, Bytes(rhs).ptr());
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-    }
-
 };
+
+
+namespace impl {
+
+    namespace ops {
+
+        template <typename Return, std::derived_from<Bytes> Self>
+        auto len(const Self& obj) {
+            return static_cast<size_t>(PyBytes_GET_SIZE(obj.ptr()));
+        }
+
+        template <typename Return, typename L, typename R>
+            requires (std::derived_from<L, Bytes> || std::derived_from<R, Bytes>)
+        auto add(const L& lhs, const R& rhs) {
+            if constexpr (std::derived_from<L, Bytes>) {
+                Return result = lhs.copy();
+                iadd<Return>(result, rhs);
+                return result;
+            } else {
+                Return result = rhs.copy();
+                iadd<Return>(result, lhs);
+                return result;
+            }
+        }
+
+        template <typename Return, std::derived_from<Bytes> L, typename R>
+        auto iadd(L& lhs, const R& rhs) {
+            PyObject* result = lhs.ptr();
+            PyBytes_Concat(&result, Bytes(rhs).ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+        }
+
+        // TODO: mul, imul redirect to ops::sequence?
+
+    }
+
+}
+
+
+/////////////////////////
+////    BYTEARRAY    ////
+/////////////////////////
 
 
 /* Represents a statically-typed Python `bytearray` in C++. */
@@ -574,7 +570,6 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, ByteArray, impl::bytearray_like, PyByteArray_Check)
-    BERTRAND_OBJECT_OPERATORS(ByteArray)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -589,10 +584,6 @@ public:
             Exception::from_python();
         }
     }
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (impl::bytearray_like<T>)
-    ByteArray(T&& obj) : Base(std::forward<T>(obj)) {}
 
     /* Implicitly convert a string literal into a py::ByteArray object.  Note that this
     interprets the string as raw binary data rather than text, and it automatically
@@ -620,7 +611,7 @@ public:
 
     /* Get a bytes representation of a Python object that implements the buffer
     protocol. */
-    template <impl::python_like T>
+    template <impl::python_like T> requires (!impl::bytearray_like<T>)
     explicit ByteArray(const T& obj) :
         Base(PyByteArray_FromObject(obj.ptr()), stolen_t{})
     {
@@ -629,14 +620,12 @@ public:
         }
     }
 
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
 
-    /* Implicitly convert to pybind11::bytearray. */
-    inline operator pybind11::bytearray() const {
-        return reinterpret_borrow<pybind11::bytearray>(m_ptr);
-    }
+    /* Equivalent to Python (static) `bytes.fromhex(string)`. */
+    inline static ByteArray fromhex(const Str& string);
 
     /* Access the internal buffer of the bytearray object.  The data can be modified
     in-place, but should never be deallocated. */
@@ -652,47 +641,43 @@ public:
         ));
     }
 
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
-
-    /* Equivalent to Python (static) `bytes.fromhex(string)`. */
-    inline static ByteArray fromhex(const Str& string);
-
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
-protected:
-
-    using impl::SequenceOps<ByteArray>::operator_mul;
-    using impl::SequenceOps<ByteArray>::operator_imul;
-
-    template <typename Return>
-    inline static auto operator_len(const ByteArray& obj) {
-        return static_cast<size_t>(PyByteArray_GET_SIZE(obj.ptr()));
-    }
-
-    template <typename Return, typename L, typename R>
-    inline static auto operator_add(const L& lhs, const R& rhs) {
-        PyObject* result;
-        if constexpr (std::derived_from<L, ByteArray>) {
-            result = PyByteArray_Concat(lhs.ptr(), ByteArray(rhs).ptr());
-        } else {
-            result = PyByteArray_Concat(ByteArray(lhs).ptr(), rhs.ptr());
-        }
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return reinterpret_steal<Return>(result);
-    }
-
-    template <typename Return, typename L, typename R>
-    inline static void operator_iadd(L& lhs, const R& rhs) {
-        lhs = operator_add<Return>(lhs, rhs);
-    }
-
 };
+
+
+namespace impl {
+
+    namespace ops {
+
+        template <typename Return, std::derived_from<ByteArray> Self>
+        auto len(const Self& obj) {
+            return static_cast<size_t>(PyByteArray_GET_SIZE(obj.ptr()));
+        }
+
+        template <typename Return, typename L, typename R>
+            requires (std::derived_from<L, ByteArray> || std::derived_from<R, ByteArray>)
+        auto add(const L& lhs, const R& rhs) {
+            PyObject* result;
+            if constexpr (std::derived_from<L, ByteArray>) {
+                result = PyByteArray_Concat(lhs.ptr(), ByteArray(rhs).ptr());
+            } else {
+                result = PyByteArray_Concat(ByteArray(lhs).ptr(), rhs.ptr());
+            }
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+
+        template <typename Return, std::derived_from<ByteArray> L, typename R>
+        auto iadd(L& lhs, const R& rhs) {
+            lhs = add<Return>(lhs, rhs);
+        }
+
+        // TODO: mul, imul redirect to ops::sequence?
+
+    }
+
+}
 
 
 }  // namespace py

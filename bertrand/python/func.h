@@ -278,7 +278,6 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Code, comptime_check, PyCode_Check)
-    BERTRAND_OBJECT_OPERATORS(Code)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -287,10 +286,6 @@ public:
     /* Default constructor deleted to throw compile errors when a script is declared
     without an implementation. */
     Code() = delete;
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
-    Code(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Compile a Python source file into an interactive code object. */
     explicit Code(const char* path) : Base(load(path), stolen_t{}) {}
@@ -504,7 +499,6 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Frame, comptime_check, PyFrame_Check)
-    BERTRAND_OBJECT_OPERATORS(Frame)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -516,10 +510,6 @@ public:
             throw RuntimeError("no frame is currently executing");
         }
     }
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
-    Frame(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Construct an empty frame from a function name, file name, and line number.  This
     is primarily used to represent C++ contexts in Python exception tracebacks, etc. */
@@ -714,7 +704,6 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Function, impl::is_callable_any, runtime_check)
-    BERTRAND_OBJECT_OPERATORS(Function)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -722,11 +711,6 @@ public:
 
     /* Functions have no default constructor. */
     Function() = delete;
-
-
-    /* Copy/move constructor from equivalent pybind11 type(s). */
-    template <impl::python_like T> requires (check<T>())
-    Function(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Implicitly convert a C++ function or callable object into a py::Function. */
     template <impl::cpp_like T> requires (check<T>())
@@ -737,11 +721,6 @@ public:
     /////////////////////////////
     ////    C++ INTERFACE    ////
     /////////////////////////////
-
-    /* Implicitly convert to pybind11::function. */
-    inline operator pybind11::function() const {
-        return reinterpret_borrow<pybind11::function>(m_ptr);
-    }
 
     /* Get the module in which this function was defined. */
     inline Module module_() const {
@@ -1024,14 +1003,9 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, ClassMethod, comptime_check, runtime_check)
-    BERTRAND_OBJECT_OPERATORS(ClassMethod)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     ClassMethod() = delete;
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
-    ClassMethod(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Wrap an existing Python function as a classmethod descriptor. */
     ClassMethod(Function func) : Base(PyClassMethod_New(func.ptr()), stolen_t{}) {
@@ -1084,14 +1058,9 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, StaticMethod, comptime_check, runtime_check)
-    BERTRAND_OBJECT_OPERATORS(StaticMethod)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     StaticMethod() = delete;
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
-    StaticMethod(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Wrap an existing Python function as a staticmethod descriptor. */
     StaticMethod(Function func) : Base(PyStaticMethod_New(func.ptr()), stolen_t{}) {
@@ -1156,14 +1125,9 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, Property, comptime_check, runtime_check)
-    BERTRAND_OBJECT_OPERATORS(Property)
 
     /* Default constructor deleted to avoid confusion + possibility of nulls. */
     Property() = delete;
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
-    Property(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Wrap an existing Python function as a getter in a property descriptor. */
     Property(const Function& getter) :

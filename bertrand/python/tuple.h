@@ -192,7 +192,6 @@ public:
     using const_reverse_iterator = impl::ReverseIterator<impl::TupleIter<const value_type>>;
 
     BERTRAND_OBJECT_COMMON(Base, Tuple, impl::tuple_like, PyTuple_Check)
-    BERTRAND_OBJECT_OPERATORS(Tuple)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

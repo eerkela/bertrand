@@ -17,62 +17,78 @@ from bertrand import Extension, BuildExt
 # support through compile_commands.json.
 
 
+
 # NOTE: Bertrand uses C++23 features only found in GCC 14+ and Clang 18+ (MSVC is not
 # yet fully supported).  Users must first install these compilers to use the library.
 # Here are the steps to do so:
 
-# GCC:
 
-# NOTE: if you have Ubuntu 24.04 or later, then you can install gcc-14 directly using
-# the package manager:
-#       sudo apt-get install build-essential
+# GCC: If you have Ubuntu 24.04 or later, then you can install gcc-14 directly using the
+# package manager:
+#       sudo apt-get install build-essential gcc-14 g++-14 python3-dev
 
 # Otherwise:
 
 # 1. clone the git repository to a local directory:
-#       git clone git://gcc.gnu.org/git/gcc.git some/local/directory
-#       cd some/local/directory
+#       git clone git://gcc.gnu.org/git/gcc.git gcc-14
+#       cd gcc-14
 # 2. checkout the GCC 14 release branch:
 #       git checkout releases/gcc-14
-# 3. download prerequisites and install dependencies
+# 3. download prerequisites
 #       ./contrib/download_prerequisites
-#       sudo apt-get install g++-multilib flex bison
-# 4. create a build directory and configure the build:
-#       mkdir build
-#       cd build
-#       ../configure --disable-werror --disable-bootstrap
+# 4. create a local build directory and configure the build:
+#       cd ..
+#       mkdir gcc-build
+#       cd gcc-build
+#       ../gcc-14/configure --prefix=$(pwd)/../gcc-install  --enable-shared \
+#           --disable-werror --disable-bootstrap
 # 5. run the build (takes about 20 minutes):
 #       make -j$(nproc)
 # 6. install:
-#       sudo make install
-# 7. (optional) add as default compiler:
-#       sudo update-alternatives --install /usr/bin/c++ c++ /usr/local/bin/c++ 100
-#       sudo update-alternatives --install /usr/bin/g++ g++ /usr/local/bin/g++ 100
-#       sudo update-alternatives --install /usr/bin/gcc gcc /usr/local/bin/gcc 100
-#       sudo update-alternatives --install /usr/bin/cpp cpp /usr/local/bin/cpp 100
+#       make install
+# 7. (optional) update alternatives and set as default compiler:
+#       cd ../gcc-install/bin
+#       sudo update-alternatives --install /usr/bin/gcc gcc $(pwd)/gcc 14 \
+#           --slave /usr/bin/g++ g++ $(pwd)/g++ \
+#           --slave /usr/bin/c++ c++ $(pwd)/c++ \
+#           --slave /usr/bin/cpp cpp $(pwd)/cpp \
+#           --slave /usr/bin/gcc-ar gcc-ar $(pwd)/gcc-ar \
+#           --slave /usr/bin/gcc-nm gcc-nm $(pwd)/gcc-nm \
+#           --slave /usr/bin/gcc-ranlib gcc-ranlib $(pwd)/gcc-ranlib \
+#           --slave /usr/bin/gcov gcov $(pwd)/gcov
+#       sudo update-alternatives --config gcc
 # 8. Check the version:
 #       gcc --version
+
 
 
 # Clang:
 
 # 1. clone the git repository to a local directory:
-#       git clone https://github.com/llvm/llvm-project.git some/local/directory
-#       cd some/local/directory
+#       git clone https://github.com/llvm/llvm-project.git clang-18
+#       cd clang-18
 # 2. checkout the clang 18 release branch:
 #       git checkout release/18.x
-# 3. create a build directory and configure the build:
-#       mkdir build
-#       cd build
-#       cmake -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_BUILD_TYPE=Release -G "Unix Makefiles" ../llvm
+# 3. create a local build directory and configure the build:
+#       cd ..
+#       mkdir clang-build
+#       cd clang-build
+#       cmake -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_BUILD_TYPE=Release -G "Unix Makefiles" \
+#           -DCMAKE_INSTALL_PREFIX=$(pwd)/../clang-install -DBUILD_SHARED_LIBS=ON \
+#           ../clang-18/llvm
 # 4. run the build (takes about 30 minutes):
 #       make -j$(nproc)
-# 5. (optional) add as default compiler:
-#       sudo update-alternatives --install /usr/bin/clang clang $(pwd)/bin/clang 100
-#       sudo update-alternatives --install /usr/bin/clang++ clang++ $(pwd)/bin/clang++ 100
-#       sudo update-alternatives --install /usr/bin/clang-cpp clang-cpp $(pwd)/bin/clang-cpp 100
-# 6. Check the version:
+# 5. install:
+#       make install
+# 6. (optional) update alternatives and set as default compiler:
+#       cd ../clang-install/bin
+#       sudo update-alternatives --install /usr/bin/clang clang $(pwd)/clang 18 \
+#           --slave /usr/bin/clang++ clang++ $(pwd)/clang++ \
+#           --slave /usr/bin/clang-cpp clang-cpp $(pwd)/clang-cpp
+#       sudo update-alternatives --config clang
+# 7. Check the version:
 #       clang --version
+
 
 
 # NOTE: after building the C++ compiler, it's a good idea to build Python from source
@@ -80,8 +96,8 @@ from bertrand import Extension, BuildExt
 # Here's how to do that:
 #
 # 1. clone the git repository to a local directory:
-#       git clone https://github.com/python/cpython.git some/local/directory
-#       cd some/local/directory
+#       git clone https://github.com/python/cpython.git python-3.12
+#       cd python-3.12
 # 2. checkout the latest release branch:
 #       git checkout 3.12
 # 3. download prerequisites and install dependencies
@@ -89,37 +105,66 @@ from bertrand import Extension, BuildExt
 #         libbz2-dev libffi-dev libgdbm-dev libgdbm-compat-dev liblzma-dev \
 #         libncurses5-dev libreadline6-dev libsqlite3-dev libssl-dev \
 #         lzma lzma-dev tk-dev uuid-dev zlib1g-dev
-# 4. create a build directory and configure the build:
-#       mkdir build
-#       cd build
-#       ../configure --enable-shared --enable-optimizations --with-lto \
-#           --with-ensurepip=upgrade --prefix=/usr/local LDFLAGS="-Wl,-rpath=usr/local"
+# 4. create a local build directory and configure the build:
+#       cd ..
+#       mkdir python-build
+#       cd python-build
+#
+#   NOTE: if building with gcc:
+#       gcc_libs=$(gcc -print-search-dirs | grep 'libraries' | sed 's/libraries: =//')
+#       ../python-3.12/configure --enable-shared --enable-optimizations --with-lto \
+#           --with-ensurepip=upgrade --prefix=$(pwd)/../python-install \
+#           LDFLAGS="-Wl, -rpath=$(pwd)/../python-install/lib:$gcc_libs"
+#
+#   NOTE: if building with clang:
+#       clang_libs=$(clang -print-search-dirs | grep 'libraries' | sed 's/libraries: =//')
+#       ../python-3.12/configure --enable-shared --enable-optimizations --with-lto \
+#           --with-ensurepip=upgrade --prefix=$(pwd)/../python-install \
+#           LDFLAGS="-Wl, -rpath=$(pwd)/../python-install/lib:$clang_libs"
+#
 # 5. run the build (takes about 30 minutes):
 #       make -s -j$(nproc)
-# 6. install:  # TODO: the rest of these might not be necessary.  Check later with a fresh install of ubuntu
-#       sudo make altinstall
-# 7. Add shared libraries to the system path:
-#       echo $(pwd) | sudo tee -a /etc/ld.so.conf.d/local.conf
-#       sudo ldconfig
-# 8. (optional) add as default Python:
-#       sudo update-alternatives --install /usr/bin/python python /usr/local/bin/python3.12 100
-#       sudo update-alternatives --install /usr/bin/python3 python3 /usr/local/bin/python3.12 100
+# 6. install:
+#       make install
+# 7. (optional) update alternatives and set as default Python:
+#       cd ../python-install/bin
+#       sudo update-alternatives --install /usr/bin/python python $(pwd)/python3.12 312 \
+#           --slave /usr/bin/python3 python3 $(pwd)/python3.12 \
+#           --slave /usr/bin/pip pip $(pwd)/pip3.12 \
+#           --slave /usr/bin/pip3 pip3 $(pwd)/pip3.12
+#       sudo update-alternatives --config python
+# 8. Check the version:
+#       python --version
 
 
 
-# NOTE: building Python from source allows integration with other C++ tools, like
-# valgrind (./configure --with-valgrind).  I can also manually configure the CFLAGS and
-# LDFLAGS to enable more warnings and optimizations.
+# NOTE: You might want to add additional configuration flags to either the C++ compiler
+# or the Python build process to enable more warnings, enhanced security, or specific
+# optimizations.  Here are some to consider:
+#
+#   GCC:
+#
+#   Clang
+#
+#   Python:
+#       --with-valgrind:  enable valgrind support for Python
+
+
+# Extra:
+# -fno-strict-overflow
+
+# Missing:
+# -fwrapv
+# -fstack-protector-strong
+# -Wformat
+# -Werror=format-security
+# -Wdate-time
+# -D_FORTIFY_SOURCE=2
 
 
 
 # NOTE: See setuptools for more info on how extensions are built:
 # https://setuptools.pypa.io/en/latest/userguide/ext_modules.html
-
-
-
-# os.environ["CC"] = "g++"  # NOTE: use GCC latest.  Set to clang-18 for Clang.
-
 
 
 class build_ext(BuildExt):

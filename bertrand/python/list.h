@@ -98,7 +98,6 @@ public:
     static const Type type;
 
     BERTRAND_OBJECT_COMMON(Base, List, impl::list_like, PyList_Check)
-    BERTRAND_OBJECT_OPERATORS(List)
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////

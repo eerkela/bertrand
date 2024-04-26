@@ -1024,7 +1024,9 @@ public:
             object type = reinterpret_borrow<object>(
                 reinterpret_cast<PyObject*>(Py_TYPE(value.ptr()))
             );
-            object traceback = reinterpret_steal<object>(PyException_GetTraceback(value));
+            object traceback = reinterpret_steal<object>(
+                PyException_GetTraceback(value.ptr())
+            );
             thread->current_exception = nullptr;
         #else
             object type = reinterpret_steal<object>(thread->curexc_type);
