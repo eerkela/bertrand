@@ -123,11 +123,25 @@ void run() {
 
 
 
-    py::Bool x = true;
-    py::Bool y = x;
-    py::print("abc" + x);
+    // py::Int x = 1;
+    // py::Int y = 2;
+    // py::Int z = x + y;
+    // py::print(z);
 
-    // std::cout << "hello, world!\n";
+    py::Tuple<py::Int> t = {1, 2, 3};
+    py::Tuple t2 = t;
+    py::print(t);
+    py::print(t2);
+    py::print(typeid(decltype(t)::value_type).name());
+    py::print(typeid(decltype(t2)::value_type).name());
+
+
+
+    // int x = 1;
+    // int y = 2;
+    // for (size_t i = 0; i < 1000000; ++i) {
+    //     volatile int z = x + y;
+    // }
 
 
 

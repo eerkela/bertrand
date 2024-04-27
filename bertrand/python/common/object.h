@@ -28,35 +28,6 @@ namespace impl {
     template <typename Deref>
     class GenericIter;
 
-    #define BERTRAND_OBJECT_COMMON(Base, cls, comptime_check, runtime_check)            \
-        template <typename T>                                                           \
-        static consteval bool check() { return comptime_check<T>; }                     \
-                                                                                        \
-        template <typename T>                                                           \
-        static constexpr bool check(const T& obj) {                                     \
-            if constexpr (impl::python_like<T>) {                                       \
-                return obj.ptr() != nullptr && runtime_check(obj.ptr());                \
-            } else {                                                                    \
-                return check<T>();                                                      \
-            }                                                                           \
-        }                                                                               \
-                                                                                        \
-        cls(Handle h, const borrowed_t& t) : Base(h, t) {}                              \
-        cls(Handle h, const stolen_t& t) : Base(h, t) {}                                \
-                                                                                        \
-        template <impl::pybind11_like T> requires (check<T>())                          \
-        cls(T&& other) : Base(std::forward<T>(other)) {}                                \
-                                                                                        \
-        template <typename Policy>                                                      \
-        cls(const detail::accessor<Policy>& accessor) : Base(nullptr, stolen_t{}) {     \
-            pybind11::object obj(accessor);                                             \
-            if (check(obj)) {                                                           \
-                m_ptr = obj.release().ptr();                                            \
-            } else {                                                                    \
-                throw impl::noconvert<cls>(obj.ptr());                                  \
-            }                                                                           \
-        }                                                                               \
-
 }
 
 
@@ -205,6 +176,18 @@ protected:
     friend T reinterpret_borrow(Handle);
     template <std::derived_from<Object> T>
     friend T reinterpret_steal(Handle);
+
+    template <typename Self, typename Policy>
+    static pybind11::object from_pybind11_accessor(
+        const detail::accessor<Policy>& accessor
+    ) {
+        pybind11::object obj(accessor);
+        if (Self::check(obj)) {
+            return obj;
+        } else {
+            throw impl::noconvert<Self>(obj.ptr());
+        }
+    }
 
 public:
     static const Type type;
@@ -585,14 +568,16 @@ public:
 };
 
 
+/* Implicitly convert Object to any type that is not a pointer or reference type, an
+internal pybind11 type, or a subclass of Object. */
 template <impl::not_proxy_like T>
     requires (
         !std::is_pointer_v<T> &&
         !std::is_reference_v<T> &&
         !std::same_as<T, pybind11::handle> &&
-        !std::same_as<T, pybind11::object> &&
-        !std::derived_from<T, Object> &&
-        !std::derived_from<T, pybind11::arg>
+        !std::derived_from<T, pybind11::object> &&
+        !std::derived_from<T, pybind11::arg> &&
+        !std::derived_from<T, Object>
     )
 struct __cast__<Object, T> {
     static constexpr bool enable = true;

@@ -97,11 +97,34 @@ class List : public Object, public impl::SequenceOps<List>, public impl::ListTag
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, List, impl::list_like, PyList_Check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::list_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyList_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    List(Handle h, const borrowed_t& t) : Base(h, t) {}
+    List(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    List(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    List(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<List>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to an empty list. */
     List() : Base(PyList_New(0), stolen_t{}) {
@@ -109,10 +132,6 @@ public:
             Exception::from_python();
         }
     }
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
-    List(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the contents of a braced initializer list into a new Python list. */
     List(const std::initializer_list<Object>& contents) :

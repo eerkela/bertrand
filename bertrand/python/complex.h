@@ -114,11 +114,34 @@ class Complex : public Object {
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Complex, impl::complex_like, PyComplex_Check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::complex_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyComplex_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    Complex(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Complex(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Complex(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Complex(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Complex>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to 0+0j. */
     Complex() : Base(PyComplex_FromDoubles(0.0, 0.0), stolen_t{}) {

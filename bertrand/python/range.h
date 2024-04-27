@@ -46,22 +46,45 @@ struct __getitem__<Range, Slice>                            : Returns<Range> {};
 class Range : public Object {
     using Base = Object;
 
-    inline static bool runtime_check(PyObject* obj) {
-        int result = PyObject_IsInstance(obj, (PyObject*) &PyRange_Type);
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Range, impl::range_like, runtime_check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::range_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj.ptr(),
+                (PyObject*) &PyRange_Type
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    Range(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Range(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Range(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Range(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Range>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to an empty range. */
     Range() : Range(Int::zero()) {}

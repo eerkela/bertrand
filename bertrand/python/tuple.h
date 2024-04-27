@@ -191,11 +191,37 @@ public:
     using reverse_iterator = impl::ReverseIterator<impl::TupleIter<value_type>>;
     using const_reverse_iterator = impl::ReverseIterator<impl::TupleIter<const value_type>>;
 
-    BERTRAND_OBJECT_COMMON(Base, Tuple, impl::tuple_like, PyTuple_Check)
+    // TODO: account for compatibility with templated types in check().  pybind11 types
+    // should only be considered matches if and only if the value type is set to py::Object.
+
+    template <typename T>
+    static consteval bool check() {
+        return impl::tuple_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyTuple_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    Tuple(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Tuple(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Tuple(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Tuple(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Tuple>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to an empty tuple. */
     Tuple() : Base(PyTuple_New(0), stolen_t{}) {
@@ -212,6 +238,10 @@ public:
     /* Move constructor from another tuple with a narrower type. */
     template <std::derived_from<value_type> T>
     Tuple(Tuple<T>&& other) : Base(other.release(), stolen_t{}) {}
+
+    // TODO: figure copy/move constructors out.  Probably just delete OBJECT_COMMON and
+    // replace with explicit specializations here.
+    // -> This is currently repeated in an ambiguous way, so I need to figure this out.
 
     /* Copy/move constructors from equivalent pybind11 type(s).  Only enabled if this
     tuple's value type is set to py::Object. */

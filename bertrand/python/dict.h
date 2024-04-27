@@ -85,29 +85,46 @@ struct __xor__<KeysView, T>                                 : Returns<Set> {};
 class KeysView : public Object, public impl::KeysTag {
     using Base = Object;
 
-    template <typename T>
-    static constexpr bool comptime_check = std::derived_from<T, KeysView>; 
-
-    inline static bool runtime_check(PyObject* obj) {
-        int result = PyObject_IsInstance(obj, (PyObject*) &PyDictKeys_Type);
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, KeysView, comptime_check, runtime_check)
+    template <typename T>
+    static consteval bool check() {
+        return std::derived_from<T, KeysView>;
+    }
 
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj,
+                (PyObject*) &PyDictKeys_Type
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return check<T>();
+        }
+    }
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
+    KeysView(Handle h, const borrowed_t& t) : Base(h, t) {}
+    KeysView(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
     KeysView(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    KeysView(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<KeysView>(accessor).release(), stolen_t{})
+    {}
 
     /* Explicitly create a keys view on an existing dictionary. */
     explicit KeysView(const pybind11::dict& dict) : Base(nullptr, stolen_t{}) {
@@ -207,29 +224,47 @@ struct __contains__<ValuesView, T>                          : Returns<bool> {};
 class ValuesView : public Object, public impl::ValuesTag {
     using Base = Object;
 
-    template <typename T>
-    static constexpr bool comptime_check = std::derived_from<T, ValuesView>; 
-
-    inline static bool runtime_check(PyObject* obj) {
-        int result = PyObject_IsInstance(obj, (PyObject*) &PyDictValues_Type);
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, ValuesView, comptime_check, runtime_check)
+    template <typename T>
+    static consteval bool check() {
+        return std::derived_from<T, ValuesView>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj,
+                (PyObject*) &PyDictValues_Type
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
+    ValuesView(Handle h, const borrowed_t& t) : Base(h, t) {}
+    ValuesView(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
     ValuesView(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    ValuesView(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<ValuesView>(accessor).release(), stolen_t{})
+    {}
 
     /* Explicitly create a values view on an existing dictionary. */
     explicit ValuesView(const pybind11::dict& dict) : Base(nullptr, stolen_t{}) {
@@ -272,29 +307,47 @@ struct __contains__<ItemsView, T>                           : Returns<bool> {};
 class ItemsView : public Object, public impl::ItemsTag {
     using Base = Object;
 
-    template <typename T>
-    static constexpr bool comptime_check = std::derived_from<T, ItemsView>; 
-
-    inline static bool runtime_check(PyObject* obj) {
-        int result = PyObject_IsInstance(obj, (PyObject*) &PyDictItems_Type);
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, ItemsView, comptime_check, runtime_check)
+    template <typename T>
+    static consteval bool check() {
+        return std::derived_from<T, ItemsView>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj,
+                (PyObject*) &PyDictItems_Type
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
+    ItemsView(Handle h, const borrowed_t& t) : Base(h, t) {}
+    ItemsView(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
     ItemsView(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    ItemsView(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<ItemsView>(accessor).release(), stolen_t{})
+    {}
 
     /* Explicitly create an items view on an existing dictionary. */
     explicit ItemsView(const pybind11::dict& dict) : Base(nullptr, stolen_t{}) {
@@ -374,11 +427,34 @@ class Dict : public Object, public impl::DictTag {
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Dict, impl::dict_like, PyDict_Check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::dict_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyDict_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    Dict(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Dict(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Dict(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Dict(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Dict>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to empty dict. */
     Dict() : Base(PyDict_New(), stolen_t{}) {
@@ -386,10 +462,6 @@ public:
             Exception::from_python();
         }
     }
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
-    Dict(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the given arguments into a dictionary using an initializer list. */
     Dict(const std::initializer_list<impl::DictInitializer>& contents) :
@@ -482,11 +554,6 @@ public:
     /////////////////////////////
     ////    C++ INTERFACE    ////
     /////////////////////////////
-
-    /* Implicitly convert to a pybind11::dict. */
-    inline operator pybind11::dict() const {
-        return reinterpret_borrow<pybind11::dict>(m_ptr);
-    }
 
     /* Implicitly convert to a C++ dict type. */
     template <impl::cpp_like T> requires (impl::dict_like<T>)
@@ -908,28 +975,49 @@ struct __or__<MappingProxy, T>                              : Returns<Dict> {};
 class MappingProxy : public Object, public impl::MappingProxyTag {
     using Base = Object;
 
-    inline static bool runtime_check(PyObject* obj) {
-        int result = PyObject_IsInstance(obj, (PyObject*) &PyDictProxy_Type);
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, MappingProxy, impl::mappingproxy_like, runtime_check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::mappingproxy_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj,
+                (PyObject*) &PyDictProxy_Type
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
+    MappingProxy(Handle h, const borrowed_t& t) : Base(h, t) {}
+    MappingProxy(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
     MappingProxy(T&& other) : Base(std::forward<T>(other)) {}
 
-    /* Explicitly construct a read-only view on an existing dictionary. */
+    template <typename Policy>
+    MappingProxy(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<MappingProxy>(accessor).release(), stolen_t{})
+    {}
+
+    /* Construct a read-only view on an existing dictionary. */
     MappingProxy(const Dict& dict) : Base(PyDictProxy_New(dict.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();

@@ -85,7 +85,32 @@ class NoneType : public Object {
 
 public:
     static const Type type;
-    BERTRAND_OBJECT_COMMON(Base, NoneType, impl::none_like, Py_IsNone)
+
+    template <typename T>
+    static consteval bool check() {
+        return impl::none_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && Py_IsNone(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
+
+    NoneType(Handle h, const borrowed_t& t) : Base(h, t) {}
+    NoneType(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    NoneType(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    NoneType(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<NoneType>(accessor).release(), stolen_t{})
+    {}
+
     NoneType() : Base(Py_None, borrowed_t{}) {}
 };
 
@@ -103,23 +128,44 @@ struct __hash__<NotImplementedType>                             : Returns<size_t
 class NotImplementedType : public Object {
     using Base = Object;
 
-    template <typename T>
-    static constexpr bool comptime_check = std::derived_from<T, NotImplementedType>;
-
-    static bool runtime_check(PyObject* obj) {
-        int result = PyObject_IsInstance(
-            obj,
-            (PyObject*) Py_TYPE(Py_NotImplemented)
-        );
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
 public:
     static const Type type;
-    BERTRAND_OBJECT_COMMON(Base, NotImplementedType, comptime_check, runtime_check)
+
+    template <typename T>
+    static consteval bool check() {
+        return std::derived_from<T, NotImplementedType>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj.ptr(),
+                (PyObject*) Py_TYPE(Py_NotImplemented)
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return check<T>();
+        }
+    }
+
+    NotImplementedType(Handle h, const borrowed_t& t) : Base(h, t) {}
+    NotImplementedType(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    NotImplementedType(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    NotImplementedType(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<NotImplementedType>(accessor).release(), stolen_t{})
+    {}
+
     NotImplementedType() : Base(Py_NotImplemented, borrowed_t{}) {}
 };
 
@@ -137,23 +183,44 @@ struct __hash__<EllipsisType>                                   : Returns<size_t
 class EllipsisType : public Object {
     using Base = Object;
 
-    template <typename T>
-    static constexpr bool comptime_check = std::derived_from<T, EllipsisType>;
-
-    static bool runtime_check(PyObject* obj) {
-        int result = PyObject_IsInstance(
-            obj,
-            (PyObject*) Py_TYPE(Py_Ellipsis)
-        );
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
 public:
     static const Type type;
-    BERTRAND_OBJECT_COMMON(Base, EllipsisType, comptime_check, runtime_check)
+
+    template <typename T>
+    static consteval bool check() {
+        return std::derived_from<T, EllipsisType>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj.ptr(),
+                (PyObject*) Py_TYPE(Py_Ellipsis)
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return check<T>();
+        }
+    }
+
+    EllipsisType(Handle h, const borrowed_t& t) : Base(h, t) {}
+    EllipsisType(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    EllipsisType(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    EllipsisType(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<EllipsisType>(accessor).release(), stolen_t{})
+    {}
+
     EllipsisType() : Base(Py_Ellipsis, borrowed_t{}) {}
 };
 
@@ -258,11 +325,34 @@ class Slice : public Object {
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Slice, impl::slice_like, PySlice_Check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::slice_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PySlice_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    Slice(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Slice(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Slice(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Slice(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Slice>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to all Nones. */
     Slice() : Base(
@@ -400,11 +490,34 @@ class Module : public Object {
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Module, impl::module_like, PyModule_Check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::module_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyModule_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    Module(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Module(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Module(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Module(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Module>(accessor).release(), stolen_t{})
+    {}
 
     /* Default module constructor deleted for clarity. */
     Module() = delete;

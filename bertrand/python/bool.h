@@ -294,11 +294,34 @@ class Bool : public Object {
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Bool, impl::bool_like, PyBool_Check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::bool_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyBool_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    Bool(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Bool(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Bool(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Bool(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Bool>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to False. */
     Bool() : Base(Py_False, borrowed_t{}) {}

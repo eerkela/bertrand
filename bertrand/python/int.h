@@ -382,11 +382,34 @@ class Int : public Object {
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Int, impl::int_like, PyLong_Check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::int_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyLong_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    Int(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Int(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Int(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Int(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Int>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to 0. */
     Int() : Base(PyLong_FromLong(0), stolen_t{}) {

@@ -445,12 +445,34 @@ class Bytes : public impl::IBytes<Bytes>, public impl::SequenceOps<Bytes> {
 
 public:
     static const Type type;
+    template <typename T>
+    static consteval bool check() {
+        return impl::bytes_like<T>;
+    }
 
-    BERTRAND_OBJECT_COMMON(Base, Bytes, impl::bytes_like, PyBytes_Check)
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyBytes_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    Bytes(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Bytes(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Bytes(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Bytes(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Bytes>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to an empty string with zero bytes. */
     Bytes(size_t size = 0) :
@@ -569,11 +591,34 @@ class ByteArray : public impl::IBytes<ByteArray>, public impl::SequenceOps<ByteA
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, ByteArray, impl::bytearray_like, PyByteArray_Check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::bytearray_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyByteArray_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    ByteArray(Handle h, const borrowed_t& t) : Base(h, t) {}
+    ByteArray(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    ByteArray(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    ByteArray(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<ByteArray>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to an empty string with zero bytes. */
     ByteArray(size_t size = 0) : Base(

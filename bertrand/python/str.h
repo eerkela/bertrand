@@ -174,11 +174,34 @@ class Str : public Object, public impl::SequenceOps<Str> {
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Str, impl::str_like, PyUnicode_Check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::str_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyUnicode_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    Str(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Str(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Str(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Str(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Str>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to empty string. */
     Str() : Base(PyUnicode_FromStringAndSize("", 0), stolen_t{}) {

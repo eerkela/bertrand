@@ -147,11 +147,34 @@ class Float : public Object {
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Float, impl::float_like, PyFloat_Check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::float_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyFloat_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    Float(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Float(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Float(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Float(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Float>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to 0.0. */
     Float() : Base(PyFloat_FromDouble(0.0), stolen_t{}) {

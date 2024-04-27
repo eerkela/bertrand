@@ -357,11 +357,34 @@ class FrozenSet : public impl::ISet<FrozenSet>, public impl::FrozenSetTag {
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, FrozenSet, impl::frozenset_like, PyFrozenSet_Check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::frozenset_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyFrozenSet_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    FrozenSet(Handle h, const borrowed_t& t) : Base(h, t) {}
+    FrozenSet(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    FrozenSet(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    FrozenSet(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<FrozenSet>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to an empty set. */
     FrozenSet() : Base(PyFrozenSet_New(nullptr), stolen_t{}) {
@@ -369,10 +392,6 @@ public:
             Exception::from_python();
         }
     }
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
-    FrozenSet(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the contents of a braced initializer list into a new Python frozenset. */
     FrozenSet(const std::initializer_list<impl::HashInitializer>& contents) :
@@ -578,11 +597,34 @@ class Set : public impl::ISet<Set>, public impl::SetTag {
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Set, impl::set_like, PySet_Check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::set_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PySet_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    Set(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Set(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Set(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Set(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Set>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to an empty set. */
     Set() : Base(PySet_New(nullptr), stolen_t{}) {
@@ -590,10 +632,6 @@ public:
             Exception::from_python();
         }
     }
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
-    Set(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the contents of a braced initializer list into a new Python set. */
     Set(const std::initializer_list<impl::HashInitializer>& contents) :

@@ -68,9 +68,13 @@
 # del timedelta       # type: ignore
 
 
-
-# from .regex import Regex
 from .setup_helpers import BuildExt, Extension, get_include
+
+
+try:
+    from .regex import Regex
+except ModuleNotFoundError:
+    pass
 
 
 __version__ = "0.5.1"  # handled by bumpver

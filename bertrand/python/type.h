@@ -48,18 +48,37 @@ class Type : public Object {
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Type, impl::type_like, PyType_Check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::type_like<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyType_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
+    Type(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Type(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Type(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Type(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Type>(accessor).release(), stolen_t{})
+    {}
+
     /* Default constructor.  Initializes to the built-in type metaclass. */
     Type() : Base((PyObject*) &PyType_Type, borrowed_t{}) {}
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
-    Type(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly detect the type of an arbitrary Python object. */
     template <impl::python_like T>
@@ -409,24 +428,47 @@ struct __delattr__<Super, name>                             : Returns<void> {};
 class Super : public Object {
     using Base = Object;
 
-    template <typename T>
-    static constexpr bool comptime_check = std::derived_from<T, Super>;
-
-    inline static int runtime_check(PyObject* obj) {
-        int result = PyObject_IsInstance(
-            obj,
-            reinterpret_cast<PyObject*>(&PySuper_Type)
-        );
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Super, comptime_check, runtime_check)
+    template <typename T>
+    static consteval bool check() {
+        return std::derived_from<T, Super>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj.ptr(),
+                reinterpret_cast<PyObject*>(&PySuper_Type)
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return check<T>();
+        }
+    }
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    Super(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Super(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Super(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Super(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Super>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Equivalent to Python `super()` with no arguments, which
     uses the calling context's inheritance hierarchy. */
@@ -438,10 +480,6 @@ public:
             Exception::from_python();
         }
     }
-
-    /* Copy/move constructors. */
-    template <impl::python_like T> requires (check<T>())
-    Super(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicit constructor.  Equivalent to Python `super(type, self)` with 2
     arguments. */

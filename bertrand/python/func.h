@@ -205,9 +205,6 @@ which are compiled once and then cached for repeated use.
 class Code : public Object {
     using Base = Object;
 
-    template <typename T>
-    static constexpr bool comptime_check = std::derived_from<T, Code>;
-
     inline PyCodeObject* self() const {
         return reinterpret_cast<PyCodeObject*>(this->ptr());
     }
@@ -277,15 +274,34 @@ class Code : public Object {
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Code, comptime_check, PyCode_Check)
+    template <typename T>
+    static consteval bool check() {
+        return std::derived_from<T, Code>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyCode_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Default constructor deleted to throw compile errors when a script is declared
-    without an implementation. */
-    Code() = delete;
+    Code(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Code(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Code(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Code(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Code>(accessor).release(), stolen_t{})
+    {}
 
     /* Compile a Python source file into an interactive code object. */
     explicit Code(const char* path) : Base(load(path), stolen_t{}) {}
@@ -488,9 +504,6 @@ to run Python code in an interactive loop via the embedded code object. */
 class Frame : public Object {
     using Base = Object;
 
-    template <typename T>
-    static constexpr bool comptime_check = std::derived_from<T, Frame>;
-
     inline PyFrameObject* self() const {
         return reinterpret_cast<PyFrameObject*>(this->ptr());
     }
@@ -498,11 +511,34 @@ class Frame : public Object {
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Frame, comptime_check, PyFrame_Check)
+    template <typename T>
+    static consteval bool check() {
+        return std::derived_from<T, Frame>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && PyFrame_Check(obj.ptr());
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    Frame(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Frame(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Frame(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Frame(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Frame>(accessor).release(), stolen_t{})
+    {}
 
     /* Default constructor.  Initializes to the current execution frame. */
     Frame() : Base(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{}) {
@@ -684,14 +720,6 @@ which no code object will be compiled. */
 class Function : public Object {
     using Base = Object;
 
-    inline static bool runtime_check(PyObject* obj) {
-        return (
-            PyFunction_Check(obj) ||
-            PyCFunction_Check(obj) ||
-            PyMethod_Check(obj)
-        );
-    }
-
     inline PyObject* self() const {
         PyObject* result = this->ptr();
         if (PyMethod_Check(result)) {
@@ -703,14 +731,38 @@ class Function : public Object {
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Function, impl::is_callable_any, runtime_check)
+    template <typename T>
+    static consteval bool check() {
+        return impl::is_callable_any<T>;
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr && (
+                PyFunction_Check(obj.ptr()) ||
+                PyCFunction_Check(obj.ptr()) ||
+                PyMethod_Check(obj.ptr())
+            );
+        } else {
+            return check<T>();
+        }
+    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Functions have no default constructor. */
-    Function() = delete;
+    Function(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Function(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Function(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Function(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Function>(accessor).release(), stolen_t{})
+    {}
 
     /* Implicitly convert a C++ function or callable object into a py::Function. */
     template <impl::cpp_like T> requires (check<T>())
@@ -985,27 +1037,43 @@ attribute assignment. */
 class ClassMethod : public Object {
     using Base = Object;
 
-    template <typename T>
-    static constexpr bool comptime_check = std::derived_from<T, ClassMethod>;
-
-    inline static bool runtime_check(PyObject* obj) {
-        int result = PyObject_IsInstance(
-            obj,
-            reinterpret_cast<PyObject*>(&PyClassMethodDescr_Type)
-        );
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, ClassMethod, comptime_check, runtime_check)
+    template <typename T>
+    static consteval bool check() {
+        return std::derived_from<T, ClassMethod>;
+    }
 
-    /* Default constructor deleted to avoid confusion + possibility of nulls. */
-    ClassMethod() = delete;
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj.ptr(),
+                (PyObject*) &PyClassMethodDescr_Type
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return check<T>();
+        }
+    }
+
+    ClassMethod(Handle h, const borrowed_t& t) : Base(h, t) {}
+    ClassMethod(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    ClassMethod(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    ClassMethod(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<ClassMethod>(accessor).release(), stolen_t{})
+    {}
 
     /* Wrap an existing Python function as a classmethod descriptor. */
     ClassMethod(Function func) : Base(PyClassMethod_New(func.ptr()), stolen_t{}) {
@@ -1040,27 +1108,43 @@ attribute assignment. */
 class StaticMethod : public Object {
     using Base = Object;
 
-    template <typename T>
-    static constexpr bool comptime_check = std::derived_from<T, StaticMethod>;
-
-    static bool runtime_check(PyObject* obj) {
-        int result = PyObject_IsInstance(
-            obj,
-            reinterpret_cast<PyObject*>(&PyStaticMethod_Type)
-        );
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, StaticMethod, comptime_check, runtime_check)
+    template <typename T>
+    static consteval bool check() {
+        return std::derived_from<T, StaticMethod>;
+    }
 
-    /* Default constructor deleted to avoid confusion + possibility of nulls. */
-    StaticMethod() = delete;
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj.ptr(),
+                (PyObject*) &PyStaticMethod_Type
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return check<T>();
+        }
+    }
+
+    StaticMethod(Handle h, const borrowed_t& t) : Base(h, t) {}
+    StaticMethod(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    StaticMethod(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    StaticMethod(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<StaticMethod>(accessor).release(), stolen_t{})
+    {}
 
     /* Wrap an existing Python function as a staticmethod descriptor. */
     StaticMethod(Function func) : Base(PyStaticMethod_New(func.ptr()), stolen_t{}) {
@@ -1110,24 +1194,42 @@ assignment. */
 class Property : public Object {
     using Base = Object;
 
-    template <typename T>
-    static constexpr bool comptime_check = std::derived_from<T, Property>;
-
-    inline static bool runtime_check(PyObject* obj) {
-        int result = PyObject_IsInstance(obj, impl::PyProperty.ptr());
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
 public:
     static const Type type;
 
-    BERTRAND_OBJECT_COMMON(Base, Property, comptime_check, runtime_check)
+    template <typename T>
+    static consteval bool check() {
+        return std::derived_from<T, Property>;
+    }
 
-    /* Default constructor deleted to avoid confusion + possibility of nulls. */
-    Property() = delete;
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj.ptr(),
+                impl::PyProperty.ptr());
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return check<T>();
+        }
+    }
+
+    Property(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Property(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Property(T&& other) : Base(std::forward<T>(other)) {}
+
+    template <typename Policy>
+    Property(const detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Property>(accessor).release(), stolen_t{})
+    {}
 
     /* Wrap an existing Python function as a getter in a property descriptor. */
     Property(const Function& getter) :
