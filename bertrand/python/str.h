@@ -229,6 +229,8 @@ public:
         }
     }
 
+    // TODO: this causes an ambiguity when converting from Object to Str
+
     /* Implicitly convert a C++ std::string into a py::Str object. */
     template <impl::cpp_like T>
         requires (

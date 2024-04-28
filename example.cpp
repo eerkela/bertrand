@@ -123,17 +123,19 @@ void run() {
 
 
 
-    // py::Int x = 1;
-    // py::Int y = 2;
-    // py::Int z = x + y;
-    // py::print(z);
+    py::Float x = 1;
+    py::Float y = 2.5;
+    int z = static_cast<int>(x + y);
+    py::print(z);
 
-    py::Tuple<py::Int> t = {1, 2, 3};
-    py::Tuple t2 = t;
-    py::print(t);
-    py::print(t2);
-    py::print(typeid(decltype(t)::value_type).name());
-    py::print(typeid(decltype(t2)::value_type).name());
+
+
+    // py::Tuple<py::Int> t = {1, 2, 3};
+    // py::Tuple t2 = t;
+    // py::print(t);
+    // py::print(t2);
+    // py::print(typeid(decltype(t)::value_type).name());
+    // py::print(typeid(decltype(t2)::value_type).name());
 
 
 

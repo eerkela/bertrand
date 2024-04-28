@@ -30,62 +30,66 @@ from bertrand import Extension, BuildExt
 
 # Otherwise:
 
-# 1. clone the git repository to a local directory:
-#       git clone git://gcc.gnu.org/git/gcc.git gcc-14
-#       cd gcc-14
-# 2. checkout the GCC 14 release branch:
+# 1. set up local build variables:
+#       gcc_source=$(realpath $(pwd)/gcc-14)
+#       gcc_build=$(realpath $(pwd)/gcc-build)
+#       gcc_install=$(realpath $(pwd)/gcc-install)
+# 2. clone the git repository to a local directory:
+#       git clone git://gcc.gnu.org/git/gcc.git $gcc_source
+#       cd $gcc_source
+# 3. checkout the GCC 14 release branch:
 #       git checkout releases/gcc-14
-# 3. download prerequisites
+# 4. download prerequisites
 #       ./contrib/download_prerequisites
-# 4. create a local build directory and configure the build:
-#       cd ..
-#       mkdir gcc-build
-#       cd gcc-build
-#       ../gcc-14/configure --prefix=$(pwd)/../gcc-install  --enable-shared \
-#           --disable-werror --disable-bootstrap
-# 5. run the build (takes about 20 minutes):
+# 5. create a local build directory and configure the build:
+#       mkdir $gcc_build
+#       cd $gcc_build
+#       ${gcc_source}/configure --prefix=${gcc_install} --enable-shared --disable-werror \
+#           --disable-bootstrap
+# 6. run the build (takes about 20 minutes):
 #       make -j$(nproc)
-# 6. install:
+# 7. install:
 #       make install
-# 7. (optional) update alternatives and set as default compiler:
-#       cd ../gcc-install/bin
-#       sudo update-alternatives --install /usr/bin/gcc gcc $(pwd)/gcc 14 \
-#           --slave /usr/bin/g++ g++ $(pwd)/g++ \
-#           --slave /usr/bin/c++ c++ $(pwd)/c++ \
-#           --slave /usr/bin/cpp cpp $(pwd)/cpp \
-#           --slave /usr/bin/gcc-ar gcc-ar $(pwd)/gcc-ar \
-#           --slave /usr/bin/gcc-nm gcc-nm $(pwd)/gcc-nm \
-#           --slave /usr/bin/gcc-ranlib gcc-ranlib $(pwd)/gcc-ranlib \
-#           --slave /usr/bin/gcov gcov $(pwd)/gcov
+# 8. (optional) update alternatives and set as default compiler:
+#       sudo update-alternatives --install /usr/bin/gcc gcc ${gcc_install}/bin/gcc 14 \
+#           --slave /usr/bin/g++ g++ ${gcc_install}/bin/g++ \
+#           --slave /usr/bin/c++ c++ ${gcc_install}/bin/c++ \
+#           --slave /usr/bin/cpp cpp ${gcc_install}/bin/cpp \
+#           --slave /usr/bin/gcc-ar gcc-ar ${gcc_install}/bin/gcc-ar \
+#           --slave /usr/bin/gcc-nm gcc-nm ${gcc_install}/bin/gcc-nm \
+#           --slave /usr/bin/gcc-ranlib gcc-ranlib ${gcc_install}/bin/gcc-ranlib \
+#           --slave /usr/bin/gcov gcov ${gcc_install}/bin/gcov
 #       sudo update-alternatives --config gcc
-# 8. Check the version:
+# 9. Check the version:
 #       gcc --version
 
 
 
 # Clang:
 
+# 1. set up local build variables:
+#       clang_source=$(realpath $(pwd)/clang-18)
+#       clang_build=$(realpath $(pwd)/clang-build)
+#       clang_install=$(realpath $(pwd)/clang-install)
 # 1. clone the git repository to a local directory:
-#       git clone https://github.com/llvm/llvm-project.git clang-18
-#       cd clang-18
+#       git clone https://github.com/llvm/llvm-project.git $clang_source
+#       cd $clang_source
 # 2. checkout the clang 18 release branch:
 #       git checkout release/18.x
 # 3. create a local build directory and configure the build:
-#       cd ..
-#       mkdir clang-build
-#       cd clang-build
+#       mkdir $clang_build
+#       cd $clang_build
 #       cmake -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_BUILD_TYPE=Release -G "Unix Makefiles" \
-#           -DCMAKE_INSTALL_PREFIX=$(pwd)/../clang-install -DBUILD_SHARED_LIBS=ON \
-#           ../clang-18/llvm
+#           -DCMAKE_INSTALL_PREFIX=${clang_install} -DBUILD_SHARED_LIBS=ON \
+#           ${clang_source}/llvm
 # 4. run the build (takes about 30 minutes):
 #       make -j$(nproc)
 # 5. install:
 #       make install
 # 6. (optional) update alternatives and set as default compiler:
-#       cd ../clang-install/bin
-#       sudo update-alternatives --install /usr/bin/clang clang $(pwd)/clang 18 \
-#           --slave /usr/bin/clang++ clang++ $(pwd)/clang++ \
-#           --slave /usr/bin/clang-cpp clang-cpp $(pwd)/clang-cpp
+#       sudo update-alternatives --install /usr/bin/clang clang ${clang_install}/bin/clang 18 \
+#           --slave /usr/bin/clang++ clang++ ${clang_install}/bin/clang++ \
+#           --slave /usr/bin/clang-cpp clang-cpp ${clang_install}/bin/clang-cpp
 #       sudo update-alternatives --config clang
 # 7. Check the version:
 #       clang --version
@@ -96,45 +100,45 @@ from bertrand import Extension, BuildExt
 # as well to prevent any ABI incompatibilities and get the best possible performance.
 # Here's how to do that:
 #
-# 1. clone the git repository to a local directory:
-#       git clone https://github.com/python/cpython.git python-3.12
-#       cd python-3.12
-# 2. checkout the latest release branch:
+# 1. set up local build variables:
+#       python_source=$(realpath $(pwd)/python-3.12)
+#       python_build=$(realpath $(pwd)/python-build)
+#       python_install=$(realpath $(pwd)/python-install)
+#
+#   if building with gcc:
+#       cpp_libs=$(gcc -print-search-dirs | grep 'libraries' | sed 's/libraries: =//')
+#
+#   if building with clang:
+#       cpp_libs=$(clang -print-search-dirs | grep 'libraries' | sed 's/libraries: =//')
+#
+# 2. clone the git repository to a local directory:
+#       git clone https://github.com/python/cpython.git $python_source
+#       cd $python_source
+# 3. checkout the latest release branch:
 #       git checkout 3.12
-# 3. download prerequisites and install dependencies
+# 4. download prerequisites and install dependencies
 #       sudo apt-get install build-essential gdb lcov pkg-config \
 #         libbz2-dev libffi-dev libgdbm-dev libgdbm-compat-dev liblzma-dev \
 #         libncurses5-dev libreadline6-dev libsqlite3-dev libssl-dev \
 #         lzma lzma-dev tk-dev uuid-dev zlib1g-dev
-# 4. create a local build directory and configure the build:
-#       cd ..
-#       mkdir python-build
-#       cd python-build
-#
-#   NOTE: if building with gcc:
-#       gcc_libs=$(gcc -print-search-dirs | grep 'libraries' | sed 's/libraries: =//')
-#       ../python-3.12/configure --enable-shared --enable-optimizations --with-lto \
-#           --with-ensurepip=upgrade --prefix=$(pwd)/../python-install \
-#           LDFLAGS="-Wl, -rpath=$(pwd)/../python-install/lib:$gcc_libs"
-#
-#   NOTE: if building with clang:
-#       clang_libs=$(clang -print-search-dirs | grep 'libraries' | sed 's/libraries: =//')
-#       ../python-3.12/configure --enable-shared --enable-optimizations --with-lto \
-#           --with-ensurepip=upgrade --prefix=$(pwd)/../python-install \
-#           LDFLAGS="-Wl, -rpath=$(pwd)/../python-install/lib:$clang_libs"
-#
-# 5. run the build (takes about 30 minutes):
+# 5. create a local build directory and configure the build:
+#       mkdir $python_build
+#       cd $python_build
+#       ${python_source}/configure --enable-shared --enable-optimizations --with-lto \
+#           --with-ensurepip=upgrade --prefix=${python_install} \
+#           LDFLAGS="-Wl,-rpath=${python_install}/lib:${cpp_libs}" \
+#           CFLAGS="-DBERTRAND_TRACEBACK_EXCLUDE_PYTHON=${python_source}:${python_build}:${python_install}"
+# 6. run the build (takes about 30 minutes):
 #       make -s -j$(nproc)
-# 6. install:
+# 7. install:
 #       make install
-# 7. (optional) update alternatives and set as default Python:
-#       cd ../python-install/bin
-#       sudo update-alternatives --install /usr/bin/python python $(pwd)/python3.12 312 \
-#           --slave /usr/bin/python3 python3 $(pwd)/python3.12 \
-#           --slave /usr/bin/pip pip $(pwd)/pip3.12 \
-#           --slave /usr/bin/pip3 pip3 $(pwd)/pip3.12
+# 8. (optional) update alternatives and set as default Python:
+#       sudo update-alternatives --install /usr/bin/python python ${python_install}/bin/python3.12 312 \
+#           --slave /usr/bin/python3 python3 ${python_install}/bin/python3.12 \
+#           --slave /usr/bin/pip pip ${python_install}/bin/pip3.12 \
+#           --slave /usr/bin/pip3 pip3 ${python_install}/bin/pip3.12
 #       sudo update-alternatives --config python
-# 8. Check the version:
+# 10. Check the version:
 #       python --version
 
 

@@ -231,11 +231,6 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
-    /* Implicitly convert a Python float into a C++ float. */
-    inline operator double() const {
-        return PyFloat_AS_DOUBLE(this->ptr());
-    }
-
     /* Get the zero singleton. */
     inline static const Float& zero() {
         static const Float val = 0.0;
@@ -254,6 +249,16 @@ public:
         return val;
     }
 
+};
+
+
+/* Implicitly convert py::Float to any C++ floating point type. */
+template <std::derived_from<Float> Self, std::floating_point T>
+struct __cast__<Self, T> {
+    static constexpr bool enable = true;
+    static T cast(const Self& self) {
+        return PyFloat_AS_DOUBLE(self.ptr());
+    }
 };
 
 

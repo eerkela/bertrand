@@ -230,11 +230,20 @@ namespace impl {
                         "failed to create globals dictionary"
                     );
                 }
-                PyCodeObject* code = PyCode_NewEmpty(
-                    filename.c_str(),
-                    funcname.c_str(),
-                    lineno
-                );
+                PyCodeObject* code;
+                if (is_inline) {
+                    code = PyCode_NewEmpty(
+                        filename.c_str(),
+                        ("[inline] " + funcname).c_str(),
+                        lineno
+                    );
+                } else {
+                    code = PyCode_NewEmpty(
+                        filename.c_str(),
+                        funcname.c_str(),
+                        lineno
+                    );
+                }
                 if (code == nullptr) {
                     Py_DECREF(globals);
                     throw std::runtime_error(
@@ -279,6 +288,52 @@ namespace impl {
 
     };
 
+    #define STR_EXPAND(tok) #tok
+    #define STR(tok) STR_EXPAND(tok)
+
+    /* NOTE: passing `-DBERTRAND_TRACEBACK_EXCLUDE=...` (where `...` is a
+    colon-separated list of paths - e.g. 'some/local/dir:another/local/dir') causes
+    bertrand's traceback system to ignore certain directories when building mixed
+    Python/C++ tracebacks.  This can be useful for excluding frames related to the
+    Python or C++ standard libraries, or internal binding code that would otherwise
+    clutter exception tracebacks.  Note that the paths can match anywhere within a
+    filename, so they can refer to relative paths as well as absolute paths.
+
+    If compiling from Python, this flag can be set through the `bertrand.Extension`
+    setuptools hook.  If compiling from the command line, the flag can be passed
+    directly using the above syntax.  Some base paths are set statically during the
+    build process for the Python interpreter itself, which are automatically appended to
+    the list of ignored paths.  Additional paths can be appended at runtime by
+    modifying this variable. */
+    static std::vector<std::string> traceback_exclude_paths = [] {
+        std::vector<std::string> result;
+        std::string path;
+        #ifdef BERTRAND_TRACEBACK_EXCLUDE_PYTHON
+            std::istringstream exclude_base(STR(BERTRAND_TRACEBACK_EXCLUDE_PYTHON));
+            while (std::getline(exclude_base, path, ':')) {
+                if (!path.empty()) {
+                    result.push_back(path);
+                }
+            }
+        #else
+            result.push_back("usr/bin/python");
+            result.push_back("usr/lib/python");
+        #endif
+        #ifdef BERTRAND_TRACEBACK_EXCLUDE
+            std::istringstream exclude(STR(BERTRAND_TRACEBACK_EXCLUDE));
+            while (std::getline(exclude, path, ':')) {
+                if (!path.empty()) {
+                    result.push_back(path);
+                }
+            }
+            return paths;
+        #endif
+        return result;
+    }();
+
+    #undef STR
+    #undef STR_EXPAND
+
     /* A language-agnostic stack trace that is attached to all Python/C++ errors. */
     class StackTrace {
         mutable std::string string;
@@ -288,10 +343,14 @@ namespace impl {
         /* Return true if a C++ stack frame does not refer to an internal frame within
         the Python interpreter, pybind11 bindings, or the C++ standard library. */
         static bool ignore(const cpptrace::stacktrace_frame& frame) {
+            for (const std::string& path : traceback_exclude_paths) {
+                if (frame.filename.find(path) != std::string::npos) {
+                    return true;
+                }
+            }
             return (
-                frame.filename.find("usr/bin/python") != std::string::npos ||
-                frame.symbol.find("pybind11::") != std::string::npos ||
-                frame.symbol.starts_with("__")
+                frame.symbol.starts_with("__") ||
+                frame.symbol.find("pybind11::") != std::string::npos
             );
         }
 
