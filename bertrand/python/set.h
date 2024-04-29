@@ -339,7 +339,7 @@ struct __ixor__<L, R>                                           : Returns<L&> {}
 template <std::derived_from<impl::ISetTag> Self, impl::cpp_like T>
     requires (impl::anyset_like<T>)
 struct __cast__<Self, T> : Returns<T> {
-    static T cast(const Self& self) {
+    static T operator()(const Self& self) {
         T result;
         for (auto&& item : self) {
             result.insert(item.template cast<typename T::value_type>());

@@ -232,7 +232,7 @@ public:
 
 template <std::derived_from<Complex> Self, typename T>
 struct __cast__<Self, std::complex<T>> : Returns<std::complex<T>> {
-    static std::complex<T> cast(const Self& self) {
+    static std::complex<T> operator()(const Self& self) {
         Py_complex complex = PyComplex_AsCComplex(self.ptr());
         if (complex.real == -1.0 && PyErr_Occurred()) {
             Exception::from_python();

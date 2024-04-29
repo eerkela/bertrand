@@ -388,7 +388,7 @@ public:
     and avoidable. */
     template <typename Self, typename T> requires (__cast__<Self, T>::enable)
     operator T(this const Self& self) {
-        return __cast__<Self, T>::cast(self);
+        return __cast__<Self, T>::operator()(self);
     }
 
     /* Explicit conversion operator.  This defers to implicit conversions where
@@ -579,7 +579,7 @@ template <impl::not_proxy_like T>
         !std::derived_from<T, Object>
     )
 struct __cast__<Object, T> : Returns<T> {
-    static T cast(const Object& self) {
+    static T operator()(const Object& self) {
         try {
             return Handle(self.ptr()).template cast<T>();
         } catch (...) {
@@ -638,75 +638,6 @@ Return impl::ops::sequence::mul<Return, L, R>::operator()(const L& lhs, const R&
         }
         return reinterpret_steal<Return>(result);
     }
-}
-
-
-namespace impl {
-
-    /* Mixin holding operator overloads for types implementing the sequence protocol,
-    which makes them both concatenatable and repeatable. */
-    template <typename Derived>
-    class SequenceOps {
-
-        inline Derived& self() { return static_cast<Derived&>(*this); }
-        inline const Derived& self() const { return static_cast<const Derived&>(*this); }
-
-    public:
-        /* Equivalent to Python `sequence.count(value)`, but also takes optional
-        start/stop indices similar to `sequence.index()`. */
-        inline Py_ssize_t count(
-            const Object& value,
-            Py_ssize_t start = 0,
-            Py_ssize_t stop = -1
-        ) const {
-            if (start != 0 || stop != -1) {
-                PyObject* slice = PySequence_GetSlice(self().ptr(), start, stop);
-                if (slice == nullptr) {
-                    Exception::from_python();
-                }
-                Py_ssize_t result = PySequence_Count(slice, value.ptr());
-                Py_DECREF(slice);
-                if (result == -1 && PyErr_Occurred()) {
-                    Exception::from_python();
-                }
-                return result;
-            } else {
-                Py_ssize_t result = PySequence_Count(self().ptr(), value.ptr());
-                if (result == -1 && PyErr_Occurred()) {
-                    Exception::from_python();
-                }
-                return result;
-            }
-        }
-
-        /* Equivalent to Python `s.index(value[, start[, stop]])`. */
-        inline Py_ssize_t index(
-            const Object& value,
-            Py_ssize_t start = 0,
-            Py_ssize_t stop = -1
-        ) const {
-            if (start != 0 || stop != -1) {
-                PyObject* slice = PySequence_GetSlice(self().ptr(), start, stop);
-                if (slice == nullptr) {
-                    Exception::from_python();
-                }
-                Py_ssize_t result = PySequence_Index(slice, value.ptr());
-                Py_DECREF(slice);
-                if (result == -1 && PyErr_Occurred()) {
-                    Exception::from_python();
-                }
-                return result;
-            } else {
-                Py_ssize_t result = PySequence_Index(self().ptr(), value.ptr());
-                if (result == -1 && PyErr_Occurred()) {
-                    Exception::from_python();
-                }
-                return result;
-            }
-        }
-
-    };
-
 }
 
 

@@ -28,6 +28,9 @@ namespace impl {
     class IBytes : public Object, public IBytesTag {
         using Base = Object;
 
+        Derived& self() { return static_cast<Derived&>(*this); }
+        const Derived& self() const { return static_cast<const Derived&>(*this); }
+
     public:
         using Base::Base;
 
@@ -48,11 +51,28 @@ namespace impl {
 
         /* Equivalent to Python `bytes.count(sub[, start[, end]])`. */
         inline Py_ssize_t count(
-            const Derived& sub,
+            const Derived& value,
             Py_ssize_t start = 0,
-            Py_ssize_t end = -1
+            Py_ssize_t stop = -1
         ) const {
-            return static_cast<size_t>(attr<"count">()(sub, start, end));
+            if (start != 0 || stop != -1) {
+                PyObject* slice = PySequence_GetSlice(self().ptr(), start, stop);
+                if (slice == nullptr) {
+                    Exception::from_python();
+                }
+                Py_ssize_t result = PySequence_Count(slice, value.ptr());
+                Py_DECREF(slice);
+                if (result == -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                return result;
+            } else {
+                Py_ssize_t result = PySequence_Count(self().ptr(), value.ptr());
+                if (result == -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                return result;
+            }
         }
 
         /* Equivalent to Python `bytes.decode([encoding[, errors]])`. */
@@ -98,11 +118,28 @@ namespace impl {
 
         /* Equivalent to Python `bytes.index(sub[, start[, end]])`. */
         inline Py_ssize_t index(
-            const Derived& sub,
+            const Derived& value,
             Py_ssize_t start = 0,
-            Py_ssize_t end = -1
+            Py_ssize_t stop = -1
         ) const {
-            return static_cast<size_t>(attr<"index">()(sub, start, end));
+            if (start != 0 || stop != -1) {
+                PyObject* slice = PySequence_GetSlice(self().ptr(), start, stop);
+                if (slice == nullptr) {
+                    Exception::from_python();
+                }
+                Py_ssize_t result = PySequence_Index(slice, value.ptr());
+                Py_DECREF(slice);
+                if (result == -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                return result;
+            } else {
+                Py_ssize_t result = PySequence_Index(self().ptr(), value.ptr());
+                if (result == -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                return result;
+            }
         }
 
         /* Equivalent to Python `bytes.isalnum()`. */
@@ -440,7 +477,7 @@ struct __imul__<L, R>                                           : Returns<L&> {}
 
 
 /* Represents a statically-typed Python `bytes` object in C++. */
-class Bytes : public impl::IBytes<Bytes>, public impl::SequenceOps<Bytes> {
+class Bytes : public impl::IBytes<Bytes> {
     using Base = impl::IBytes<Bytes>;
 
 public:
@@ -594,7 +631,7 @@ namespace ops {
 
 
 /* Represents a statically-typed Python `bytearray` in C++. */
-class ByteArray : public impl::IBytes<ByteArray>, public impl::SequenceOps<ByteArray> {
+class ByteArray : public impl::IBytes<ByteArray> {
     using Base = impl::IBytes<ByteArray>;
 
 public:

@@ -168,7 +168,7 @@ struct __imul__<L, R>                                           : Returns<Str> {
 
 
 /* Represents a statically-typed Python string in C++. */
-class Str : public Object, public impl::SequenceOps<Str> {
+class Str : public Object {
     using Base = Object;
 
 public:
@@ -811,7 +811,7 @@ public:
 /* Implicitly convert a py::Str into a C++ std::string. */
 template <std::derived_from<Str> Self>
 struct __cast__<Self, std::string> : Returns<std::string> {
-    static std::string cast(const Self& self) {
+    static std::string operator()(const Self& self) {
         Py_ssize_t length;
         const char* result = PyUnicode_AsUTF8AndSize(self.ptr(), &length);
         if (result == nullptr) {

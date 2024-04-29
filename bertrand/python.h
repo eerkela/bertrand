@@ -18,7 +18,7 @@
 #include "python/bytes.h"
 #include "python/func.h"
 // #include "python/datetime.h"
-// #include "python/math.h"
+#include "python/math.h"
 #include "python/type.h"
 
 #include "regex.h"

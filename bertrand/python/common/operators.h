@@ -853,7 +853,7 @@ struct __cast__ { static constexpr bool enable = false; };
 /* Implicitly convert all objects to pybind11::handle. */
 template <typename Self>
 struct __cast__<Self, pybind11::handle> : Returns<pybind11::handle> {
-    static pybind11::handle cast(const Self& self) {
+    static pybind11::handle operator()(const Self& self) {
         return self.ptr();
     }
 };
@@ -862,7 +862,7 @@ struct __cast__<Self, pybind11::handle> : Returns<pybind11::handle> {
 /* Implicitly convert all objects to pybind11::object */
 template <typename Self>
 struct __cast__<Self, pybind11::object> : Returns<pybind11::object> {
-    static pybind11::object cast(const Self& self) {
+    static pybind11::object operator()(const Self& self) {
         return pybind11::reinterpret_borrow<pybind11::object>(self.ptr());
     }
 };
@@ -871,7 +871,7 @@ struct __cast__<Self, pybind11::object> : Returns<pybind11::object> {
 /* Implicitly convert all objects to equivalent pybind11 type. */
 template <typename Self, impl::pybind11_like T> requires (Self::template check<T>())
 struct __cast__<Self, T> : Returns<T> {
-    static T cast(const Self& self) {
+    static T operator()(const Self& self) {
         return pybind11::reinterpret_borrow<T>(self.ptr());
     }
 };
@@ -880,7 +880,7 @@ struct __cast__<Self, T> : Returns<T> {
 /* Implicitly convert all objects to one of their subclasses by applying a type check. */
 template <typename Self, std::derived_from<Self> T>
 struct __cast__<Self, T> : Returns<T> {
-    static T cast(const Self& self) {
+    static T operator()(const Self& self) {
         if (!T::check(self)) {
             throw impl::noconvert<T>(self.ptr());
         }
@@ -894,8 +894,8 @@ moving the result into a managed buffer. */
 template <typename Self, impl::proxy_like T>
     requires (__cast__<Self, impl::unwrap_proxy<T>>::enable)
 struct __cast__<Self, T> : Returns<T> {
-    static T cast(const Self& self) {
-        return T(__cast__<Self, impl::unwrap_proxy<T>>::cast(self));
+    static T operator()(const Self& self) {
+        return T(__cast__<Self, impl::unwrap_proxy<T>>::operator()(self));
     }
 };
 

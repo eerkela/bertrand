@@ -911,7 +911,7 @@ public:
 /* Implicitly convert a py::Dict into a C++ mapping type. */
 template <std::derived_from<Dict> Self, impl::cpp_like T> requires (impl::dict_like<T>)
 struct __cast__<Self, T> {
-    static T cast(const Self& self) {
+    static T operator()(const Self& self) {
         T result;
         PyObject* key;
         PyObject* value;

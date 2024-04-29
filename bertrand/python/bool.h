@@ -387,7 +387,7 @@ static const Bool False = reinterpret_borrow<Bool>(Py_False);
 
 template <std::derived_from<Bool> Self>
 struct __cast__<Self, bool> : Returns<bool> {
-    static bool cast(const Self& self) {
+    static bool operator()(const Self& self) {
         int result = PyObject_IsTrue(self.ptr());
         if (result == -1) {
             Exception::from_python();

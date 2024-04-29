@@ -80,7 +80,7 @@ Tuple(const std::initializer_list<T>&) -> Tuple<Object>;
 
 /* Represents a statically-typed Python tuple in C++. */
 template <typename Val>
-class Tuple : public Object, public impl::SequenceOps<Tuple<Val>>, public impl::TupleTag {
+class Tuple : public Object, public impl::TupleTag {
     using Base = Object;
     static_assert(
         std::derived_from<Val, Object>,
@@ -484,9 +484,9 @@ public:
         }
     }
 
-    /////////////////////////////////
-    ////    CPYTHON INTERFACE    ////
-    /////////////////////////////////
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
 
     // TODO: from_args() and to_args() need special handling for value type.  Maybe they
     // can be rolled into the constructor?
@@ -517,6 +517,59 @@ public:
         PyObject* prev = PyTuple_GET_ITEM(this->ptr(), index);
         PyTuple_SET_ITEM(this->ptr(), index, Py_XNewRef(value.ptr()));
         Py_XDECREF(prev);
+    }
+
+    /* Equivalent to Python `tuple.count(value)`, but also takes optional start/stop
+    indices similar to `tuple.index()`. */
+    inline Py_ssize_t count(
+        const value_type& value,
+        Py_ssize_t start = 0,
+        Py_ssize_t stop = -1
+    ) const {
+        if (start != 0 || stop != -1) {
+            PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
+            if (slice == nullptr) {
+                Exception::from_python();
+            }
+            Py_ssize_t result = PySequence_Count(slice, value.ptr());
+            Py_DECREF(slice);
+            if (result == -1 && PyErr_Occurred()) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            Py_ssize_t result = PySequence_Count(this->ptr(), value.ptr());
+            if (result == -1 && PyErr_Occurred()) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    }
+
+    /* Equivalent to Python `tuple.index(value[, start[, stop]])`. */
+    inline Py_ssize_t index(
+        const value_type& value,
+        Py_ssize_t start = 0,
+        Py_ssize_t stop = -1
+    ) const {
+        if (start != 0 || stop != -1) {
+            PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
+            if (slice == nullptr) {
+                Exception::from_python();
+            }
+            Py_ssize_t result = PySequence_Index(slice, value.ptr());
+            Py_DECREF(slice);
+            if (result == -1 && PyErr_Occurred()) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            Py_ssize_t result = PySequence_Index(this->ptr(), value.ptr());
+            if (result == -1 && PyErr_Occurred()) {
+                Exception::from_python();
+            }
+            return result;
+        }
     }
 
     /////////////////////////
@@ -581,7 +634,7 @@ template <std::derived_from<impl::TupleTag> Self, typename First, typename Secon
         std::convertible_to<typename Self::value_type, Second>
     )
 struct __cast__<Self, std::pair<First, Second>> : Returns<std::pair<First, Second>> {
-    static std::pair<First, Second> cast(const Self& self) {
+    static std::pair<First, Second> operator()(const Self& self) {
         if (self.size() != 2) {
             throw IndexError(
                 "conversion to std::pair requires tuple of size 2, not " +
@@ -602,7 +655,7 @@ the member types. */
 template <std::derived_from<impl::TupleTag> Self, typename... Args>
     requires (std::convertible_to<typename Self::value_type, Args> && ...)
 struct __cast__<Self, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
-    static std::tuple<Args...> cast(const Self& self) {
+    static std::tuple<Args...> operator()(const Self& self) {
         if (self.size() != sizeof...(Args)) {
             throw IndexError(
                 "conversion to std::tuple requires tuple of size " +
@@ -624,7 +677,7 @@ specified length, and its contents are implicitly convertible to the array type.
 template <std::derived_from<impl::TupleTag> Self, typename T, size_t N>
     requires (std::convertible_to<typename Self::value_type, T>)
 struct __cast__<Self, std::array<T, N>> : Returns<std::array<T, N>> {
-    static std::array<T, N> cast(const Self& self) {
+    static std::array<T, N> operator()(const Self& self) {
         if (N != self.size()) {
             throw IndexError(
                 "conversion to std::array requires tuple of size " +
@@ -645,7 +698,7 @@ the vector type. */
 template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
     requires (std::convertible_to<typename Self::value_type, T>)
 struct __cast__<Self, std::vector<T, Args...>> : Returns<std::vector<T, Args...>> {
-    static std::vector<T, Args...> cast(const Self& self) {
+    static std::vector<T, Args...> operator()(const Self& self) {
         std::vector<T, Args...> result;
         result.reserve(self.size());
         for (const auto& item : self) {
@@ -661,7 +714,7 @@ the list type. */
 template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
     requires (std::convertible_to<typename Self::value_type, T>)
 struct __cast__<Self, std::list<T, Args...>> : Returns<std::list<T, Args...>> {
-    static std::list<T, Args...> cast(const Self& self) {
+    static std::list<T, Args...> operator()(const Self& self) {
         std::list<T, Args...> result;
         for (const auto& item : self) {
             result.push_back(impl::implicit_cast<T>(item));
@@ -676,7 +729,7 @@ convertible to the list type. */
 template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
     requires (std::convertible_to<typename Self::value_type, T>)
 struct __cast__<Self, std::forward_list<T, Args...>> : Returns<std::forward_list<T, Args...>> {
-    static std::forward_list<T, Args...> cast(const Self& self) {
+    static std::forward_list<T, Args...> operator()(const Self& self) {
         std::forward_list<T, Args...> result;
         auto it = self.rbegin();
         auto end = self.rend();
@@ -694,7 +747,7 @@ the deque type. */
 template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
     requires (std::convertible_to<typename Self::value_type, T>)
 struct __cast__<Self, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> {
-    static std::deque<T, Args...> cast(const Self& self) {
+    static std::deque<T, Args...> operator()(const Self& self) {
         std::deque<T, Args...> result;
         for (const auto& item : self) {
             result.push_back(impl::implicit_cast<T>(item));

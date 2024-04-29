@@ -536,7 +536,7 @@ public:
 /* Implicitly convert py::Int to any C++ integer type. */
 template <std::derived_from<Int> Self, std::integral T>
 struct __cast__<Self, T> : Returns<T> {
-    static T cast(const Self& self) {
+    static T operator()(const Self& self) {
         if constexpr (sizeof(T) <= sizeof(long)) {
             if constexpr (std::signed_integral<T>) {
                 return PyLong_AsLong(self.ptr());
@@ -557,7 +557,7 @@ struct __cast__<Self, T> : Returns<T> {
 /* Implicitly promote py::Int to any C++ float type. */
 template <std::derived_from<Int> Self, std::floating_point T>
 struct __cast__<Self, T> : Returns<T> {
-    static T cast(const Self& self) {
+    static T operator()(const Self& self) {
         return PyLong_AsDouble(self.ptr());
     }
 };

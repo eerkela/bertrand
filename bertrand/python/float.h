@@ -255,7 +255,7 @@ public:
 /* Implicitly convert py::Float to any C++ floating point type. */
 template <std::derived_from<Float> Self, std::floating_point T>
 struct __cast__<Self, T> : Returns<T> {
-    static T cast(const Self& self) {
+    static T operator()(const Self& self) {
         return PyFloat_AS_DOUBLE(self.ptr());
     }
 };
