@@ -73,7 +73,7 @@ public:
     Type(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Type(const detail::accessor<Policy>& accessor) :
+    Type(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Type>(accessor).release(), stolen_t{})
     {}
 
@@ -92,11 +92,6 @@ public:
     /////////////////////////////
     ////    C++ INTERFACE    ////
     /////////////////////////////
-
-    /* Implicitly convert to pybind11::type. */
-    inline operator pybind11::type() const {
-        return reinterpret_borrow<pybind11::type>(m_ptr);
-    }
 
     /* Get the Python type of a registered pybind11 extension type. */
     template <typename T>
@@ -466,7 +461,7 @@ public:
     Super(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Super(const detail::accessor<Policy>& accessor) :
+    Super(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Super>(accessor).release(), stolen_t{})
     {}
 

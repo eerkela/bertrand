@@ -344,7 +344,7 @@ namespace impl {
         the Python interpreter, pybind11 bindings, or the C++ standard library. */
         static bool ignore(const cpptrace::stacktrace_frame& frame) {
             for (const std::string& path : traceback_exclude_paths) {
-                if (frame.filename.find(path) != std::string::npos) {
+                if (frame.filename.starts_with(path)) {
                     return true;
                 }
             }
@@ -355,10 +355,8 @@ namespace impl {
         }
 
     public:
-        // NOTE: the stack is stored in proper execution order
-        // (i.e. [head] most recent -> least recent [tail]).  This is reversed from
-        // both Python and cpptrace, which report tracebacks in the opposite order.
-        std::deque<StackFrame> stack;
+        // stack is stored in proper execution order
+        std::deque<StackFrame> stack;  // [head] least recent -> most recent [tail]
 
         BERTRAND_NOINLINE explicit StackTrace(
             size_t skip = 0,

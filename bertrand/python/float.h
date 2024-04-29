@@ -172,7 +172,7 @@ public:
     Float(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Float(const detail::accessor<Policy>& accessor) :
+    Float(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Float>(accessor).release(), stolen_t{})
     {}
 
@@ -254,8 +254,7 @@ public:
 
 /* Implicitly convert py::Float to any C++ floating point type. */
 template <std::derived_from<Float> Self, std::floating_point T>
-struct __cast__<Self, T> {
-    static constexpr bool enable = true;
+struct __cast__<Self, T> : Returns<T> {
     static T cast(const Self& self) {
         return PyFloat_AS_DOUBLE(self.ptr());
     }

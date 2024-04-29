@@ -111,22 +111,30 @@ void run() {
     // py::print(a, b, c, d);
 
 
-    // auto x = py::arg("x") = py::Object(1);
 
-    // std::cout << cpptrace::generate_trace();
-    // std::cout << std::stacktrace::current();
-
-    // static const bertrand::Regex re("(?P<group>hello)");
-    // std::cout << re.match("hello, world!") << std::endl;
-
-    // std::cout << "abc\n";
-
+    // py::Int x = 1;
+    // py::Int y = 2;
+    // py::print(x < y);
+    // py::print(x < 2);
+    // py::print(1 < y);
+    // py::print(1 < 2);
+    // py::print(x + 2);
 
 
-    py::Float x = 1;
-    py::Float y = 2.5;
-    int z = static_cast<int>(x + y);
-    py::print(z);
+
+    py::Str x = "abc";
+    py::print(py::hash(x));
+
+
+
+
+
+
+
+    // py::Float x = 1;
+    // py::Float y = 2.5;
+    // int z = static_cast<int>(x + y);
+    // py::print(z);
 
 
 

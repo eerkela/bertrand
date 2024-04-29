@@ -19,6 +19,8 @@ namespace py {
 // TODO: enable __pow__ and overload operator_pow() to account for negative integer
 // exponents.  This just delegates to parent implementation, but sets a different
 // return type before doing so.
+// -> Can't change the return type based on a runtime condition, so this always needs
+// to return a float.
 
 
 template <>
@@ -407,7 +409,7 @@ public:
     Int(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Int(const detail::accessor<Policy>& accessor) :
+    Int(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Int>(accessor).release(), stolen_t{})
     {}
 
@@ -510,30 +512,6 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
-    /* Implicitly convert a Python int into a C++ integer. */
-    template <impl::cpp_like T> requires (impl::int_like<T>)
-    inline operator T() const {
-        if constexpr (sizeof(T) <= sizeof(long)) {
-            if constexpr (std::signed_integral<T>) {
-                return PyLong_AsLong(m_ptr);
-            } else {
-                return PyLong_AsUnsignedLong(m_ptr);
-            }
-        } else {
-            if constexpr (std::signed_integral<T>) {
-                return PyLong_AsLongLong(m_ptr);
-            } else {
-                return PyLong_AsUnsignedLongLong(m_ptr);
-            }
-        }
-    }
-
-    /* Implicitly convert a Python int into a C++ float. */
-    template <std::floating_point T>
-    inline operator T() const {
-        return PyLong_AsDouble(m_ptr);
-    }
-
     /* Get a static reference to the zero singleton. */
     static const Int& zero() {
         static const Int zero = 0;
@@ -552,6 +530,36 @@ public:
         return two;
     }
 
+};
+
+
+/* Implicitly convert py::Int to any C++ integer type. */
+template <std::derived_from<Int> Self, std::integral T>
+struct __cast__<Self, T> : Returns<T> {
+    static T cast(const Self& self) {
+        if constexpr (sizeof(T) <= sizeof(long)) {
+            if constexpr (std::signed_integral<T>) {
+                return PyLong_AsLong(self.ptr());
+            } else {
+                return PyLong_AsUnsignedLong(self.ptr());
+            }
+        } else {
+            if constexpr (std::signed_integral<T>) {
+                return PyLong_AsLongLong(self.ptr());
+            } else {
+                return PyLong_AsUnsignedLongLong(self.ptr());
+            }
+        }
+    }
+};
+
+
+/* Implicitly promote py::Int to any C++ float type. */
+template <std::derived_from<Int> Self, std::floating_point T>
+struct __cast__<Self, T> : Returns<T> {
+    static T cast(const Self& self) {
+        return PyLong_AsDouble(self.ptr());
+    }
 };
 
 

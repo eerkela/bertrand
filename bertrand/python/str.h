@@ -199,7 +199,7 @@ public:
     Str(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Str(const detail::accessor<Policy>& accessor) :
+    Str(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Str>(accessor).release(), stolen_t{})
     {}
 
@@ -347,16 +347,6 @@ public:
     /////////////////////////////
     ////    C++ INTERFACE    ////
     /////////////////////////////
-
-    /* Implicitly convert a py::Str into a C++ std::string. */
-    inline operator std::string() const {
-        Py_ssize_t length;
-        const char* result = PyUnicode_AsUTF8AndSize(this->ptr(), &length);
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return {result, static_cast<size_t>(length)};
-    }
 
     /* Get the underlying unicode buffer. */
     inline void* data() const noexcept {
@@ -815,49 +805,73 @@ public:
     /* Equivalent to Python `str.zfill(width)`. */
     inline Str zfill(const Int& width) const;
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
+};
 
-protected:
-    using impl::SequenceOps<Str>::operator_mul;
-    using impl::SequenceOps<Str>::operator_imul;
 
-    template <typename Return, typename Self>
-    inline static size_t operator_len(const Self& self) {
-        return static_cast<size_t>(PyUnicode_GET_LENGTH(self.ptr()));
-    }
-
-    template <typename Return, typename L, typename R>
-    inline static bool operator_contains(const L& self, const R& key) {
-        int result = PyUnicode_Contains(
-            self.ptr(),
-            Object(key).ptr()
-        );
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
-    template <typename Return, typename L, typename R>
-    inline static auto operator_add(const L& lhs, const R& rhs) {
-        PyObject* result = PyUnicode_Concat(
-            Object(lhs).ptr(),
-            Object(rhs).ptr()
-        );
+/* Implicitly convert a py::Str into a C++ std::string. */
+template <std::derived_from<Str> Self>
+struct __cast__<Self, std::string> : Returns<std::string> {
+    static std::string cast(const Self& self) {
+        Py_ssize_t length;
+        const char* result = PyUnicode_AsUTF8AndSize(self.ptr(), &length);
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Return>(result);
+        return {result, static_cast<size_t>(length)};
     }
+};
+
+
+namespace impl {
+namespace ops {
+
+    template <typename Return, std::derived_from<Str> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            return static_cast<size_t>(PyUnicode_GET_LENGTH(self.ptr()));
+        }
+    };
+
+    template <typename Return, std::derived_from<Str> Self, typename Key>
+    struct contains<Return, Self, Key> {
+        static bool operator()(const Self& self, const to_object<Key>& key) {
+            int result = PyUnicode_Contains(self.ptr(), key.ptr());
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    };
 
     template <typename Return, typename L, typename R>
-    inline static void operator_iadd(L& lhs, const R& rhs) {
-        lhs = operator_add<Return>(lhs, rhs);
-    }
+        requires (std::derived_from<L, Str> || std::derived_from<R, Str>)
+    struct add<Return, L, R> {
+        static Return operator()(const to_object<L>& lhs, to_object<R>& rhs) {
+            PyObject* result = PyUnicode_Concat(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
 
-};
+    };
+
+    template <typename Return, std::derived_from<Str> L, typename R>
+    struct iadd<Return, L, R> {
+        static void operator()(L& lhs, const R& rhs) {
+            lhs = add<Return, L, R>::operator()(lhs, rhs);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, Str> || std::derived_from<R, Str>)
+    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
+
+    template <typename Return, std::derived_from<Str> L, typename R>
+    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
+
+}
+}
 
 
 }  // namespace py

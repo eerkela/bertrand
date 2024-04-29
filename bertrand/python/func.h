@@ -299,7 +299,7 @@ public:
     Code(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Code(const detail::accessor<Policy>& accessor) :
+    Code(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Code>(accessor).release(), stolen_t{})
     {}
 
@@ -536,7 +536,7 @@ public:
     Frame(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Frame(const detail::accessor<Policy>& accessor) :
+    Frame(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Frame>(accessor).release(), stolen_t{})
     {}
 
@@ -760,7 +760,7 @@ public:
     Function(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Function(const detail::accessor<Policy>& accessor) :
+    Function(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Function>(accessor).release(), stolen_t{})
     {}
 
@@ -1071,7 +1071,7 @@ public:
     ClassMethod(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    ClassMethod(const detail::accessor<Policy>& accessor) :
+    ClassMethod(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<ClassMethod>(accessor).release(), stolen_t{})
     {}
 
@@ -1142,7 +1142,7 @@ public:
     StaticMethod(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    StaticMethod(const detail::accessor<Policy>& accessor) :
+    StaticMethod(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<StaticMethod>(accessor).release(), stolen_t{})
     {}
 
@@ -1227,7 +1227,7 @@ public:
     Property(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Property(const detail::accessor<Policy>& accessor) :
+    Property(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Property>(accessor).release(), stolen_t{})
     {}
 

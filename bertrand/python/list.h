@@ -97,6 +97,22 @@ class List : public Object, public impl::SequenceOps<List>, public impl::ListTag
 public:
     static const Type type;
 
+    using size_type = size_t;
+    using difference_type = std::ptrdiff_t;
+    using value_type = Object;  // TODO: CTAD
+    using pointer = value_type*;
+    using const_pointer = const value_type*;
+    using reference = value_type&;
+    using const_reference = const value_type&;
+    using iterator = impl::Iterator<impl::ListIter<value_type>>;
+    using const_iterator = impl::Iterator<impl::ListIter<const value_type>>;
+    using reverse_iterator = impl::ReverseIterator<impl::ListIter<value_type>>;
+    using const_reverse_iterator = impl::ReverseIterator<impl::ListIter<const value_type>>;
+
+    // TODO: When implementing CTAD, check() should account for the member type.
+    // pybind11 types should only be considered matches if and only if the value type
+    // is set to py::Object.
+
     template <typename T>
     static consteval bool check() {
         return impl::list_like<T>;
@@ -122,7 +138,7 @@ public:
     List(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    List(const detail::accessor<Policy>& accessor) :
+    List(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<List>(accessor).release(), stolen_t{})
     {}
 
@@ -264,42 +280,6 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
-    /* Implicitly convert to pybind11::list. */
-    inline operator pybind11::list() const {
-        return reinterpret_borrow<pybind11::list>(m_ptr);
-    }
-
-    /* Implicitly convert a py::List into a C++ std::array.  Throws an error if the
-    list does not have the expected length. */
-    template <typename T, size_t N>
-    inline operator std::array<T, N>() const {
-        if (size() != N) {
-            std::ostringstream msg;
-            msg << "conversion to std::array requires list of size " << N << ", not "
-                << size();
-            throw IndexError(msg.str());
-        }
-        std::array<T, N> result;
-        for (size_t i = 0; i < N; ++i) {
-            result[i] = static_cast<T>(GET_ITEM(i));
-        }
-        return result;
-    }
-
-    /* Implicitly convert a Python list into a C++ vector, deque, list, or forward
-    list. */
-    template <impl::cpp_like T> requires (impl::list_like<T>)
-    inline operator T() const {
-        T result;
-        if constexpr (impl::has_reserve<T>) {
-            result.reserve(size());
-        }
-        for (auto&& item : *this) {
-            result.push_back(static_cast<typename T::value_type>(item));
-        }
-        return result;
-    }
-
     /* Get the underlying PyObject* array. */
     inline PyObject** data() const noexcept {
         return PySequence_Fast_ITEMS(this->ptr());
@@ -422,16 +402,6 @@ public:
 
 protected:
 
-    using impl::SequenceOps<List>::operator_add;
-    using impl::SequenceOps<List>::operator_iadd;
-    using impl::SequenceOps<List>::operator_mul;
-    using impl::SequenceOps<List>::operator_imul;
-
-    template <typename Return, typename Self>
-    inline static size_t operator_len(const Self& self) {
-        return static_cast<size_t>(PyList_GET_SIZE(self.ptr()));
-    }
-
     inline List concat(const std::initializer_list<Object>& items) const {
         PyObject* result = PyList_New(size() + items.size());
         if (result == nullptr) {
@@ -455,38 +425,198 @@ protected:
         }
     }
 
-    template <typename Return, typename Self>
-    inline static auto operator_begin(const Self& self)
-        -> impl::Iterator<impl::ListIter<Return>>
-    {
-        return impl::Iterator<impl::ListIter<Return>>(self, 0);
-    }
-
-    template <typename Return, typename Self>
-    inline static auto operator_end(const Self& self)
-        -> impl::Iterator<impl::ListIter<Return>>
-    {
-        return impl::Iterator<impl::ListIter<Return>>(PyList_GET_SIZE(self.ptr()));
-    }
-
-    template <typename Return, typename Self>
-    inline static auto operator_rbegin(const Self& self)
-        -> impl::ReverseIterator<impl::ListIter<Return>>
-    {
-        return impl::ReverseIterator<impl::ListIter<Return>>(
-            self,
-            PyList_GET_SIZE(self.ptr()) - 1
-        );
-    }
-
-    template <typename Return, typename Self>
-    inline static auto operator_rend(const Self& self)
-        -> impl::ReverseIterator<impl::ListIter<Return>>
-    {
-        return impl::ReverseIterator<impl::ListIter<Return>>(-1);
-    }
-
 };
+
+
+/* Implicitly convert a py::List into a std::pair if and only if the list is of length
+two and its contents are implicitly convertible to the member types. */
+template <std::derived_from<impl::ListTag> Self, typename First, typename Second>
+    requires (
+        std::convertible_to<typename Self::value_type, First> &&
+        std::convertible_to<typename Self::value_type, Second>
+    )
+struct __cast__<Self, std::pair<First, Second>> : Returns<std::pair<First, Second>> {
+    static std::pair<First, Second> cast(const Self& self) {
+        if (self.size() != 2) {
+            throw IndexError(
+                "conversion to std::pair requires list of size 2, not "
+                + std::to_string(self.size())
+            );
+        }
+        return {
+            impl::implicit_cast<First>(self.GET_ITEM(0)),
+            impl::implicit_cast<Second>(self.GET_ITEM(1))
+        };
+    }
+};
+
+
+/* Implicitly convert a py::List into a std::tuple if and only if the list is of length
+equal to the tuple arguments, and its contents are implicitly convertible to the member
+types.  */
+template <std::derived_from<impl::ListTag> Self, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, Args> && ...)
+struct __cast__<Self, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
+    static std::tuple<Args...> cast(const Self& self) {
+        if (self.size() != sizeof...(Args)) {
+            throw IndexError(
+                "conversion to std::tuple requires list of size " +
+                std::to_string(sizeof...(Args)) + ", not " +
+                std::to_string(self.size())
+            );
+        }
+        return [&]<size_t... N>(std::index_sequence<N...>) {
+            return std::make_tuple(
+                impl::implicit_cast<Args>(self.GET_ITEM(N))...
+            );
+        }(std::index_sequence_for<Args...>{});
+    }
+};
+
+
+/* Implicitly convert a py::List into a std::array if and only if the list is of the
+specified length, and its contents are implicitly convertible to the array type. */
+template <std::derived_from<impl::ListTag> Self, typename T, size_t N>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::array<T, N>> : Returns<std::array<T, N>> {
+    static std::array<T, N> cast(const Self& self) {
+        if (self.size() != N) {
+            throw IndexError(
+                "conversion to std::array requires list of size " +
+                std::to_string(N) + ", not " +
+                std::to_string(self.size())
+            );
+        }
+        std::array<T, N> result;
+        for (size_t i = 0; i < N; ++i) {
+            result[i] = impl::implicit_cast<T>(self.GET_ITEM(i));
+        }
+        return result;
+    }
+};
+
+
+/* Implicitly convert a py::List into a std::vector if its contents are convertible to
+the vector type. */
+template <std::derived_from<impl::ListTag> Self, typename T, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::vector<T, Args...>> : Returns<std::vector<T, Args...>> {
+    static std::vector<T, Args...> cast(const Self& self) {
+        std::vector<T, Args...> result;
+        result.reserve(self.size());
+        for (const auto& item : self) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
+
+
+/* Implicitly convert a py::List into a std::list if its contents are convertible to
+the list type. */
+template <std::derived_from<impl::ListTag> Self, typename T, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::list<T, Args...>> : Returns<std::list<T, Args...>> {
+    static std::list<T, Args...> cast(const Self& self) {
+        std::list<T, Args...> result;
+        for (const auto& item : self) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
+
+
+/* Implicitly convert a py::List into a std::forward_list if its contents are
+convertible to the list type. */
+template <std::derived_from<impl::ListTag> Self, typename T, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::forward_list<T, Args...>> : Returns<std::forward_list<T, Args...>> {
+    static std::forward_list<T, Args...> cast(const Self& self) {
+        std::forward_list<T, Args...> result;
+        auto it = self.rbegin();
+        auto end = self.rend();
+        while (it != end) {
+            result.push_front(impl::implicit_cast<T>(*it));
+            ++it;
+        }
+        return result;
+    }
+};
+
+
+/* Implicitly convert a py::List into a std::deque if its contents are convertible to
+the deque type. */
+template <std::derived_from<impl::ListTag> Self, typename T, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> {
+    static std::deque<T, Args...> cast(const Self& self) {
+        std::deque<T, Args...> result;
+        for (const auto& item : self) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
+
+
+namespace impl {
+namespace ops {
+
+    template <typename Return, std::derived_from<ListTag> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            return PyList_GET_SIZE(self.ptr());
+        }
+    };
+
+    template <typename Return, std::derived_from<ListTag> Self>
+    struct begin<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::ListIter<Return>>(self, 0);
+        }
+    };
+
+    template <typename Return, std::derived_from<ListTag> Self>
+    struct end<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::ListIter<Return>>(PyList_GET_SIZE(self.ptr()));
+        }
+    };
+
+    template <typename Return, std::derived_from<ListTag> Self>
+    struct rbegin<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::ListIter<Return>>(
+                self,
+                PyList_GET_SIZE(self.ptr()) - 1
+            );
+        }
+    };
+
+    template <typename Return, std::derived_from<ListTag> Self>
+    struct rend<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::ListIter<Return>>(-1);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, ListTag> || std::derived_from<R, ListTag>)
+    struct add<Return, L, R> : sequence::add<Return, L, R> {};
+
+    template <typename Return, std::derived_from<ListTag> L, typename R>
+    struct iadd<Return, L, R> : sequence::iadd<Return, L, R> {};
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, ListTag> || std::derived_from<R, ListTag>)
+    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
+
+    template <typename Return, std::derived_from<ListTag> L, typename R>
+    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
+
+}
+}
 
 
 }  // namespace py

@@ -357,12 +357,6 @@ namespace impl {
         { t.reserve(n) } -> std::same_as<void>;
     };
 
-    // NOTE: decay is necessary to treat `const char[N]` like `const char*`
-    template <typename T>
-    concept is_hashable = requires(T&& t) {
-        { std::hash<std::decay_t<T>>{}(std::forward<T>(t)) } -> std::convertible_to<size_t>;
-    };
-
     template <typename T>
     concept is_iterable = requires(T t) {
         { std::begin(t) } -> std::input_or_output_iterator;
@@ -373,6 +367,12 @@ namespace impl {
     concept is_reverse_iterable = requires(const T& t) {
         { std::rbegin(t) } -> std::input_or_output_iterator;
         { std::rend(t) } -> std::input_or_output_iterator;
+    };
+
+    // NOTE: decay is necessary to treat `const char[N]` like `const char*`
+    template <typename T>
+    concept is_hashable = requires(T&& t) {
+        { std::hash<std::decay_t<T>>{}(std::forward<T>(t)) } -> std::convertible_to<size_t>;
     };
 
     template <typename T>

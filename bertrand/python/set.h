@@ -12,6 +12,9 @@ namespace bertrand {
 namespace py {
 
 
+// TODO: just remove ISet and reimplement in Set and FrozenSet individually.
+
+
 namespace impl {
 
     struct ISetTag {};
@@ -25,19 +28,6 @@ namespace impl {
 
     public:
         using Base::Base;
-
-        /////////////////////////////
-        ////    C++ INTERFACE    ////
-        /////////////////////////////
-
-        /* Implicitly convert a py::FrozenSet into a C++ set or unordered_set. */
-        template <impl::cpp_like T> requires (impl::anyset_like<T>)
-        inline operator T() const {
-            T result;
-            for (auto&& item : *self()) {
-                result.insert(item.template cast<typename T::value_type>());
-            }
-        }
                                         
         ////////////////////////////////
         ////    PYTHON INTERFACE    ////
@@ -238,27 +228,33 @@ namespace impl {
             return self.symmetric_difference(other);
         }
 
-    protected:
+    };
 
-        template <typename Return, typename Self>
-        inline static size_t operator_len(const Self& self) {
-            return static_cast<size_t>(PySet_GET_SIZE(self.ptr()));
+}
+
+
+namespace impl {
+namespace ops {
+
+    template <typename Return, std::derived_from<ISetTag> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            return PySet_GET_SIZE(self.ptr());
         }
+    };
 
-        template <typename Return, typename L, typename R>
-        inline static bool operator_contains(const L& self, const R& key) {
-            int result = PySet_Contains(
-                self.ptr(),
-                Object(key).ptr()
-            );
+    template <typename Return, std::derived_from<ISetTag> Self, typename Key>
+    struct contains<Return, Self, Key> {
+        static bool operator()(const Self& self, const to_object<Key>& key) {
+            int result = PySet_Contains(self.ptr(), key.ptr());
             if (result == -1) {
                 Exception::from_python();
             }
             return result;
         }
-
     };
 
+}
 }
 
 
@@ -339,6 +335,20 @@ template <std::derived_from<impl::ISetTag> L, impl::anyset_like R>
 struct __ixor__<L, R>                                           : Returns<L&> {};
 
 
+/* Implicitly convert a py::FrozenSet into a C++ set or unordered_set. */
+template <std::derived_from<impl::ISetTag> Self, impl::cpp_like T>
+    requires (impl::anyset_like<T>)
+struct __cast__<Self, T> : Returns<T> {
+    static T cast(const Self& self) {
+        T result;
+        for (auto&& item : self) {
+            result.insert(item.template cast<typename T::value_type>());
+        }
+        return result;
+    }
+};
+
+
 /////////////////////////
 ////    FROZENSET    ////
 /////////////////////////
@@ -382,7 +392,7 @@ public:
     FrozenSet(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    FrozenSet(const detail::accessor<Policy>& accessor) :
+    FrozenSet(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<FrozenSet>(accessor).release(), stolen_t{})
     {}
 
@@ -511,15 +521,6 @@ public:
         }
     }
 
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
-
-    /* Implicitly convert to pybind11::frozenset. */
-    inline operator pybind11::frozenset() const {
-        return reinterpret_borrow<pybind11::frozenset>(m_ptr);
-    }
-
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
@@ -622,7 +623,7 @@ public:
     Set(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Set(const detail::accessor<Policy>& accessor) :
+    Set(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Set>(accessor).release(), stolen_t{})
     {}
 
@@ -749,15 +750,6 @@ public:
             Py_DECREF(m_ptr);
             throw;
         }
-    }
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
-
-    /* Implicitly convert to pybind11::set. */
-    inline operator pybind11::set() const {
-        return reinterpret_borrow<pybind11::set>(m_ptr);
     }
 
     ////////////////////////////////

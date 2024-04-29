@@ -299,7 +299,10 @@ public:
         static auto div(const L& lhs, const R& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
                 Int a = lhs, b = rhs;
-                Int quotient = impl::ops::floordiv<Int>(a, b);
+                Int quotient = impl::ops::floordiv<Int, Int, Int>::operator()(
+                    a,
+                    b
+                );
                 if ((quotient < Int::zero()) && ((a % b) != Int::zero())) {
                     ++quotient;
                 }
@@ -308,7 +311,10 @@ public:
             } else if constexpr (std::same_as<L, Object> && std::same_as<R, Object>) {
                 Object a = lhs, b = rhs;
                 if (PyLong_Check(a.ptr()) && PyLong_Check(b.ptr())) {
-                    Object quotient = impl::ops::floordiv<Object>(a, b);
+                    Object quotient = impl::ops::floordiv<Object, Object, Object>::operator()(
+                        a,
+                        b
+                    );
                     if ((quotient < Int::zero()) && ((a % b) != Int::zero())) {
                         ++quotient;
                     }

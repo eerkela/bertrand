@@ -122,7 +122,7 @@ public:
     KeysView(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    KeysView(const detail::accessor<Policy>& accessor) :
+    KeysView(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<KeysView>(accessor).release(), stolen_t{})
     {}
 
@@ -262,7 +262,7 @@ public:
     ValuesView(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    ValuesView(const detail::accessor<Policy>& accessor) :
+    ValuesView(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<ValuesView>(accessor).release(), stolen_t{})
     {}
 
@@ -345,7 +345,7 @@ public:
     ItemsView(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    ItemsView(const detail::accessor<Policy>& accessor) :
+    ItemsView(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<ItemsView>(accessor).release(), stolen_t{})
     {}
 
@@ -452,7 +452,7 @@ public:
     Dict(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Dict(const detail::accessor<Policy>& accessor) :
+    Dict(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Dict>(accessor).release(), stolen_t{})
     {}
 
@@ -544,7 +544,9 @@ public:
     compatibility with Python and pybind11. */
     template <
         typename... Args,
-        typename collector = detail::deferred_t<detail::unpacking_collector<>, Args...>
+        typename collector = pybind11::detail::deferred_t<
+            pybind11::detail::unpacking_collector<>, Args...
+        >
     >
         requires (pybind11::args_are_all_keyword_or_ds<Args...>())
     explicit Dict(Args&&... args) :
@@ -554,23 +556,6 @@ public:
     /////////////////////////////
     ////    C++ INTERFACE    ////
     /////////////////////////////
-
-    /* Implicitly convert to a C++ dict type. */
-    template <impl::cpp_like T> requires (impl::dict_like<T>)
-    inline operator T() const {
-        T result;
-        PyObject* key;
-        PyObject* value;
-        Py_ssize_t pos = 0;
-        while (PyDict_Next(this->ptr(), &pos, &key, &value)) {
-            using Key = typename T::key_type;
-            using Value = typename T::mapped_type;
-            Key converted_key = Handle(key).template cast<Key>();
-            Value converted_value = Handle(value).template cast<Value>();
-            result[converted_key] = converted_value;
-        }
-        return result;
-    }
 
     /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
     template <impl::dict_like T>
@@ -920,23 +905,52 @@ public:
         return self;
     }
 
-protected:
+};
 
-    template <typename Return, typename Self>
-    inline static size_t operator_len(const Self& self) {
-        return static_cast<size_t>(PyDict_Size(self.ptr()));
-    }
 
-    template <typename Return, typename L, typename R>
-    inline static bool operator_contains(const L& self, const R& key) {
-        int result = PyDict_Contains(self.ptr(), Object(key).ptr());
-        if (result == -1) {
-            Exception::from_python();
+/* Implicitly convert a py::Dict into a C++ mapping type. */
+template <std::derived_from<Dict> Self, impl::cpp_like T> requires (impl::dict_like<T>)
+struct __cast__<Self, T> {
+    static T cast(const Self& self) {
+        T result;
+        PyObject* key;
+        PyObject* value;
+        Py_ssize_t pos = 0;
+        while (PyDict_Next(self.ptr(), &pos, &key, &value)) {
+            using Key = typename T::key_type;
+            using Value = typename T::mapped_type;
+            Key converted_key = Handle(key).template cast<Key>();
+            Value converted_value = Handle(value).template cast<Value>();
+            result[converted_key] = converted_value;
         }
         return result;
     }
-
 };
+
+
+namespace impl {
+namespace ops {
+
+    template <typename Return, std::derived_from<DictTag> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            return static_cast<size_t>(PyDict_Size(self.ptr()));
+        }
+    };
+
+    template <typename Return, std::derived_from<DictTag> Self, typename Key>
+    struct contains<Return, Self, Key> {
+        static bool operator()(const Self& self, const to_object<Key>& key) {
+            int result = PyDict_Contains(self.ptr(), key.ptr());
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    };
+
+}
+}
 
 
 ////////////////////////////
@@ -1013,7 +1027,7 @@ public:
     MappingProxy(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    MappingProxy(const detail::accessor<Policy>& accessor) :
+    MappingProxy(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<MappingProxy>(accessor).release(), stolen_t{})
     {}
 

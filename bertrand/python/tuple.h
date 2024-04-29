@@ -219,7 +219,7 @@ public:
     Tuple(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Tuple(const detail::accessor<Policy>& accessor) :
+    Tuple(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Tuple>(accessor).release(), stolen_t{})
     {}
 
@@ -484,103 +484,6 @@ public:
         }
     }
 
-    ///////////////////////////
-    ////    CONVERSIONS    ////
-    ///////////////////////////
-
-    template <typename First, typename Second>
-        requires (
-            std::convertible_to<value_type, First> &&
-            std::convertible_to<value_type, Second>
-        )
-    operator std::pair<First, Second>() const {
-        if (size() != 2) {
-            throw IndexError(
-                "conversion to std::pair requires tuple of size 2, not " +
-                std::to_string(size())
-            );
-        }
-        return {
-            impl::implicit_cast<First>(GET_ITEM(0)),
-            impl::implicit_cast<Second>(GET_ITEM(1))
-        };
-    }
-
-    template <typename... Args>
-        requires (std::convertible_to<value_type, Args> && ...)
-    operator std::tuple<Args...>() const {
-        if (size() != sizeof...(Args)) {
-            throw IndexError(
-                "conversion to std::tuple requires tuple of size " +
-                std::to_string(sizeof...(Args)) + ", not " +
-                std::to_string(size())
-            );
-        }
-
-        return [&]<size_t... N>(std::index_sequence<N...>) {
-            return std::make_tuple(
-                impl::implicit_cast<Args>(GET_ITEM(N))...
-            );
-        }(std::index_sequence_for<Args...>{});
-    }
-
-    template <typename T, size_t N>
-        requires (std::convertible_to<value_type, T>)
-    operator std::array<T, N>() const {
-        if (N != size()) {
-            throw IndexError(
-                "conversion to std::array requires tuple of size " +
-                std::to_string(N) + ", not " + std::to_string(size())
-            );
-        }
-        std::array<T, N> result;
-        for (size_t i = 0; i < N; ++i) {
-            result[i] = impl::implicit_cast<T>(GET_ITEM(i));
-        }
-        return result;
-    }
-
-    template <typename T, typename... Args>
-        requires (std::convertible_to<value_type, T>)
-    operator std::vector<T, Args...>() const {
-        std::vector<T, Args...> result;
-        result.reserve(size());
-        for (const value_type& item : *this) {
-            result.push_back(impl::implicit_cast<T>(item));
-        }
-        return result;
-    }
-
-    template <typename T, typename... Args>
-        requires (std::convertible_to<value_type, T>)
-    operator std::deque<T, Args...>() const {
-        std::deque<T, Args...> result;
-        for (const value_type& item : *this) {
-            result.push_back(impl::implicit_cast<T>(item));
-        }
-        return result;
-    }
-
-    template <typename T, typename... Args>
-        requires (std::convertible_to<value_type, T>)
-    operator std::list<T, Args...>() const {
-        std::list<T, Args...> result;
-        for (const value_type& item : *this) {
-            result.push_back(impl::implicit_cast<T>(item));
-        }
-        return result;
-    }
-
-    template <typename T, typename... Args>
-        requires (std::convertible_to<value_type, T>)
-    operator std::forward_list<T, Args...>() const {
-        std::forward_list<T, Args...> result;
-        for (const value_type& item : *this) {
-            result.push_front(impl::implicit_cast<T>(item));
-        }
-        return result;
-    }
-
     /////////////////////////////////
     ////    CPYTHON INTERFACE    ////
     /////////////////////////////////
@@ -644,16 +547,6 @@ public:
 
 protected:
 
-    using impl::SequenceOps<Tuple>::operator_add;
-    using impl::SequenceOps<Tuple>::operator_iadd;
-    using impl::SequenceOps<Tuple>::operator_mul;
-    using impl::SequenceOps<Tuple>::operator_imul;
-
-    template <typename Return, typename Self>
-    static size_t operator_len(const Self& self) {
-        return PyTuple_GET_SIZE(self.ptr());
-    }
-
     inline Tuple concat(const std::initializer_list<value_type>& items) const {
         PyObject* result = PyTuple_New(size() + items.size());
         if (result == nullptr) {
@@ -677,38 +570,199 @@ protected:
         }
     }
 
-    template <typename Return, typename Self>
-    static auto operator_begin(const Self& self)
-        -> impl::Iterator<impl::TupleIter<Return>>
-    {
-        return impl::Iterator<impl::TupleIter<Return>>(self, 0);
-    }
-
-    template <typename Return, typename Self>
-    static auto operator_end(const Self& self)
-        -> impl::Iterator<impl::TupleIter<Return>>
-    {
-        return impl::Iterator<impl::TupleIter<Return>>(PyTuple_GET_SIZE(self.ptr()));
-    }
-
-    template <typename Return, typename Self>
-    static auto operator_rbegin(const Self& self)
-        -> impl::ReverseIterator<impl::TupleIter<Return>>
-    {
-        return impl::ReverseIterator<impl::TupleIter<Return>>(
-            self,
-            PyTuple_GET_SIZE(self.ptr()) - 1
-        );
-    }
-
-    template <typename Return, typename Self>
-    static auto operator_rend(const Self& self)
-        -> impl::ReverseIterator<impl::TupleIter<Return>>
-    {
-        return impl::ReverseIterator<impl::TupleIter<Return>>(-1);
-    }
-
 };
+
+
+/* Implicitly convert a py::Tuple into a std::pair if and only if the tuple is of
+length two and its contents are implicitly covnertible to the member types. */
+template <std::derived_from<impl::TupleTag> Self, typename First, typename Second>
+    requires (
+        std::convertible_to<typename Self::value_type, First> &&
+        std::convertible_to<typename Self::value_type, Second>
+    )
+struct __cast__<Self, std::pair<First, Second>> : Returns<std::pair<First, Second>> {
+    static std::pair<First, Second> cast(const Self& self) {
+        if (self.size() != 2) {
+            throw IndexError(
+                "conversion to std::pair requires tuple of size 2, not " +
+                std::to_string(self.size())
+            );
+        }
+        return {
+            impl::implicit_cast<First>(self.GET_ITEM(0)),
+            impl::implicit_cast<Second>(self.GET_ITEM(1))
+        };
+    }
+};
+
+
+/* Implicitly convert a py::Tuple into a std::tuple if and only if the tuple is of
+length equal to the tuple arguments, and its contents are implicitly convertible to
+the member types. */
+template <std::derived_from<impl::TupleTag> Self, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, Args> && ...)
+struct __cast__<Self, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
+    static std::tuple<Args...> cast(const Self& self) {
+        if (self.size() != sizeof...(Args)) {
+            throw IndexError(
+                "conversion to std::tuple requires tuple of size " +
+                std::to_string(sizeof...(Args)) + ", not " +
+                std::to_string(self.size())
+            );
+        }
+        return [&]<size_t... N>(std::index_sequence<N...>) {
+            return std::make_tuple(
+                impl::implicit_cast<Args>(self.GET_ITEM(N))...
+            );
+        }(std::index_sequence_for<Args...>{});
+    }
+};
+
+
+/* Implicitly convert a py::Tuple into a std::array if and only if the tuple is of the
+specified length, and its contents are implicitly convertible to the array type. */
+template <std::derived_from<impl::TupleTag> Self, typename T, size_t N>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::array<T, N>> : Returns<std::array<T, N>> {
+    static std::array<T, N> cast(const Self& self) {
+        if (N != self.size()) {
+            throw IndexError(
+                "conversion to std::array requires tuple of size " +
+                std::to_string(N) + ", not " + std::to_string(self.size())
+            );
+        }
+        std::array<T, N> result;
+        for (size_t i = 0; i < N; ++i) {
+            result[i] = impl::implicit_cast<T>(self.GET_ITEM(i));
+        }
+        return result;
+    }
+};
+
+
+/* Implicitly convert a py::Tuple into a std::vector if its contents are convertible to
+the vector type. */
+template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::vector<T, Args...>> : Returns<std::vector<T, Args...>> {
+    static std::vector<T, Args...> cast(const Self& self) {
+        std::vector<T, Args...> result;
+        result.reserve(self.size());
+        for (const auto& item : self) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
+
+
+/* Implicitly convert a py::Tuple into a std::list if its contents are convertible to
+the list type. */
+template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::list<T, Args...>> : Returns<std::list<T, Args...>> {
+    static std::list<T, Args...> cast(const Self& self) {
+        std::list<T, Args...> result;
+        for (const auto& item : self) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
+
+
+/* Implicitly convert a py::Tuple into a std::forward_list if its contents are
+convertible to the list type. */
+template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::forward_list<T, Args...>> : Returns<std::forward_list<T, Args...>> {
+    static std::forward_list<T, Args...> cast(const Self& self) {
+        std::forward_list<T, Args...> result;
+        auto it = self.rbegin();
+        auto end = self.rend();
+        while (it != end) {
+            result.push_front(impl::implicit_cast<T>(*it));
+            ++it;
+        }
+        return result;
+    }
+};
+
+
+/* Implicitly convert a py::Tuple into a std::deque if its contents are convertible to
+the deque type. */
+template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> {
+    static std::deque<T, Args...> cast(const Self& self) {
+        std::deque<T, Args...> result;
+        for (const auto& item : self) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
+
+
+namespace impl {
+namespace ops {
+
+    template <typename Return, std::derived_from<TupleTag> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            return PyTuple_GET_SIZE(self.ptr());
+        }
+    };
+
+    template <typename Return, std::derived_from<TupleTag> Self>
+    struct begin<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::TupleIter<Return>>(self, 0);
+        }
+    };
+
+    template <typename Return, std::derived_from<TupleTag> Self>
+    struct end<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::TupleIter<Return>>(
+                PyTuple_GET_SIZE(self.ptr())
+            );
+        }
+    };
+
+    template <typename Return, std::derived_from<TupleTag> Self>
+    struct rbegin<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::TupleIter<Return>>(
+                self,
+                PyTuple_GET_SIZE(self.ptr()) - 1
+            );
+        }
+    };
+
+    template <typename Return, std::derived_from<TupleTag> Self>
+    struct rend<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::TupleIter<Return>>(-1);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, TupleTag> || std::derived_from<R, TupleTag>)
+    struct add<Return, L, R> : sequence::add<Return, L, R> {};
+
+    template <typename Return, std::derived_from<TupleTag> L, typename R>
+    struct iadd<Return, L, R> : sequence::iadd<Return, L, R> {};
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, TupleTag> || std::derived_from<R, TupleTag>)
+    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
+
+    template <typename Return, std::derived_from<TupleTag> L, typename R>
+    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
+
+}
+}
 
 
 }  // namespace py

@@ -139,7 +139,7 @@ public:
     Complex(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Complex(const detail::accessor<Policy>& accessor) :
+    Complex(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Complex>(accessor).release(), stolen_t{})
     {}
 
@@ -231,8 +231,7 @@ public:
 
 
 template <std::derived_from<Complex> Self, typename T>
-struct __cast__<Self, std::complex<T>> {
-    static constexpr bool enable = true;
+struct __cast__<Self, std::complex<T>> : Returns<std::complex<T>> {
     static std::complex<T> cast(const Self& self) {
         Py_complex complex = PyComplex_AsCComplex(self.ptr());
         if (complex.real == -1.0 && PyErr_Occurred()) {

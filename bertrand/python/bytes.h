@@ -470,7 +470,7 @@ public:
     Bytes(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Bytes(const detail::accessor<Policy>& accessor) :
+    Bytes(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Bytes>(accessor).release(), stolen_t{})
     {}
 
@@ -541,41 +541,50 @@ public:
 
 
 namespace impl {
+namespace ops {
 
-    namespace ops {
-
-        template <typename Return, std::derived_from<Bytes> Self>
-        auto len(const Self& obj) {
-            return static_cast<size_t>(PyBytes_GET_SIZE(obj.ptr()));
+    template <typename Return, std::derived_from<Bytes> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            return PyBytes_GET_SIZE(self.ptr());
         }
+    };
 
-        template <typename Return, typename L, typename R>
-            requires (std::derived_from<L, Bytes> || std::derived_from<R, Bytes>)
-        auto add(const L& lhs, const R& rhs) {
-            if constexpr (std::derived_from<L, Bytes>) {
-                Return result = lhs.copy();
-                iadd<Return>(result, rhs);
-                return result;
-            } else {
-                Return result = rhs.copy();
-                iadd<Return>(result, lhs);
-                return result;
-            }
-        }
-
-        template <typename Return, std::derived_from<Bytes> L, typename R>
-        auto iadd(L& lhs, const R& rhs) {
+    template <typename Return, std::derived_from<Bytes> L, typename R>
+    struct iadd<Return, L, R> {
+        static void operator()(L& lhs, const to_object<R>& rhs) {
             PyObject* result = lhs.ptr();
             PyBytes_Concat(&result, Bytes(rhs).ptr());
             if (result == nullptr) {
                 Exception::from_python();
             }
         }
+    };
 
-        // TODO: mul, imul redirect to ops::sequence?
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, Bytes> || std::derived_from<R, Bytes>)
+    struct add<Return, L, R> {
+        static Return operator()(const auto& lhs, const auto& rhs) {
+            if constexpr (std::derived_from<L, Bytes>) {
+                Return result = lhs.copy();
+                iadd<Return, L, R>::operator()(result, rhs);
+                return result;
+            } else {
+                Return result = rhs.copy();
+                iadd<Return, L, R>::operator()(result, lhs);
+                return result;
+            }
+        }
+    };
 
-    }
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, Bytes> || std::derived_from<R, Bytes>)
+    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
 
+    template <typename Return, std::derived_from<Bytes> L, typename R>
+    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
+
+}
 }
 
 
@@ -616,7 +625,7 @@ public:
     ByteArray(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    ByteArray(const detail::accessor<Policy>& accessor) :
+    ByteArray(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<ByteArray>(accessor).release(), stolen_t{})
     {}
 
@@ -690,38 +699,42 @@ public:
 
 
 namespace impl {
+namespace ops {
 
-    namespace ops {
-
-        template <typename Return, std::derived_from<ByteArray> Self>
-        auto len(const Self& obj) {
-            return static_cast<size_t>(PyByteArray_GET_SIZE(obj.ptr()));
+    template <typename Return, std::derived_from<ByteArray> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            return PyByteArray_GET_SIZE(self.ptr());
         }
+    };
 
-        template <typename Return, typename L, typename R>
-            requires (std::derived_from<L, ByteArray> || std::derived_from<R, ByteArray>)
-        auto add(const L& lhs, const R& rhs) {
-            PyObject* result;
-            if constexpr (std::derived_from<L, ByteArray>) {
-                result = PyByteArray_Concat(lhs.ptr(), ByteArray(rhs).ptr());
-            } else {
-                result = PyByteArray_Concat(ByteArray(lhs).ptr(), rhs.ptr());
-            }
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, ByteArray> || std::derived_from<R, ByteArray>)
+    struct add<Return, L, R> {
+        static Return operator()(const ByteArray& lhs, const ByteArray& rhs) {
+            PyObject* result = PyByteArray_Concat(lhs.ptr(), rhs.ptr());
             if (result == nullptr) {
                 Exception::from_python();
             }
             return reinterpret_steal<Return>(result);
         }
+    };
 
-        template <typename Return, std::derived_from<ByteArray> L, typename R>
-        auto iadd(L& lhs, const R& rhs) {
-            lhs = add<Return>(lhs, rhs);
+    template <typename Return, std::derived_from<ByteArray> L, typename R>
+    struct iadd<Return, L, R> {
+        static void operator()(L& lhs, const auto& rhs) {
+            lhs = add<Return, L, R>::operator()(lhs, rhs);
         }
+    };
 
-        // TODO: mul, imul redirect to ops::sequence?
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, ByteArray> || std::derived_from<R, ByteArray>)
+    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
 
-    }
+    template <typename Return, std::derived_from<ByteArray> L, typename R>
+    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
 
+}
 }
 
 

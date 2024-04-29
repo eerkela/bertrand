@@ -138,7 +138,7 @@ from bertrand import Extension, BuildExt
 #           --slave /usr/bin/pip pip ${python_install}/bin/pip3.12 \
 #           --slave /usr/bin/pip3 pip3 ${python_install}/bin/pip3.12
 #       sudo update-alternatives --config python
-# 10. Check the version:
+# 9. Check the version:
 #       python --version
 
 

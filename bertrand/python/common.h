@@ -107,7 +107,7 @@ public:
     NoneType(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    NoneType(const detail::accessor<Policy>& accessor) :
+    NoneType(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<NoneType>(accessor).release(), stolen_t{})
     {}
 
@@ -162,7 +162,7 @@ public:
     NotImplementedType(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    NotImplementedType(const detail::accessor<Policy>& accessor) :
+    NotImplementedType(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<NotImplementedType>(accessor).release(), stolen_t{})
     {}
 
@@ -217,7 +217,7 @@ public:
     EllipsisType(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    EllipsisType(const detail::accessor<Policy>& accessor) :
+    EllipsisType(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<EllipsisType>(accessor).release(), stolen_t{})
     {}
 
@@ -350,7 +350,7 @@ public:
     Slice(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Slice(const detail::accessor<Policy>& accessor) :
+    Slice(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Slice>(accessor).release(), stolen_t{})
     {}
 
@@ -515,7 +515,7 @@ public:
     Module(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Module(const detail::accessor<Policy>& accessor) :
+    Module(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Module>(accessor).release(), stolen_t{})
     {}
 
@@ -619,24 +619,27 @@ public:
 ////////////////////////////////////
 
 
-
 template <typename Return, typename Self, typename Key>
-auto impl::ops::getitem(const Self& self, Key&& key) {
-    return impl::Item<Self, std::decay_t<Key>>(self, std::forward<Key>(key));
+auto impl::ops::getitem<Return, Self, Key>::operator()(const Self& self, auto&& key) {
+    return impl::Item<Self, Key>(self, std::forward<decltype(key)>(key));
 }
 
 
-template <typename Return, typename Self>
-auto impl::ops::getitem(
-    const Self& self,
+template <typename Self> requires (__getitem__<Self, Slice>::enable)
+auto Object::operator[](
+    this const Self& self,
     const std::initializer_list<impl::SliceInitializer>& slice
 ) {
-    return impl::Item<Self, Slice>(self, Slice(slice));
+    using Return = typename __getitem__<Self, Slice>::Return;
+    return impl::ops::getitem<Return, Self, Slice>::operator()(
+        self,
+        Slice(slice)
+    );
 }
 
 
 template <typename Return, typename Self>
-auto impl::ops::begin(const Self& self) {
+auto impl::ops::begin<Return, Self>::operator()(const Self& self) {
     PyObject* iter = PyObject_GetIter(self.ptr());
     if (iter == nullptr) {
         Exception::from_python();
@@ -646,13 +649,13 @@ auto impl::ops::begin(const Self& self) {
 
 
 template <typename Return, typename Self>
-auto impl::ops::end(const Self& self) {
+auto impl::ops::end<Return, Self>::operator()(const Self& self) {
     return impl::Iterator<impl::GenericIter<Return>>();
 }
 
 
 template <typename Return, typename Self>
-auto impl::ops::rbegin(const Self& self) {
+auto impl::ops::rbegin<Return, Self>::operator()(const Self& self) {
     return impl::Iterator<impl::GenericIter<Return>>(
         self.template attr<"__reversed__">()()
     );
@@ -660,7 +663,7 @@ auto impl::ops::rbegin(const Self& self) {
 
 
 template <typename Return, typename Self>
-auto impl::ops::rend(const Self& self) {
+auto impl::ops::rend<Return, Self>::operator()(const Self& self) {
     return impl::Iterator<impl::GenericIter<Return>>();
 }
 
@@ -803,7 +806,7 @@ namespace std {
             "Return type is set to size_t."
         );
 
-        inline size_t operator()(const T& obj) const {
+        static size_t operator()(const T& obj) {
             return pybind11::hash(obj);
         }
     };
@@ -811,7 +814,7 @@ namespace std {
     #define BERTRAND_STD_EQUAL_TO(cls)                                                  \
         template <>                                                                     \
         struct equal_to<cls> {                                                          \
-            bool operator()(const cls& a, const cls& b) const {                         \
+            static bool operator()(const cls& a, const cls& b) {                        \
                 return a.equal(b);                                                      \
             }                                                                           \
         };                                                                              \

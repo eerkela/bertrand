@@ -107,8 +107,6 @@ using pybind11::arg_v;
 using pybind11::kw_only;
 using pybind11::pos_only;
 
-namespace detail = pybind11::detail;
-
 
 /////////////////////
 ////    TYPES    ////

@@ -179,7 +179,7 @@ protected:
 
     template <typename Self, typename Policy>
     static pybind11::object from_pybind11_accessor(
-        const detail::accessor<Policy>& accessor
+        const pybind11::detail::accessor<Policy>& accessor
     ) {
         pybind11::object obj(accessor);
         if (Self::check(obj)) {
@@ -223,7 +223,7 @@ public:
 
     /* Convert a pybind11 accessor into a generic Object. */
     template <typename Policy>
-    Object(const detail::accessor<Policy>& accessor) : m_ptr(nullptr) {
+    Object(const pybind11::detail::accessor<Policy>& accessor) : m_ptr(nullptr) {
         pybind11::object obj(accessor);
         if (check(obj)) {
             m_ptr = obj.release().ptr();
@@ -417,7 +417,9 @@ public:
             "Check your specialization of __call__ for the given arguments and "
             "ensure that it is derived from py::Object."
         );
-        return impl::ops::call<Return>(self, std::forward<Args>(args)...);
+        return impl::ops::call<Return, Self, Args...>::operator()(
+            self, std::forward<Args>(args)...
+        );
     }
 
     /* Index operator.  Specific key and element types can be controlled via the
@@ -428,7 +430,7 @@ public:
         if constexpr (impl::proxy_like<Key>) {
             return self[key.value()];
         } else {
-            return impl::ops::getitem<Return>(self, key);
+            return impl::ops::getitem<Return, Self, Key>::operator()(self, key);
         }
     }
 
@@ -439,10 +441,7 @@ public:
     auto operator[](
         this const Self& self,
         const std::initializer_list<impl::SliceInitializer>& slice
-    ) {
-        using Return = typename __getitem__<Self, Slice>::Return;
-        return impl::ops::getitem<Return>(self, slice);
-    }
+    );
 
     /* Contains operator.  Equivalent to Python's `in` keyword, but with reversed
     operands (i.e. `x in y` -> `y.contains(x)`).  This is consistent with other STL
@@ -460,7 +459,7 @@ public:
         if constexpr (impl::proxy_like<Key>) {
             return self.contains(key.value());
         } else {
-            return impl::ops::contains<Return>(self, key);
+            return impl::ops::contains<Return, Self, Key>::operator()(self, key);
         }
     }
 
@@ -475,7 +474,7 @@ public:
             "containers.  Check your specialization of __len__ for these types "
             "and ensure the Return type is set to size_t."
         );
-        return impl::ops::len<Return>(self);
+        return impl::ops::len<Return, Self>::operator()(self);
     }
 
     /* Begin iteration operator.  Both this and the end iteration operator are
@@ -490,7 +489,7 @@ public:
             "specialization of __iter__ for this types and ensure the Return type "
             "is a subclass of py::Object."
         );
-        return impl::ops::begin<Return>(self);
+        return impl::ops::begin<Return, Self>::operator()(self);
     }
 
     /* Const iteration operator.  Python has no distinction between mutable and
@@ -512,7 +511,7 @@ public:
             "specialization of __iter__ for this types and ensure the Return type "
             "is a subclass of py::Object."
         );
-        return impl::ops::end<Return>(self);
+        return impl::ops::end<Return, Self>::operator()(self);
     }
 
     /* Const end operator.  Similar to `cbegin()`, this is identical to `end()`. */
@@ -533,7 +532,7 @@ public:
             "specialization of __reversed__ for this types and ensure the Return "
             "type is a subclass of py::Object."
         );
-        return impl::ops::rbegin<Return>(self);
+        return impl::ops::rbegin<Return, Self>::operator()(self);
     }
 
     /* Const reverse iteration operator.  Python has no distinction between mutable
@@ -555,7 +554,7 @@ public:
             "specialization of __reversed__ for this types and ensure the Return "
             "type is a subclass of py::Object."
         );
-        return impl::ops::rend<Return>(self);
+        return impl::ops::rend<Return, Self>::operator()(self);
     }
 
     /* Const reverse end operator.  Similar to `crbegin()`, this is identical to
@@ -579,8 +578,7 @@ template <impl::not_proxy_like T>
         !std::derived_from<T, pybind11::arg> &&
         !std::derived_from<T, Object>
     )
-struct __cast__<Object, T> {
-    static constexpr bool enable = true;
+struct __cast__<Object, T> : Returns<T> {
     static T cast(const Object& self) {
         try {
             return Handle(self.ptr()).template cast<T>();
@@ -619,15 +617,31 @@ T reinterpret_steal(Handle obj) {
 }
 
 
+template <typename Return, typename L, typename R>
+Return impl::ops::sequence::mul<Return, L, R>::operator()(const L& lhs, const R& rhs) {
+    if constexpr (impl::python_like<L>) {
+        PyObject* result = PySequence_Repeat(lhs.ptr(), rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Return>(result);
+    } else if constexpr (impl::python_like<R>) {
+        PyObject* result = PySequence_Repeat(rhs.ptr(), lhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Return>(result);
+    } else {
+        PyObject* result = PySequence_Repeat(Object(rhs).ptr(), lhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Return>(result);
+    }
+}
+
+
 namespace impl {
-
-    // TODO: make this accept an extra template argument for the value stored within
-    // the container.  index() and count() should account for this
-
-    // TODO: this could be a subclass of Inherits<> that adds in sequence protocol
-    // operators automatically.
-    // -> Get count()/index() type from __iter__?  Also maybe assert that the type
-    // implements __iter__?
 
     /* Mixin holding operator overloads for types implementing the sequence protocol,
     which makes them both concatenatable and repeatable. */
@@ -688,62 +702,6 @@ namespace impl {
                     Exception::from_python();
                 }
                 return result;
-            }
-        }
-
-    protected:
-
-        template <typename Return, typename L, typename R>
-        static auto operator_add(const L& lhs, const R& rhs) {
-            PyObject* result = PySequence_Concat(
-                detail::object_or_cast(lhs).ptr(),
-                detail::object_or_cast(rhs).ptr()
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Return>(result);
-        }
-
-        template <typename Return, typename L, typename R>
-        static void operator_iadd(L& lhs, const R& rhs) {
-            PyObject* result = PySequence_InPlaceConcat(
-                lhs.ptr(),
-                detail::object_or_cast(rhs).ptr()
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == lhs.ptr()) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<L>(result);
-            }
-        }
-
-        template <typename Return, typename L>
-        static auto operator_mul(const L& lhs, Py_ssize_t repetitions) {
-            PyObject* result = PySequence_Repeat(
-                detail::object_or_cast(lhs).ptr(),
-                repetitions
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Return>(result);
-        }
-
-        template <typename Return, typename L>
-        static void operator_imul(L& lhs, Py_ssize_t repetitions) {
-            PyObject* result = PySequence_InPlaceRepeat(
-                lhs.ptr(),
-                repetitions
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == lhs.ptr()) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<L>(result);
             }
         }
 

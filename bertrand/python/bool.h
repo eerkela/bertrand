@@ -319,7 +319,7 @@ public:
     Bool(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Bool(const detail::accessor<Policy>& accessor) :
+    Bool(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Bool>(accessor).release(), stolen_t{})
     {}
 
@@ -386,10 +386,13 @@ static const Bool False = reinterpret_borrow<Bool>(Py_False);
 
 
 template <std::derived_from<Bool> Self>
-struct __cast__<Self, bool> {
-    static constexpr bool enable = true;
-    static bool cast(const Self& obj) {
-        return __cast__<Object, bool>::cast(obj);
+struct __cast__<Self, bool> : Returns<bool> {
+    static bool cast(const Self& self) {
+        int result = PyObject_IsTrue(self.ptr());
+        if (result == -1) {
+            Exception::from_python();
+        }
+        return result;
     }
 };
 

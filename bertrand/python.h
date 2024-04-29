@@ -18,7 +18,7 @@
 #include "python/bytes.h"
 #include "python/func.h"
 // #include "python/datetime.h"
-#include "python/math.h"
+// #include "python/math.h"
 #include "python/type.h"
 
 #include "regex.h"
@@ -553,16 +553,14 @@ inline Str Str::expandtabs(const Int& tabsize) const {
 template <typename... Args>
 inline Str Str::format(Args&&... args) const {
     return reinterpret_steal<Str>(attr<"format">()(
-        detail::object_or_cast(std::forward<Args>(args))...
+        std::forward<Args>(args)...
     ).release());
 }
 
 
 template <impl::dict_like T>
 inline Str Str::format_map(const T& mapping) const {
-    return reinterpret_steal<Str>(
-        attr<"format_map">()(detail::object_or_cast(mapping)).release()
-    );
+    return reinterpret_steal<Str>(attr<"format_map">()(mapping).release());
 }
 
 
@@ -1545,7 +1543,7 @@ template <typename T>
 inline bool isinstance(const Handle& derived, const T& base) {
     int result = PyObject_IsInstance(
         derived.ptr(),
-        detail::object_or_cast(base).ptr()
+        Object(base).ptr()
     );
     if (result == -1) {
         Exception::from_python();
@@ -1579,7 +1577,7 @@ template <typename T>
 inline bool issubclass(const Type& derived, const T& base) {
     int result = PyObject_IsSubclass(
         derived.ptr(),
-        detail::object_or_cast(base).ptr()
+        Object(base).ptr()
     );
     if (result == -1) {
         Exception::from_python();

@@ -82,7 +82,7 @@ public:
     Range(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
-    Range(const detail::accessor<Policy>& accessor) :
+    Range(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Range>(accessor).release(), stolen_t{})
     {}
 
