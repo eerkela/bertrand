@@ -89,92 +89,26 @@ class Tuple : public Object, public impl::TupleTag {
 
     static constexpr bool generic = std::same_as<Val, Object>;
 
-    // TODO: maybe the way to address this is to create a separate Initializer class
-    // that is inherited from in order to define explicit and implicit constructors.
-    // -> Maybe Initializer only includes explicit constructors, and each class
-    // defines its own implicit constructors.
+    template <typename T>
+    static constexpr bool typecheck = std::derived_from<T, Object> ?
+        std::derived_from<T, Val> : std::convertible_to<T, Val>;
 
-    // -> This could mean I could implement a generic forwarding constructor of this
-    // form:
-
-    // template <typename... Args> requires (std::constructible_from<Initializer, Args...>)
-    // explicit Tuple(Args&&... args) :
-    //     Base(Initializer(std::forward<Args>(args)...).release(), stolen_t{})
-    // {}
-
-    // TODO: separate classes for explicit and implicit constructors?  Implicit
-    // initializers could inherit from a CRTP impl:: class that holds the
-    // reinterpret_borrow<>, reinterpret_steal<> constructors.
-
-    // implicit constructors
-
-    struct Initializer {
-        PyObject* m_ptr = nullptr;
-
-        /* Explicitly unpack a C++ string literal into a py::Tuple. */
-        template <size_t N>
-        explicit Initializer(const char (&string)[N]) : m_ptr(PyTuple_New(N - 1)) {
-            if (m_ptr == nullptr) {
-                Exception::from_python();
-            }
-            try {
-                for (size_t i = 0; i < N - 1; ++i) {
-                    PyObject* item = PyUnicode_FromStringAndSize(string + i, 1);
-                    if (item == nullptr) {
-                        Exception::from_python();
-                    }
-                    PyTuple_SET_ITEM(m_ptr, i, item);
-                }
-            } catch (...) {
-                Py_DECREF(m_ptr);
-                throw;
-            }
-        }
-
-        /* Explicitly unpack a C++ string pointer into a py::Tuple. */
-        template <std::same_as<const char*> T>
-        explicit Initializer(T string) {
-            PyObject* list = PyList_New(0);
-            if (list == nullptr) {
-                Exception::from_python();
-            }
-            try {
-                const char* curr = string;
-                while (*curr != '\0') {
-                    PyObject* item = PyUnicode_FromStringAndSize(curr++, 1);
-                    if (item == nullptr) {
-                        Exception::from_python();
-                    }
-                    if (PyList_Append(list, item)) {
-                        Exception::from_python();
-                    }
-                }
-            } catch (...) {
-                Py_DECREF(list);
-                throw;
-            }
-            m_ptr = PyList_AsTuple(list);
-            Py_DECREF(list);
-            if (m_ptr == nullptr) {
-                Exception::from_python();
-            }
-        }
-
-        inline PyObject* release() {
-            PyObject* result = m_ptr;
-            m_ptr = nullptr;
-            return result;
-        }
-
+    template <typename T>
+    struct std_tuple_check {
+        static constexpr bool match = false;
     };
 
-    // TODO: maybe the real benefit of these structs is just encapsulation.
-    // -> implicit_init, explicit_init, implicit_convert, explicit_convert
+    template <typename First, typename Second>
+    struct std_tuple_check<std::pair<First, Second>> {
+        static constexpr bool match = true;
+        static constexpr bool value = typecheck<First> && typecheck<Second>;
+    };
 
-    // if this works through template specialization, then there could be no need to
-    // delete conversion operators from a parent class.  Object would define conversions
-    // to handle, object, and proxies, and would then have a general templates for
-    // implicit conversions as long as the associated 
+    template <typename... Args>
+    struct std_tuple_check<std::tuple<Args...>> {
+        static constexpr bool match = true;
+        static constexpr bool value = (typecheck<Args> && ...);
+    };
 
 public:
     using impl::TupleTag::type;
@@ -191,20 +125,72 @@ public:
     using reverse_iterator = impl::ReverseIterator<impl::TupleIter<value_type>>;
     using const_reverse_iterator = impl::ReverseIterator<impl::TupleIter<const value_type>>;
 
-    // TODO: account for compatibility with templated types in check().  pybind11 types
-    // should only be considered matches if and only if the value type is set to py::Object.
-
     template <typename T>
     static consteval bool check() {
-        return impl::tuple_like<T>;
+        if constexpr (!impl::tuple_like<std::decay_t<T>>) {
+            return false;
+
+        // pybind11 tuples only match if this tuple is generic
+        } else if constexpr (impl::pybind11_like<std::decay_t<T>>) {
+            return generic;
+
+        // if container has a value_type alias, check if it's convertible to the
+        // tuple's value type
+        } else if constexpr (impl::has_value_type<std::decay_t<T>>) {
+            return typecheck<typename std::decay_t<T>::value_type>;
+
+        // otherwise, the type must be a std::pair or std::tuple.  Then, check if
+        // all member types are convertible to the tuple's value type.
+        } else {
+            static_assert(
+                std_tuple_check<std::decay_t<T>>::match,
+                "candidate type is not a pybind11 type, does not have a "
+                "`value_type` alias, and is not a std::pair or std::tuple."
+            );
+            return std_tuple_check<std::decay_t<T>>::value;
+        }
     }
 
     template <typename T>
     static constexpr bool check(const T& obj) {
-        if constexpr (impl::python_like<T>) {
-            return obj.ptr() != nullptr && PyTuple_Check(obj.ptr());
-        } else {
+        if (!impl::python_like<T>) {
             return check<T>();
+
+        } else if constexpr (
+            std::same_as<T, Object> ||
+            std::same_as<T, pybind11::object>
+        ) {
+            if constexpr (generic) {
+                return obj.ptr() != nullptr && PyTuple_Check(obj.ptr());
+            } else {
+                return (
+                    obj.ptr() != nullptr && PyTuple_Check(obj.ptr()) &&
+                    std::ranges::all_of(obj, [](const auto& item) {
+                        return value_type::check(item);
+                    })
+                );
+            }
+
+        } else if constexpr (
+            std::derived_from<T, Tuple<Object>> ||
+            std::derived_from<T, pybind11::tuple>
+        ) {
+            if constexpr (generic) {
+                return obj.ptr() != nullptr;
+            } else {
+                return (
+                    obj.ptr() != nullptr &&
+                    std::ranges::all_of(obj, [](const auto& item) {
+                        return value_type::check(item);
+                    })
+                );
+            }
+
+        } else if constexpr (impl::tuple_like<T>) {
+            return obj.ptr() != nullptr && typecheck<typename T::value_type>;
+
+        } else {
+            return false;
         }
     }
 
@@ -214,9 +200,6 @@ public:
 
     Tuple(Handle h, const borrowed_t& t) : Base(h, t) {}
     Tuple(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (check<T>())
-    Tuple(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
     Tuple(const pybind11::detail::accessor<Policy>& accessor) :
@@ -230,27 +213,6 @@ public:
             Exception::from_python();
         }
     }
-
-    /* Copy constructor from another tuple with a narrower type. */
-    template <std::derived_from<value_type> T>
-    Tuple(const Tuple<T>& other) : Base(other.ptr(), borrowed_t{}) {}
-
-    /* Move constructor from another tuple with a narrower type. */
-    template <std::derived_from<value_type> T>
-    Tuple(Tuple<T>&& other) : Base(other.release(), stolen_t{}) {}
-
-    // TODO: figure copy/move constructors out.  Probably just delete OBJECT_COMMON and
-    // replace with explicit specializations here.
-    // -> This is currently repeated in an ambiguous way, so I need to figure this out.
-
-    /* Copy/move constructors from equivalent pybind11 type(s).  Only enabled if this
-    tuple's value type is set to py::Object. */
-    template <typename T>
-        requires (
-            impl::python_like<T> && check<T>() &&
-            !std::derived_from<std::decay_t<T>, impl::TupleTag> && generic
-        )
-    Tuple(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Pack the contents of a braced initializer into a new Python tuple. */
     Tuple(const std::initializer_list<value_type>& contents) :
@@ -269,6 +231,11 @@ public:
             throw;
         }
     }
+
+    /* Copy/move constructors from equivalent pybind11 types or other tuples with a
+    narrower value type. */
+    template <impl::python_like T> requires (check<T>())
+    Tuple(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly unpack a Python list into a py::Tuple directly using the C API. */
     template <impl::python_like T> requires (impl::list_like<T>)
@@ -386,11 +353,6 @@ public:
         }
     }
 
-    template <typename... Args> requires (std::constructible_from<Initializer, Args...>)
-    explicit Tuple(Args&&... initializer) :
-        Base(Initializer(std::forward<Args>(initializer)...).release(), stolen_t{})
-    {}
-
     /* Explicitly unpack a C++ string literal into a py::Tuple. */
     template <size_t N>
     explicit Tuple(const char (&string)[N]) : Base(PyTuple_New(N - 1), stolen_t{}) {
@@ -488,20 +450,6 @@ public:
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    // TODO: from_args() and to_args() need special handling for value type.  Maybe they
-    // can be rolled into the constructor?
-
-    /* Extract variadic positional arguments from pybind11 into a more expressive
-    py::Tuple object. */
-    static Tuple from_args(const pybind11::args& args) {
-        return reinterpret_borrow<Tuple>(args.ptr());
-    }
-
-    /* Convert a tuple to variadic positional arguments for pybind11. */
-    static pybind11::args to_args(const Tuple& tuple) {
-        return reinterpret_borrow<pybind11::args>(tuple);
-    }
-
     /* Get the underlying PyObject* array. */
     inline PyObject** data() const noexcept {
         return PySequence_Fast_ITEMS(this->ptr());
@@ -521,7 +469,7 @@ public:
 
     /* Equivalent to Python `tuple.count(value)`, but also takes optional start/stop
     indices similar to `tuple.index()`. */
-    inline Py_ssize_t count(
+    inline size_t count(
         const value_type& value,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -533,13 +481,13 @@ public:
             }
             Py_ssize_t result = PySequence_Count(slice, value.ptr());
             Py_DECREF(slice);
-            if (result == -1 && PyErr_Occurred()) {
+            if (result < 0) {
                 Exception::from_python();
             }
             return result;
         } else {
             Py_ssize_t result = PySequence_Count(this->ptr(), value.ptr());
-            if (result == -1 && PyErr_Occurred()) {
+            if (result < 0) {
                 Exception::from_python();
             }
             return result;
@@ -547,7 +495,7 @@ public:
     }
 
     /* Equivalent to Python `tuple.index(value[, start[, stop]])`. */
-    inline Py_ssize_t index(
+    inline size_t index(
         const value_type& value,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -559,13 +507,13 @@ public:
             }
             Py_ssize_t result = PySequence_Index(slice, value.ptr());
             Py_DECREF(slice);
-            if (result == -1 && PyErr_Occurred()) {
+            if (result < 0) {
                 Exception::from_python();
             }
             return result;
         } else {
             Py_ssize_t result = PySequence_Index(this->ptr(), value.ptr());
-            if (result == -1 && PyErr_Occurred()) {
+            if (result < 0) {
                 Exception::from_python();
             }
             return result;

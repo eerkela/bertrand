@@ -120,10 +120,14 @@ public:
 
     template <typename T>
     static constexpr bool check(const T& obj) {
-        if constexpr (impl::python_like<T>) {
+        if constexpr (impl::cpp_like<T>) {
+            return check<T>();
+        } else if constexpr (check<T>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
             return obj.ptr() != nullptr && PyList_Check(obj.ptr());
         } else {
-            return check<T>();
+            return false;
         }
     }
 
@@ -352,13 +356,13 @@ public:
             }
             Py_ssize_t result = PySequence_Count(slice, value.ptr());
             Py_DECREF(slice);
-            if (result == -1 && PyErr_Occurred()) {
+            if (result < 0) {
                 Exception::from_python();
             }
             return result;
         } else {
             Py_ssize_t result = PySequence_Count(this->ptr(), value.ptr());
-            if (result == -1 && PyErr_Occurred()) {
+            if (result < 0) {
                 Exception::from_python();
             }
             return result;
@@ -378,13 +382,13 @@ public:
             }
             Py_ssize_t result = PySequence_Index(slice, value.ptr());
             Py_DECREF(slice);
-            if (result == -1 && PyErr_Occurred()) {
+            if (result < 0) {
                 Exception::from_python();
             }
             return result;
         } else {
             Py_ssize_t result = PySequence_Index(this->ptr(), value.ptr());
-            if (result == -1 && PyErr_Occurred()) {
+            if (result < 0) {
                 Exception::from_python();
             }
             return result;

@@ -391,10 +391,14 @@ public:
 
     template <typename T>
     static constexpr bool check(const T& obj) {
-        if constexpr (impl::python_like<T>) {
+        if constexpr (impl::cpp_like<T>) {
+            return check<T>();
+        } else if constexpr (check<T>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
             return obj.ptr() != nullptr && PyLong_Check(obj.ptr());
         } else {
-            return check<T>();
+            return false;
         }
     }
 
@@ -539,15 +543,30 @@ struct __cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
         if constexpr (sizeof(T) <= sizeof(long)) {
             if constexpr (std::signed_integral<T>) {
-                return PyLong_AsLong(self.ptr());
+                long result = PyLong_AsLong(self.ptr());
+                if (result == -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                return result;
             } else {
-                return PyLong_AsUnsignedLong(self.ptr());
+                unsigned long result = PyLong_AsUnsignedLong(self.ptr());
+                if (result == (unsigned long) -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                return result;
             }
         } else {
             if constexpr (std::signed_integral<T>) {
-                return PyLong_AsLongLong(self.ptr());
+                long long result = PyLong_AsLongLong(self.ptr());
+                if (result == -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
             } else {
-                return PyLong_AsUnsignedLongLong(self.ptr());
+                unsigned long long result = PyLong_AsUnsignedLongLong(self.ptr());
+                if (result == (unsigned long long) -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                return result;
             }
         }
     }

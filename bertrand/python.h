@@ -1762,7 +1762,7 @@ inline Dict vars(const Object& object) {
 auto Regex::Match::group(const py::args& args) const
     -> std::vector<std::optional<std::string>>
 {
-    auto tuple = py::Tuple<py::Object>::from_args(args);
+    py::Tuple tuple = args;
     std::vector<std::optional<std::string>> result;
     result.reserve(tuple.size());
 

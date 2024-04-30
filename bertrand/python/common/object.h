@@ -201,10 +201,10 @@ public:
     /* Check whether a Python/C++ value is considered object-like at compile time. */
     template <typename T>
     static constexpr bool check(const T& value) {
-        if constexpr (impl::python_like<T>) {
-            return value.ptr() != nullptr;
-        } else {
+        if constexpr (impl::cpp_like<T>) {
             return check<T>();
+        } else {
+            return value.ptr() != nullptr;
         }
     }
 

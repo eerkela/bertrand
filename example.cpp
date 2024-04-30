@@ -103,30 +103,29 @@ void run() {
     // py::Tuple<py::Int> d = b;  // this should not cause an ambiguity, it should just fail to compile
 
 
-    // py::Bool a = true;
-    // py::Bool b = py::reinterpret_borrow<py::Bool>(a.ptr());
-    // bool c = b;
-    // std::string d = static_cast<std::string>(b);
-    // // auto e = static_cast<std::vector<int>>(b);
-    // py::print(a, b, c, d);
+
+
+    // py::Tuple<py::Int> tuple = {1, 2, 3};
+    // auto result = tuple + py::Tuple<py::Int>{4, 5, 6};  // TODO: should return py::Tuple<py::Int>
+    // py::print(result);
+    // py::print(typeid(typename decltype(result)::value_type).name());
 
 
 
-    // py::Int x = 1;
-    // py::Int y = 2;
-    // py::print(x < y);
-    // py::print(x < 2);
-    // py::print(1 < y);
-    // py::print(1 < 2);
-    // py::print(x + 2);
+    // py::Tuple tuple = {1, 2, 3};
+    // py::print(py::Tuple<py::Int>::check<decltype(tuple)>());
+    // py::print(py::Tuple<py::Int>::check(tuple));
+    // py::print(py::Tuple<>::check<decltype(tuple)>());
+    // py::print(py::Tuple<>::check(tuple));
+    // py::print(py::Tuple<py::Str>::check<decltype(tuple)>());
+    // py::print(py::Tuple<py::Str>::check(tuple));
 
 
-
-    py::Str x = "abc";
-    py::print(py::hash(x));
-
-
-
+    py::Tuple<py::Int> x = {1, 2, 3};
+    py::Tuple<> y = x;
+    // py::Tuple z = 2;
+    py::print(y);
+    py::print(typeid(decltype(y)).name());
 
 
 

@@ -73,7 +73,7 @@ namespace impl {
 
         template <typename T, size_t N>
         struct Traits<std::array<T, N>> : public Base {
-            static constexpr bool listlike = true;
+            static constexpr bool tuplelike = true;
         };
 
         template <typename... Args>
@@ -134,6 +134,12 @@ namespace impl {
     concept python_like = (
         pybind11_like<std::remove_cvref_t<T>> ||
         std::derived_from<std::remove_cvref_t<T>, Object>
+    );
+
+    template <typename T>
+    concept is_object_exact = (
+        std::same_as<std::remove_cvref_t<T>, Object> ||
+        std::same_as<std::remove_cvref_t<T>, pybind11::object>
     );
 
     template <typename T>
@@ -355,6 +361,11 @@ namespace impl {
     template <typename T>
     concept has_reserve = requires(T& t, size_t n) {
         { t.reserve(n) } -> std::same_as<void>;
+    };
+
+    template <typename T>
+    concept has_value_type = requires {
+        typename T::value_type;
     };
 
     template <typename T>

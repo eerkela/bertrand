@@ -95,7 +95,13 @@ public:
 
     template <typename T>
     static constexpr bool check(const T& obj) {
-        if constexpr (impl::python_like<T>) {
+        if constexpr (impl::cpp_like<T>) {
+            return check<T>();
+
+        } else if constexpr (check<T>()) {
+            return obj.ptr() != nullptr;
+
+        } else if constexpr (impl::is_object_exact<T>) {
             if (obj.ptr() == nullptr) {
                 return false;
             }
@@ -107,10 +113,12 @@ public:
                 Exception::from_python();
             }
             return result;
+
         } else {
-            return check<T>();
+            return false;
         }
     }
+
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
@@ -234,7 +242,13 @@ public:
 
     template <typename T>
     static constexpr bool check(const T& obj) {
-        if constexpr (impl::python_like<T>) {
+        if constexpr (impl::cpp_like<T>) {
+            return check<T>();
+
+        } else if constexpr (check<T>()) {
+            return obj.ptr() != nullptr;
+
+        } else if constexpr (impl::is_object_exact<T>) {
             if (obj.ptr() == nullptr) {
                 return false;
             }
@@ -246,8 +260,9 @@ public:
                 Exception::from_python();
             }
             return result;
+
         } else {
-            return check<T>();
+            return false;
         }
     }
 
@@ -317,7 +332,13 @@ public:
 
     template <typename T>
     static constexpr bool check(const T& obj) {
-        if constexpr (impl::python_like<T>) {
+        if constexpr (impl::cpp_like<T>) {
+            return check<T>();
+
+        } else if constexpr (check<T>()) {
+            return obj.ptr() != nullptr;
+
+        } else if constexpr (impl::is_object_exact<T>) {
             if (obj.ptr() == nullptr) {
                 return false;
             }
@@ -329,8 +350,9 @@ public:
                 Exception::from_python();
             }
             return result;
+
         } else {
-            return check<T>();
+            return false;
         }
     }
 
@@ -434,10 +456,14 @@ public:
 
     template <typename T>
     static constexpr bool check(const T& obj) {
-        if constexpr (impl::python_like<T>) {
+        if constexpr (impl::cpp_like<T>) {
+            return check<T>();
+        } else if constexpr (check<T>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
             return obj.ptr() != nullptr && PyDict_Check(obj.ptr());
         } else {
-            return check<T>();
+            return false;
         }
     }
 
@@ -999,7 +1025,13 @@ public:
 
     template <typename T>
     static constexpr bool check(const T& obj) {
-        if constexpr (impl::python_like<T>) {
+        if constexpr (impl::cpp_like<T>) {
+            return check<T>();
+
+        } else if constexpr (check<T>()) {
+            return obj.ptr() != nullptr;
+
+        } else if constexpr (impl::is_object_exact<T>) {
             if (obj.ptr() == nullptr) {
                 return false;
             }
@@ -1011,8 +1043,9 @@ public:
                 Exception::from_python();
             }
             return result;
+
         } else {
-            return check<T>();
+            return false;
         }
     }
 
