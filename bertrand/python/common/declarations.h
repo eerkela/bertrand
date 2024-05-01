@@ -131,6 +131,7 @@ class Int;
 class Float;
 class Complex;
 class Range;
+template <typename Val = Object>
 class List;
 template <typename Val = Object>
 class Tuple;
@@ -167,7 +168,9 @@ namespace impl {
     struct TupleTag {
         static const Type type;
     };
-    struct ListTag {};
+    struct ListTag {
+        static const Type type;
+    };
     struct SetTag {};
     struct FrozenSetTag {};
     struct KeysTag {};

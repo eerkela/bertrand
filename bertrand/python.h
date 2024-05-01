@@ -164,7 +164,7 @@ inline const Type Float::type = reinterpret_borrow<Type>((PyObject*) &PyFloat_Ty
 inline const Type Complex::type = reinterpret_borrow<Type>((PyObject*) &PyComplex_Type);
 inline const Type Slice::type = reinterpret_borrow<Type>((PyObject*) &PySlice_Type);
 inline const Type Range::type = reinterpret_borrow<Type>((PyObject*) &PyRange_Type);
-inline const Type List::type = reinterpret_borrow<Type>((PyObject*) &PyList_Type);
+inline const Type impl::ListTag::type = reinterpret_borrow<Type>((PyObject*) &PyList_Type);
 inline const Type impl::TupleTag::type = reinterpret_borrow<Type>((PyObject*) &PyTuple_Type);
 inline const Type Set::type = reinterpret_borrow<Type>((PyObject*) &PySet_Type);
 inline const Type FrozenSet::type = reinterpret_borrow<Type>((PyObject*) &PyFrozenSet_Type);
@@ -296,8 +296,10 @@ inline Type::Type(const Str& name, const Tuple<Type>& bases, const Dict& dict) :
 #endif
 
 
+template <typename Val>
 template <impl::is_iterable T>
-inline void List::extend(const T& items) {
+    requires (std::convertible_to<impl::dereference_type<T>, Val>)
+inline void List<Val>::extend(const T& items) {
     if constexpr (impl::python_like<T>) {
         attr<"extend">()(items);
     } else {
@@ -308,22 +310,26 @@ inline void List::extend(const T& items) {
 }
 
 
-inline void List::remove(const Object& value) {
+template <typename Val>
+inline void List<Val>::remove(const Val& value) {
     attr<"remove">()(value);
 }
 
 
-inline Object List::pop(Py_ssize_t index) {
+template <typename Val>
+inline Val List<Val>::pop(Py_ssize_t index) {
     return attr<"pop">()(index);
 }
 
 
-inline void List::sort(const Bool& reverse) {
+template <typename Val>
+inline void List<Val>::sort(const Bool& reverse) {
     attr<"sort">()(py::arg("reverse") = reverse);
 }
 
 
-inline void List::sort(const Function& key, const Bool& reverse) {
+template <typename Val>
+inline void List<Val>::sort(const Function& key, const Bool& reverse) {
     attr<"sort">()(py::arg("key") = key, py::arg("reverse") = reverse);
 }
 
@@ -700,13 +706,13 @@ inline Tuple<Str> Str::rpartition(const Str& sep) const {
 }
 
 
-inline List Str::rsplit() const {
-    return reinterpret_steal<List>(attr<"rsplit">()().release());
+inline List<Str> Str::rsplit() const {
+    return reinterpret_steal<List<Str>>(attr<"rsplit">()().release());
 }
 
 
-inline List Str::rsplit(const Str& sep, const Int& maxsplit) const {
-    return reinterpret_steal<List>(attr<"rsplit">()(sep, maxsplit).release());
+inline List<Str> Str::rsplit(const Str& sep, const Int& maxsplit) const {
+    return reinterpret_steal<List<Str>>(attr<"rsplit">()(sep, maxsplit).release());
 }
 
 
@@ -1371,17 +1377,17 @@ inline void delattr(const Object& obj, const Str& name) {
 
 /* Equivalent to Python `dir()` with no arguments.  Returns a list of names in the
 current local scope. */
-inline List dir() {
+inline List<Str> dir() {
     PyObject* result = PyObject_Dir(nullptr);
     if (result == nullptr) {
         Exception::from_python();
     }
-    return reinterpret_steal<List>(result);
+    return reinterpret_steal<List<Str>>(result);
 }
 
 
 /* Equivalent to Python `dir(obj)`. */
-inline List dir(const Handle& obj) {
+inline List<Str> dir(const Handle& obj) {
     if (obj.ptr() == nullptr) {
         throw TypeError("cannot call dir() on a null object");
     }
@@ -1389,7 +1395,7 @@ inline List dir(const Handle& obj) {
     if (result == nullptr) {
         Exception::from_python();
     }
-    return reinterpret_steal<List>(result);
+    return reinterpret_steal<List<Str>>(result);
 }
 
 
@@ -1723,24 +1729,26 @@ inline void setattr(const Handle& obj, const Str& name, const Object& value) {
 // TODO: sorted() for C++ types.  Still returns a List, but has to reimplement logic
 // for key and reverse arguments.  std::ranges::sort() is a better alternative for C++
 // types.
+// -> sorted() will have to preserve type information for CTAD containers, or be
+// deleted outright.
 
 
-/* Equivalent to Python `sorted(obj)`. */
-inline List sorted(const Handle& obj) {
-    static const Str s_sorted = "sorted";
-    return builtins()[s_sorted](obj);
-}
+// /* Equivalent to Python `sorted(obj)`. */
+// inline List sorted(const Handle& obj) {
+//     static const Str s_sorted = "sorted";
+//     return builtins()[s_sorted](obj);
+// }
 
 
-/* Equivalent to Python `sorted(obj, key=key, reverse=reverse)`. */
-inline List sorted(const Handle& obj, const Function& key, bool reverse = false) {
-    static const Str s_sorted = "sorted";
-    return builtins()[s_sorted](
-        obj,
-        py::arg("key") = key,
-        py::arg("reverse") = reverse
-    );
-}
+// /* Equivalent to Python `sorted(obj, key=key, reverse=reverse)`. */
+// inline List sorted(const Handle& obj, const Function& key, bool reverse = false) {
+//     static const Str s_sorted = "sorted";
+//     return builtins()[s_sorted](
+//         obj,
+//         py::arg("key") = key,
+//         py::arg("reverse") = reverse
+//     );
+// }
 
 
 /* Equivalent to Python `vars()`. */

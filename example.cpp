@@ -139,12 +139,7 @@ void run() {
     // py::print(typeid(decltype(a)::value_type).name());
 
 
-    // TODO: Since I have no control over the type of a generic Object, I have to
-    // return another Object.  That allows for arbitrary Python objects to overload
-    // these operators however they wish, with the caveat that the return type is
-    // always another Object.
-    // py::Tuple w = {1, 2, 3};
-    // py::print(typeid(decltype(w + py::Object(py::Tuple{"a", "b", "c"}))).name());
+
 
 
     py::Tuple<py::Int> a = {1, 2, 3};
@@ -162,10 +157,23 @@ void run() {
 
 
 
+    py::List<py::Int> list = {1, 2, 3, 4, 5};
+    py::List list2("abcdefg");
+    py::print(list);
+    py::print(list2);
 
-    // perhaps Object should only implement operators that are combined with other
-    // objects?  So you could generically add two objects, but that wouldn't extend to
-    // any subclasses.  That might simplify the operator definitions as well.
+
+    py::List list3("abc");
+    py::print(typeid(decltype(list3)).name());
+    py::print(list3);
+
+    list3.extend({"d", "e", "f"});
+    // list3.extend({1, 2, 3});
+    // list3.append(1);
+
+
+    // py::List<> list4 = list3;
+    // py::print(typeid(decltype(list4)).name());
 
 
 

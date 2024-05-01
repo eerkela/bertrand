@@ -731,10 +731,10 @@ public:
     inline Tuple<Str> rpartition(const Str& sep) const;
 
     /* Equivalent to Python `str.rsplit()`. */
-    inline List rsplit() const;
+    inline List<Str> rsplit() const;
 
     /* Equivalent to Python `str.rsplit(sep[, maxsplit])`. */
-    inline List rsplit(const Str& sep, const Int& maxsplit = -1) const;
+    inline List<Str> rsplit(const Str& sep, const Int& maxsplit = -1) const;
 
     /* Equivalent to Python `str.rstrip()`. */
     inline Str rstrip() const;
@@ -743,30 +743,30 @@ public:
     inline Str rstrip(const Str& chars) const;
 
     /* Equivalent to Python `str.split()`. */
-    inline List split() const {
+    inline List<Str> split() const {
         PyObject* result = PyUnicode_Split(this->ptr(), nullptr, -1);
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<List>(result);
+        return reinterpret_steal<List<Str>>(result);
     }
 
     /* Equivalent to Python `str.split(sep[, maxsplit])`. */
-    inline List split(const Str& sep, Py_ssize_t maxsplit = -1) const {
+    inline List<Str> split(const Str& sep, Py_ssize_t maxsplit = -1) const {
         PyObject* result = PyUnicode_Split(this->ptr(), sep.ptr(), maxsplit);
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<List>(result);
+        return reinterpret_steal<List<Str>>(result);
     }
 
     /* Equivalent to Python `str.splitlines([keepends])`. */
-    inline List splitlines(bool keepends = false) const {
+    inline List<Str> splitlines(bool keepends = false) const {
         PyObject* result = PyUnicode_Splitlines(this->ptr(), keepends);
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<List>(result);
+        return reinterpret_steal<List<Str>>(result);
     }
 
     /* Equivalent to Python `str.startswith(prefix[, start[, end]])`. */

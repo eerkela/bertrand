@@ -253,16 +253,16 @@ namespace impl {
         }
 
         /* Equivalent to Python `bytes.rsplit()`. */
-        inline List rsplit() const {
-            return reinterpret_steal<List>(attr<"rsplit">()().release());
+        inline List<Derived> rsplit() const {
+            return reinterpret_steal<List<Derived>>(attr<"rsplit">()().release());
         }
 
         /* Equivalent to Python `bytes.rsplit(sep, maxsplit=-1)`. */
-        inline List rsplit(
+        inline List<Derived> rsplit(
             const Derived& sep,
             Py_ssize_t maxsplit = -1
         ) const {
-            return reinterpret_steal<List>(attr<"rsplit">()(sep, maxsplit).release());
+            return reinterpret_steal<List<Derived>>(attr<"rsplit">()(sep, maxsplit).release());
         }
 
         /* Equivalent to Python `bytes.rstrip()`. */
@@ -276,21 +276,21 @@ namespace impl {
         }
 
         /* Equivalent to Python `bytes.split()`. */
-        inline List split() const {
-            return reinterpret_steal<List>(attr<"split">()().release());
+        inline List<Derived> split() const {
+            return reinterpret_steal<List<Derived>>(attr<"split">()().release());
         }
 
         /* Equivalent to Python `bytes.split(sep, maxsplit=-1)`. */
-        inline List split(
+        inline List<Derived> split(
             const Derived& sep,
             Py_ssize_t maxsplit = -1
         ) const {
-            return reinterpret_steal<List>(attr<"split">()(sep, maxsplit).release());
+            return reinterpret_steal<List<Derived>>(attr<"split">()(sep, maxsplit).release());
         }
 
         /* Equivalent to Python `bytes.splitlines()`. */
-        inline List splitlines(bool keepends = false) const {
-            return reinterpret_steal<List>(attr<"splitlines">()(keepends).release());
+        inline List<Derived> splitlines(bool keepends = false) const {
+            return reinterpret_steal<List<Derived>>(attr<"splitlines">()(keepends).release());
         }
 
         /* Equivalent to Python `bytes.startswith(prefix[, start[, stop]])`. */

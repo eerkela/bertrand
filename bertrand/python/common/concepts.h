@@ -382,10 +382,16 @@ namespace impl {
     };
 
     template <typename T>
+    using dereference_type = decltype(*std::begin(std::declval<T>()));
+
+    template <typename T>
     concept is_reverse_iterable = requires(const T& t) {
         { std::rbegin(t) } -> std::input_or_output_iterator;
         { std::rend(t) } -> std::input_or_output_iterator;
     };
+
+    template <typename T>
+    using reverse_dereference_type = decltype(*std::rbegin(std::declval<T>()));
 
     // NOTE: decay is necessary to treat `const char[N]` like `const char*`
     template <typename T>
@@ -457,8 +463,8 @@ namespace impl {
     /* NOTE: some binary operators (such as lexicographic comparisons) accept generic
      * containers, which may be combined with containers of different types.  In these
      * cases, the operator should be enabled if and only if it is also supported by the
-     * respective element types.  This is complicated by the implementation of std::pair
-     * and std::tuple, which may contain heterogenous types.
+     * respective element types.  This sounds simple, but is complicated by the
+     * implementation of std::pair and std::tuple, which may contain heterogenous types.
      *
      * The Broadcast<> struct helps by recursively applying a scalar constraint over
      * the values of a generic container type, with specializations to account for
@@ -506,7 +512,6 @@ namespace impl {
         static constexpr bool value =
             Broadcast<Condition, typename L::value_type, R>::value;
     };
-
 
     template <
         template <typename, typename> typename Condition,

@@ -27,9 +27,7 @@ template <typename T>
 Tuple(const Tuple<T>&) -> Tuple<T>;
 template <typename T>
 Tuple(Tuple<T>&&) -> Tuple<T>;
-template <size_t N>
-explicit Tuple(const char (&string)[N]) -> Tuple<Str>;
-template <std::same_as<const char*> T>
+template <impl::str_like T>
 explicit Tuple(T string) -> Tuple<Str>;
 
 
@@ -160,7 +158,6 @@ public:
 
     /* Default constructor.  Initializes to an empty tuple. */
     Tuple() : Base(PyTuple_New(0), stolen_t{}) {
-        py::print("default constructor");
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -399,9 +396,9 @@ public:
         }
     }
 
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
+    /////////////////////////
+    ////    INTERFACE    ////
+    /////////////////////////
 
     /* Get the underlying PyObject* array. */
     inline PyObject** DATA() const noexcept {
@@ -547,9 +544,7 @@ namespace ops {
     template <typename Return, std::derived_from<TupleTag> Self>
     struct end<Return, Self> {
         static auto operator()(const Self& self) {
-            return impl::Iterator<impl::TupleIter<Return>>(
-                PyTuple_GET_SIZE(self.ptr())
-            );
+            return impl::Iterator<impl::TupleIter<Return>>(PyTuple_GET_SIZE(self.ptr()));
         }
     };
 
@@ -661,14 +656,16 @@ template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
         impl::Broadcast<impl::gt_comparable, Self, T>::value
     )
 struct __gt__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::TupleTag> Self, typename T> requires (Self::template check<T>())
+template <std::derived_from<impl::TupleTag> Self, typename T>
+    requires (Self::template check<T>())
 struct __add__<Self, T>                                         : Returns<Self> {};
 template <
     std::derived_from<impl::TupleTag> T,
     std::derived_from<impl::TupleTag> Self
 > requires (!T::template check<Self>() && Self::template check<T>())
 struct __add__<T, Self>                                         : Returns<Self> {};
-template <std::derived_from<impl::TupleTag> Self, typename T> requires (Self::template check<T>())
+template <std::derived_from<impl::TupleTag> Self, typename T>
+    requires (Self::template check<T>())
 struct __iadd__<Self, T>                                        : Returns<Self&> {};
 template <std::derived_from<impl::TupleTag> Self, impl::int_like T>
 struct __mul__<Self, T>                                         : Returns<Self> {};
