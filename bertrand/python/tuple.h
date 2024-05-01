@@ -89,16 +89,16 @@ public:
 
         // if container has a value_type alias, check if it's convertible to the
         // tuple's value type
-        } else if constexpr (impl::has_value_type<std::decay_t<T>>) {
-            return typecheck<typename std::decay_t<T>::value_type>;
+        } else if constexpr (impl::is_iterable<std::decay_t<T>>) {
+            return typecheck<impl::dereference_type<std::decay_t<T>>>;
 
         // otherwise, the type must be a std::pair or std::tuple.  Then, check if
         // all member types are convertible to the tuple's value type.
         } else {
             static_assert(
                 std_tuple_check<std::decay_t<T>>::match,
-                "candidate type is not a pybind11 type, does not have a "
-                "`value_type` alias, and is not a std::pair or std::tuple."
+                "candidate type is not a pybind11 type, is not iterable, and is not a "
+                "std::pair or std::tuple."
             );
             return std_tuple_check<std::decay_t<T>>::value;
         }
@@ -137,7 +137,7 @@ public:
             }
 
         } else if constexpr (impl::tuple_like<T>) {
-            return obj.ptr() != nullptr && typecheck<typename T::value_type>;
+            return obj.ptr() != nullptr && typecheck<impl::dereference_type<T>>;
 
         } else {
             return false;
@@ -186,53 +186,53 @@ public:
     template <impl::python_like T> requires (check<T>())
     Tuple(T&& other) : Base(std::forward<T>(other)) {}
 
-    /* Explicitly unpack a Python list into a py::Tuple directly using the C API. */
-    template <impl::python_like T> requires (impl::list_like<T>)
-    explicit Tuple(const T& list) : Base(nullptr, stolen_t{}) {
-        if constexpr (generic) {
-            m_ptr = PyList_AsTuple(list.ptr());
-            if (m_ptr == nullptr) {
-                Exception::from_python();
-            }
-        } else {
-            m_ptr = PyTuple_New(std::size(list));
-            if (m_ptr == nullptr) {
-                Exception::from_python();
-            }
-            try {
-                size_t i = 0;
-                for (const auto& item : list) {
-                    PyTuple_SET_ITEM(m_ptr, i++, value_type(item).release().ptr());
-                }
-            } catch (...) {
-                Py_DECREF(m_ptr);
-                throw;
-            }
-        }
-    }
-
     /* Explicitly unpack a generic Python container into a py::Tuple. */
-    template <impl::python_like T>
-        requires (!impl::list_like<T> && !impl::tuple_like<T> && impl::is_iterable<T>)
+    template <impl::python_like T> requires (!impl::tuple_like<T> && impl::is_iterable<T>)
     explicit Tuple(const T& contents) : Base(nullptr, stolen_t{}) {
         if constexpr (generic) {
-            m_ptr = PySequence_Tuple(contents.ptr());
+            if constexpr (impl::list_like<T>) {
+                m_ptr = PyList_AsTuple(contents.ptr());
+            } else {
+                m_ptr = PySequence_Tuple(contents.ptr());
+            }
             if (m_ptr == nullptr) {
                 Exception::from_python();
             }
         } else {
-            m_ptr = PyTuple_New(std::size(contents));
-            if (m_ptr == nullptr) {
-                Exception::from_python();
-            }
-            try {
-                size_t i = 0;
-                for (const auto& item : contents) {
-                    PyTuple_SET_ITEM(m_ptr, i++, value_type(item).release().ptr());
+            if constexpr (impl::has_size<T>) {
+                m_ptr = PyTuple_New(std::size(contents));
+                if (m_ptr == nullptr) {
+                    Exception::from_python();
                 }
-            } catch (...) {
-                Py_DECREF(m_ptr);
-                throw;
+                try {
+                    size_t i = 0;
+                    for (const auto& item : contents) {
+                        PyTuple_SET_ITEM(m_ptr, i++, value_type(item).release().ptr());
+                    }
+                } catch (...) {
+                    Py_DECREF(m_ptr);
+                    throw;
+                }
+            } else {
+                PyObject* list = PyList_New(0);
+                if (list == nullptr) {
+                    Exception::from_python();
+                }
+                try {
+                    for (const auto& item : contents) {
+                        if (PyList_Append(list, value_type(item).ptr())) {
+                            Exception::from_python();
+                        }
+                    }
+                } catch (...) {
+                    Py_DECREF(list);
+                    throw;
+                }
+                m_ptr = PyList_AsTuple(list);
+                Py_DECREF(list);
+                if (m_ptr == nullptr) {
+                    Exception::from_python();
+                }
             }
         }
     }

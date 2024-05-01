@@ -93,11 +93,10 @@ public:
         // value type
         } else {
             static_assert(
-                impl::has_value_type<std::decay_t<T>>,
-                "py::List can only be constructed from containers with a value_type "
-                "alias."
+                impl::is_iterable<std::decay_t<T>>,
+                "py::List can only be constructed from iterable containers."
             );
-            return typecheck<typename std::decay_t<T>::value_type>;
+            return typecheck<impl::dereference_type<std::decay_t<T>>>;
         }
     }
 
@@ -134,7 +133,7 @@ public:
             }
 
         } else if constexpr (impl::list_like<T>) {
-            return obj.tr() != nullptr && typecheck<typename T::value_type>;
+            return obj.tr() != nullptr && typecheck<impl::dereference_type<T>>;
 
         } else {
             return false;

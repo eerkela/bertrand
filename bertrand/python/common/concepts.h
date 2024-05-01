@@ -371,11 +371,6 @@ namespace impl {
     };
 
     template <typename T>
-    concept has_value_type = requires {
-        typename T::value_type;
-    };
-
-    template <typename T>
     concept is_iterable = requires(T t) {
         { std::begin(t) } -> std::input_or_output_iterator;
         { std::end(t) } -> std::input_or_output_iterator;
@@ -480,64 +475,19 @@ namespace impl {
         typename R
     >
     struct Broadcast {
-        static constexpr bool value = Condition<L, R>::value;
-    };
+        template <typename T>
+        struct deref { using type = T; };
+        template <is_iterable T>
+        struct deref<T> {
+            using type = std::conditional_t<
+                pybind11_like<T>, Object, dereference_type<T>
+            >;
+        };
 
-    template <
-        template <typename, typename> typename Condition,
-        has_value_type L,
-        has_value_type R
-    >
-    struct Broadcast<Condition, L, R> {
-        static constexpr bool value =
-            Broadcast<Condition, typename L::value_type, typename R::value_type>::value;
-    };
-
-    template <
-        template <typename, typename> typename Condition,
-        typename L,
-        has_value_type R
-    >
-    struct Broadcast<Condition, L, R> {
-        static constexpr bool value =
-            Broadcast<Condition, L, typename R::value_type>::value;
-    };
-
-    template <
-        template <typename, typename> typename Condition,
-        has_value_type L,
-        typename R
-    >
-    struct Broadcast<Condition, L, R> {
-        static constexpr bool value =
-            Broadcast<Condition, typename L::value_type, R>::value;
-    };
-
-    template <
-        template <typename, typename> typename Condition,
-        pybind11_like L,
-        pybind11_like R
-    >
-    struct Broadcast<Condition, L, R> {
-        static constexpr bool value = Broadcast<Condition, Object, Object>::value;
-    };
-
-    template <
-        template <typename, typename> typename Condition,
-        typename L,
-        pybind11_like R
-    > requires (!has_value_type<L>)
-    struct Broadcast<Condition, L, R> {
-        static constexpr bool value = Broadcast<Condition, L, Object>::value;
-    };
-
-    template <
-        template <typename, typename> typename Condition,
-        pybind11_like L,
-        typename R
-    > requires (!has_value_type<R>)
-    struct Broadcast<Condition, L, R> {
-        static constexpr bool value = Broadcast<Condition, Object, R>::value;
+        static constexpr bool value = Condition<
+            typename deref<L>::type,
+            typename deref<R>::type
+        >::value;
     };
 
     template <
