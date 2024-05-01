@@ -36,59 +36,6 @@ struct __getattr__<List, "count">                           : Returns<Function> 
 template <>
 struct __getattr__<List, "index">                           : Returns<Function> {};
 
-template <>
-struct __len__<List>                                        : Returns<size_t> {};
-template <>
-struct __iter__<List>                                       : Returns<Object> {};
-template <>
-struct __reversed__<List>                                   : Returns<Object> {};
-template <typename T>
-struct __contains__<List, T>                                : Returns<bool> {};
-template <impl::int_like T>
-struct __getitem__<List, T>                                 : Returns<Object> {};
-template <>
-struct __getitem__<List, Slice>                             : Returns<List> {};
-template <impl::int_like Key, typename Value>
-struct __setitem__<List, Key, Value>                        : Returns<void> {};
-template <impl::list_like Value>
-struct __setitem__<List, Slice, Value>                      : Returns<void> {};
-template <impl::int_like Key>
-struct __delitem__<List, Key>                               : Returns<void> {};
-template <>
-struct __delitem__<List, Slice>                             : Returns<void> {};
-template <>
-struct __lt__<List, Object>                                 : Returns<bool> {};
-template <impl::list_like T>
-struct __lt__<List, T>                                      : Returns<bool> {};
-template <>
-struct __le__<List, Object>                                 : Returns<bool> {};
-template <impl::list_like T>
-struct __le__<List, T>                                      : Returns<bool> {};
-template <>
-struct __ge__<List, Object>                                 : Returns<bool> {};
-template <impl::list_like T>
-struct __ge__<List, T>                                      : Returns<bool> {};
-template <>
-struct __gt__<List, Object>                                 : Returns<bool> {};
-template <impl::list_like T>
-struct __gt__<List, T>                                      : Returns<bool> {};
-template <>
-struct __add__<List, Object>                                : Returns<List> {};
-template <impl::list_like T>
-struct __add__<List, T>                                     : Returns<List> {};
-template <>
-struct __iadd__<List, Object>                               : Returns<List&> {};
-template <impl::list_like T>
-struct __iadd__<List, T>                                    : Returns<List&> {};
-template <>
-struct __mul__<List, Object>                                : Returns<List> {};
-template <impl::int_like T>
-struct __mul__<List, T>                                     : Returns<List> {};
-template <>
-struct __imul__<List, Object>                               : Returns<List&> {};
-template <impl::int_like T>
-struct __imul__<List, T>                                    : Returns<List&> {};
-
 
 /* Represents a statically-typed Python list in C++. */
 class List : public Object, public impl::ListTag {
@@ -335,7 +282,7 @@ public:
 
     /* Equivalent to Python `list.copy()`. */
     inline List copy() const {
-        PyObject* result = PyList_GetSlice(this->ptr(), 0, size());
+        PyObject* result = PyList_GetSlice(this->ptr(), 0, PyList_GET_SIZE(this->ptr()));
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -397,7 +344,7 @@ public:
 
     /* Equivalent to Python `list.clear()`. */
     inline void clear() {
-        if (PyList_SetSlice(this->ptr(), 0, size(), nullptr)) {
+        if (PyList_SetSlice(this->ptr(), 0, PyList_GET_SIZE(this->ptr()), nullptr)) {
             Exception::from_python();
         }
     }
@@ -460,13 +407,13 @@ public:
 protected:
 
     inline List concat(const std::initializer_list<Object>& items) const {
-        PyObject* result = PyList_New(size() + items.size());
+        PyObject* result = PyList_New(PyList_GET_SIZE(this->ptr()) + items.size());
         if (result == nullptr) {
             Exception::from_python();
         }
         try {
             size_t i = 0;
-            size_t length = size();
+            size_t length = PyList_GET_SIZE(this->ptr());
             PyObject** array = data();
             while (i < length) {
                 PyList_SET_ITEM(result, i, Py_NewRef(array[i]));
@@ -483,6 +430,78 @@ protected:
     }
 
 };
+
+
+// template <
+//     std::derived_from<impl::TupleTag> Self,
+//     std::convertible_to<typename Self::value_type> T
+// >
+// struct __setitem__<Self, Object, T>                             : Returns<void> {};
+// template <
+//     std::derived_from<impl::TupleTag> Self,
+//     impl::int_like Key,
+//     std::convertible_to<typename Self::value_type> T
+// >
+// struct __setitem__<Self, Key, T>                                : Returns<void> {};
+// template <
+//     std::derived_from<impl::TupleTag> Self,
+//     std::convertible_to<Self> T
+// >
+// struct __setitem__<Self, Slice, T>                              : Returns<void> {};
+
+
+template <>
+struct __len__<List>                                        : Returns<size_t> {};
+template <>
+struct __iter__<List>                                       : Returns<Object> {};
+template <>
+struct __reversed__<List>                                   : Returns<Object> {};
+template <typename T>
+struct __contains__<List, T>                                : Returns<bool> {};
+template <impl::int_like T>
+struct __getitem__<List, T>                                 : Returns<Object> {};
+template <>
+struct __getitem__<List, Slice>                             : Returns<List> {};
+template <impl::int_like Key, typename Value>
+struct __setitem__<List, Key, Value>                        : Returns<void> {};
+template <impl::list_like Value>
+struct __setitem__<List, Slice, Value>                      : Returns<void> {};
+template <impl::int_like Key>
+struct __delitem__<List, Key>                               : Returns<void> {};
+template <>
+struct __delitem__<List, Slice>                             : Returns<void> {};
+template <>
+struct __lt__<List, Object>                                 : Returns<bool> {};
+template <impl::list_like T>
+struct __lt__<List, T>                                      : Returns<bool> {};
+template <>
+struct __le__<List, Object>                                 : Returns<bool> {};
+template <impl::list_like T>
+struct __le__<List, T>                                      : Returns<bool> {};
+template <>
+struct __ge__<List, Object>                                 : Returns<bool> {};
+template <impl::list_like T>
+struct __ge__<List, T>                                      : Returns<bool> {};
+template <>
+struct __gt__<List, Object>                                 : Returns<bool> {};
+template <impl::list_like T>
+struct __gt__<List, T>                                      : Returns<bool> {};
+template <>
+struct __add__<List, Object>                                : Returns<List> {};
+template <impl::list_like T>
+struct __add__<List, T>                                     : Returns<List> {};
+template <>
+struct __iadd__<List, Object>                               : Returns<List&> {};
+template <impl::list_like T>
+struct __iadd__<List, T>                                    : Returns<List&> {};
+template <>
+struct __mul__<List, Object>                                : Returns<List> {};
+template <impl::int_like T>
+struct __mul__<List, T>                                     : Returns<List> {};
+template <>
+struct __imul__<List, Object>                               : Returns<List&> {};
+template <impl::int_like T>
+struct __imul__<List, T>                                    : Returns<List&> {};
 
 
 /* Implicitly convert a py::List into a std::pair if and only if the list is of length

@@ -96,13 +96,6 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
-    // CTAD problems:
-    // py::Tuple<py::Int> a("abc");  // this should not compile
-    // py::Tuple<py::Str> b = {"a", "b", "c"};
-    // py::Tuple<> c = b;  // this should not cause a clangd error
-    // py::Tuple<py::Int> d = b;  // this should not cause an ambiguity, it should just fail to compile
-
-
 
 
     // py::Tuple<py::Int> tuple = {1, 2, 3};
@@ -121,12 +114,58 @@ void run() {
     // py::print(py::Tuple<py::Str>::check(tuple));
 
 
-    py::Tuple<py::Int> x = {1, 2, 3};
-    py::Tuple<> y = x;
-    // py::Tuple z = 2;
-    py::print(y);
-    py::print(typeid(decltype(y)).name());
 
+    // py::Tuple tuple("abc");
+    // py::print(typeid(decltype(tuple)::value_type).name());
+    // for (auto&& item : tuple[{0, 2}]) {
+    //     py::print(item);
+    // }
+
+
+    // py::Tuple<py::Int> x = {1, 2, 3};
+    // // py::Tuple<> y = {4, 5, 6};
+    // py::Tuple<py::Int> y = {4, 5, 6};
+    // // py::Tuple y("abcdef");
+    // py::Object z = py::Tuple{7, 8, "abc"};
+    // py::print(typeid(decltype(x + y)).name());
+    // // py::print(x + z);  // TODO: should not be allowed
+    // // py::print(2 * x);
+    // // py::print(x % z);
+
+    // x += py::Object(py::Tuple{20, 21, "abc"});  // TODO: should not be allowed
+    // py::print(x);
+
+    // py::Tuple a = x + py::Tuple{10, 11, 12};
+    // py::print(typeid(decltype(a)::value_type).name());
+
+
+    // TODO: Since I have no control over the type of a generic Object, I have to
+    // return another Object.  That allows for arbitrary Python objects to overload
+    // these operators however they wish, with the caveat that the return type is
+    // always another Object.
+    // py::Tuple w = {1, 2, 3};
+    // py::print(typeid(decltype(w + py::Object(py::Tuple{"a", "b", "c"}))).name());
+
+
+    py::Tuple<py::Int> a = {1, 2, 3};
+    pybind11::tuple b = a;
+    py::print(b);
+    py::print(a < py::Tuple<py::Int>{4, 5, 6});
+    py::print(a < std::tuple<double, double, double>{4, 5, 6});
+    py::print(std::pair<int, int>{1, 2} < a);
+    py::print(a < b);
+    // py::print(a < py::Tuple<py::Str>{"a", "b", "c"});
+    // py::print(a < std::vector<double>{4, 5, 6});
+    // py::print(a < std::list<std::string>{"a", "b", "c"});
+
+    // py::print(x[{0, 2}] + py::Tuple<py::Int>{10, 11});
+
+
+
+
+    // perhaps Object should only implement operators that are combined with other
+    // objects?  So you could generically add two objects, but that wouldn't extend to
+    // any subclasses.  That might simplify the operator definitions as well.
 
 
 

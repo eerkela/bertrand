@@ -31,135 +31,6 @@ namespace impl {
 }
 
 
-// NOTE: Object implicitly allows all operators, but will defer to a subclass if
-// combined with one in a binary operation.  This reduces the need to treat Object
-// as a special case in the operator overloads.
-template <typename ... Args>
-struct __call__<Object, Args...>                            : Returns<Object> {};
-template <>
-struct __len__<Object>                                      : Returns<size_t> {};
-template <typename T>
-struct __contains__<Object, T>                              : Returns<bool> {};
-template <>
-struct __iter__<Object>                                     : Returns<Object> {};
-template <>
-struct __reversed__<Object>                                 : Returns<Object> {};
-template <typename Key>
-struct __getitem__<Object, Key>                             : Returns<Object> {};
-template <typename Key, typename Value>
-struct __setitem__<Object, Key, Value>                      : Returns<void> {};
-template <typename Key>
-struct __delitem__<Object, Key>                             : Returns<void> {};
-template <StaticStr name> requires (!impl::getattr_helper<name>::enable)
-struct __getattr__<Object, name>                            : Returns<Object> {};
-template <StaticStr name, typename Value> requires (!impl::setattr_helper<name>::enable)
-struct __setattr__<Object, name, Value>                     : Returns<void> {};
-template <StaticStr name> requires (!impl::delattr_helper<name>::enable)
-struct __delattr__<Object, name>                            : Returns<void> {};
-template <>
-struct __pos__<Object>                                      : Returns<Object> {};
-template <>
-struct __neg__<Object>                                      : Returns<Object> {};
-template <>
-struct __abs__<Object>                                      : Returns<Object> {};
-template <>
-struct __invert__<Object>                                   : Returns<Object> {};
-template <>
-struct __increment__<Object>                                : Returns<Object> {};
-template <>
-struct __decrement__<Object>                                : Returns<Object> {};
-template <>
-struct __hash__<Object>                                     : Returns<size_t> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __lt__<L, R>                                         : Returns<bool> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __lt__<L, R>                                         : Returns<bool> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __le__<L, R>                                         : Returns<bool> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __le__<L, R>                                         : Returns<bool> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __eq__<L, R>                                         : Returns<bool> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __eq__<L, R>                                         : Returns<bool> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __ne__<L, R>                                         : Returns<bool> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __ne__<L, R>                                         : Returns<bool> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __ge__<L, R>                                         : Returns<bool> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __ge__<L, R>                                         : Returns<bool> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __gt__<L, R>                                         : Returns<bool> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __gt__<L, R>                                         : Returns<bool> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __add__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __add__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> R>
-struct __iadd__<Object, R>                                  : Returns<Object&> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __sub__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __sub__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> R>
-struct __isub__<Object, R>                                  : Returns<Object&> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __mul__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __mul__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> R>
-struct __imul__<Object, R>                                  : Returns<Object&> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __truediv__<L, R>                                    : Returns<Object> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __truediv__<L, R>                                    : Returns<Object> {};
-template <std::convertible_to<Object> R>
-struct __itruediv__<Object, R>                              : Returns<Object&> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __mod__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __mod__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> R>
-struct __imod__<Object, R>                                  : Returns<Object&> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __lshift__<L, R>                                     : Returns<Object> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __lshift__<L, R>                                     : Returns<Object> {};
-template <std::convertible_to<Object> R>
-struct __ilshift__<Object, R>                               : Returns<Object&> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __rshift__<L, R>                                     : Returns<Object> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __rshift__<L, R>                                     : Returns<Object> {};
-template <std::convertible_to<Object> R>
-struct __irshift__<Object, R>                               : Returns<Object&> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __and__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __and__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> R>
-struct __iand__<Object, R>                                  : Returns<Object&> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __or__<L, R>                                         : Returns<Object> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __or__<L, R>                                         : Returns<Object> {};
-template <std::convertible_to<Object> R>
-struct __ior__<Object, R>                                   : Returns<Object&> {};
-template <std::same_as<Object> L, std::convertible_to<Object> R>
-struct __xor__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> L, std::same_as<Object> R> requires (!std::same_as<L, Object>)
-struct __xor__<L, R>                                        : Returns<Object> {};
-template <std::convertible_to<Object> R>
-struct __ixor__<Object, R>                                  : Returns<Object&> {};
-
-
-// TODO: maybe check() should not check for nullptr?  This might make them more
-// composable?
-
-
 /* A revised Python object interface that allows implicit conversions to subtypes
 (applying a type check on the way), explicit conversions to arbitrary C++ types,
 type-safe operators, and generalized slice/attr syntax. */
@@ -349,24 +220,24 @@ public:
     }
 
     /* Return the underlying PyObject* pointer. */
-    inline PyObject* ptr() const {
+    [[nodiscard]] inline PyObject* ptr() const {
         return m_ptr;
     }
 
     /* Relinquish ownership over the object and return it as a raw handle. */
-    inline Handle release() {
+    [[nodiscard]] inline Handle release() {
         PyObject* temp = m_ptr;
         m_ptr = nullptr;
         return Handle(temp);
     }
 
     /* Check for exact pointer identity. */
-    inline bool is(const Handle& other) const {
+    [[nodiscard]] inline bool is(const Handle& other) const {
         return m_ptr == other.ptr();
     }
 
     /* Check for exact pointer identity. */
-    inline bool is(const Object& other) const {
+    [[nodiscard]] inline bool is(const Object& other) const {
         return m_ptr == other.ptr();
     }
 
@@ -386,7 +257,8 @@ public:
     implemented, as it can lead to template ambiguities and unexpected behavior.
     Ambiguities can still arise via the control struct, but they are more predictable
     and avoidable. */
-    template <typename Self, typename T> requires (__cast__<Self, T>::enable)
+    template <typename Self, typename T>
+        requires (__cast__<Self, T>::enable && !impl::initializer_like<T>)
     operator T(this const Self& self) {
         return __cast__<Self, T>::operator()(self);
     }
@@ -425,7 +297,7 @@ public:
     /* Index operator.  Specific key and element types can be controlled via the
     __getitem__, __setitem__, and __delitem__ control structs. */
     template <typename Self, typename Key> requires (__getitem__<Self, Key>::enable)
-    auto operator[](this const Self& self, const Key& key) {
+    [[nodiscard]] auto operator[](this const Self& self, const Key& key) {
         using Return = typename __getitem__<Self, Key>::Return;
         if constexpr (impl::proxy_like<Key>) {
             return self[key.value()];
@@ -438,7 +310,7 @@ public:
     py::Slice operand, allowing users to specify slices using a condensed initializer
     list. */
     template <typename Self> requires (__getitem__<Self, Slice>::enable)
-    auto operator[](
+    [[nodiscard]] auto operator[](
         this const Self& self,
         const std::initializer_list<impl::SliceInitializer>& slice
     );
@@ -448,7 +320,7 @@ public:
     container types, and the allowable key types can be specified via the __contains__
     control struct. */
     template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
-    bool contains(this const Self& self, const Key& key) {
+    [[nodiscard]] bool contains(this const Self& self, const Key& key) {
         using Return = typename __contains__<Self, Key>::Return;
         static_assert(
             std::same_as<Return, bool>,
@@ -466,7 +338,7 @@ public:
     /* Length operator.  Equivalent to Python's `len()` function.  This can be enabled
     via the __len__ control struct. */
     template <typename Self> requires (__len__<Self>::enable)
-    size_t size(this const Self& self) {
+    [[nodiscard]] size_t size(this const Self& self) {
         using Return = typename __len__<Self>::Return;
         static_assert(
             std::same_as<Return, size_t>,
@@ -481,7 +353,7 @@ public:
     controlled by the __iter__ control struct, whose return type dictates the
     iterator's dereference type. */
     template <typename Self> requires (__iter__<Self>::enable)
-    auto begin(this const Self& self) {
+    [[nodiscard]] auto begin(this const Self& self) {
         using Return = typename __iter__<Self>::Return;
         static_assert(
             std::derived_from<Return, Object>,
@@ -496,14 +368,14 @@ public:
     immutable iterators, so this is fundamentally the same as the ordinary begin()
     method.  Some libraries assume the existence of this method. */
     template <typename Self> requires (__iter__<Self>::enable)
-    auto cbegin(this const Self& self) {
+    [[nodiscard]] auto cbegin(this const Self& self) {
         return self.begin();
     }
 
     /* End iteration operator.  This terminates the iteration and is controlled by the
     __iter__ control struct. */
     template <typename Self> requires (__iter__<Self>::enable)
-    auto end(this const Self& self) {
+    [[nodiscard]] auto end(this const Self& self) {
         using Return = typename __iter__<Self>::Return;
         static_assert(
             std::derived_from<Return, Object>,
@@ -516,7 +388,7 @@ public:
 
     /* Const end operator.  Similar to `cbegin()`, this is identical to `end()`. */
     template <typename Self> requires (__iter__<Self>::enable)
-    auto cend(this const Self& self) {
+    [[nodiscard]] auto cend(this const Self& self) {
         return self.end();
     }
 
@@ -524,7 +396,7 @@ public:
     controlled by the __reversed__ control struct, whose return type dictates the
     iterator's dereference type. */
     template <typename Self> requires (__reversed__<Self>::enable)
-    auto rbegin(this const Self& self) {
+    [[nodiscard]] auto rbegin(this const Self& self) {
         using Return = typename __reversed__<Self>::Return;
         static_assert(
             std::derived_from<Return, Object>,
@@ -539,14 +411,14 @@ public:
     and immutable iterators, so this is fundamentally the same as the ordinary
     rbegin() method.  Some libraries assume the existence of this method. */
     template <typename Self> requires (__reversed__<Self>::enable)
-    auto crbegin(this const Self& self) {
+    [[nodiscard]] auto crbegin(this const Self& self) {
         return self.rbegin();
     }
 
     /* Reverse end operator.  This terminates the reverse iteration and is controlled
     by the __reversed__ control struct. */
     template <typename Self> requires (__reversed__<Self>::enable)
-    auto rend(this const Self& self) {
+    [[nodiscard]] auto rend(this const Self& self) {
         using Return = typename __reversed__<Self>::Return;
         static_assert(
             std::derived_from<Return, Object>,
@@ -560,15 +432,204 @@ public:
     /* Const reverse end operator.  Similar to `crbegin()`, this is identical to
     `rend()`. */
     template <typename Self> requires (__reversed__<Self>::enable)
-    auto crend(this const Self& self) {
+    [[nodiscard]] auto crend(this const Self& self) {
         return self.rend();
     }
 
 };
 
 
+// NOTE: Object implicitly allows all operators, but will defer to a subclass if
+// combined with one in a binary operation.  This reduces the need to treat Object
+// as a special case in the operator overloads.
+template <typename ... Args>
+struct __call__<Object, Args...>                            : Returns<Object> {};
+template <StaticStr name> requires (!impl::getattr_helper<name>::enable)
+struct __getattr__<Object, name>                            : Returns<Object> {};
+template <StaticStr name, typename Value> requires (!impl::setattr_helper<name>::enable)
+struct __setattr__<Object, name, Value>                     : Returns<void> {};
+template <StaticStr name> requires (!impl::delattr_helper<name>::enable)
+struct __delattr__<Object, name>                            : Returns<void> {};
+template <typename Key>
+struct __getitem__<Object, Key>                             : Returns<Object> {};
+template <typename Key, typename Value>
+struct __setitem__<Object, Key, Value>                      : Returns<void> {};
+template <typename Key>
+struct __delitem__<Object, Key>                             : Returns<void> {};
+template <>
+struct __len__<Object>                                      : Returns<size_t> {};
+template <>
+struct __iter__<Object>                                     : Returns<Object> {};
+template <>
+struct __reversed__<Object>                                 : Returns<Object> {};
+template <typename T>
+struct __contains__<Object, T>                              : Returns<bool> {};
+template <>
+struct __hash__<Object>                                     : Returns<size_t> {};
+template <>
+struct __abs__<Object>                                      : Returns<Object> {};
+template <>
+struct __invert__<Object>                                   : Returns<Object> {};
+template <>
+struct __pos__<Object>                                      : Returns<Object> {};
+template <>
+struct __neg__<Object>                                      : Returns<Object> {};
+template <>
+struct __increment__<Object>                                : Returns<Object> {};
+template <>
+struct __decrement__<Object>                                : Returns<Object> {};
+template <>
+struct __lt__<Object, Object>                               : Returns<bool> {};
+template <std::convertible_to<Object> R>
+struct __lt__<Object, R>                                    : Returns<bool> {};
+template <std::convertible_to<Object> L>
+struct __lt__<L, Object>                                    : Returns<bool> {};
+template <>
+struct __le__<Object, Object>                               : Returns<bool> {};
+template <std::convertible_to<Object> R>
+struct __le__<Object, R>                                    : Returns<bool> {};
+template <std::convertible_to<Object> L>
+struct __le__<L, Object>                                    : Returns<bool> {};
+template <>
+struct __eq__<Object, Object>                               : Returns<bool> {};
+template <std::convertible_to<Object> R>
+struct __eq__<Object, R>                                    : Returns<bool> {};
+template <std::convertible_to<Object> L>
+struct __eq__<L, Object>                                    : Returns<bool> {};
+template <>
+struct __ne__<Object, Object>                               : Returns<bool> {};
+template <std::convertible_to<Object> R>
+struct __ne__<Object, R>                                    : Returns<bool> {};
+template <std::convertible_to<Object> L>
+struct __ne__<L, Object>                                    : Returns<bool> {};
+template <>
+struct __ge__<Object, Object>                               : Returns<bool> {};
+template <std::convertible_to<Object> R>
+struct __ge__<Object, R>                                    : Returns<bool> {};
+template <std::convertible_to<Object> L>
+struct __ge__<L, Object>                                    : Returns<bool> {};
+template <>
+struct __gt__<Object, Object>                               : Returns<bool> {};
+template <std::convertible_to<Object> R>
+struct __gt__<Object, R>                                    : Returns<bool> {};
+template <std::convertible_to<Object> L>
+struct __gt__<L, Object>                                    : Returns<bool> {};
+template <>
+struct __add__<Object, Object>                              : Returns<Object> {};
+template <std::convertible_to<Object> R>
+struct __add__<Object, R>                                   : Returns<Object> {};
+template <std::convertible_to<Object> L>
+struct __add__<L, Object>                                   : Returns<Object> {};
+template <>
+struct __iadd__<Object, Object>                             : Returns<Object&> {};
+template <std::convertible_to<Object> R>
+struct __iadd__<Object, R>                                  : Returns<Object&> {};
+template <>
+struct __sub__<Object, Object>                              : Returns<Object> {};
+template <std::convertible_to<Object> R>
+struct __sub__<Object, R>                                   : Returns<Object> {};
+template <std::convertible_to<Object> L>
+struct __sub__<L, Object>                                   : Returns<Object> {};
+template <>
+struct __isub__<Object, Object>                             : Returns<Object&> {};
+template <std::convertible_to<Object> R>
+struct __isub__<Object, R>                                  : Returns<Object&> {};
+template <>
+struct __mul__<Object, Object>                              : Returns<Object> {};
+template <std::convertible_to<Object> R>
+struct __mul__<Object, R>                                   : Returns<Object> {};
+template <std::convertible_to<Object> L>
+struct __mul__<L, Object>                                   : Returns<Object> {};
+template <>
+struct __imul__<Object, Object>                             : Returns<Object&> {};
+template <std::convertible_to<Object> R>
+struct __imul__<Object, R>                                  : Returns<Object&> {};
+template <>
+struct __truediv__<Object, Object>                          : Returns<Object> {};
+template <std::convertible_to<Object> R>
+struct __truediv__<Object, R>                               : Returns<Object> {};
+template <std::convertible_to<Object> L>
+struct __truediv__<L, Object>                               : Returns<Object> {};
+template <>
+struct __itruediv__<Object, Object>                         : Returns<Object&> {};
+template <std::convertible_to<Object> R>
+struct __itruediv__<Object, R>                              : Returns<Object&> {};
+template <>
+struct __floordiv__<Object, Object>                         : Returns<Object> {};
+template <std::convertible_to<Object> R>
+struct __floordiv__<Object, R>                              : Returns<Object> {};
+template <std::convertible_to<Object> L>
+struct __floordiv__<L, Object>                              : Returns<Object> {};
+template <>
+struct __mod__<Object, Object>                              : Returns<Object> {};
+template <std::convertible_to<Object> R>
+struct __mod__<Object, R>                                   : Returns<Object> {};
+template <std::convertible_to<Object> L>
+struct __mod__<L, Object>                                   : Returns<Object> {};
+template <>
+struct __imod__<Object, Object>                             : Returns<Object&> {};
+template <std::convertible_to<Object> R>
+struct __imod__<Object, R>                                  : Returns<Object&> {};
+template <>
+struct __pow__<Object, Object>                              : Returns<Object> {};
+template <std::convertible_to<Object> R>
+struct __pow__<Object, R>                                   : Returns<Object> {};
+template <std::convertible_to<Object> L>
+struct __pow__<L, Object>                                   : Returns<Object> {};
+template <>
+struct __lshift__<Object, Object>                           : Returns<Object> {};
+template <std::convertible_to<Object> R>
+struct __lshift__<Object, R>                                : Returns<Object> {};
+template <std::convertible_to<Object> L>
+struct __lshift__<L, Object>                                : Returns<Object> {};
+template <>
+struct __ilshift__<Object, Object>                          : Returns<Object&> {};
+template <std::convertible_to<Object> R>
+struct __ilshift__<Object, R>                               : Returns<Object&> {};
+template <>
+struct __rshift__<Object, Object>                           : Returns<Object> {};
+template <std::convertible_to<Object> R>
+struct __rshift__<Object, R>                                : Returns<Object> {};
+template <std::convertible_to<Object> L>
+struct __rshift__<L, Object>                                : Returns<Object> {};
+template <>
+struct __irshift__<Object, Object>                          : Returns<Object&> {};
+template <std::convertible_to<Object> R>
+struct __irshift__<Object, R>                               : Returns<Object&> {};
+template <>
+struct __and__<Object, Object>                              : Returns<Object> {};
+template <std::convertible_to<Object> R>
+struct __and__<Object, R>                                   : Returns<Object> {};
+template <std::convertible_to<Object> L>
+struct __and__<L, Object>                                   : Returns<Object> {};
+template <>
+struct __iand__<Object, Object>                             : Returns<Object&> {};
+template <std::convertible_to<Object> R>
+struct __iand__<Object, R>                                  : Returns<Object&> {};
+template <>
+struct __or__<Object, Object>                               : Returns<Object> {};
+template <std::convertible_to<Object> R>
+struct __or__<Object, R>                                    : Returns<Object> {};
+template <std::convertible_to<Object> L>
+struct __or__<L, Object>                                    : Returns<Object> {};
+template <>
+struct __ior__<Object, Object>                              : Returns<Object&> {};
+template <std::convertible_to<Object> R>
+struct __ior__<Object, R>                                   : Returns<Object&> {};
+template <>
+struct __xor__<Object, Object>                              : Returns<Object> {};
+template <std::convertible_to<Object> R>
+struct __xor__<Object, R>                                   : Returns<Object> {};
+template <std::convertible_to<Object> L>
+struct __xor__<L, Object>                                   : Returns<Object> {};
+template <>
+struct __ixor__<Object, Object>                             : Returns<Object&> {};
+template <std::convertible_to<Object> R>
+struct __ixor__<Object, R>                                  : Returns<Object&> {};
+
+
 /* Implicitly convert Object to any type that is not a pointer or reference type, an
-internal pybind11 type, or a subclass of Object. */
+internal pybind11 type, or a subclass of Object using pybind11's cast() mechanism. */
 template <impl::not_proxy_like T>
     requires (
         !std::is_pointer_v<T> &&

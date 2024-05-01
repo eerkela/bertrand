@@ -469,11 +469,11 @@ namespace impl {
             Py_XDECREF(py_traceback);
         }
 
-        size_t size() const noexcept { return stack.size(); }
-        auto begin() const noexcept { return stack.begin(); }
-        auto end() const noexcept { return stack.end(); }
-        auto rbegin() const noexcept { return stack.rbegin(); }
-        auto rend() const noexcept { return stack.rend(); }
+        [[nodiscard]] size_t size() const noexcept { return stack.size(); }
+        [[nodiscard]] auto begin() const noexcept { return stack.begin(); }
+        [[nodiscard]] auto end() const noexcept { return stack.end(); }
+        [[nodiscard]] auto rbegin() const noexcept { return stack.rbegin(); }
+        [[nodiscard]] auto rend() const noexcept { return stack.rend(); }
 
         /* Set an active Python error with this traceback. */
         void restore(PyObject* type, const char* value) const {
@@ -493,7 +493,8 @@ namespace impl {
         }
 
         /* Build an equivalent Python traceback object for this stack trace.  The
-        result is cached and reused on subsequent calls. */
+        result is cached and reused on subsequent calls.  The user does not need to
+        decrement its reference count. */
         PyTracebackObject* to_python() const {
             if (py_traceback == nullptr && !stack.empty()) {
                 auto it = stack.rbegin();
@@ -537,7 +538,7 @@ namespace impl {
 
         /* Convert the traceback into a string representation, for use in C++ error
         messages.  These mimic the Python style even in pure C++ contexts. */
-        const std::string& to_string() const noexcept {
+        [[nodiscard]] const std::string& to_string() const noexcept {
             if (string.empty()) {
                 string = "Traceback (most recent call last):";
                 for (auto&& frame : stack) {

@@ -25,20 +25,20 @@ namespace impl {
     namespace categories {
 
         struct Base {
-            static constexpr bool boollike = false;
-            static constexpr bool intlike = false;
-            static constexpr bool floatlike = false;
-            static constexpr bool complexlike = false;
-            static constexpr bool strlike = false;
-            static constexpr bool timedeltalike = false;
-            static constexpr bool timezonelike = false;
-            static constexpr bool datelike = false;
-            static constexpr bool timelike = false;
-            static constexpr bool datetimelike = false;
-            static constexpr bool tuplelike = false;
-            static constexpr bool listlike = false;
-            static constexpr bool setlike = false;
-            static constexpr bool dictlike = false;
+            static constexpr bool bool_like = false;
+            static constexpr bool int_like = false;
+            static constexpr bool float_like = false;
+            static constexpr bool complex_like = false;
+            static constexpr bool str_like = false;
+            static constexpr bool timedelta_like = false;
+            static constexpr bool timezone_like = false;
+            static constexpr bool date_like = false;
+            static constexpr bool time_like = false;
+            static constexpr bool datetime_like = false;
+            static constexpr bool tuple_like = false;
+            static constexpr bool list_like = false;
+            static constexpr bool set_like = false;
+            static constexpr bool dict_like = false;
         };
 
         template <typename T>
@@ -46,86 +46,85 @@ namespace impl {
 
         template <typename T>
         struct Traits<std::complex<T>> : public Base {
-            static constexpr bool complexlike = true;
+            static constexpr bool complex_like = true;
         };
 
         template <typename... Args>
         struct Traits<std::chrono::duration<Args...>> : public Base {
-            static constexpr bool timedeltalike = true;
+            static constexpr bool timedelta_like = true;
         };
 
         template <typename... Args>
         struct Traits<std::chrono::time_point<Args...>> : public Base {
-            static constexpr bool timelike = true;
+            static constexpr bool time_like = true;
         };
 
         // TODO: std::time_t?
 
         template <typename... Args>
         struct Traits<std::pair<Args...>> : public Base {
-            static constexpr bool tuplelike = true;
+            static constexpr bool tuple_like = true;
         };
 
         template <typename... Args>
         struct Traits<std::tuple<Args...>> : public Base {
-            static constexpr bool tuplelike = true;
+            static constexpr bool tuple_like = true;
         };
 
         template <typename T, size_t N>
         struct Traits<std::array<T, N>> : public Base {
-            static constexpr bool tuplelike = true;
+            static constexpr bool list_like = true;
         };
 
         template <typename... Args>
         struct Traits<std::vector<Args...>> : public Base {
-            static constexpr bool listlike = true;
+            static constexpr bool list_like = true;
         };
 
         template <typename... Args>
         struct Traits<std::deque<Args...>> : public Base {
-            static constexpr bool listlike = true;
+            static constexpr bool list_like = true;
         };
 
         template <typename... Args>
         struct Traits<std::list<Args...>> : public Base {
-            static constexpr bool listlike = true;
+            static constexpr bool list_like = true;
         };
 
         template <typename... Args>
         struct Traits<std::forward_list<Args...>> : public Base {
-            static constexpr bool listlike = true;
+            static constexpr bool list_like = true;
         };
 
         template <typename... Args>
         struct Traits<std::set<Args...>> : public Base {
-            static constexpr bool setlike = true;
+            static constexpr bool set_like = true;
         };
 
         template <typename... Args>
         struct Traits<std::unordered_set<Args...>> : public Base {
-            static constexpr bool setlike = true;
+            static constexpr bool set_like = true;
         };
 
         template <typename... Args>
         struct Traits<std::map<Args...>> : public Base {
-            static constexpr bool dictlike = true;
+            static constexpr bool dict_like = true;
         };
 
         template <typename... Args>
         struct Traits<std::unordered_map<Args...>> : public Base {
-            static constexpr bool dictlike = true;
+            static constexpr bool dict_like = true;
         };
 
     }
+
+    // TODO: maybe all concepts are also exposed as traits in a nested namespace?
 
     template <typename T>
     concept proxy_like = std::derived_from<std::remove_cvref_t<T>, ProxyTag>;
 
     template <typename T>
     concept not_proxy_like = !proxy_like<T>;
-
-    template <typename T>
-    concept initializer_like = std::derived_from<std::remove_cvref_t<T>, InitializerTag>;
 
     template <typename T>
     concept pybind11_like = pybind11::detail::is_pyobject<std::remove_cvref_t<T>>::value;
@@ -161,6 +160,14 @@ namespace impl {
         { it == end } -> std::convertible_to<bool>;
         { it != end } -> std::convertible_to<bool>;
     };
+
+    template <typename T>
+    struct is_initializer_list : std::false_type {};
+    template <typename T>
+    struct is_initializer_list<std::initializer_list<T>> : std::true_type {};
+
+    template <typename T>
+    concept initializer_like = is_initializer_list<std::remove_cvref_t<T>>::value;
 
     template <typename T>
     concept none_like = (
@@ -247,31 +254,31 @@ namespace impl {
 
     template <typename T>
     concept timedelta_like = (
-        categories::Traits<std::remove_cvref_t<T>>::timedeltalike ||
+        categories::Traits<std::remove_cvref_t<T>>::timedelta_like ||
         std::derived_from<std::remove_cvref_t<T>, Timedelta>
     );
 
     template <typename T>
     concept timezone_like = (
-        categories::Traits<std::remove_cvref_t<T>>::timezonelike ||
+        categories::Traits<std::remove_cvref_t<T>>::timezone_like ||
         std::derived_from<std::remove_cvref_t<T>, Timezone>
     );
 
     template <typename T>
     concept date_like = (
-        categories::Traits<std::remove_cvref_t<T>>::datelike ||
+        categories::Traits<std::remove_cvref_t<T>>::date_like ||
         std::derived_from<std::remove_cvref_t<T>, Date>
     );
 
     template <typename T>
     concept time_like = (
-        categories::Traits<std::remove_cvref_t<T>>::timelike ||
+        categories::Traits<std::remove_cvref_t<T>>::time_like ||
         std::derived_from<std::remove_cvref_t<T>, Time>
     );
 
     template <typename T>
     concept datetime_like = (
-        categories::Traits<std::remove_cvref_t<T>>::datetimelike ||
+        categories::Traits<std::remove_cvref_t<T>>::datetime_like ||
         std::derived_from<std::remove_cvref_t<T>, Datetime>
     );
 
@@ -282,28 +289,28 @@ namespace impl {
 
     template <typename T>
     concept tuple_like = (
-        categories::Traits<std::remove_cvref_t<T>>::tuplelike ||
+        categories::Traits<std::remove_cvref_t<T>>::tuple_like ||
         std::derived_from<std::remove_cvref_t<T>, TupleTag> ||
         std::derived_from<std::remove_cvref_t<T>, pybind11::tuple>
     );
 
     template <typename T>
     concept list_like = (
-        categories::Traits<std::remove_cvref_t<T>>::listlike ||
+        categories::Traits<std::remove_cvref_t<T>>::list_like ||
         std::derived_from<std::remove_cvref_t<T>, ListTag> ||
         std::derived_from<std::remove_cvref_t<T>, pybind11::list>
     );
 
     template <typename T>
     concept set_like = (
-        categories::Traits<std::remove_cvref_t<T>>::setlike ||
+        categories::Traits<std::remove_cvref_t<T>>::set_like ||
         std::derived_from<std::remove_cvref_t<T>, SetTag> ||
         std::derived_from<std::remove_cvref_t<T>, pybind11::set>
     );
 
     template <typename T>
     concept frozenset_like = (
-        categories::Traits<std::remove_cvref_t<T>>::setlike ||
+        categories::Traits<std::remove_cvref_t<T>>::set_like ||
         std::derived_from<std::remove_cvref_t<T>, FrozenSetTag> ||
         std::derived_from<std::remove_cvref_t<T>, pybind11::frozenset>
     );
@@ -313,14 +320,14 @@ namespace impl {
 
     template <typename T>
     concept dict_like = (
-        categories::Traits<std::remove_cvref_t<T>>::dictlike ||
+        categories::Traits<std::remove_cvref_t<T>>::dict_like ||
         std::derived_from<std::remove_cvref_t<T>, DictTag> ||
         std::derived_from<std::remove_cvref_t<T>, pybind11::dict>
     );
 
     template <typename T>
     concept mappingproxy_like = (
-        categories::Traits<std::remove_cvref_t<T>>::dictlike ||
+        categories::Traits<std::remove_cvref_t<T>>::dict_like ||
         std::derived_from<std::remove_cvref_t<T>, MappingProxyTag>
     );
 
@@ -397,21 +404,201 @@ namespace impl {
     };
 
     template <typename T>
-    concept pybind11_iterable = requires(const T& t) {
-        { pybind11::iter(t) } -> std::convertible_to<pybind11::iterator>;
-    };
-
-    template <typename T>
     concept has_call_operator = requires { &std::decay_t<T>::operator(); };
 
-    /* SFINAE condition is used to recognize callable C++ types without regard to their
-    argument signatures. */
     template <typename T>
     concept is_callable_any = 
         std::is_function_v<std::remove_pointer_t<std::decay_t<T>>> ||
         std::is_member_function_pointer_v<std::decay_t<T>> ||
         has_call_operator<T>;
 
+    template <typename L, typename R>
+    struct lt_comparable {
+        static constexpr bool value = requires(const L& a, const R& b) {
+            { a < b } -> std::convertible_to<bool>;
+        };
+    };
+
+    template <typename L, typename R>
+    struct le_comparable {
+        static constexpr bool value = requires(const L& a, const R& b) {
+            { a <= b } -> std::convertible_to<bool>;
+        };
+    };
+
+    template <typename L, typename R>
+    struct eq_comparable {
+        static constexpr bool value = requires(const L& a, const R& b) {
+            { a == b } -> std::convertible_to<bool>;
+        };
+    };
+
+    template <typename L, typename R>
+    struct ne_comparable {
+        static constexpr bool value = requires(const L& a, const R& b) {
+            { a != b } -> std::convertible_to<bool>;
+        };
+    };
+
+    template <typename L, typename R>
+    struct ge_comparable {
+        static constexpr bool value = requires(const L& a, const R& b) {
+            { a >= b } -> std::convertible_to<bool>;
+        };
+    };
+
+    template <typename L, typename R>
+    struct gt_comparable {
+        static constexpr bool value = requires(const L& a, const R& b) {
+            { a > b } -> std::convertible_to<bool>;
+        };
+    };
+
+    /* NOTE: some binary operators (such as lexicographic comparisons) accept generic
+     * containers, which may be combined with containers of different types.  In these
+     * cases, the operator should be enabled if and only if it is also supported by the
+     * respective element types.  This is complicated by the implementation of std::pair
+     * and std::tuple, which may contain heterogenous types.
+     *
+     * The Broadcast<> struct helps by recursively applying a scalar constraint over
+     * the values of a generic container type, with specializations to account for
+     * std::pair and std::tuple.  A generic specialization is provided for all types
+     * that implement a nested `value_type` alias, as well as pybind11 types, which are
+     * assumed to contain generic objects.  Note that the condition must be a type
+     * trait (not a concept) in order to be valid as a template template parameter.
+     */
+
+    template <
+        template <typename, typename> typename Condition,
+        typename L,
+        typename R
+    >
+    struct Broadcast {
+        static constexpr bool value = Condition<L, R>::value;
+    };
+
+    template <
+        template <typename, typename> typename Condition,
+        has_value_type L,
+        has_value_type R
+    >
+    struct Broadcast<Condition, L, R> {
+        static constexpr bool value =
+            Broadcast<Condition, typename L::value_type, typename R::value_type>::value;
+    };
+
+    template <
+        template <typename, typename> typename Condition,
+        typename L,
+        has_value_type R
+    >
+    struct Broadcast<Condition, L, R> {
+        static constexpr bool value =
+            Broadcast<Condition, L, typename R::value_type>::value;
+    };
+
+    template <
+        template <typename, typename> typename Condition,
+        has_value_type L,
+        typename R
+    >
+    struct Broadcast<Condition, L, R> {
+        static constexpr bool value =
+            Broadcast<Condition, typename L::value_type, R>::value;
+    };
+
+
+    template <
+        template <typename, typename> typename Condition,
+        pybind11_like L,
+        pybind11_like R
+    >
+    struct Broadcast<Condition, L, R> {
+        static constexpr bool value = Broadcast<Condition, Object, Object>::value;
+    };
+
+    template <
+        template <typename, typename> typename Condition,
+        typename L,
+        pybind11_like R
+    > requires (!has_value_type<L>)
+    struct Broadcast<Condition, L, R> {
+        static constexpr bool value = Broadcast<Condition, L, Object>::value;
+    };
+
+    template <
+        template <typename, typename> typename Condition,
+        pybind11_like L,
+        typename R
+    > requires (!has_value_type<R>)
+    struct Broadcast<Condition, L, R> {
+        static constexpr bool value = Broadcast<Condition, Object, R>::value;
+    };
+
+    template <
+        template <typename, typename> typename Condition,
+        typename T1,
+        typename T2,
+        typename T3,
+        typename T4
+    >
+    struct Broadcast<Condition, std::pair<T1, T2>, std::pair<T3, T4>> {
+        static constexpr bool value =
+            Broadcast<Condition, T1, std::pair<T3, T4>>::value &&
+            Broadcast<Condition, T2, std::pair<T3, T4>>::value;
+    };
+
+    template <
+        template <typename, typename> typename Condition,
+        typename L,
+        typename T1,
+        typename T2
+    >
+    struct Broadcast<Condition, L, std::pair<T1, T2>> {
+        static constexpr bool value =
+            Broadcast<Condition, L, T1>::value && Broadcast<Condition, L, T2>::value;
+    };
+
+    template <
+        template <typename, typename> typename Condition,
+        typename T1,
+        typename T2,
+        typename R
+    >
+    struct Broadcast<Condition, std::pair<T1, T2>, R> {
+        static constexpr bool value =
+            Broadcast<Condition, T1, R>::value && Broadcast<Condition, T2, R>::value;
+    };
+
+    template <
+        template <typename, typename> typename Condition,
+        typename... Ts1,
+        typename... Ts2
+    >
+    struct Broadcast<Condition, std::tuple<Ts1...>, std::tuple<Ts2...>> {
+        static constexpr bool value =
+            (Broadcast<Condition, Ts1, std::tuple<Ts2...>>::value && ...);
+    };
+
+    template <
+        template <typename, typename> typename Condition,
+        typename L,
+        typename... Ts
+    >
+    struct Broadcast<Condition, L, std::tuple<Ts...>> {
+        static constexpr bool value =
+            (Broadcast<Condition, L, Ts>::value && ...);
+    };
+
+    template <
+        template <typename, typename> typename Condition,
+        typename... Ts,
+        typename R
+    >
+    struct Broadcast<Condition, std::tuple<Ts...>, R> {
+        static constexpr bool value =
+            (Broadcast<Condition, Ts, R>::value && ...);
+    };
 
 }  // namespace impl
 }  // namespace py

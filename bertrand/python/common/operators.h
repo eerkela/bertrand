@@ -47,7 +47,7 @@ namespace impl {
 
             template <typename Return, typename L, typename R>
             struct iadd {
-                static L& operator()(to_object<L>& lhs, const to_object<R>& rhs) {
+                static void operator()(to_object<L>& lhs, const to_object<R>& rhs) {
                     PyObject* result = PySequence_InPlaceConcat(
                         lhs.ptr(),
                         rhs.ptr()
@@ -1141,282 +1141,6 @@ template <impl::proxy_like T>
 struct __hash__<T> : __hash__<impl::unwrap_proxy<T>> {};
 
 
-/////////////////////////
-////    LESS-THAN    ////
-/////////////////////////
-
-
-namespace impl {
-    template <> struct getattr_helper<"__lt__">             : Returns<Function> {};
-    template <> struct setattr_helper<"__lt__">             : Returns<void> {};
-    template <> struct delattr_helper<"__lt__">             : Returns<void> {};
-}
-
-
-template <typename L, typename R>
-struct __lt__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, impl::not_proxy_like R>
-struct __lt__<L, R> : __lt__<impl::unwrap_proxy<L>, R> {};
-template <impl::not_proxy_like L, impl::proxy_like R>
-struct __lt__<L, R> : __lt__<L, impl::unwrap_proxy<R>> {};
-template <impl::proxy_like L, impl::proxy_like R>
-struct __lt__<L, R> : __lt__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-
-
-template <typename L, typename R> requires (__lt__<L, R>::enable)
-auto operator<(const L& lhs, const R& rhs) {
-    using Return = typename __lt__<L, R>::Return;
-    static_assert(
-        std::same_as<Return, bool>,
-        "Less-than operator must return a boolean value.  Check your "
-        "specialization of __lt__ for these types and ensure the Return type "
-        "is set to bool."
-    );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() < rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs < rhs.value();
-    } else {
-        return impl::ops::lt<Return, L, R>::operator()(lhs, rhs);
-    }
-}
-
-
-template <typename L, typename R>
-    requires (impl::object_operand<L, R> && !__lt__<L, R>::enable)
-auto operator<(const L& lhs, const R& rhs) = delete;
-
-
-//////////////////////////////////
-////    LESS-THAN-OR-EQUAL    ////
-//////////////////////////////////
-
-
-namespace impl {
-    template <> struct getattr_helper<"__le__">             : Returns<Function> {};
-    template <> struct setattr_helper<"__le__">             : Returns<void> {};
-    template <> struct delattr_helper<"__le__">             : Returns<void> {};
-}
-
-
-template <typename L, typename R>
-struct __le__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, impl::not_proxy_like R>
-struct __le__<L, R> : __le__<impl::unwrap_proxy<L>, R> {};
-template <impl::not_proxy_like L, impl::proxy_like R>
-struct __le__<L, R> : __le__<L, impl::unwrap_proxy<R>> {};
-template <impl::proxy_like L, impl::proxy_like R>
-struct __le__<L, R> : __le__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-
-
-template <typename L, typename R> requires (__le__<L, R>::enable)
-auto operator<=(const L& lhs, const R& rhs) {
-    using Return = typename __le__<L, R>::Return;
-    static_assert(
-        std::same_as<Return, bool>,
-        "Less-than-or-equal operator must return a boolean value.  Check your "
-        "specialization of __le__ for this type and ensure the Return type is "
-        "set to bool."
-    );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() <= rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs <= rhs.value();
-    } else {
-        return impl::ops::le<Return, L, R>::operator()(lhs, rhs);
-    }
-}
-
-
-template <typename L, typename R>
-    requires (impl::object_operand<L, R> && !__le__<L, R>::enable)
-auto operator<=(const L& lhs, const R& rhs) = delete;
-
-
-/////////////////////
-////    EQUAL    ////
-/////////////////////
-
-
-namespace impl {
-    template <> struct getattr_helper<"__eq__">             : Returns<Function> {};
-    template <> struct setattr_helper<"__eq__">             : Returns<void> {};
-    template <> struct delattr_helper<"__eq__">             : Returns<void> {};
-}
-
-
-template <typename L, typename R>
-struct __eq__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, impl::not_proxy_like R>
-struct __eq__<L, R> : __eq__<impl::unwrap_proxy<L>, R> {};
-template <impl::not_proxy_like L, impl::proxy_like R>
-struct __eq__<L, R> : __eq__<L, impl::unwrap_proxy<R>> {};
-template <impl::proxy_like L, impl::proxy_like R>
-struct __eq__<L, R> : __eq__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-
-
-template <typename L, typename R> requires (__eq__<L, R>::enable)
-auto operator==(const L& lhs, const R& rhs) {
-    using Return = typename __eq__<L, R>::Return;
-    static_assert(
-        std::same_as<Return, bool>,
-        "Equality operator must return a boolean value.  Check your "
-        "specialization of __eq__ for this type and ensure the Return type is "
-        "set to bool."
-    );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() == rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs == rhs.value();
-    } else {
-        return impl::ops::eq<Return, L, R>::operator()(lhs, rhs);
-    }
-}
-
-
-template <typename L, typename R>
-    requires (impl::object_operand<L, R> && !__eq__<L, R>::enable)
-auto operator==(const L& lhs, const R& rhs) = delete;
-
-
-////////////////////////
-////   NOT-EQUAL    ////
-////////////////////////
-
-
-namespace impl {
-    template <> struct getattr_helper<"__ne__">             : Returns<Function> {};
-    template <> struct setattr_helper<"__ne__">             : Returns<void> {};
-    template <> struct delattr_helper<"__ne__">             : Returns<void> {};
-}
-
-
-template <typename L, typename R>
-struct __ne__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, impl::not_proxy_like R>
-struct __ne__<L, R> : __ne__<impl::unwrap_proxy<L>, R> {};
-template <impl::not_proxy_like L, impl::proxy_like R>
-struct __ne__<L, R> : __ne__<L, impl::unwrap_proxy<R>> {};
-template <impl::proxy_like L, impl::proxy_like R>
-struct __ne__<L, R> : __ne__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-
-
-template <typename L, typename R> requires (__ne__<L, R>::enable)
-auto operator!=(const L& lhs, const R& rhs) {
-    using Return = typename __ne__<L, R>::Return;
-    static_assert(
-        std::same_as<Return, bool>,
-        "Inequality operator must return a boolean value.  Check your "
-        "specialization of __ne__ for this type and ensure the Return type is "
-        "set to bool."
-    );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() != rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs != rhs.value();
-    } else {
-        return impl::ops::ne<Return, L, R>::operator()(lhs, rhs);
-    }
-}
-
-
-template <typename L, typename R>
-    requires (impl::object_operand<L, R> && !__ne__<L, R>::enable)
-auto operator!=(const L& lhs, const R& rhs) = delete;
-
-
-/////////////////////////////////////
-////    GREATER-THAN-OR-EQUAL    ////
-/////////////////////////////////////
-
-
-namespace impl {
-    template <> struct getattr_helper<"__ge__">             : Returns<Function> {};
-    template <> struct setattr_helper<"__ge__">             : Returns<void> {};
-    template <> struct delattr_helper<"__ge__">             : Returns<void> {};
-}
-
-
-template <typename L, typename R>
-struct __ge__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, impl::not_proxy_like R>
-struct __ge__<L, R> : __ge__<impl::unwrap_proxy<L>, R> {};
-template <impl::not_proxy_like L, impl::proxy_like R>
-struct __ge__<L, R> : __ge__<L, impl::unwrap_proxy<R>> {};
-template <impl::proxy_like L, impl::proxy_like R>
-struct __ge__<L, R> : __ge__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-
-
-template <typename L, typename R> requires (__ge__<L, R>::enable)
-auto operator>=(const L& lhs, const R& rhs) {
-    using Return = typename __ge__<L, R>::Return;
-    static_assert(
-        std::same_as<Return, bool>,
-        "Greater-than-or-equal operator must return a boolean value.  Check "
-        "your specialization of __ge__ for this type and ensure the Return "
-        "type is set to bool."
-    );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() >= rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs >= rhs.value();
-    } else {
-        return impl::ops::ge<Return, L, R>::operator()(lhs, rhs);
-    }
-}
-
-
-template <typename L, typename R>
-    requires (impl::object_operand<L, R> && !__ge__<L, R>::enable)
-auto operator>=(const L& lhs, const R& rhs) = delete;
-
-
-////////////////////////////
-////    GREATER-THAN    ////
-////////////////////////////
-
-
-namespace impl {
-    template <> struct getattr_helper<"__gt__">             : Returns<Function> {};
-    template <> struct setattr_helper<"__gt__">             : Returns<void> {};
-    template <> struct delattr_helper<"__gt__">             : Returns<void> {};
-}
-
-
-template <typename L, typename R>
-struct __gt__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, impl::not_proxy_like R>
-struct __gt__<L, R> : __gt__<impl::unwrap_proxy<L>, R> {};
-template <impl::not_proxy_like L, impl::proxy_like R>
-struct __gt__<L, R> : __gt__<L, impl::unwrap_proxy<R>> {};
-template <impl::proxy_like L, impl::proxy_like R>
-struct __gt__<L, R> : __gt__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-
-
-template <typename L, typename R> requires (__gt__<L, R>::enable)
-auto operator>(const L& lhs, const R& rhs) {
-    using Return = typename __gt__<L, R>::Return;
-    static_assert(
-        std::same_as<Return, bool>,
-        "Greater-than operator must return a boolean value.  Check your "
-        "specialization of __gt__ for this type and ensure the Return type is "
-        "set to bool."
-    );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() > rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs > rhs.value();
-    } else {
-        return impl::ops::gt<Return, L, R>::operator()(lhs, rhs);
-    }
-}
-
-
-template <typename L, typename R>
-    requires (impl::object_operand<L, R> && !__gt__<L, R>::enable)
-auto operator>(const L& lhs, const R& rhs) = delete;
-
-
 ///////////////////
 ////    ABS    ////
 ///////////////////
@@ -1705,6 +1429,282 @@ T& operator--(T& self) = delete;
 
 template <std::derived_from<Object> T> requires (!__decrement__<T>::enable)
 T operator--(T& self, int) = delete;
+
+
+/////////////////////////
+////    LESS-THAN    ////
+/////////////////////////
+
+
+namespace impl {
+    template <> struct getattr_helper<"__lt__">             : Returns<Function> {};
+    template <> struct setattr_helper<"__lt__">             : Returns<void> {};
+    template <> struct delattr_helper<"__lt__">             : Returns<void> {};
+}
+
+
+template <typename L, typename R>
+struct __lt__ { static constexpr bool enable = false; };
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __lt__<L, R> : __lt__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __lt__<L, R> : __lt__<L, impl::unwrap_proxy<R>> {};
+template <impl::proxy_like L, impl::proxy_like R>
+struct __lt__<L, R> : __lt__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
+
+
+template <typename L, typename R> requires (__lt__<L, R>::enable)
+auto operator<(const L& lhs, const R& rhs) {
+    using Return = typename __lt__<L, R>::Return;
+    static_assert(
+        std::same_as<Return, bool>,
+        "Less-than operator must return a boolean value.  Check your "
+        "specialization of __lt__ for these types and ensure the Return type "
+        "is set to bool."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() < rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs < rhs.value();
+    } else {
+        return impl::ops::lt<Return, L, R>::operator()(lhs, rhs);
+    }
+}
+
+
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__lt__<L, R>::enable)
+auto operator<(const L& lhs, const R& rhs) = delete;
+
+
+//////////////////////////////////
+////    LESS-THAN-OR-EQUAL    ////
+//////////////////////////////////
+
+
+namespace impl {
+    template <> struct getattr_helper<"__le__">             : Returns<Function> {};
+    template <> struct setattr_helper<"__le__">             : Returns<void> {};
+    template <> struct delattr_helper<"__le__">             : Returns<void> {};
+}
+
+
+template <typename L, typename R>
+struct __le__ { static constexpr bool enable = false; };
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __le__<L, R> : __le__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __le__<L, R> : __le__<L, impl::unwrap_proxy<R>> {};
+template <impl::proxy_like L, impl::proxy_like R>
+struct __le__<L, R> : __le__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
+
+
+template <typename L, typename R> requires (__le__<L, R>::enable)
+auto operator<=(const L& lhs, const R& rhs) {
+    using Return = typename __le__<L, R>::Return;
+    static_assert(
+        std::same_as<Return, bool>,
+        "Less-than-or-equal operator must return a boolean value.  Check your "
+        "specialization of __le__ for this type and ensure the Return type is "
+        "set to bool."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() <= rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs <= rhs.value();
+    } else {
+        return impl::ops::le<Return, L, R>::operator()(lhs, rhs);
+    }
+}
+
+
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__le__<L, R>::enable)
+auto operator<=(const L& lhs, const R& rhs) = delete;
+
+
+/////////////////////
+////    EQUAL    ////
+/////////////////////
+
+
+namespace impl {
+    template <> struct getattr_helper<"__eq__">             : Returns<Function> {};
+    template <> struct setattr_helper<"__eq__">             : Returns<void> {};
+    template <> struct delattr_helper<"__eq__">             : Returns<void> {};
+}
+
+
+template <typename L, typename R>
+struct __eq__ { static constexpr bool enable = false; };
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __eq__<L, R> : __eq__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __eq__<L, R> : __eq__<L, impl::unwrap_proxy<R>> {};
+template <impl::proxy_like L, impl::proxy_like R>
+struct __eq__<L, R> : __eq__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
+
+
+template <typename L, typename R> requires (__eq__<L, R>::enable)
+auto operator==(const L& lhs, const R& rhs) {
+    using Return = typename __eq__<L, R>::Return;
+    static_assert(
+        std::same_as<Return, bool>,
+        "Equality operator must return a boolean value.  Check your "
+        "specialization of __eq__ for this type and ensure the Return type is "
+        "set to bool."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() == rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs == rhs.value();
+    } else {
+        return impl::ops::eq<Return, L, R>::operator()(lhs, rhs);
+    }
+}
+
+
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__eq__<L, R>::enable)
+auto operator==(const L& lhs, const R& rhs) = delete;
+
+
+////////////////////////
+////   NOT-EQUAL    ////
+////////////////////////
+
+
+namespace impl {
+    template <> struct getattr_helper<"__ne__">             : Returns<Function> {};
+    template <> struct setattr_helper<"__ne__">             : Returns<void> {};
+    template <> struct delattr_helper<"__ne__">             : Returns<void> {};
+}
+
+
+template <typename L, typename R>
+struct __ne__ { static constexpr bool enable = false; };
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __ne__<L, R> : __ne__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __ne__<L, R> : __ne__<L, impl::unwrap_proxy<R>> {};
+template <impl::proxy_like L, impl::proxy_like R>
+struct __ne__<L, R> : __ne__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
+
+
+template <typename L, typename R> requires (__ne__<L, R>::enable)
+auto operator!=(const L& lhs, const R& rhs) {
+    using Return = typename __ne__<L, R>::Return;
+    static_assert(
+        std::same_as<Return, bool>,
+        "Inequality operator must return a boolean value.  Check your "
+        "specialization of __ne__ for this type and ensure the Return type is "
+        "set to bool."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() != rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs != rhs.value();
+    } else {
+        return impl::ops::ne<Return, L, R>::operator()(lhs, rhs);
+    }
+}
+
+
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__ne__<L, R>::enable)
+auto operator!=(const L& lhs, const R& rhs) = delete;
+
+
+/////////////////////////////////////
+////    GREATER-THAN-OR-EQUAL    ////
+/////////////////////////////////////
+
+
+namespace impl {
+    template <> struct getattr_helper<"__ge__">             : Returns<Function> {};
+    template <> struct setattr_helper<"__ge__">             : Returns<void> {};
+    template <> struct delattr_helper<"__ge__">             : Returns<void> {};
+}
+
+
+template <typename L, typename R>
+struct __ge__ { static constexpr bool enable = false; };
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __ge__<L, R> : __ge__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __ge__<L, R> : __ge__<L, impl::unwrap_proxy<R>> {};
+template <impl::proxy_like L, impl::proxy_like R>
+struct __ge__<L, R> : __ge__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
+
+
+template <typename L, typename R> requires (__ge__<L, R>::enable)
+auto operator>=(const L& lhs, const R& rhs) {
+    using Return = typename __ge__<L, R>::Return;
+    static_assert(
+        std::same_as<Return, bool>,
+        "Greater-than-or-equal operator must return a boolean value.  Check "
+        "your specialization of __ge__ for this type and ensure the Return "
+        "type is set to bool."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() >= rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs >= rhs.value();
+    } else {
+        return impl::ops::ge<Return, L, R>::operator()(lhs, rhs);
+    }
+}
+
+
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__ge__<L, R>::enable)
+auto operator>=(const L& lhs, const R& rhs) = delete;
+
+
+////////////////////////////
+////    GREATER-THAN    ////
+////////////////////////////
+
+
+namespace impl {
+    template <> struct getattr_helper<"__gt__">             : Returns<Function> {};
+    template <> struct setattr_helper<"__gt__">             : Returns<void> {};
+    template <> struct delattr_helper<"__gt__">             : Returns<void> {};
+}
+
+
+template <typename L, typename R>
+struct __gt__ { static constexpr bool enable = false; };
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __gt__<L, R> : __gt__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __gt__<L, R> : __gt__<L, impl::unwrap_proxy<R>> {};
+template <impl::proxy_like L, impl::proxy_like R>
+struct __gt__<L, R> : __gt__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
+
+
+template <typename L, typename R> requires (__gt__<L, R>::enable)
+auto operator>(const L& lhs, const R& rhs) {
+    using Return = typename __gt__<L, R>::Return;
+    static_assert(
+        std::same_as<Return, bool>,
+        "Greater-than operator must return a boolean value.  Check your "
+        "specialization of __gt__ for this type and ensure the Return type is "
+        "set to bool."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return lhs.value() > rhs;
+    } else if constexpr (impl::proxy_like<R>) {
+        return lhs > rhs.value();
+    } else {
+        return impl::ops::gt<Return, L, R>::operator()(lhs, rhs);
+    }
+}
+
+
+template <typename L, typename R>
+    requires (impl::object_operand<L, R> && !__gt__<L, R>::enable)
+auto operator>(const L& lhs, const R& rhs) = delete;
 
 
 ///////////////////
@@ -2023,15 +2023,6 @@ struct __truediv__<L, R> : __truediv__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __truediv__<L, R> : __truediv__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
-template <typename L, typename R>
-struct __floordiv__ { static constexpr bool enable = false; };
-template <impl::proxy_like L, impl::not_proxy_like R>
-struct __floordiv__<L, R> : __floordiv__<impl::unwrap_proxy<L>, R> {};
-template <impl::not_proxy_like L, impl::proxy_like R>
-struct __floordiv__<L, R> : __floordiv__<L, impl::unwrap_proxy<R>> {};
-template <impl::proxy_like L, impl::proxy_like R>
-struct __floordiv__<L, R> : __floordiv__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-
 template <typename L, typename R> requires (__truediv__<L, R>::enable)
 auto operator/(const L& lhs, const R& rhs) {
     using Return = typename __truediv__<L, R>::Return;
@@ -2089,6 +2080,16 @@ L& operator/=(L& lhs, const R& rhs) {
 
 template <std::derived_from<Object> L, typename R> requires (!__itruediv__<L, R>::enable)
 auto operator/=(const L& lhs, const R& rhs) = delete;
+
+
+template <typename L, typename R>
+struct __floordiv__ { static constexpr bool enable = false; };
+template <impl::proxy_like L, impl::not_proxy_like R>
+struct __floordiv__<L, R> : __floordiv__<impl::unwrap_proxy<L>, R> {};
+template <impl::not_proxy_like L, impl::proxy_like R>
+struct __floordiv__<L, R> : __floordiv__<L, impl::unwrap_proxy<R>> {};
+template <impl::proxy_like L, impl::proxy_like R>
+struct __floordiv__<L, R> : __floordiv__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 
 
 ///////////////////////

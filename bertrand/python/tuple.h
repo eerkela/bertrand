@@ -12,70 +12,25 @@ namespace bertrand {
 namespace py {
 
 
-template <typename Val>
-struct __getattr__<Tuple<Val>, "count">                         : Returns<Function> {};
-template <typename Val>
-struct __getattr__<Tuple<Val>, "index">                         : Returns<Function> {};
-
-template <typename Val>
-struct __len__<Tuple<Val>>                                      : Returns<size_t> {};
-template <typename Val>
-struct __hash__<Tuple<Val>>                                     : Returns<size_t> {};
-template <typename Val>
-struct __iter__<Tuple<Val>>                                     : Returns<Val> {};
-template <typename Val>
-struct __reversed__<Tuple<Val>>                                 : Returns<Val> {};
-template <typename Val, typename T>
-struct __contains__<Tuple<Val>, T>                              : Returns<bool> {};
-template <typename Val>
-struct __getitem__<Tuple<Val>, Object>                          : Returns<Object> {};
-template <typename Val, impl::int_like T>
-struct __getitem__<Tuple<Val>, T>                               : Returns<Val> {};
-template <typename Val>
-struct __getitem__<Tuple<Val>, Slice>                           : Returns<Tuple<Val>> {};
-template <typename Val>
-struct __lt__<Tuple<Val>, Object>                               : Returns<bool> {};
-template <typename Val, impl::tuple_like T>
-struct __lt__<Tuple<Val>, T>                                    : Returns<bool> {};
-template <typename Val>
-struct __le__<Tuple<Val>, Object>                               : Returns<bool> {};
-template <typename Val, impl::tuple_like T>
-struct __le__<Tuple<Val>, T>                                    : Returns<bool> {};
-template <typename Val>
-struct __ge__<Tuple<Val>, Object>                               : Returns<bool> {};
-template <typename Val, impl::tuple_like T>
-struct __ge__<Tuple<Val>, T>                                    : Returns<bool> {};
-template <typename Val>
-struct __gt__<Tuple<Val>, Object>                               : Returns<bool> {};
-template <typename Val, impl::tuple_like T>
-struct __gt__<Tuple<Val>, T>                                    : Returns<bool> {};
-template <typename Val>
-struct __add__<Tuple<Val>, Object>                              : Returns<Tuple<Object>> {};  // TODO: return narrow tuple type?
-template <typename Val, impl::tuple_like T>
-struct __add__<Tuple<Val>, T>                                   : Returns<Tuple<Object>> {};  // TODO: return narrow tuple type?
-template <typename Val>
-struct __iadd__<Tuple<Val>, Object>                             : Returns<Tuple<Val>&> {};  // TODO: make sure types are compatible
-template <typename Val, impl::tuple_like T>
-struct __iadd__<Tuple<Val>, T>                                  : Returns<Tuple<Val>&> {};  // TODO: make sure types are compatible
-template <typename Val>
-struct __mul__<Tuple<Val>, Object>                              : Returns<Tuple<Val>> {};
-template <typename Val, impl::int_like T>
-struct __mul__<Tuple<Val>, T>                                   : Returns<Tuple<Val>> {};
-template <typename Val>
-struct __imul__<Tuple<Val>, Object>                             : Returns<Tuple<Val>&> {};
-template <typename Val, impl::int_like T>
-struct __imul__<Tuple<Val>, T>                                  : Returns<Tuple<Val>&> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __getattr__<Self, "count">                               : Returns<Function> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __getattr__<Self, "index">                               : Returns<Function> {};
 
 
 template <typename T>
-Tuple(const Tuple<T>&) -> Tuple<T>;
-template <typename T>
-Tuple(Tuple<T>&&) -> Tuple<T>;
+Tuple(const std::initializer_list<T>&) -> Tuple<Object>;
 template <typename T, typename... Args>
     requires (!std::derived_from<std::decay_t<T>, impl::TupleTag>)
 Tuple(T&&, Args&&...) -> Tuple<Object>;
 template <typename T>
-Tuple(const std::initializer_list<T>&) -> Tuple<Object>;
+Tuple(const Tuple<T>&) -> Tuple<T>;
+template <typename T>
+Tuple(Tuple<T>&&) -> Tuple<T>;
+template <size_t N>
+explicit Tuple(const char (&string)[N]) -> Tuple<Str>;
+template <std::same_as<const char*> T>
+explicit Tuple(T string) -> Tuple<Str>;
 
 
 /* Represents a statically-typed Python tuple in C++. */
@@ -153,13 +108,10 @@ public:
 
     template <typename T>
     static constexpr bool check(const T& obj) {
-        if (!impl::python_like<T>) {
+        if (impl::cpp_like<T>) {
             return check<T>();
 
-        } else if constexpr (
-            std::same_as<T, Object> ||
-            std::same_as<T, pybind11::object>
-        ) {
+        } else if constexpr (impl::is_object_exact<T>) {
             if constexpr (generic) {
                 return obj.ptr() != nullptr && PyTuple_Check(obj.ptr());
             } else {
@@ -263,7 +215,8 @@ public:
     }
 
     /* Explicitly unpack a generic Python container into a py::Tuple. */
-    template <impl::python_like T> requires (!impl::list_like<T> && impl::is_iterable<T>)
+    template <impl::python_like T>
+        requires (!impl::list_like<T> && !impl::tuple_like<T> && impl::is_iterable<T>)
     explicit Tuple(const T& contents) : Base(nullptr, stolen_t{}) {
         if constexpr (generic) {
             m_ptr = PySequence_Tuple(contents.ptr());
@@ -289,7 +242,7 @@ public:
 
     /* Explicitly unpack a generic C++ container into a new py::Tuple. */
     template <impl::cpp_like T> requires (impl::is_iterable<T>)
-    explicit Tuple(T&& contents) : Base(nullptr, stolen_t{}) {
+    explicit Tuple(const T& contents) : Base(nullptr, stolen_t{}) {
         if constexpr (impl::has_size<T>) {
             size_t size = std::size(contents);
             m_ptr = PyTuple_New(size);
@@ -353,55 +306,6 @@ public:
         }
     }
 
-    /* Explicitly unpack a C++ string literal into a py::Tuple. */
-    template <size_t N>
-    explicit Tuple(const char (&string)[N]) : Base(PyTuple_New(N - 1), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            for (size_t i = 0; i < N - 1; ++i) {
-                PyObject* item = PyUnicode_FromStringAndSize(string + i, 1);
-                if (item == nullptr) {
-                    Exception::from_python();
-                }
-                PyTuple_SET_ITEM(m_ptr, i, item);
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Explicitly unpack a C++ string pointer into a py::Tuple. */
-    template <std::same_as<const char*> T>
-    explicit Tuple(T string) : Base(nullptr, stolen_t{}) {
-        PyObject* list = PyList_New(0);
-        if (list == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            const char* curr = string;
-            while (*curr != '\0') {
-                PyObject* item = PyUnicode_FromStringAndSize(curr++, 1);
-                if (item == nullptr) {
-                    Exception::from_python();
-                }
-                if (PyList_Append(list, item)) {
-                    Exception::from_python();
-                }
-            }
-        } catch (...) {
-            Py_DECREF(list);
-            throw;
-        }
-        m_ptr = PyList_AsTuple(list);
-        Py_DECREF(list);
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
     /* Explicitly unpack a std::pair into a py::Tuple. */
     template <typename First, typename Second>
     explicit Tuple(const std::pair<First, Second>& pair) :
@@ -446,12 +350,61 @@ public:
         }
     }
 
+    /* Explicitly unpack a C++ string literal into a py::Tuple. */
+    template <size_t N> requires (generic || impl::str_like<value_type>)
+    explicit Tuple(const char (&string)[N]) : Base(PyTuple_New(N - 1), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            for (size_t i = 0; i < N - 1; ++i) {
+                PyObject* item = PyUnicode_FromStringAndSize(string + i, 1);
+                if (item == nullptr) {
+                    Exception::from_python();
+                }
+                PyTuple_SET_ITEM(m_ptr, i, item);
+            }
+        } catch (...) {
+            Py_DECREF(m_ptr);
+            throw;
+        }
+    }
+
+    /* Explicitly unpack a C++ string pointer into a py::Tuple. */
+    template <std::same_as<const char*> T> requires (generic || impl::str_like<value_type>)
+    explicit Tuple(T string) : Base(nullptr, stolen_t{}) {
+        PyObject* list = PyList_New(0);
+        if (list == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            const char* curr = string;
+            while (*curr != '\0') {
+                PyObject* item = PyUnicode_FromStringAndSize(curr++, 1);
+                if (item == nullptr) {
+                    Exception::from_python();
+                }
+                if (PyList_Append(list, item)) {
+                    Exception::from_python();
+                }
+            }
+        } catch (...) {
+            Py_DECREF(list);
+            throw;
+        }
+        m_ptr = PyList_AsTuple(list);
+        Py_DECREF(list);
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+    }
+
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
     /* Get the underlying PyObject* array. */
-    inline PyObject** data() const noexcept {
+    inline PyObject** DATA() const noexcept {
         return PySequence_Fast_ITEMS(this->ptr());
     }
 
@@ -549,14 +502,14 @@ public:
 protected:
 
     inline Tuple concat(const std::initializer_list<value_type>& items) const {
-        PyObject* result = PyTuple_New(size() + items.size());
+        Py_ssize_t length = PyTuple_GET_SIZE(this->ptr());
+        PyObject* result = PyTuple_New(length + items.size());
         if (result == nullptr) {
             Exception::from_python();
         }
         try {
-            size_t i = 0;
-            size_t length = size();
-            PyObject** array = data();
+            PyObject** array = DATA();
+            Py_ssize_t i = 0;
             while (i < length) {
                 PyTuple_SET_ITEM(result, i, Py_NewRef(array[i]));
                 ++i;
@@ -571,137 +524,6 @@ protected:
         }
     }
 
-};
-
-
-/* Implicitly convert a py::Tuple into a std::pair if and only if the tuple is of
-length two and its contents are implicitly covnertible to the member types. */
-template <std::derived_from<impl::TupleTag> Self, typename First, typename Second>
-    requires (
-        std::convertible_to<typename Self::value_type, First> &&
-        std::convertible_to<typename Self::value_type, Second>
-    )
-struct __cast__<Self, std::pair<First, Second>> : Returns<std::pair<First, Second>> {
-    static std::pair<First, Second> operator()(const Self& self) {
-        if (self.size() != 2) {
-            throw IndexError(
-                "conversion to std::pair requires tuple of size 2, not " +
-                std::to_string(self.size())
-            );
-        }
-        return {
-            impl::implicit_cast<First>(self.GET_ITEM(0)),
-            impl::implicit_cast<Second>(self.GET_ITEM(1))
-        };
-    }
-};
-
-
-/* Implicitly convert a py::Tuple into a std::tuple if and only if the tuple is of
-length equal to the tuple arguments, and its contents are implicitly convertible to
-the member types. */
-template <std::derived_from<impl::TupleTag> Self, typename... Args>
-    requires (std::convertible_to<typename Self::value_type, Args> && ...)
-struct __cast__<Self, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
-    static std::tuple<Args...> operator()(const Self& self) {
-        if (self.size() != sizeof...(Args)) {
-            throw IndexError(
-                "conversion to std::tuple requires tuple of size " +
-                std::to_string(sizeof...(Args)) + ", not " +
-                std::to_string(self.size())
-            );
-        }
-        return [&]<size_t... N>(std::index_sequence<N...>) {
-            return std::make_tuple(
-                impl::implicit_cast<Args>(self.GET_ITEM(N))...
-            );
-        }(std::index_sequence_for<Args...>{});
-    }
-};
-
-
-/* Implicitly convert a py::Tuple into a std::array if and only if the tuple is of the
-specified length, and its contents are implicitly convertible to the array type. */
-template <std::derived_from<impl::TupleTag> Self, typename T, size_t N>
-    requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::array<T, N>> : Returns<std::array<T, N>> {
-    static std::array<T, N> operator()(const Self& self) {
-        if (N != self.size()) {
-            throw IndexError(
-                "conversion to std::array requires tuple of size " +
-                std::to_string(N) + ", not " + std::to_string(self.size())
-            );
-        }
-        std::array<T, N> result;
-        for (size_t i = 0; i < N; ++i) {
-            result[i] = impl::implicit_cast<T>(self.GET_ITEM(i));
-        }
-        return result;
-    }
-};
-
-
-/* Implicitly convert a py::Tuple into a std::vector if its contents are convertible to
-the vector type. */
-template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
-    requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::vector<T, Args...>> : Returns<std::vector<T, Args...>> {
-    static std::vector<T, Args...> operator()(const Self& self) {
-        std::vector<T, Args...> result;
-        result.reserve(self.size());
-        for (const auto& item : self) {
-            result.push_back(impl::implicit_cast<T>(item));
-        }
-        return result;
-    }
-};
-
-
-/* Implicitly convert a py::Tuple into a std::list if its contents are convertible to
-the list type. */
-template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
-    requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::list<T, Args...>> : Returns<std::list<T, Args...>> {
-    static std::list<T, Args...> operator()(const Self& self) {
-        std::list<T, Args...> result;
-        for (const auto& item : self) {
-            result.push_back(impl::implicit_cast<T>(item));
-        }
-        return result;
-    }
-};
-
-
-/* Implicitly convert a py::Tuple into a std::forward_list if its contents are
-convertible to the list type. */
-template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
-    requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::forward_list<T, Args...>> : Returns<std::forward_list<T, Args...>> {
-    static std::forward_list<T, Args...> operator()(const Self& self) {
-        std::forward_list<T, Args...> result;
-        auto it = self.rbegin();
-        auto end = self.rend();
-        while (it != end) {
-            result.push_front(impl::implicit_cast<T>(*it));
-            ++it;
-        }
-        return result;
-    }
-};
-
-
-/* Implicitly convert a py::Tuple into a std::deque if its contents are convertible to
-the deque type. */
-template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
-    requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> {
-    static std::deque<T, Args...> operator()(const Self& self) {
-        std::deque<T, Args...> result;
-        for (const auto& item : self) {
-            result.push_back(impl::implicit_cast<T>(item));
-        }
-        return result;
-    }
 };
 
 
@@ -764,6 +586,221 @@ namespace ops {
 
 }
 }
+
+
+template <std::derived_from<impl::TupleTag> Self>
+struct __len__<Self>                                            : Returns<size_t> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __hash__<Self>                                           : Returns<size_t> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __iter__<Self>                                           : Returns<typename Self::value_type> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __reversed__<Self>                                       : Returns<typename Self::value_type> {};
+template <
+    std::derived_from<impl::TupleTag> Self,
+    std::convertible_to<typename Self::value_type> Key
+>
+struct __contains__<Self, Key>                                  : Returns<bool> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __getitem__<Self, Object>                                : Returns<Object> {};
+template <std::derived_from<impl::TupleTag> Self, impl::int_like Index>
+struct __getitem__<Self, Index>                                 : Returns<typename Self::value_type> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __getitem__<Self, Slice>                                 : Returns<Self> {};
+template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
+    requires (impl::Broadcast<impl::lt_comparable, Self, T>::value)
+struct __lt__<Self, T>                                          : Returns<bool> {};
+template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
+    requires (
+        !std::derived_from<T, impl::TupleTag> &&
+        impl::Broadcast<impl::lt_comparable, Self, T>::value
+    )
+struct __lt__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
+    requires (impl::Broadcast<impl::le_comparable, Self, T>::value)
+struct __le__<Self, T>                                          : Returns<bool> {};
+template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
+    requires (
+        !std::derived_from<T, impl::TupleTag> &&
+        impl::Broadcast<impl::le_comparable, Self, T>::value
+    )
+struct __le__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
+    requires (impl::Broadcast<impl::eq_comparable, Self, T>::value)
+struct __eq__<Self, T>                                          : Returns<bool> {};
+template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
+    requires (
+        !std::derived_from<T, impl::TupleTag> &&
+        impl::Broadcast<impl::eq_comparable, Self, T>::value
+    )
+struct __eq__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
+    requires (impl::Broadcast<impl::ne_comparable, Self, T>::value)
+struct __ne__<Self, T>                                          : Returns<bool> {};
+template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
+    requires (
+        !std::derived_from<T, impl::TupleTag> &&
+        impl::Broadcast<impl::ne_comparable, Self, T>::value
+    )
+struct __ne__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
+    requires (impl::Broadcast<impl::ge_comparable, Self, T>::value)
+struct __ge__<Self, T>                                          : Returns<bool> {};
+template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
+    requires (
+        !std::derived_from<T, impl::TupleTag> &&
+        impl::Broadcast<impl::ge_comparable, Self, T>::value
+    )
+struct __ge__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
+    requires (impl::Broadcast<impl::gt_comparable, Self, T>::value)
+struct __gt__<Self, T>                                          : Returns<bool> {};
+template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
+    requires (
+        !std::derived_from<T, impl::TupleTag> &&
+        impl::Broadcast<impl::gt_comparable, Self, T>::value
+    )
+struct __gt__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::TupleTag> Self, typename T> requires (Self::template check<T>())
+struct __add__<Self, T>                                         : Returns<Self> {};
+template <
+    std::derived_from<impl::TupleTag> T,
+    std::derived_from<impl::TupleTag> Self
+> requires (!T::template check<Self>() && Self::template check<T>())
+struct __add__<T, Self>                                         : Returns<Self> {};
+template <std::derived_from<impl::TupleTag> Self, typename T> requires (Self::template check<T>())
+struct __iadd__<Self, T>                                        : Returns<Self&> {};
+template <std::derived_from<impl::TupleTag> Self, impl::int_like T>
+struct __mul__<Self, T>                                         : Returns<Self> {};
+template <impl::int_like T, std::derived_from<impl::TupleTag> Self>
+struct __mul__<T, Self>                                         : Returns<Self> {};
+template <std::derived_from<impl::TupleTag> Self, impl::int_like T>
+struct __imul__<Self, T>                                        : Returns<Self&> {};
+
+
+template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
+    requires (impl::pybind11_like<T> && !Self::template check<T>())
+struct __cast__<Self, T> : Returns<T> {
+    static T operator()(const Self& self) {
+        return reinterpret_borrow<T>(self.ptr());
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> Self, typename First, typename Second>
+    requires (
+        std::convertible_to<typename Self::value_type, First> &&
+        std::convertible_to<typename Self::value_type, Second>
+    )
+struct __cast__<Self, std::pair<First, Second>> : Returns<std::pair<First, Second>> {
+    static std::pair<First, Second> operator()(const Self& self) {
+        if (self.size() != 2) {
+            throw IndexError(
+                "conversion to std::pair requires tuple of size 2, not " +
+                std::to_string(self.size())
+            );
+        }
+        return {
+            impl::implicit_cast<First>(self.GET_ITEM(0)),
+            impl::implicit_cast<Second>(self.GET_ITEM(1))
+        };
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> Self, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, Args> && ...)
+struct __cast__<Self, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
+    static std::tuple<Args...> operator()(const Self& self) {
+        if (self.size() != sizeof...(Args)) {
+            throw IndexError(
+                "conversion to std::tuple requires tuple of size " +
+                std::to_string(sizeof...(Args)) + ", not " +
+                std::to_string(self.size())
+            );
+        }
+        return [&]<size_t... N>(std::index_sequence<N...>) {
+            return std::make_tuple(
+                impl::implicit_cast<Args>(self.GET_ITEM(N))...
+            );
+        }(std::index_sequence_for<Args...>{});
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> Self, typename T, size_t N>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::array<T, N>> : Returns<std::array<T, N>> {
+    static std::array<T, N> operator()(const Self& self) {
+        if (N != self.size()) {
+            throw IndexError(
+                "conversion to std::array requires tuple of size " +
+                std::to_string(N) + ", not " + std::to_string(self.size())
+            );
+        }
+        std::array<T, N> result;
+        for (size_t i = 0; i < N; ++i) {
+            result[i] = impl::implicit_cast<T>(self.GET_ITEM(i));
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::vector<T, Args...>> : Returns<std::vector<T, Args...>> {
+    static std::vector<T, Args...> operator()(const Self& self) {
+        std::vector<T, Args...> result;
+        result.reserve(self.size());
+        for (const auto& item : self) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::list<T, Args...>> : Returns<std::list<T, Args...>> {
+    static std::list<T, Args...> operator()(const Self& self) {
+        std::list<T, Args...> result;
+        for (const auto& item : self) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::forward_list<T, Args...>> : Returns<std::forward_list<T, Args...>> {
+    static std::forward_list<T, Args...> operator()(const Self& self) {
+        std::forward_list<T, Args...> result;
+        auto it = self.rbegin();
+        auto end = self.rend();
+        while (it != end) {
+            result.push_front(impl::implicit_cast<T>(*it));
+            ++it;
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
+    requires (std::convertible_to<typename Self::value_type, T>)
+struct __cast__<Self, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> {
+    static std::deque<T, Args...> operator()(const Self& self) {
+        std::deque<T, Args...> result;
+        for (const auto& item : self) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
 
 
 }  // namespace py
