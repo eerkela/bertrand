@@ -14,27 +14,27 @@ namespace py {
 
 
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "append">                          : Returns<Function> {};
+struct __getattr__<Self, "append">                              : Returns<Function> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "extend">                          : Returns<Function> {};
+struct __getattr__<Self, "extend">                              : Returns<Function> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "insert">                          : Returns<Function> {};
+struct __getattr__<Self, "insert">                              : Returns<Function> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "copy">                            : Returns<Function> {};
+struct __getattr__<Self, "copy">                                : Returns<Function> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "count">                           : Returns<Function> {};
+struct __getattr__<Self, "count">                               : Returns<Function> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "index">                           : Returns<Function> {};
+struct __getattr__<Self, "index">                               : Returns<Function> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "clear">                           : Returns<Function> {};
+struct __getattr__<Self, "clear">                               : Returns<Function> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "remove">                          : Returns<Function> {};
+struct __getattr__<Self, "remove">                              : Returns<Function> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "pop">                             : Returns<Function> {};
+struct __getattr__<Self, "pop">                                 : Returns<Function> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "reverse">                         : Returns<Function> {};
+struct __getattr__<Self, "reverse">                             : Returns<Function> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "sort">                            : Returns<Function> {};
+struct __getattr__<Self, "sort">                                : Returns<Function> {};
 template <std::derived_from<impl::ListTag> Self>
 struct __len__<Self>                                            : Returns<size_t> {};
 template <std::derived_from<impl::ListTag> Self>
