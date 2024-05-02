@@ -8,6 +8,14 @@
 #include "common.h"
 
 
+// TODO: when implementing py::Struct:
+
+// template <std::derived_from<Object>... Args>
+// struct Struct : public Tuple<
+//     std::conditional_t<impl::homogenous<Args...>, impl::first<Args...>, Object>
+// > {
+
+
 namespace bertrand {
 namespace py {
 
@@ -16,6 +24,155 @@ template <std::derived_from<impl::TupleTag> Self>
 struct __getattr__<Self, "count">                               : Returns<Function> {};
 template <std::derived_from<impl::TupleTag> Self>
 struct __getattr__<Self, "index">                               : Returns<Function> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __len__<Self>                                            : Returns<size_t> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __hash__<Self>                                           : Returns<size_t> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __iter__<Self>                                           : Returns<typename Self::value_type> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __reversed__<Self>                                       : Returns<typename Self::value_type> {};
+template <
+    std::derived_from<impl::TupleTag> Self,
+    std::convertible_to<typename Self::value_type> Key
+>
+struct __contains__<Self, Key>                                  : Returns<bool> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __getitem__<Self, Object>                                : Returns<Object> {};
+template <std::derived_from<impl::TupleTag> Self, impl::int_like Index>
+struct __getitem__<Self, Index>                                 : Returns<typename Self::value_type> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __getitem__<Self, Slice>                                 : Returns<Self> {};
+template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
+    requires (impl::Broadcast<impl::lt_comparable, Self, T>::value)
+struct __lt__<Self, T>                                          : Returns<bool> {};
+template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
+    requires (
+        !std::derived_from<T, impl::TupleTag> &&
+        impl::Broadcast<impl::lt_comparable, Self, T>::value
+    )
+struct __lt__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
+    requires (impl::Broadcast<impl::le_comparable, Self, T>::value)
+struct __le__<Self, T>                                          : Returns<bool> {};
+template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
+    requires (
+        !std::derived_from<T, impl::TupleTag> &&
+        impl::Broadcast<impl::le_comparable, Self, T>::value
+    )
+struct __le__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
+    requires (impl::Broadcast<impl::eq_comparable, Self, T>::value)
+struct __eq__<Self, T>                                          : Returns<bool> {};
+template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
+    requires (
+        !std::derived_from<T, impl::TupleTag> &&
+        impl::Broadcast<impl::eq_comparable, Self, T>::value
+    )
+struct __eq__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
+    requires (impl::Broadcast<impl::ne_comparable, Self, T>::value)
+struct __ne__<Self, T>                                          : Returns<bool> {};
+template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
+    requires (
+        !std::derived_from<T, impl::TupleTag> &&
+        impl::Broadcast<impl::ne_comparable, Self, T>::value
+    )
+struct __ne__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
+    requires (impl::Broadcast<impl::ge_comparable, Self, T>::value)
+struct __ge__<Self, T>                                          : Returns<bool> {};
+template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
+    requires (
+        !std::derived_from<T, impl::TupleTag> &&
+        impl::Broadcast<impl::ge_comparable, Self, T>::value
+    )
+struct __ge__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
+    requires (impl::Broadcast<impl::gt_comparable, Self, T>::value)
+struct __gt__<Self, T>                                          : Returns<bool> {};
+template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
+    requires (
+        !std::derived_from<T, impl::TupleTag> &&
+        impl::Broadcast<impl::gt_comparable, Self, T>::value
+    )
+struct __gt__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::TupleTag> Self, typename T>
+    requires (Self::template check<T>())
+struct __add__<Self, T>                                         : Returns<Self> {};
+template <
+    std::derived_from<impl::TupleTag> T,
+    std::derived_from<impl::TupleTag> Self
+> requires (!T::template check<Self>() && Self::template check<T>())
+struct __add__<T, Self>                                         : Returns<Self> {};
+template <std::derived_from<impl::TupleTag> Self, typename T>
+    requires (Self::template check<T>())
+struct __iadd__<Self, T>                                        : Returns<Self&> {};
+template <std::derived_from<impl::TupleTag> Self, impl::int_like T>
+struct __mul__<Self, T>                                         : Returns<Self> {};
+template <impl::int_like T, std::derived_from<impl::TupleTag> Self>
+struct __mul__<T, Self>                                         : Returns<Self> {};
+template <std::derived_from<impl::TupleTag> Self, impl::int_like T>
+struct __imul__<Self, T>                                        : Returns<Self&> {};
+
+
+namespace impl {
+namespace ops {
+
+    template <typename Return, std::derived_from<TupleTag> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            return PyTuple_GET_SIZE(self.ptr());
+        }
+    };
+
+    template <typename Return, std::derived_from<TupleTag> Self>
+    struct begin<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::TupleIter<Return>>(self, 0);
+        }
+    };
+
+    template <typename Return, std::derived_from<TupleTag> Self>
+    struct end<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::TupleIter<Return>>(PyTuple_GET_SIZE(self.ptr()));
+        }
+    };
+
+    template <typename Return, std::derived_from<TupleTag> Self>
+    struct rbegin<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::TupleIter<Return>>(
+                self,
+                PyTuple_GET_SIZE(self.ptr()) - 1
+            );
+        }
+    };
+
+    template <typename Return, std::derived_from<TupleTag> Self>
+    struct rend<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::TupleIter<Return>>(-1);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, TupleTag> || std::derived_from<R, TupleTag>)
+    struct add<Return, L, R> : sequence::add<Return, L, R> {};
+
+    template <typename Return, std::derived_from<TupleTag> L, typename R>
+    struct iadd<Return, L, R> : sequence::iadd<Return, L, R> {};
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, TupleTag> || std::derived_from<R, TupleTag>)
+    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
+
+    template <typename Return, std::derived_from<TupleTag> L, typename R>
+    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
+
+}
+}
 
 
 template <typename T>
@@ -70,37 +227,28 @@ public:
     using difference_type = std::ptrdiff_t;
     using value_type = Val;
     using pointer = value_type*;
-    using const_pointer = const value_type*;
     using reference = value_type&;
+    using const_pointer = const value_type*;
     using const_reference = const value_type&;
     using iterator = impl::Iterator<impl::TupleIter<value_type>>;
     using const_iterator = impl::Iterator<impl::TupleIter<const value_type>>;
     using reverse_iterator = impl::ReverseIterator<impl::TupleIter<value_type>>;
     using const_reverse_iterator = impl::ReverseIterator<impl::TupleIter<const value_type>>;
 
+    // TODO: use decay_t in all Object::check<T>(); methods
+
     template <typename T>
     static consteval bool check() {
         if constexpr (!impl::tuple_like<std::decay_t<T>>) {
             return false;
-
-        // pybind11 tuples only match if this tuple is generic
         } else if constexpr (impl::pybind11_like<std::decay_t<T>>) {
             return generic;
-
-        // if container has a value_type alias, check if it's convertible to the
-        // tuple's value type
         } else if constexpr (impl::is_iterable<std::decay_t<T>>) {
             return typecheck<impl::dereference_type<std::decay_t<T>>>;
-
-        // otherwise, the type must be a std::pair or std::tuple.  Then, check if
-        // all member types are convertible to the tuple's value type.
-        } else {
-            static_assert(
-                std_tuple_check<std::decay_t<T>>::match,
-                "candidate type is not a pybind11 type, is not iterable, and is not a "
-                "std::pair or std::tuple."
-            );
+        } else if constexpr (std_tuple_check<std::decay_t<T>>::match) {
             return std_tuple_check<std::decay_t<T>>::value;
+        } else {
+            return false;
         }
     }
 
@@ -305,6 +453,10 @@ public:
 
     /* Explicitly unpack a std::pair into a py::Tuple. */
     template <typename First, typename Second>
+        requires (
+            std::convertible_to<value_type, First> &&
+            std::convertible_to<value_type, Second>
+        )
     explicit Tuple(const std::pair<First, Second>& pair) :
         Base(PyTuple_New(2), stolen_t{})
     {
@@ -325,6 +477,10 @@ public:
     explicit Tuple(const std::tuple<Args...>& tuple) :
         Base(PyTuple_New(sizeof...(Args)), stolen_t{})
     {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+
         auto unpack_tuple = [&]<size_t... Ns>(std::index_sequence<Ns...>) {
             (
                 PyTuple_SET_ITEM(
@@ -336,9 +492,6 @@ public:
             );
         };
 
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
         try {
             unpack_tuple(std::index_sequence_for<Args...>{});
         } catch (...) {
@@ -348,7 +501,7 @@ public:
     }
 
     /* Explicitly unpack a C++ string literal into a py::Tuple. */
-    template <size_t N> requires (generic || impl::str_like<value_type>)
+    template <size_t N> requires (generic || std::same_as<value_type, Str>)
     explicit Tuple(const char (&string)[N]) : Base(PyTuple_New(N - 1), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -368,22 +521,22 @@ public:
     }
 
     /* Explicitly unpack a C++ string pointer into a py::Tuple. */
-    template <std::same_as<const char*> T> requires (generic || impl::str_like<value_type>)
+    template <std::same_as<const char*> T> requires (generic || std::same_as<value_type, Str>)
     explicit Tuple(T string) : Base(nullptr, stolen_t{}) {
         PyObject* list = PyList_New(0);
         if (list == nullptr) {
             Exception::from_python();
         }
         try {
-            const char* curr = string;
-            while (*curr != '\0') {
-                PyObject* item = PyUnicode_FromStringAndSize(curr++, 1);
+            for (const char* ptr = string; *ptr != '\0'; ++ptr) {
+                PyObject* item = PyUnicode_FromStringAndSize(ptr, 1);
                 if (item == nullptr) {
                     Exception::from_python();
                 }
                 if (PyList_Append(list, item)) {
                     Exception::from_python();
                 }
+                Py_DECREF(item);
             }
         } catch (...) {
             Py_DECREF(list);
@@ -522,157 +675,6 @@ protected:
     }
 
 };
-
-
-namespace impl {
-namespace ops {
-
-    template <typename Return, std::derived_from<TupleTag> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            return PyTuple_GET_SIZE(self.ptr());
-        }
-    };
-
-    template <typename Return, std::derived_from<TupleTag> Self>
-    struct begin<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::Iterator<impl::TupleIter<Return>>(self, 0);
-        }
-    };
-
-    template <typename Return, std::derived_from<TupleTag> Self>
-    struct end<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::Iterator<impl::TupleIter<Return>>(PyTuple_GET_SIZE(self.ptr()));
-        }
-    };
-
-    template <typename Return, std::derived_from<TupleTag> Self>
-    struct rbegin<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::ReverseIterator<impl::TupleIter<Return>>(
-                self,
-                PyTuple_GET_SIZE(self.ptr()) - 1
-            );
-        }
-    };
-
-    template <typename Return, std::derived_from<TupleTag> Self>
-    struct rend<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::ReverseIterator<impl::TupleIter<Return>>(-1);
-        }
-    };
-
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, TupleTag> || std::derived_from<R, TupleTag>)
-    struct add<Return, L, R> : sequence::add<Return, L, R> {};
-
-    template <typename Return, std::derived_from<TupleTag> L, typename R>
-    struct iadd<Return, L, R> : sequence::iadd<Return, L, R> {};
-
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, TupleTag> || std::derived_from<R, TupleTag>)
-    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
-
-    template <typename Return, std::derived_from<TupleTag> L, typename R>
-    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
-
-}
-}
-
-
-template <std::derived_from<impl::TupleTag> Self>
-struct __len__<Self>                                            : Returns<size_t> {};
-template <std::derived_from<impl::TupleTag> Self>
-struct __hash__<Self>                                           : Returns<size_t> {};
-template <std::derived_from<impl::TupleTag> Self>
-struct __iter__<Self>                                           : Returns<typename Self::value_type> {};
-template <std::derived_from<impl::TupleTag> Self>
-struct __reversed__<Self>                                       : Returns<typename Self::value_type> {};
-template <
-    std::derived_from<impl::TupleTag> Self,
-    std::convertible_to<typename Self::value_type> Key
->
-struct __contains__<Self, Key>                                  : Returns<bool> {};
-template <std::derived_from<impl::TupleTag> Self>
-struct __getitem__<Self, Object>                                : Returns<Object> {};
-template <std::derived_from<impl::TupleTag> Self, impl::int_like Index>
-struct __getitem__<Self, Index>                                 : Returns<typename Self::value_type> {};
-template <std::derived_from<impl::TupleTag> Self>
-struct __getitem__<Self, Slice>                                 : Returns<Self> {};
-template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
-    requires (impl::Broadcast<impl::lt_comparable, Self, T>::value)
-struct __lt__<Self, T>                                          : Returns<bool> {};
-template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
-    requires (
-        !std::derived_from<T, impl::TupleTag> &&
-        impl::Broadcast<impl::lt_comparable, Self, T>::value
-    )
-struct __lt__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
-    requires (impl::Broadcast<impl::le_comparable, Self, T>::value)
-struct __le__<Self, T>                                          : Returns<bool> {};
-template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
-    requires (
-        !std::derived_from<T, impl::TupleTag> &&
-        impl::Broadcast<impl::le_comparable, Self, T>::value
-    )
-struct __le__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
-    requires (impl::Broadcast<impl::eq_comparable, Self, T>::value)
-struct __eq__<Self, T>                                          : Returns<bool> {};
-template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
-    requires (
-        !std::derived_from<T, impl::TupleTag> &&
-        impl::Broadcast<impl::eq_comparable, Self, T>::value
-    )
-struct __eq__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
-    requires (impl::Broadcast<impl::ne_comparable, Self, T>::value)
-struct __ne__<Self, T>                                          : Returns<bool> {};
-template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
-    requires (
-        !std::derived_from<T, impl::TupleTag> &&
-        impl::Broadcast<impl::ne_comparable, Self, T>::value
-    )
-struct __ne__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
-    requires (impl::Broadcast<impl::ge_comparable, Self, T>::value)
-struct __ge__<Self, T>                                          : Returns<bool> {};
-template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
-    requires (
-        !std::derived_from<T, impl::TupleTag> &&
-        impl::Broadcast<impl::ge_comparable, Self, T>::value
-    )
-struct __ge__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
-    requires (impl::Broadcast<impl::gt_comparable, Self, T>::value)
-struct __gt__<Self, T>                                          : Returns<bool> {};
-template <impl::tuple_like T, std::derived_from<impl::TupleTag> Self>
-    requires (
-        !std::derived_from<T, impl::TupleTag> &&
-        impl::Broadcast<impl::gt_comparable, Self, T>::value
-    )
-struct __gt__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::TupleTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __add__<Self, T>                                         : Returns<Self> {};
-template <
-    std::derived_from<impl::TupleTag> T,
-    std::derived_from<impl::TupleTag> Self
-> requires (!T::template check<Self>() && Self::template check<T>())
-struct __add__<T, Self>                                         : Returns<Self> {};
-template <std::derived_from<impl::TupleTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __iadd__<Self, T>                                        : Returns<Self&> {};
-template <std::derived_from<impl::TupleTag> Self, impl::int_like T>
-struct __mul__<Self, T>                                         : Returns<Self> {};
-template <impl::int_like T, std::derived_from<impl::TupleTag> Self>
-struct __mul__<T, Self>                                         : Returns<Self> {};
-template <std::derived_from<impl::TupleTag> Self, impl::int_like T>
-struct __imul__<Self, T>                                        : Returns<Self&> {};
 
 
 template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>

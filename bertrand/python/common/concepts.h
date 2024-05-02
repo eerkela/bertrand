@@ -12,7 +12,6 @@ namespace bertrand {
 namespace py {
 namespace impl {
 
-
     /* Helper function triggers implicit conversion operators and/or implicit
     constructors, but not explicit ones.  In contrast, static_cast<>() will trigger
     explicit constructors on the target type, which can give unexpected results and
@@ -118,7 +117,11 @@ namespace impl {
 
     }
 
-    // TODO: maybe all concepts are also exposed as traits in a nested namespace?
+    template <typename T, typename... Ts>
+    using first = T;
+
+    template <typename T, typename... Ts>
+    concept homogenous = (std::same_as<T, Ts> && ...);
 
     template <typename T>
     concept proxy_like = std::derived_from<std::remove_cvref_t<T>, ProxyTag>;

@@ -97,83 +97,16 @@ void run() {
     std::chrono::time_point<Clock> start = Clock::now();
 
 
-
-    // py::Tuple<py::Int> tuple = {1, 2, 3};
-    // auto result = tuple + py::Tuple<py::Int>{4, 5, 6};  // TODO: should return py::Tuple<py::Int>
-    // py::print(result);
-    // py::print(typeid(typename decltype(result)::value_type).name());
-
-
-
-    // py::Tuple tuple = {1, 2, 3};
-    // py::print(py::Tuple<py::Int>::check<decltype(tuple)>());
-    // py::print(py::Tuple<py::Int>::check(tuple));
-    // py::print(py::Tuple<>::check<decltype(tuple)>());
-    // py::print(py::Tuple<>::check(tuple));
-    // py::print(py::Tuple<py::Str>::check<decltype(tuple)>());
-    // py::print(py::Tuple<py::Str>::check(tuple));
-
-
-
-    // py::Tuple tuple("abc");
-    // py::print(typeid(decltype(tuple)::value_type).name());
-    // for (auto&& item : tuple[{0, 2}]) {
-    //     py::print(item);
-    // }
-
-
-    // py::Tuple<py::Int> x = {1, 2, 3};
-    // // py::Tuple<> y = {4, 5, 6};
-    // py::Tuple<py::Int> y = {4, 5, 6};
-    // // py::Tuple y("abcdef");
-    // py::Object z = py::Tuple{7, 8, "abc"};
-    // py::print(typeid(decltype(x + y)).name());
-    // // py::print(x + z);  // TODO: should not be allowed
-    // // py::print(2 * x);
-    // // py::print(x % z);
-
-    // x += py::Object(py::Tuple{20, 21, "abc"});  // TODO: should not be allowed
-    // py::print(x);
-
-    // py::Tuple a = x + py::Tuple{10, 11, 12};
-    // py::print(typeid(decltype(a)::value_type).name());
-
-
-
-
-
-    py::Tuple<py::Int> a = {1, 2, 3};
-    pybind11::tuple b = a;
+    py::Set a = {1, 2, 3};
+    py::Set b("abc");
+    py::print(a);
     py::print(b);
-    py::print(a < py::Tuple<py::Int>{4, 5, 6});
-    py::print(a < std::tuple<double, double, double>{4, 5, 6});
-    py::print(std::pair<int, int>{1, 2} < a);
-    py::print(a < b);
-    // py::print(a < py::Tuple<py::Str>{"a", "b", "c"});
-    // py::print(a < std::vector<double>{4, 5, 6});
-    // py::print(a < std::list<std::string>{"a", "b", "c"});
-
-    // py::print(x[{0, 2}] + py::Tuple<py::Int>{10, 11});
+    py::print(typeid(decltype(b)::value_type).name());
 
 
-
-    py::List<py::Int> list = {1, 2, 3, 4, 5};
-    py::List list2("abcdefg");
-    py::print(list);
-    py::print(list2);
-
-
-    py::List list3("abc");
-    py::print(typeid(decltype(list3)).name());
-    py::print(list3);
-
-    list3.extend({"d", "e", "f"});
-    // list3.extend({1, 2, 3});
-    // list3.append(1);
-
-
-    // py::List<> list4 = list3;
-    // py::print(typeid(decltype(list4)).name());
+    py::Set<py::Tuple<py::Int>> set = {{1, 2, 3}, {4, 5, 6}};
+    py::print(set);
+    py::print(typeid(decltype(set)::value_type).name());
 
 
 

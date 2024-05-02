@@ -135,13 +135,15 @@ template <typename Val = Object>
 class List;
 template <typename Val = Object>
 class Tuple;
+template <typename Key = Object>
 class Set;
+template <typename Key = Object>
 class FrozenSet;
-class KeysView;
-class ItemsView;
-class ValuesView;
-class Dict;
-class MappingProxy;
+class KeysView;  // TODO: template on dict
+class ValuesView;  // TODO: template on dict
+class ItemsView;  // TODO: template on dict
+class Dict;  // TODO: CTAD
+class MappingProxy;  // TODO: template on dict
 class Str;
 class Bytes;
 class ByteArray;
@@ -149,10 +151,10 @@ class Type;
 class Super;
 class Code;
 class Frame;
-class Function;
-class ClassMethod;
-class StaticMethod;
-class Property;
+class Function;  // TODO: template on return and arguments, with dynamic as CTAD default?
+class ClassMethod;  // TODO: template on function type
+class StaticMethod;  // TODO: template on function type
+class Property;  // NOTE: no need to template because getters/setters/deleters have consistent signatures
 class Timedelta;
 class Timezone;
 class Date;
@@ -171,8 +173,12 @@ namespace impl {
     struct ListTag {
         static const Type type;
     };
-    struct SetTag {};
-    struct FrozenSetTag {};
+    struct SetTag {
+        static const Type type;
+    };
+    struct FrozenSetTag {
+        static const Type type;
+    };
     struct KeysTag {};
     struct ValuesTag {};
     struct ItemsTag {};

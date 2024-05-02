@@ -56,29 +56,29 @@ struct __gt__<KeysView, T>                                  : Returns<bool> {};
 template <impl::anyset_like T>
 struct __gt__<KeysView, T>                                  : Returns<bool> {};
 template <>
-struct __or__<KeysView, Object>                             : Returns<Set> {};
+struct __or__<KeysView, Object>                             : Returns<Set<>> {};  // TODO: template on specific key type
 template <std::derived_from<KeysView> T>
-struct __or__<KeysView, T>                                  : Returns<Set> {};
+struct __or__<KeysView, T>                                  : Returns<Set<>> {};  // TODO: template on specific key type
 template <impl::anyset_like T>
-struct __or__<KeysView, T>                                  : Returns<Set> {};
+struct __or__<KeysView, T>                                  : Returns<Set<>> {};  // TODO: template on specific key type
 template <>
-struct __and__<KeysView, Object>                            : Returns<Set> {};
+struct __and__<KeysView, Object>                            : Returns<Set<>> {};  // TODO: template on specific key type
 template <std::derived_from<KeysView> T>
-struct __and__<KeysView, T>                                 : Returns<Set> {};
+struct __and__<KeysView, T>                                 : Returns<Set<>> {};  // TODO: template on specific key type
 template <impl::anyset_like T>
-struct __and__<KeysView, T>                                 : Returns<Set> {};
+struct __and__<KeysView, T>                                 : Returns<Set<>> {};  // TODO: template on specific key type
 template <>
-struct __sub__<KeysView, Object>                            : Returns<Set> {};
+struct __sub__<KeysView, Object>                            : Returns<Set<>> {};  // TODO: template on specific key type
 template <std::derived_from<KeysView> T>
-struct __sub__<KeysView, T>                                 : Returns<Set> {};
+struct __sub__<KeysView, T>                                 : Returns<Set<>> {};  // TODO: template on specific key type
 template <impl::anyset_like T>
-struct __sub__<KeysView, T>                                 : Returns<Set> {};
+struct __sub__<KeysView, T>                                 : Returns<Set<>> {};  // TODO: template on specific key type
 template <>
-struct __xor__<KeysView, Object>                            : Returns<Set> {};
+struct __xor__<KeysView, Object>                            : Returns<Set<>> {};  // TODO: template on specific key type
 template <std::derived_from<KeysView> T>
-struct __xor__<KeysView, T>                                 : Returns<Set> {};
+struct __xor__<KeysView, T>                                 : Returns<Set<>> {};  // TODO: template on specific key type
 template <impl::anyset_like T>
-struct __xor__<KeysView, T>                                 : Returns<Set> {};
+struct __xor__<KeysView, T>                                 : Returns<Set<>> {};  // TODO: template on specific key type
 
 
 /* Represents a statically-typed Python `dict.keys()` object in C++. */
@@ -163,48 +163,50 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    inline friend Set operator|(
+    // TODO: all of these should be templated on the specific key type
+
+    inline friend Set<> operator|(
         const KeysView& self,
         const std::initializer_list<impl::HashInitializer>& other
     ) {
-        PyObject* result = PyNumber_Or(self.ptr(), Set(other).ptr());
+        PyObject* result = PyNumber_Or(self.ptr(), Set<>(other).ptr());
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Set>(result);
+        return reinterpret_steal<Set<>>(result);
     }
 
-    inline friend Set operator&(
+    inline friend Set<> operator&(
         const KeysView& self,
         const std::initializer_list<impl::HashInitializer>& other
     ) {
-        PyObject* result = PyNumber_And(self.ptr(), Set(other).ptr());
+        PyObject* result = PyNumber_And(self.ptr(), Set<>(other).ptr());
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Set>(result);
+        return reinterpret_steal<Set<>>(result);
     }
 
-    inline friend Set operator-(
+    inline friend Set<> operator-(
         const KeysView& self,
         const std::initializer_list<impl::HashInitializer>& other
     ) {
-        PyObject* result = PyNumber_Subtract(self.ptr(), Set(other).ptr());
+        PyObject* result = PyNumber_Subtract(self.ptr(), Set<>(other).ptr());
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Set>(result);
+        return reinterpret_steal<Set<>>(result);
     }
 
-    inline friend Set operator^(
+    inline friend Set<> operator^(
         const KeysView& self,
         const std::initializer_list<impl::HashInitializer>& other
     ) {
-        PyObject* result = PyNumber_Xor(self.ptr(), Set(other).ptr());
+        PyObject* result = PyNumber_Xor(self.ptr(), Set<>(other).ptr());
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Set>(result);
+        return reinterpret_steal<Set<>>(result);
     }
 
 };

@@ -166,8 +166,8 @@ inline const Type Slice::type = reinterpret_borrow<Type>((PyObject*) &PySlice_Ty
 inline const Type Range::type = reinterpret_borrow<Type>((PyObject*) &PyRange_Type);
 inline const Type impl::ListTag::type = reinterpret_borrow<Type>((PyObject*) &PyList_Type);
 inline const Type impl::TupleTag::type = reinterpret_borrow<Type>((PyObject*) &PyTuple_Type);
-inline const Type Set::type = reinterpret_borrow<Type>((PyObject*) &PySet_Type);
-inline const Type FrozenSet::type = reinterpret_borrow<Type>((PyObject*) &PyFrozenSet_Type);
+inline const Type impl::SetTag::type = reinterpret_borrow<Type>((PyObject*) &PySet_Type);
+inline const Type impl::FrozenSetTag::type = reinterpret_borrow<Type>((PyObject*) &PyFrozenSet_Type);
 inline const Type Dict::type = reinterpret_borrow<Type>((PyObject*) &PyDict_Type);
 inline const Type MappingProxy::type = reinterpret_borrow<Type>((PyObject*) &PyDictProxy_Type);
 inline const Type KeysView::type = reinterpret_borrow<Type>((PyObject*) &PyDictKeys_Type);
@@ -234,7 +234,7 @@ inline Module Module::def_submodule(const char* name, const char* doc) {
     if (!submodule) {
         Exception::from_python();
     }
-    auto result = reinterpret_borrow<Module>(submodule);
+    Module result = reinterpret_borrow<Module>(submodule);
     try {
         if (doc && pybind11::options::show_user_defined_docstrings()) {
             result.template attr<"__doc__">() = pybind11::str(doc);
@@ -303,8 +303,8 @@ inline void List<Val>::extend(const T& items) {
     if constexpr (impl::python_like<T>) {
         attr<"extend">()(items);
     } else {
-        for (auto&& item : items) {
-            append(std::forward<decltype(item)>(item));
+        for (const auto& item : items) {
+            append(item);
         }
     }
 }
@@ -318,7 +318,7 @@ inline void List<Val>::remove(const Val& value) {
 
 template <typename Val>
 inline Val List<Val>::pop(Py_ssize_t index) {
-    return attr<"pop">()(index);
+    return reinterpet_steal<Val>(attr<"pop">()(index).release());
 }
 
 
@@ -334,16 +334,15 @@ inline void List<Val>::sort(const Function& key, const Bool& reverse) {
 }
 
 
-template <typename Derived>
+template <typename Key>
 template <impl::is_iterable T>
-inline bool impl::ISet<Derived>::isdisjoint(const T& other) const {
+    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+inline bool FrozenSet<Key>::isdisjoint(const T& other) const {
     if constexpr (impl::python_like<T>) {
-        return static_cast<bool>(
-            self()->template attr<"isdisjoint">()(other)
-        );
+        return static_cast<bool>(attr<"isdisjoint">()(other));
     } else {
-        for (auto&& item : other) {
-            if (contains(std::forward<decltype(item)>(item))) {
+        for (const auto& item : other) {
+            if (contains(item)) {
                 return false;
             }
         }
@@ -352,16 +351,15 @@ inline bool impl::ISet<Derived>::isdisjoint(const T& other) const {
 }
 
 
-template <typename Derived>
+template <typename Key>
 template <impl::is_iterable T>
-inline bool impl::ISet<Derived>::issuperset(const T& other) const {
+    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+inline bool Set<Key>::isdisjoint(const T& other) const {
     if constexpr (impl::python_like<T>) {
-        return static_cast<bool>(
-            self()->template attr<"issuperset">()(other)
-        );
+        return static_cast<bool>(attr<"isdisjoint">()(other));
     } else {
-        for (auto&& item : other) {
-            if (!contains(std::forward<decltype(item)>(item))) {
+        for (const auto& item : other) {
+            if (contains(item)) {
                 return false;
             }
         }
@@ -370,80 +368,187 @@ inline bool impl::ISet<Derived>::issuperset(const T& other) const {
 }
 
 
-template <typename Derived>
+template <typename Key>
 template <impl::is_iterable T>
-inline bool impl::ISet<Derived>::issubset(const T& other) const {
-    return static_cast<bool>(self()->template attr<"issubset">()(other));
+    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+inline bool FrozenSet<Key>::issuperset(const T& other) const {
+    if constexpr (impl::python_like<T>) {
+        return static_cast<bool>(attr<"issuperset">()(other));
+    } else {
+        for (const auto& item : other) {
+            if (!contains(item)) {
+                return false;
+            }
+        }
+        return true;
+    }
 }
 
 
-template <typename Derived>
-inline bool impl::ISet<Derived>::issubset(
-    const std::initializer_list<impl::HashInitializer>& other
-) const {
-    return static_cast<bool>(
-        self()->template attr<"issubset">()(Derived(other))
+template <typename Key>
+template <impl::is_iterable T>
+    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+inline bool Set<Key>::issuperset(const T& other) const {
+    if constexpr (impl::python_like<T>) {
+        return static_cast<bool>(attr<"issuperset">()(other));
+    } else {
+        for (const auto& item : other) {
+            if (!contains(item)) {
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
+
+template <typename Key>
+template <impl::is_iterable T>
+    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+inline bool FrozenSet<Key>::issubset(const T& other) const {
+    return static_cast<bool>(attr<"issubset">()(other));
+}
+
+
+template <typename Key>
+template <impl::is_iterable T>
+    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+inline bool Set<Key>::issubset(const T& other) const {
+    return static_cast<bool>(attr<"issubset">()(other));
+}
+
+
+template <typename Key>
+inline bool FrozenSet<Key>::issubset(const std::initializer_list<Key>& other) const {
+    return static_cast<bool>(attr<"issubset">()(FrozenSet(other)));
+}
+
+
+template <typename Key>
+inline bool Set<Key>::issubset(const std::initializer_list<Key>& other) const {
+    return static_cast<bool>(attr<"issubset">()(Set(other)));
+}
+
+
+template <typename Key>
+template <impl::is_iterable... Args>
+    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+inline FrozenSet<Key> FrozenSet<Key>::union_(const Args&... others) const {
+    return reinterpret_steal<FrozenSet<Key>>(
+        attr<"union">()(std::forward<Args>(others)...).release()
     );
 }
 
 
-template <typename Derived>
+template <typename Key>
 template <impl::is_iterable... Args>
-inline Derived impl::ISet<Derived>::union_(const Args&... others) const {
-    return self()->template attr<"union">()(std::forward<Args>(others)...);
+    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+inline Set<Key> Set<Key>::union_(const Args&... others) const {
+    return reinterpet_steal<Set<Key>>(
+        attr<"union">()(std::forward<Args>(others)...).release()
+    );
 }
 
 
-template <typename Derived>
+template <typename Key>
 template <impl::is_iterable... Args>
-inline Derived impl::ISet<Derived>::intersection(const Args&... others) const {
-    return self()->template attr<"intersection">()(std::forward<Args>(others)...);
+    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+inline FrozenSet<Key> FrozenSet<Key>::intersection(const Args&... others) const {
+    return reinterpret_steal<FrozenSet<Key>>(
+        attr<"intersection">()(std::forward<Args>(others)...).release()
+    );
 }
 
 
-template <typename Derived>
+template <typename Key>
 template <impl::is_iterable... Args>
-inline Derived impl::ISet<Derived>::difference(const Args&... others) const {
-    return self()->template attr<"difference">()(std::forward<Args>(others)...);
+    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+inline Set<Key> Set<Key>::intersection(const Args&... others) const {
+    return reinterpet_steal<Set<Key>>(
+        attr<"intersection">()(std::forward<Args>(others)...).release()
+    );
 }
 
 
-template <typename Derived>
+template <typename Key>
+template <impl::is_iterable... Args>
+    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+inline FrozenSet<Key> FrozenSet<Key>::difference(const Args&... others) const {
+    return reinterpret_steal<FrozenSet<Key>>(
+        attr<"difference">()(std::forward<Args>(others)...).release()
+    );
+}
+
+
+template <typename Key>
+template <impl::is_iterable... Args>
+    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+inline Set<Key> Set<Key>::difference(const Args&... others) const {
+    return reinterpet_steal<Set<Key>>(
+        attr<"difference">()(std::forward<Args>(others)...).release()
+    );
+}
+
+
+template <typename Key>
 template <impl::is_iterable T>
-inline Derived impl::ISet<Derived>::symmetric_difference(const T& other) const {
-    return self()->template attr<"symmetric_difference">()(other);
+    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+inline FrozenSet<Key> FrozenSet<Key>::symmetric_difference(const T& other) const {
+    return reinterpret_steal<FrozenSet<Key>>(
+        attr<"symmetric_difference">()(other).release()
+    );
 }
 
 
+template <typename Key>
+template <impl::is_iterable T>
+    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+inline Set<Key> Set<Key>::symmetric_difference(const T& other) const {
+    return reinterpret_steal<Set<Key>>(
+        attr<"symmetric_difference">()(other).release()
+    );
+}
+
+
+template <typename Key>
 template <impl::is_iterable... Args>
-inline void Set::update(const Args&... others) {
+    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+inline void Set<Key>::update(const Args&... others) {
     attr<"update">()(std::forward<Args>(others)...);
 }
 
 
+template <typename Key>
 template <impl::is_iterable... Args>
-inline void Set::intersection_update(const Args&... others) {
+    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+inline void Set<Key>::intersection_update(const Args&... others) {
     attr<"intersection_update">()(std::forward<Args>(others)...);
 }
 
 
-inline void Set::intersection_update(
-    const std::initializer_list<impl::HashInitializer>& other
-) {
+template <typename Key>
+inline void Set<Key>::intersection_update(const std::initializer_list<Key>& other) {
     attr<"intersection_update">()(Set(other));
 }
 
 
+template <typename Key>
 template <impl::is_iterable... Args>
-inline void Set::difference_update(const Args&... others) {
+    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+inline void Set<Key>::difference_update(const Args&... others) {
     attr<"difference_update">()(std::forward<Args>(others)...);
 }
 
 
+template <typename Key>
 template <impl::is_iterable T>
-inline void Set::symmetric_difference_update(const T& other) {
+    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+inline void Set<Key>::symmetric_difference_update(const T& other) {
     attr<"symmetric_difference_update">()(other);
 }
+
+
+// TODO: user reinterpret_steal where appropriate to ensure performance and safety
 
 
 template <impl::is_iterable T>
@@ -455,7 +560,7 @@ inline bool KeysView::isdisjoint(const T& other) const {
 inline bool KeysView::isdisjoint(
     const std::initializer_list<impl::HashInitializer>& other
 ) const {
-    return static_cast<bool>(attr<"isdisjoint">()(Set(other)));
+    return static_cast<bool>(attr<"isdisjoint">()(Set<>(other)));  // TODO: this should be templated on the specific key type
 }
 
 
