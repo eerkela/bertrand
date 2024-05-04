@@ -177,25 +177,6 @@ namespace ops {
     // TODO: ReverseIterator<KeyIter> will not compile as written, since KeyIter is a
     // forward iterator.
 
-    template <typename Return, std::derived_from<impl::KeyTag> Self>
-    struct rbegin<Return, Self> {
-        static auto operator()(const Self& self) {
-            PyObject* dict = reinterpret_cast<PyObject*>(
-                reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
-            );
-            return impl::ReverseIterator<impl::KeyIter<Return>>(
-                reinterpret_borrow<typename Self::mapping_type>(dict)
-            );
-        };
-    };
-
-    template <typename Return, std::derived_from<impl::KeyTag> Self>
-    struct rend<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::ReverseIterator<impl::KeyIter<Return>>();
-        };
-    };
-
 }
 }
 
@@ -221,8 +202,8 @@ public:
     using const_reference = const key_type&;
     using iterator = impl::Iterator<impl::KeyIter<key_type>>;
     using const_iterator = impl::Iterator<impl::KeyIter<const key_type>>;
-    using reverse_iterator = impl::ReverseIterator<impl::KeyIter<key_type>>;
-    using const_reverse_iterator = impl::ReverseIterator<impl::KeyIter<const key_type>>;
+    using reverse_iterator = impl::Iterator<impl::GenericIter<key_type>>;
+    using const_reverse_iterator = impl::Iterator<impl::GenericIter<const key_type>>;
 
     template <typename T>
     static consteval bool check() {
@@ -383,25 +364,6 @@ namespace ops {
         };
     };
 
-    template <typename Return, std::derived_from<ValueTag> Self>
-    struct rbegin<Return, Self> {
-        static auto operator()(const Self& self) {
-            PyObject* dict = reinterpret_cast<PyObject*>(
-                reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
-            );
-            return impl::ReverseIterator<impl::ValueIter<Return>>(
-                reinterpret_borrow<typename Self::mapping_type>(dict)
-            );
-        };
-    };
-
-    template <typename Return, std::derived_from<ValueTag> Self>
-    struct rend<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::ReverseIterator<impl::ValueIter<Return>>();
-        };
-    };
-
 }
 }
 
@@ -426,8 +388,8 @@ public:
     using const_reference = const value_type&;
     using iterator = impl::Iterator<impl::ValueIter<value_type>>;
     using const_iterator = impl::Iterator<impl::ValueIter<const value_type>>;
-    using reverse_iterator = impl::ReverseIterator<impl::ValueIter<value_type>>;
-    using const_reverse_iterator = impl::ReverseIterator<impl::ValueIter<const value_type>>;
+    using reverse_iterator = impl::Iterator<impl::GenericIter<value_type>>;
+    using const_reverse_iterator = impl::Iterator<impl::GenericIter<const value_type>>;
 
     template <typename T>
     static consteval bool check() {
@@ -529,25 +491,6 @@ namespace ops {
         };
     };
 
-    template <typename Return, std::derived_from<ItemTag> Self>
-    struct rbegin<Return, Self> {
-        static auto operator()(const Self& self) {
-            PyObject* dict = reinterpret_cast<PyObject*>(
-                reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
-            );
-            return impl::ReverseIterator<impl::ItemIter<Return>>(
-                reinterpret_borrow<typename Self::mapping_type>(dict)
-            );
-        };
-    };
-
-    template <typename Return, std::derived_from<ItemTag> Self>
-    struct rend<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::ReverseIterator<impl::ItemIter<Return>>();
-        };
-    };
-
 }
 }
 
@@ -575,8 +518,8 @@ public:
     using const_reference = const_pair&;
     using iterator = impl::Iterator<impl::ItemIter<pair>>;
     using const_iterator = impl::Iterator<impl::ItemIter<const_pair>>;
-    using reverse_iterator = impl::ReverseIterator<impl::ItemIter<pair>>;
-    using const_reverse_iterator = impl::ReverseIterator<impl::ItemIter<const_pair>>;
+    using reverse_iterator = impl::Iterator<impl::GenericIter<pair>>;
+    using const_reverse_iterator = impl::Iterator<impl::GenericIter<const_pair>>;
 
     template <typename T>
     static consteval bool check() {
@@ -727,20 +670,6 @@ namespace ops {
         };
     };
 
-    template <typename Return, std::derived_from<impl::DictTag> Self>
-    struct rbegin<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::ReverseIterator<impl::KeyIter<Return>>(self);
-        };
-    };
-
-    template <typename Return, std::derived_from<impl::DictTag> Self>
-    struct rend<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::ReverseIterator<impl::KeyIter<Return>>();
-        };
-    };
-
     template <typename Return, std::derived_from<DictTag> Self, typename Key>
     struct contains<Return, Self, Key> {
         static bool operator()(const Self& self, const to_object<Key>& key) {
@@ -823,8 +752,8 @@ public:
     using const_reference = const value_type&;
     using iterator = impl::Iterator<impl::KeyIter<value_type>>;
     using const_iterator = impl::Iterator<impl::KeyIter<const value_type>>;
-    using reverse_iterator = impl::ReverseIterator<impl::KeyIter<value_type>>;
-    using const_reverse_iterator = impl::ReverseIterator<impl::KeyIter<const value_type>>;
+    using reverse_iterator = impl::Iterator<impl::GenericIter<value_type>>;
+    using const_reverse_iterator = impl::Iterator<impl::GenericIter<const value_type>>;
 
     // TODO: std::unordered_map reserves key_type for the key type, mapped_type for the
     // value type, and value_type for the pair type.  This is a bit confusing, but

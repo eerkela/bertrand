@@ -255,9 +255,12 @@ private:
     using Base = Proxy<Wrapped, Attr>;
     Object obj;
 
-    inline static const pybind11::str key() {
-        static const pybind11::str result = static_cast<std::string>(name);
-        return result;
+    inline static PyObject* key() {
+        static PyObject* result = PyUnicode_FromStringAndSize(
+            name.buffer,
+            name.size()
+        );
+        return result;  // NOTE: string will be garbage collected at shutdown
     }
 
     void get_attr() const {
@@ -267,7 +270,7 @@ private:
                 "accessor was moved from or not properly constructed to begin with."
             );
         }
-        PyObject* result = PyObject_GetAttr(obj.ptr(), key().ptr());
+        PyObject* result = PyObject_GetAttr(obj.ptr(), key());
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -351,7 +354,7 @@ public:
                     if (descr == nullptr) {
                         Exception::from_python();
                     }
-                    if (PyObject_SetAttr(obj.ptr(), key().ptr(), descr) < 0) {
+                    if (PyObject_SetAttr(obj.ptr(), key(), descr) < 0) {
                         Py_DECREF(descr);
                         Exception::from_python();
                     }
@@ -363,7 +366,7 @@ public:
                     if (descr == nullptr) {
                         Exception::from_python();
                     }
-                    if (PyObject_SetAttr(obj.ptr(), key().ptr(), descr) < 0) {
+                    if (PyObject_SetAttr(obj.ptr(), key(), descr) < 0) {
                         Py_DECREF(descr);
                         Exception::from_python();
                     }
@@ -372,7 +375,7 @@ public:
 
             // otherwise, just set the attribute normally
             } else {
-                if (PyObject_SetAttr(obj.ptr(), key().ptr(), value_ptr) < 0) {
+                if (PyObject_SetAttr(obj.ptr(), key(), value_ptr) < 0) {
                     Exception::from_python();
                 }
             }
@@ -397,7 +400,7 @@ public:
             "specialization of __delattr__ for these types and ensure the Return "
             "type is set to void."
         );
-        if (PyObject_DelAttr(obj.ptr(), key().ptr()) < 0) {
+        if (PyObject_DelAttr(obj.ptr(), key()) < 0) {
             Exception::from_python();
         }
         if (Base::initialized) {

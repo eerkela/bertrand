@@ -8,6 +8,7 @@
 #include "common.h"
 #include "tuple.h"
 #include "dict.h"
+#include "str.h"
 
 
 namespace bertrand {

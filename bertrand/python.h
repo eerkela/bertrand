@@ -1787,9 +1787,8 @@ inline pybind11::iterator reversed(T&& obj) {
     );
     try {
         if constexpr (std::derived_from<std::decay_t<T>, pybind11::object>) {
-            static const pybind11::str lookup = "__reversed__";
             return reinterpret_steal<pybind11::iterator>(
-                obj.attr(lookup)().release()
+                obj.attr("__reversed__")().release()
             );
         } else {
             return pybind11::make_iterator(std::rbegin(obj), std::rend(obj));

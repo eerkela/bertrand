@@ -129,11 +129,10 @@ void run() {
     // dict2[4] = "d";
     py::print(dict);
 
-    // auto y = dict.keys();  // TODO: causes a segfault during shutdown
-
-    for (const auto& x : dict) {
+    for (const auto& x : dict.values()) {
         py::print(x);
     }
+
 
 
 

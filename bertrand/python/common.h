@@ -679,8 +679,12 @@ auto impl::Proxy<Obj, Wrapped>::operator[](
 /* Equivalent to Python `import module`.  Only recognizes absolute imports. */
 template <StaticStr name>
 Module import() {
-    static const pybind11::str lookup = static_cast<const char*>(name);
-    PyObject *obj = PyImport_Import(lookup.ptr());
+    // NOTE: lookup string will be garbage collected during shutdown
+    static PyObject* lookup = PyUnicode_FromStringAndSize(
+        name.buffer,
+        name.size()
+    );
+    PyObject* obj = PyImport_Import(lookup);
     if (obj == nullptr) {
         Exception::from_python();
     }
