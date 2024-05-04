@@ -672,7 +672,7 @@ namespace impl {
         static constexpr bool enable = false;
     };
 
-    template <> struct getattr_helper<"__dict__">           : Returns<Dict> {};
+    template <> struct getattr_helper<"__dict__">           : Returns<Dict<Str, Object>> {};
     template <> struct setattr_helper<"__dict__">           : Returns<void> {};
     template <> struct delattr_helper<"__dict__">           : Returns<void> {};
     template <> struct getattr_helper<"__class__">          : Returns<Type> {};

@@ -168,11 +168,11 @@ inline const Type impl::ListTag::type = reinterpret_borrow<Type>((PyObject*) &Py
 inline const Type impl::TupleTag::type = reinterpret_borrow<Type>((PyObject*) &PyTuple_Type);
 inline const Type impl::SetTag::type = reinterpret_borrow<Type>((PyObject*) &PySet_Type);
 inline const Type impl::FrozenSetTag::type = reinterpret_borrow<Type>((PyObject*) &PyFrozenSet_Type);
-inline const Type Dict::type = reinterpret_borrow<Type>((PyObject*) &PyDict_Type);
-inline const Type MappingProxy::type = reinterpret_borrow<Type>((PyObject*) &PyDictProxy_Type);
-inline const Type KeysView::type = reinterpret_borrow<Type>((PyObject*) &PyDictKeys_Type);
-inline const Type ValuesView::type = reinterpret_borrow<Type>((PyObject*) &PyDictValues_Type);
-inline const Type ItemsView::type = reinterpret_borrow<Type>((PyObject*) &PyDictItems_Type);
+inline const Type impl::DictTag::type = reinterpret_borrow<Type>((PyObject*) &PyDict_Type);
+inline const Type impl::KeyTag::type = reinterpret_borrow<Type>((PyObject*) &PyDictKeys_Type);
+inline const Type impl::ValueTag::type = reinterpret_borrow<Type>((PyObject*) &PyDictValues_Type);
+inline const Type impl::ItemTag::type = reinterpret_borrow<Type>((PyObject*) &PyDictItems_Type);
+inline const Type impl::MappingProxyTag::type = reinterpret_borrow<Type>((PyObject*) &PyDictProxy_Type);
 inline const Type Str::type = reinterpret_borrow<Type>((PyObject*) &PyUnicode_Type);
 inline const Type Bytes::type = reinterpret_borrow<Type>((PyObject*) &PyBytes_Type);
 inline const Type ByteArray::type = reinterpret_borrow<Type>((PyObject*) &PyByteArray_Type);
@@ -217,6 +217,9 @@ inline const Type Property::type = reinterpret_borrow<Type>((PyObject*) &PyPrope
 //         return Type();
 //     }
 // }();
+
+
+inline const Object impl::MappingProxyTag::placeholder = Object::type();
 
 
 ////////////////////////////////////
@@ -266,8 +269,11 @@ inline Float::Float(const Str& str) :
 }
 
 
-inline Type::Type(const Str& name, const Tuple<Type>& bases, const Dict& dict) :
-    Base(nullptr, stolen_t{})
+inline Type::Type(
+    const Str& name,
+    const Tuple<Type>& bases,
+    const Dict<Str, Object>& dict
+) : Base(nullptr, stolen_t{})
 {
     m_ptr = PyObject_CallFunctionObjArgs(
         reinterpret_cast<PyObject*>(&PyType_Type),
@@ -551,83 +557,61 @@ inline void Set<Key>::symmetric_difference_update(const T& other) {
 // TODO: user reinterpret_steal where appropriate to ensure performance and safety
 
 
-template <impl::is_iterable T>
-inline bool KeysView::isdisjoint(const T& other) const {
-    return static_cast<bool>(attr<"isdisjoint">()(other));
-}
-
-
-inline bool KeysView::isdisjoint(
-    const std::initializer_list<impl::HashInitializer>& other
-) const {
-    return static_cast<bool>(attr<"isdisjoint">()(Set<>(other)));  // TODO: this should be templated on the specific key type
-}
-
-
-inline Object Dict::popitem() {
-    return attr<"popitem">()();
-}
-
-
-inline KeysView::KeysView(const Dict& dict) :
+template <typename Map>
+inline KeyView<Map>::KeyView(const Map& dict) :
     Base(dict.template attr<"keys">()().release(), stolen_t{})
 {}
 
 
-inline KeysView Dict::keys() const {
-    return reinterpret_steal<KeysView>(attr<"keys">()().release());
+template <typename Map>
+template <impl::is_iterable T>
+    requires (std::convertible_to<impl::dereference_type<T>, typename Map::key_type>)
+inline bool KeyView<Map>::isdisjoint(const T& other) const {
+    return static_cast<bool>(attr<"isdisjoint">()(other));
 }
 
 
-inline ValuesView::ValuesView(const Dict& dict) :
+template <typename Map>
+inline bool KeyView<Map>::isdisjoint(
+    const std::initializer_list<typename Map::key_type>& other
+) const {
+    return static_cast<bool>(attr<"isdisjoint">()(Set<typename Map::key_type>(other)));
+}
+
+
+template <typename Key, typename Value>
+inline KeyView<Dict<Key, Value>> Dict<Key, Value>::keys() const {
+    return KeyView(*this);
+}
+
+
+template <typename Map>
+inline ValueView<Map>::ValueView(const Map& dict) :
     Base(dict.template attr<"values">()().release(), stolen_t{})
 {}
 
 
-inline ValuesView Dict::values() const {
-    return reinterpret_steal<ValuesView>(attr<"values">()().release());
+template <typename Key, typename Value>
+inline ValueView<Dict<Key, Value>> Dict<Key, Value>::values() const {
+    return ValueView(*this);
 }
 
 
-inline ItemsView::ItemsView(const Dict& dict) :
+template <typename Map>
+inline ItemView<Map>::ItemView(const Map& dict) :
     Base(dict.template attr<"items">()().release(), stolen_t{})
 {}
 
 
-inline ItemsView Dict::items() const {
-    return reinterpret_steal<ItemsView>(attr<"items">()().release());
+template <typename Key, typename Value>
+inline ItemView<Dict<Key, Value>> Dict<Key, Value>::items() const {
+    return ItemView(*this);
 }
 
 
-inline Dict MappingProxy::copy() const {
-    return reinterpret_steal<Dict>(attr<"copy">()().release());
-}
-
-
-template <impl::is_hashable K>
-inline Object MappingProxy::get(const K& key) const {
-    return attr<"get">()(key, py::None);
-}
-
-
-template <impl::is_hashable K>
-inline Object MappingProxy::get(const K& key, const Object& default_value) const {
-    return attr<"get">()(key, default_value);
-}
-
-
-inline KeysView MappingProxy::keys() const {
-    return reinterpret_steal<KeysView>(attr<"keys">()().release());
-}
-
-
-inline ValuesView MappingProxy::values() const {
-    return reinterpret_steal<ValuesView>(attr<"values">()().release());
-}
-
-
-inline ItemsView MappingProxy::items() const {
-    return reinterpret_steal<ItemsView>(attr<"items">()().release());
+template <typename Key, typename Value>
+inline Value Dict<Key, Value>::popitem() {
+    return reinterpret_steal<Value>(attr<"popitem">()().release());
 }
 
 
@@ -663,9 +647,9 @@ inline Str Str::expandtabs(const Int& tabsize) const {
 
 template <typename... Args>
 inline Str Str::format(Args&&... args) const {
-    return reinterpret_steal<Str>(attr<"format">()(
-        std::forward<Args>(args)...
-    ).release());
+    return reinterpret_steal<Str>(
+        attr<"format">()(std::forward<Args>(args)...).release()
+    );
 }
 
 
@@ -760,22 +744,22 @@ inline Str Str::lstrip(const Str& chars) const {
 }
 
 
-inline Dict Str::maketrans(const Object& x) {
-    return reinterpret_steal<Dict>(
+inline Dict<> Str::maketrans(const Object& x) {
+    return reinterpret_steal<Dict<>>(
         type.template attr<"maketrans">()(x).release()
     );
 }
 
 
-inline Dict Str::maketrans(const Object& x, const Object& y) {
-    return reinterpret_steal<Dict>(
+inline Dict<> Str::maketrans(const Object& x, const Object& y) {
+    return reinterpret_steal<Dict<>>(
         type.template attr<"maketrans">()(x, y).release()
     );
 }
 
 
-inline Dict Str::maketrans(const Object& x, const Object& y, const Object& z) {
-    return reinterpret_steal<Dict>(
+inline Dict<> Str::maketrans(const Object& x, const Object& y, const Object& z) {
+    return reinterpret_steal<Dict<>>(
         type.template attr<"maketrans">()(x, y, z).release()
     );
 }
@@ -874,7 +858,7 @@ inline Bytes Bytes::fromhex(const Str& string) {
 
 
 template <typename Derived>
-inline Dict impl::IBytes<Derived>::maketrans(const Derived& from, const Derived& to) {
+inline Dict<> impl::IBytes<Derived>::maketrans(const Derived& from, const Derived& to) {
     return reinterpret_steal<Dict>(
         type.template attr<"maketrans">()(from, to).release()
     );
@@ -1387,32 +1371,32 @@ py::Object zip(First&& first, Rest&&... rest) {
 /* Get Python's builtin namespace as a dictionary.  This doesn't exist in normal
 Python, but makes it much more convenient to interact with the standard library from
 C++. */
-inline Dict builtins() {
+inline Dict<Str, Object> builtins() {
     PyObject* result = PyEval_GetBuiltins();
     if (result == nullptr) {
         Exception::from_python();
     }
-    return reinterpret_steal<Dict>(result);
+    return reinterpret_steal<Dict<Str, Object>>(result);
 }
 
 
 /* Equivalent to Python `globals()`. */
-inline Dict globals() {
+inline Dict<Str, Object> globals() {
     PyObject* result = PyEval_GetGlobals();
     if (result == nullptr) {
         throw RuntimeError("cannot get globals - no frame is currently executing");
     }
-    return reinterpret_borrow<Dict>(result);
+    return reinterpret_borrow<Dict<Str, Object>>(result);
 }
 
 
 /* Equivalent to Python `locals()`. */
-inline Dict locals() {
+inline Dict<Str, Object> locals() {
     PyObject* result = PyEval_GetLocals();
     if (result == nullptr) {
         throw RuntimeError("cannot get locals - no frame is currently executing");
     }
-    return reinterpret_borrow<Dict>(result);
+    return reinterpret_borrow<Dict<Str, Object>>(result);
 }
 
 
@@ -1515,7 +1499,7 @@ inline Object eval(const Str& expr) {
 
 
 /* Equivalent to Python `eval()` with a string expression and global variables. */
-inline Object eval(const Str& source, Dict& globals) {
+inline Object eval(const Str& source, Dict<Str, Object>& globals) {
     try {
         return pybind11::eval(source, globals, locals());
     } catch (...) {
@@ -1525,7 +1509,11 @@ inline Object eval(const Str& source, Dict& globals) {
 
 
 /* Equivalent to Python `eval()` with a string expression and global/local variables. */
-inline Object eval(const Str& source, Dict& globals, Dict& locals) {
+inline Object eval(
+    const Str& source,
+    Dict<Str, Object>& globals,
+    Dict<Str, Object>& locals
+) {
     try {
         return pybind11::eval(source, globals, locals);
     } catch (...) {
@@ -1545,7 +1533,7 @@ inline void exec(const Str& source) {
 
 
 /* Equivalent to Python `exec()` with a string expression and global variables. */
-inline void exec(const Str& source, Dict& globals) {
+inline void exec(const Str& source, Dict<Str, Object>& globals) {
     try {
         pybind11::exec(source, globals, locals());
     } catch (...) {
@@ -1555,7 +1543,11 @@ inline void exec(const Str& source, Dict& globals) {
 
 
 /* Equivalent to Python `exec()` with a string expression and global/local variables. */
-inline void exec(const Str& source, Dict& globals, Dict& locals) {
+inline void exec(
+    const Str& source,
+    Dict<Str, Object>& globals,
+    Dict<Str, Object>& locals
+) {
     try {
         pybind11::exec(source, globals, locals);
     } catch (...) {
@@ -1857,15 +1849,17 @@ inline void setattr(const Handle& obj, const Str& name, const Object& value) {
 
 
 /* Equivalent to Python `vars()`. */
-inline Dict vars() {
+inline Dict<Str, Object> vars() {
     return locals();
 }
 
 
 /* Equivalent to Python `vars(object)`. */
-inline Dict vars(const Object& object) {
+inline Dict<Str, Object> vars(const Object& object) {
     static const Str lookup = "__dict__";
-    return reinterpret_steal<Dict>(getattr(object, lookup).release());
+    return reinterpret_steal<Dict<Str, Object>>(
+        getattr(object, lookup).release()
+    );
 }
 
 

@@ -336,8 +336,8 @@ public:
     /////////////////////////////
 
     /* Execute the code object without context. */
-    BERTRAND_NOINLINE Dict operator()() const {
-        py::Dict context;
+    BERTRAND_NOINLINE Dict<Str, Object> operator()() const {
+        py::Dict<Str, Object> context;
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
             Exception::from_python(1);
@@ -347,7 +347,7 @@ public:
     }
 
     /* Execute the code object with the given context. */
-    BERTRAND_NOINLINE Dict& operator()(Dict& context) const {
+    BERTRAND_NOINLINE Dict<Str, Object>& operator()(Dict<Str, Object>& context) const {
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
             Exception::from_python(1);
@@ -357,7 +357,7 @@ public:
     }
 
     /* Execute the code object with the given context. */
-    BERTRAND_NOINLINE Dict operator()(Dict&& context) const {
+    BERTRAND_NOINLINE Dict<Str, Object> operator()(Dict<Str, Object>&& context) const {
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
             Exception::from_python(1);
@@ -473,11 +473,11 @@ struct __getattr__<T, "f_back">                                 : Returns<Frame>
 template <std::derived_from<Frame> T>
 struct __getattr__<T, "f_code">                                 : Returns<Code> {};
 template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_locals">                               : Returns<Dict> {};
+struct __getattr__<T, "f_locals">                               : Returns<Dict<Str, Object>> {};
 template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_globals">                              : Returns<Dict> {};
+struct __getattr__<T, "f_globals">                              : Returns<Dict<Str, Object>> {};
 template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_builtins">                             : Returns<Dict> {};
+struct __getattr__<T, "f_builtins">                             : Returns<Dict<Str, Object>> {};
 template <std::derived_from<Frame> T>
 struct __getattr__<T, "f_lasti">                                : Returns<Int> {};
 template <std::derived_from<Frame> T>
@@ -639,26 +639,28 @@ public:
     #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
 
         /* Get the frame's builtin namespace. */
-        inline Dict builtins() const {
-            return reinterpret_steal<Dict>(PyFrame_GetBuiltins(self()));
+        inline Dict<Str, Object> builtins() const {
+            return reinterpret_steal<Dict<Str, Object>>(
+                PyFrame_GetBuiltins(self())
+            );
         }
 
         /* Get the frame's globals namespace. */
-        inline Dict globals() const {
+        inline Dict<Str, Object> globals() const {
             PyObject* result = PyFrame_GetGlobals(self());
             if (result == nullptr) {
                 Exception::from_python();
             }
-            return reinterpret_steal<Dict>(result);
+            return reinterpret_steal<Dict<Str, Object>>(result);
         }
 
         /* Get the frame's locals namespace. */
-        inline Dict locals() const {
+        inline Dict<Str, Object> locals() const {
             PyObject* result = PyFrame_GetLocals(self());
             if (result == nullptr) {
                 Exception::from_python();
             }
-            return reinterpret_steal<Dict>(result);
+            return reinterpret_steal<Dict<Str, Object>>(result);
         }
 
         /* Get the generator, coroutine, or async generator that owns this frame, or
@@ -706,7 +708,7 @@ public:
 template <typename... Args>
 struct __call__<Function, Args...>                              : Returns<Object> {};
 template <std::derived_from<Function> T>
-struct __getattr__<T, "__globals__">                            : Returns<Dict> {};
+struct __getattr__<T, "__globals__">                            : Returns<Dict<Str, Object>> {};
 template <std::derived_from<Function> T>
 struct __getattr__<T, "__closure__">                            : Returns<Tuple<Object>> {};
 template <std::derived_from<Function> T>
@@ -714,9 +716,9 @@ struct __getattr__<T, "__defaults__">                           : Returns<Tuple<
 template <std::derived_from<Function> T>
 struct __getattr__<T, "__code__">                               : Returns<Code> {};
 template <std::derived_from<Function> T>
-struct __getattr__<T, "__annotations__">                        : Returns<Dict> {};
+struct __getattr__<T, "__annotations__">                        : Returns<Dict<Str, Object>> {};
 template <std::derived_from<Function> T>
-struct __getattr__<T, "__kwdefaults__">                         : Returns<Dict> {};
+struct __getattr__<T, "__kwdefaults__">                         : Returns<Dict<Str, Object>> {};
 template <std::derived_from<Function> T>
 struct __getattr__<T, "__func__">                               : Returns<Function> {};
 
@@ -808,12 +810,12 @@ public:
     }
 
     /* Get the globals dictionary associated with the function object. */
-    inline Dict globals() const {
+    inline Dict<Str, Object> globals() const {
         PyObject* result = PyFunction_GetGlobals(self());
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_borrow<Dict>(result);
+        return reinterpret_borrow<Dict<Str, Object>>(result);
     }
 
     /* Get the name of the file from which the code was compiled. */
@@ -854,43 +856,45 @@ public:
         return code().kwonlyargcount();
     }
 
-    /* Get a read-only dictionary mapping argument names to their default values. */
-    inline MappingProxy defaults() const {
-        Code code = this->code();
+    // /* Get a read-only dictionary mapping argument names to their default values. */
+    // inline MappingProxy<Dict<Str, Object>> defaults() const {
+    //     Code code = this->code();
 
-        // check for positional defaults
-        PyObject* pos_defaults = PyFunction_GetDefaults(self());
-        if (pos_defaults == nullptr) {
-            if (code.kwonlyargcount() > 0) {
-                Object kwdefaults = attr<"__kwdefaults__">();
-                if (kwdefaults.is(None)) {
-                    return Dict{};
-                } else {
-                    return Dict(kwdefaults);
-                }
-            } else {
-                return Dict{};
-            }
-        }
+    //     // check for positional defaults
+    //     PyObject* pos_defaults = PyFunction_GetDefaults(self());
+    //     if (pos_defaults == nullptr) {
+    //         if (code.kwonlyargcount() > 0) {
+    //             Object kwdefaults = attr<"__kwdefaults__">();
+    //             if (kwdefaults.is(None)) {
+    //                 return MappingProxy(Dict<Str, Object>{});
+    //             } else {
+    //                 return MappingProxy(reinterpret_steal<Dict<Str, Object>>(
+    //                     kwdefaults.release())
+    //                 );
+    //             }
+    //         } else {
+    //             return MappingProxy(Dict<Str, Object>{});
+    //         }
+    //     }
 
-        // extract positional defaults
-        size_t argcount = code.argcount();
-        Tuple<Object> defaults = reinterpret_borrow<Tuple<Object>>(pos_defaults);
-        Tuple<Str> names = code.varnames()[{argcount - defaults.size(), argcount}];
-        Dict result;
-        for (size_t i = 0; i < defaults.size(); ++i) {
-            result[names[i]] = defaults[i];
-        }
+    //     // extract positional defaults
+    //     size_t argcount = code.argcount();
+    //     Tuple<Object> defaults = reinterpret_borrow<Tuple<Object>>(pos_defaults);
+    //     Tuple<Str> names = code.varnames()[{argcount - defaults.size(), argcount}];
+    //     Dict result;
+    //     for (size_t i = 0; i < defaults.size(); ++i) {
+    //         result[names[i]] = defaults[i];
+    //     }
 
-        // merge keyword-only defaults
-        if (code.kwonlyargcount() > 0) {
-            Object kwdefaults = attr<"__kwdefaults__">();
-            if (!kwdefaults.is(None)) {
-                result.update(Dict(kwdefaults));
-            }
-        }
-        return result;
-    }
+    //     // merge keyword-only defaults
+    //     if (code.kwonlyargcount() > 0) {
+    //         Object kwdefaults = attr<"__kwdefaults__">();
+    //         if (!kwdefaults.is(None)) {
+    //             result.update(Dict(kwdefaults));
+    //         }
+    //     }
+    //     return result;
+    // }
 
     // /* Set the default value for one or more arguments.  If nullopt is provided,
     // then all defaults will be cleared. */
@@ -951,12 +955,12 @@ public:
     // }
 
     /* Get a read-only dictionary holding type annotations for the function. */
-    inline MappingProxy annotations() const {
+    inline MappingProxy<Dict<Str, Object>> annotations() const {
         PyObject* result = PyFunction_GetAnnotations(self());
         if (result == nullptr) {
-            return Dict{};
+            return MappingProxy(Dict<Str, Object>{});
         }
-        return reinterpret_borrow<Dict>(result);
+        return reinterpret_borrow<MappingProxy<Dict<Str, Object>>>(result);
     }
 
     // /* Set the type annotations for the function.  If nullopt is provided, then the

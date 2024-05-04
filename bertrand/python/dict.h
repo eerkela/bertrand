@@ -9,8 +9,36 @@
 #include "set.h"
 
 
+// NOTE: MappingProxy is hashable as of Python 3.12
+// NOTE: OrderedDict/defaultdict are dict subclasses, so it should be easily supported
+// NOTE: ChainMap is complicated, but maybe possible to support as well.
+
+
 namespace bertrand {
 namespace py {
+
+
+namespace impl {
+
+    /* A replication of Python's internal data format for MappingProxyType objects,
+    which allows us to access the underlying dictionary being viewed.  This is
+    currently defined in `Objects/descrobject.c`, but is not exported in a public
+    header. */
+    typedef struct {
+        PyObject_HEAD
+        PyObject* mapping;
+    } mappingproxyobject;
+
+    /* A replication of Python's internal data format for dict view objects, which
+    allows us to access the underlying dictionary being viewed.  This is currently
+    defined in `Include/internal/pycore_dict.h`, but is not exported in a public
+    header. */
+    typedef struct {
+        PyObject_HEAD
+        PyDictObject* dv_dict;
+    } _PyDictViewObject;
+
+}
 
 
 ////////////////////
@@ -18,79 +46,191 @@ namespace py {
 ////////////////////
 
 
-template <>
-struct __getattr__<KeysView, "mapping">                     : Returns<MappingProxy> {};
-template <>
-struct __getattr__<KeysView, "isdisjoint">                  : Returns<Function> {};
+template <std::derived_from<impl::KeyTag> Self>
+struct __getattr__<Self, "mapping">                             : Returns<MappingProxy<typename Self::mapping_type>> {};
+template <std::derived_from<impl::KeyTag> Self>
+struct __getattr__<Self, "isdisjoint">                          : Returns<Function> {};
+template <std::derived_from<impl::KeyTag> Self>
+struct __len__<Self>                                            : Returns<size_t> {};
+template <std::derived_from<impl::KeyTag> Self>
+struct __iter__<Self>                                           : Returns<typename Self::key_type> {};
+template <std::derived_from<impl::KeyTag> Self>
+struct __reversed__<Self>                                       : Returns<typename Self::key_type> {};
+template <
+    std::derived_from<impl::KeyTag> Self,
+    std::convertible_to<typename Self::key_type> Key
+>
+struct __contains__<Self, Key>                                  : Returns<bool> {};
+template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
+struct __lt__<Self, T>                                          : Returns<bool> {};
+template <std::derived_from<impl::KeyTag> Self, impl::anyset_like T>
+struct __lt__<Self, T>                                          : Returns<bool> {};
+template <impl::anyset_like T, std::derived_from<impl::KeyTag> Self>
+struct __lt__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
+struct __le__<Self, T>                                          : Returns<bool> {};
+template <std::derived_from<impl::KeyTag> Self, impl::anyset_like T>
+struct __le__<Self, T>                                          : Returns<bool> {};
+template <impl::anyset_like T, std::derived_from<impl::KeyTag> Self>
+struct __le__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
+struct __eq__<Self, T>                                          : Returns<bool> {};
+template <std::derived_from<impl::KeyTag> Self, impl::anyset_like T>
+struct __eq__<Self, T>                                          : Returns<bool> {};
+template <impl::anyset_like T, std::derived_from<impl::KeyTag> Self>
+struct __eq__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
+struct __ne__<Self, T>                                          : Returns<bool> {};
+template <std::derived_from<impl::KeyTag> Self, impl::anyset_like T>
+struct __ne__<Self, T>                                          : Returns<bool> {};
+template <impl::anyset_like T, std::derived_from<impl::KeyTag> Self>
+struct __ne__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
+struct __ge__<Self, T>                                          : Returns<bool> {};
+template <std::derived_from<impl::KeyTag> Self, impl::anyset_like T>
+struct __ge__<Self, T>                                          : Returns<bool> {};
+template <impl::anyset_like T, std::derived_from<impl::KeyTag> Self>
+struct __ge__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
+struct __gt__<Self, T>                                          : Returns<bool> {};
+template <std::derived_from<impl::KeyTag> Self, impl::anyset_like T>
+struct __gt__<Self, T>                                          : Returns<bool> {};
+template <impl::anyset_like T, std::derived_from<impl::KeyTag> Self>
+struct __gt__<T, Self>                                          : Returns<bool> {};
+template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
+    requires (Self::template check<T>())
+struct __or__<Self, T>                                          : Returns<Set<typename Self::key_type>> {};
+template <std::derived_from<impl::KeyTag> T, std::derived_from<impl::KeyTag> Self>
+    requires (!T::template check<Self>() && Self::template check<T>())
+struct __or__<T, Self>                                          : Returns<Set<typename Self::key_type>> {};
+template <std::derived_from<impl::KeyTag> Self, typename T>
+    requires (Set<typename Self::key_type>::template check<T>())
+struct __or__<Self, T>                                          : Returns<Set<typename Self::key_type>> {};
+template <typename T, std::derived_from<impl::KeyTag> Self>
+    requires (Set<typename Self::key_type>::template check<T>())
+struct __or__<T, Self>                                          : Returns<Set<typename Self::key_type>> {};
+template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
+    requires (Self::template check<T>())
+struct __and__<Self, T>                                         : Returns<Set<typename Self::key_type>> {};
+template <std::derived_from<impl::KeyTag> T, std::derived_from<impl::KeyTag> Self>
+    requires (!T::template check<Self>() && Self::template check<T>())
+struct __and__<T, Self>                                         : Returns<Set<typename Self::key_type>> {};
+template <std::derived_from<impl::KeyTag> Self, typename T>
+    requires (Set<typename Self::key_type>::template check<T>())
+struct __and__<Self, T>                                         : Returns<Set<typename Self::key_type>> {};
+template <typename T, std::derived_from<impl::KeyTag> Self>
+    requires (Set<typename Self::key_type>::template check<T>())
+struct __and__<T, Self>                                         : Returns<Set<typename Self::key_type>> {};
+template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
+    requires (Self::template check<T>())
+struct __sub__<Self, T>                                         : Returns<Set<typename Self::key_type>> {};
+template <std::derived_from<impl::KeyTag> T, std::derived_from<impl::KeyTag> Self>
+    requires (!T::template check<Self>() && Self::template check<T>())
+struct __sub__<T, Self>                                         : Returns<Set<typename Self::key_type>> {};
+template <std::derived_from<impl::KeyTag> Self, typename T>
+    requires (Set<typename Self::key_type>::template check<T>())
+struct __sub__<Self, T>                                         : Returns<Set<typename Self::key_type>> {};
+template <typename T, std::derived_from<impl::KeyTag> Self>
+    requires (Set<typename Self::key_type>::template check<T>())
+struct __sub__<T, Self>                                         : Returns<Set<typename Self::key_type>> {};
+template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
+    requires (Self::template check<T>())
+struct __xor__<Self, T>                                         : Returns<Set<typename Self::key_type>> {};
+template <std::derived_from<impl::KeyTag> T, std::derived_from<impl::KeyTag> Self>
+    requires (!T::template check<Self>() && Self::template check<T>())
+struct __xor__<T, Self>                                         : Returns<Set<typename Self::key_type>> {};
+template <std::derived_from<impl::KeyTag> Self, typename T>
+    requires (Set<typename Self::key_type>::template check<T>())
+struct __xor__<Self, T>                                         : Returns<Set<typename Self::key_type>> {};
+template <typename T, std::derived_from<impl::KeyTag> Self>
+    requires (Set<typename Self::key_type>::template check<T>())
+struct __xor__<T, Self>                                         : Returns<Set<typename Self::key_type>> {};
 
-template <>
-struct __len__<KeysView>                                    : Returns<size_t> {};
-template <>
-struct __iter__<KeysView>                                   : Returns<Object> {};
-template <>
-struct __reversed__<KeysView>                               : Returns<Object> {};
-template <impl::is_hashable Key>
-struct __contains__<KeysView, Key>                          : Returns<bool> {};
-template <>
-struct __lt__<KeysView, Object>                             : Returns<bool> {};
-template <std::derived_from<KeysView> T>
-struct __lt__<KeysView, T>                                  : Returns<bool> {};
-template <impl::anyset_like T>
-struct __lt__<KeysView, T>                                  : Returns<bool> {};
-template <>
-struct __le__<KeysView, Object>                             : Returns<bool> {};
-template <std::derived_from<KeysView> T>
-struct __le__<KeysView, T>                                  : Returns<bool> {};
-template <impl::anyset_like T>
-struct __le__<KeysView, T>                                  : Returns<bool> {};
-template <>
-struct __ge__<KeysView, Object>                             : Returns<bool> {};
-template <std::derived_from<KeysView> T>
-struct __ge__<KeysView, T>                                  : Returns<bool> {};
-template <impl::anyset_like T>
-struct __ge__<KeysView, T>                                  : Returns<bool> {};
-template <>
-struct __gt__<KeysView, Object>                             : Returns<bool> {};
-template <std::derived_from<KeysView> T>
-struct __gt__<KeysView, T>                                  : Returns<bool> {};
-template <impl::anyset_like T>
-struct __gt__<KeysView, T>                                  : Returns<bool> {};
-template <>
-struct __or__<KeysView, Object>                             : Returns<Set<>> {};  // TODO: template on specific key type
-template <std::derived_from<KeysView> T>
-struct __or__<KeysView, T>                                  : Returns<Set<>> {};  // TODO: template on specific key type
-template <impl::anyset_like T>
-struct __or__<KeysView, T>                                  : Returns<Set<>> {};  // TODO: template on specific key type
-template <>
-struct __and__<KeysView, Object>                            : Returns<Set<>> {};  // TODO: template on specific key type
-template <std::derived_from<KeysView> T>
-struct __and__<KeysView, T>                                 : Returns<Set<>> {};  // TODO: template on specific key type
-template <impl::anyset_like T>
-struct __and__<KeysView, T>                                 : Returns<Set<>> {};  // TODO: template on specific key type
-template <>
-struct __sub__<KeysView, Object>                            : Returns<Set<>> {};  // TODO: template on specific key type
-template <std::derived_from<KeysView> T>
-struct __sub__<KeysView, T>                                 : Returns<Set<>> {};  // TODO: template on specific key type
-template <impl::anyset_like T>
-struct __sub__<KeysView, T>                                 : Returns<Set<>> {};  // TODO: template on specific key type
-template <>
-struct __xor__<KeysView, Object>                            : Returns<Set<>> {};  // TODO: template on specific key type
-template <std::derived_from<KeysView> T>
-struct __xor__<KeysView, T>                                 : Returns<Set<>> {};  // TODO: template on specific key type
-template <impl::anyset_like T>
-struct __xor__<KeysView, T>                                 : Returns<Set<>> {};  // TODO: template on specific key type
+
+namespace impl {
+namespace ops {
+
+    template <typename Return, std::derived_from<impl::KeyTag> Self>
+    struct begin<Return, Self> {
+        static auto operator()(const Self& self) {
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
+            );
+            return impl::Iterator<impl::KeyIter<Return>>(
+                reinterpret_borrow<typename Self::mapping_type>(dict)
+            );
+        };
+    };
+
+    template <typename Return, std::derived_from<impl::KeyTag> Self>
+    struct end<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::KeyIter<Return>>();
+        };
+    };
+
+    // TODO: Item iterator can use an internal tuple object that it can reuse to
+    // store the key and value, rather than creating a new tuple each time.  This
+    // should have no extra overhead over std::pair, and would be more consistent with
+    // the Python implementation.  It requires a py::Struct class though.
+
+    // TODO: ReverseIterator<KeyIter> will not compile as written, since KeyIter is a
+    // forward iterator.
+
+    template <typename Return, std::derived_from<impl::KeyTag> Self>
+    struct rbegin<Return, Self> {
+        static auto operator()(const Self& self) {
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
+            );
+            return impl::ReverseIterator<impl::KeyIter<Return>>(
+                reinterpret_borrow<typename Self::mapping_type>(dict)
+            );
+        };
+    };
+
+    template <typename Return, std::derived_from<impl::KeyTag> Self>
+    struct rend<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::KeyIter<Return>>();
+        };
+    };
+
+}
+}
 
 
 /* Represents a statically-typed Python `dict.keys()` object in C++. */
-class KeysView : public Object, public impl::KeysTag {
+template <typename Map>
+class KeyView : public Object, public impl::KeyTag {
     using Base = Object;
+    static_assert(
+        std::derived_from<Map, impl::DictTag>,
+        "py::KeyView mapping type must be derived from py::Dict."
+    );
 
 public:
-    static const Type type;
+    using impl::KeyTag::type;
+
+    using mapping_type = Map;
+    using key_type = typename Map::key_type;
+    using value_type = key_type;  // awkward naming, but consistent with std::set
+    using pointer = key_type*;
+    using reference = key_type&;
+    using const_pointer = const key_type*;
+    using const_reference = const key_type&;
+    using iterator = impl::Iterator<impl::KeyIter<key_type>>;
+    using const_iterator = impl::Iterator<impl::KeyIter<const key_type>>;
+    using reverse_iterator = impl::ReverseIterator<impl::KeyIter<key_type>>;
+    using const_reverse_iterator = impl::ReverseIterator<impl::KeyIter<const key_type>>;
 
     template <typename T>
     static consteval bool check() {
-        return std::derived_from<T, KeysView>;
+        if constexpr (std::derived_from<std::decay_t<T>, impl::KeyTag>) {
+            return mapping_type::template check<typename std::decay_t<T>::mapping_type>();
+        } else {
+            return false;
+        }
     }
 
     template <typename T>
@@ -102,17 +242,13 @@ public:
             return obj.ptr() != nullptr;
 
         } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
+            if (obj.ptr() == nullptr || !PyDictKeys_Check(obj.ptr())) {
                 return false;
             }
-            int result = PyObject_IsInstance(
-                obj,
-                (PyObject*) &PyDictKeys_Type
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::_PyDictViewObject*>(obj.ptr())->dv_dict
             );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
+            return mapping_type::check(reinterpret_borrow<Object>(dict));
 
         } else {
             return false;
@@ -123,90 +259,83 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    KeysView(Handle h, const borrowed_t& t) : Base(h, t) {}
-    KeysView(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (check<T>())
-    KeysView(T&& other) : Base(std::forward<T>(other)) {}
+    KeyView(Handle h, const borrowed_t& t) : Base(h, t) {}
+    KeyView(Handle h, const stolen_t& t) : Base(h, t) {}
 
     template <typename Policy>
-    KeysView(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<KeysView>(accessor).release(), stolen_t{})
+    KeyView(const pybind11::detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<KeyView>(accessor).release(), stolen_t{})
     {}
 
-    /* Explicitly create a keys view on an existing dictionary. */
-    explicit KeysView(const pybind11::dict& dict) : Base(nullptr, stolen_t{}) {
-        static const pybind11::str lookup = "keys";
-        m_ptr = dict.attr(lookup)().release().ptr();
-    }
+    /* Copy/move constructor from equivalent pybind11 type(s) and other key views with
+    the same or narrower mapping type. */
+    template <impl::python_like T> requires (check<T>())
+    KeyView(T&& other) : Base(std::forward<T>(other)) {}
 
-    /* Explicitly create a keys view on an existing dictionary. */
-    inline explicit KeysView(const Dict& dict);
+    /* Explicitly create a key view on an existing dictionary. */
+    explicit KeyView(const Map& dict);
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
     /* Equivalent to Python `dict.keys().mapping`. */
-    inline MappingProxy mapping() const;
+    inline MappingProxy<mapping_type> mapping() const;
 
     /* Equivalent to Python `dict.keys().isdisjoint(other)`. */
     template <impl::is_iterable T>
+        requires (std::convertible_to<impl::dereference_type<T>, key_type>)
     inline bool isdisjoint(const T& other) const;
 
     /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
-    inline bool isdisjoint(
-        const std::initializer_list<impl::HashInitializer>& other
-    ) const;
+    inline bool isdisjoint(const std::initializer_list<key_type>& other) const;
 
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
 
-    // TODO: all of these should be templated on the specific key type
-
-    inline friend Set<> operator|(
-        const KeysView& self,
-        const std::initializer_list<impl::HashInitializer>& other
+    inline friend Set<key_type> operator|(
+        const KeyView& self,
+        const std::initializer_list<key_type>& other
     ) {
-        PyObject* result = PyNumber_Or(self.ptr(), Set<>(other).ptr());
+        PyObject* result = PyNumber_Or(self.ptr(), Set<key_type>(other).ptr());
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Set<>>(result);
+        return reinterpret_steal<Set<key_type>>(result);
     }
 
-    inline friend Set<> operator&(
-        const KeysView& self,
-        const std::initializer_list<impl::HashInitializer>& other
+    inline friend Set<key_type> operator&(
+        const KeyView& self,
+        const std::initializer_list<key_type>& other
     ) {
-        PyObject* result = PyNumber_And(self.ptr(), Set<>(other).ptr());
+        PyObject* result = PyNumber_And(self.ptr(), Set<key_type>(other).ptr());
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Set<>>(result);
+        return reinterpret_steal<Set<key_type>>(result);
     }
 
-    inline friend Set<> operator-(
-        const KeysView& self,
-        const std::initializer_list<impl::HashInitializer>& other
+    inline friend Set<key_type> operator-(
+        const KeyView& self,
+        const std::initializer_list<key_type>& other
     ) {
-        PyObject* result = PyNumber_Subtract(self.ptr(), Set<>(other).ptr());
+        PyObject* result = PyNumber_Subtract(self.ptr(), Set<key_type>(other).ptr());
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Set<>>(result);
+        return reinterpret_steal<Set<key_type>>(result);
     }
 
-    inline friend Set<> operator^(
-        const KeysView& self,
-        const std::initializer_list<impl::HashInitializer>& other
+    inline friend Set<key_type> operator^(
+        const KeyView& self,
+        const std::initializer_list<key_type>& other
     ) {
-        PyObject* result = PyNumber_Xor(self.ptr(), Set<>(other).ptr());
+        PyObject* result = PyNumber_Xor(self.ptr(), Set<key_type>(other).ptr());
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Set<>>(result);
+        return reinterpret_steal<Set<key_type>>(result);
     }
 
 };
@@ -217,29 +346,96 @@ public:
 //////////////////////
 
 
-template <>
-struct __getattr__<ValuesView, "mapping">                   : Returns<MappingProxy> {};
+template <std::derived_from<impl::ValueTag> Self>
+struct __getattr__<Self, "mapping">                             : Returns<MappingProxy<typename Self::mapping_type>> {};
+template <std::derived_from<impl::ValueTag> Self>
+struct __len__<Self>                                            : Returns<size_t> {};
+template <std::derived_from<impl::ValueTag> Self>
+struct __iter__<Self>                                           : Returns<typename Self::value_type> {};
+template <std::derived_from<impl::ValueTag> Self>
+struct __reversed__<Self>                                       : Returns<typename Self::value_type> {};
+template <
+    std::derived_from<impl::ValueTag> Self,
+    std::convertible_to<typename Self::value_type> Key
+>
+struct __contains__<Self, Key>                                  : Returns<bool> {};
 
-template <>
-struct __len__<ValuesView>                                  : Returns<size_t> {};
-template <>
-struct __iter__<ValuesView>                                 : Returns<Object> {};
-template <>
-struct __reversed__<ValuesView>                             : Returns<Object> {};
-template <typename T>
-struct __contains__<ValuesView, T>                          : Returns<bool> {};
+
+namespace impl {
+namespace ops {
+
+    template <typename Return, std::derived_from<ValueTag> Self>
+    struct begin<Return, Self> {
+        static auto operator()(const Self& self) {
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
+            );
+            return impl::Iterator<impl::ValueIter<Return>>(
+                reinterpret_borrow<typename Self::mapping_type>(dict)
+            );
+        };
+    };
+
+    template <typename Return, std::derived_from<ValueTag> Self>
+    struct end<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::ValueIter<Return>>();
+        };
+    };
+
+    template <typename Return, std::derived_from<ValueTag> Self>
+    struct rbegin<Return, Self> {
+        static auto operator()(const Self& self) {
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
+            );
+            return impl::ReverseIterator<impl::ValueIter<Return>>(
+                reinterpret_borrow<typename Self::mapping_type>(dict)
+            );
+        };
+    };
+
+    template <typename Return, std::derived_from<ValueTag> Self>
+    struct rend<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::ValueIter<Return>>();
+        };
+    };
+
+}
+}
 
 
 /* Represents a statically-typed Python `dict.values()` object in C++. */
-class ValuesView : public Object, public impl::ValuesTag {
+template <typename Map>
+class ValueView : public Object, public impl::ValueTag {
     using Base = Object;
+    static_assert(
+        std::derived_from<Map, impl::DictTag>,
+        "py::ValueView mapping type must be derived from py::Dict."
+    );
 
 public:
-    static const Type type;
+    using impl::ValueTag::type;
+
+    using mapping_type = Map;
+    using value_type = typename Map::value_type;
+    using pointer = value_type*;
+    using reference = value_type&;
+    using const_pointer = const value_type*;
+    using const_reference = const value_type&;
+    using iterator = impl::Iterator<impl::ValueIter<value_type>>;
+    using const_iterator = impl::Iterator<impl::ValueIter<const value_type>>;
+    using reverse_iterator = impl::ReverseIterator<impl::ValueIter<value_type>>;
+    using const_reverse_iterator = impl::ReverseIterator<impl::ValueIter<const value_type>>;
 
     template <typename T>
     static consteval bool check() {
-        return std::derived_from<T, ValuesView>;
+        if constexpr (std::derived_from<std::decay_t<T>, impl::ValueTag>) {
+            return mapping_type::template check<typename std::decay_t<T>::mapping_type>();
+        } else {
+            return false;
+        }
     }
 
     template <typename T>
@@ -251,17 +447,13 @@ public:
             return obj.ptr() != nullptr;
 
         } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
+            if (obj.ptr() == nullptr || PyDictValues_Check(obj.ptr())) {
                 return false;
             }
-            int result = PyObject_IsInstance(
-                obj,
-                (PyObject*) &PyDictValues_Type
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::_PyDictViewObject*>(obj.ptr())->dv_dict
             );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
+            return mapping_type::check(reinterpret_borrow<Object>(dict));
 
         } else {
             return false;
@@ -272,32 +464,28 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    ValuesView(Handle h, const borrowed_t& t) : Base(h, t) {}
-    ValuesView(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (check<T>())
-    ValuesView(T&& other) : Base(std::forward<T>(other)) {}
+    ValueView(Handle h, const borrowed_t& t) : Base(h, t) {}
+    ValueView(Handle h, const stolen_t& t) : Base(h, t) {}
 
     template <typename Policy>
-    ValuesView(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<ValuesView>(accessor).release(), stolen_t{})
+    ValueView(const pybind11::detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<ValueView>(accessor).release(), stolen_t{})
     {}
 
-    /* Explicitly create a values view on an existing dictionary. */
-    explicit ValuesView(const pybind11::dict& dict) : Base(nullptr, stolen_t{}) {
-        static const pybind11::str lookup = "values";
-        m_ptr = dict.attr(lookup)().release().ptr();
-    }
+    /* Copy/move constructor from equivalent pybind11 type(s) and other value views
+    with the same or narrower mapping type. */
+    template <impl::python_like T> requires (check<T>())
+    ValueView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a values view on an existing dictionary. */
-    inline explicit ValuesView(const Dict& dict);
+    explicit ValueView(const Map& dict);
 
     ///////////////////////////////
     ////   PYTHON INTERFACE    ////
     ///////////////////////////////
 
     /* Equivalent to Python `dict.values().mapping`. */
-    inline MappingProxy mapping() const;
+    inline MappingProxy<mapping_type> mapping() const;
 
 };
 
@@ -307,29 +495,96 @@ public:
 /////////////////////
 
 
-template <>
-struct __getattr__<ItemsView, "mapping">                    : Returns<MappingProxy> {};
+template <std::derived_from<impl::ItemTag> Self>
+struct __getattr__<Self, "mapping">                             : Returns<MappingProxy<typename Self::mapping_type>> {};
+template <std::derived_from<impl::ItemTag> Self>
+struct __len__<Self>                                            : Returns<size_t> {};
+template <std::derived_from<impl::ItemTag> Self>
+struct __iter__<Self>                                           : Returns<std::pair<typename Self::key_type, typename Self::value_type>> {};
+template <std::derived_from<impl::ItemTag> Self>
+struct __reversed__<Self>                                       : Returns<std::pair<typename Self::key_type, typename Self::value_type>> {};
+template <std::derived_from<impl::ItemTag> Self, impl::tuple_like Key>
+struct __contains__<Self, Key>                                  : Returns<bool> {};
 
-template <>
-struct __len__<ItemsView>                                   : Returns<size_t> {};
-template <>
-struct __iter__<ItemsView>                                  : Returns<Tuple<Object>> {};  // TODO: should yield Tuple<Key, Value> or std::pair<Key, Value> instead
-template <>
-struct __reversed__<ItemsView>                              : Returns<Tuple<Object>> {};  // TODO: should yield Tuple<Key, Value> or std::pair<Key, Value> instead
-template <impl::tuple_like T>
-struct __contains__<ItemsView, T>                           : Returns<bool> {};
+
+namespace impl {
+namespace ops {
+
+    template <typename Return, std::derived_from<ItemTag> Self>
+    struct begin<Return, Self> {
+        static auto operator()(const Self& self) {
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
+            );
+            return impl::Iterator<impl::ItemIter<Return>>(
+                reinterpret_borrow<typename Self::mapping_type>(dict)
+            );
+        };
+    };
+
+    template <typename Return, std::derived_from<ItemTag> Self>
+    struct end<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::ItemIter<Return>>();
+        };
+    };
+
+    template <typename Return, std::derived_from<ItemTag> Self>
+    struct rbegin<Return, Self> {
+        static auto operator()(const Self& self) {
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
+            );
+            return impl::ReverseIterator<impl::ItemIter<Return>>(
+                reinterpret_borrow<typename Self::mapping_type>(dict)
+            );
+        };
+    };
+
+    template <typename Return, std::derived_from<ItemTag> Self>
+    struct rend<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::ItemIter<Return>>();
+        };
+    };
+
+}
+}
 
 
 /* Represents a statically-typed Python `dict.items()` object in C++. */
-class ItemsView : public Object, public impl::ItemsTag {
+template <typename Map>
+class ItemView : public Object, public impl::ItemTag {
     using Base = Object;
+    static_assert(
+        std::derived_from<Map, impl::DictTag>,
+        "py::ItemView mapping type must be derived from py::Dict."
+    );
 
 public:
-    static const Type type;
+    using impl::ItemTag::type;
+
+    using mapping_type = Map;
+    using key_type = typename Map::key_type;
+    using value_type = typename Map::value_type;
+    using pair = std::pair<key_type, value_type>;
+    using const_pair = std::pair<const key_type, const value_type>;
+    using pointer = pair*;
+    using reference = pair&;
+    using const_pointer = const_pair*;
+    using const_reference = const_pair&;
+    using iterator = impl::Iterator<impl::ItemIter<pair>>;
+    using const_iterator = impl::Iterator<impl::ItemIter<const_pair>>;
+    using reverse_iterator = impl::ReverseIterator<impl::ItemIter<pair>>;
+    using const_reverse_iterator = impl::ReverseIterator<impl::ItemIter<const_pair>>;
 
     template <typename T>
     static consteval bool check() {
-        return std::derived_from<T, ItemsView>;
+        if constexpr (std::derived_from<std::decay_t<T>, impl::ItemTag>) {
+            return mapping_type::template check<typename std::decay_t<T>::mapping_type>();
+        } else {
+            return false;
+        }
     }
 
     template <typename T>
@@ -341,17 +596,13 @@ public:
             return obj.ptr() != nullptr;
 
         } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
+            if (obj.ptr() == nullptr || PyDictItems_Check(obj.ptr())) {
                 return false;
             }
-            int result = PyObject_IsInstance(
-                obj,
-                (PyObject*) &PyDictItems_Type
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::_PyDictViewObject*>(obj.ptr())->dv_dict
             );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
+            return mapping_type::check(reinterpret_borrow<Object>(dict));
 
         } else {
             return false;
@@ -362,32 +613,28 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    ItemsView(Handle h, const borrowed_t& t) : Base(h, t) {}
-    ItemsView(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (check<T>())
-    ItemsView(T&& other) : Base(std::forward<T>(other)) {}
+    ItemView(Handle h, const borrowed_t& t) : Base(h, t) {}
+    ItemView(Handle h, const stolen_t& t) : Base(h, t) {}
 
     template <typename Policy>
-    ItemsView(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<ItemsView>(accessor).release(), stolen_t{})
+    ItemView(const pybind11::detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<ItemView>(accessor).release(), stolen_t{})
     {}
 
-    /* Explicitly create an items view on an existing dictionary. */
-    explicit ItemsView(const pybind11::dict& dict) : Base(nullptr, stolen_t{}) {
-        static const pybind11::str lookup = "items";
-        m_ptr = dict.attr(lookup)().release().ptr();
-    }
+    /* Copy/move constructor from equivalent pybind11 type(s) and other value views
+    with the same or narrower mapping type. */
+    template <impl::python_like T> requires (check<T>())
+    ItemView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create an items view on an existing dictionary. */
-    inline explicit ItemsView(const Dict& dict);
+    explicit ItemView(const Map& dict);
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
     /* Equivalent to Python `dict.items().mapping`. */
-    inline MappingProxy mapping() const;
+    inline MappingProxy<mapping_type> mapping() const;
 
 };
 
@@ -397,73 +644,258 @@ public:
 ////////////////////
 
 
-template <>
-struct __getattr__<Dict, "fromkeys">                        : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "copy">                            : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "clear">                           : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "get">                             : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "pop">                             : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "popitem">                         : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "setdefault">                      : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "update">                          : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "keys">                            : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "values">                          : Returns<Function> {};
-template <>
-struct __getattr__<Dict, "items">                           : Returns<Function> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "fromkeys">                        : Returns<Function> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "copy">                            : Returns<Function> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "clear">                           : Returns<Function> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "get">                             : Returns<Function> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "pop">                             : Returns<Function> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "popitem">                         : Returns<Function> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "setdefault">                      : Returns<Function> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "update">                          : Returns<Function> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "keys">                            : Returns<Function> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "values">                          : Returns<Function> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "items">                           : Returns<Function> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __len__<Self>                                        : Returns<size_t> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __iter__<Self>                                       : Returns<typename Self::key_type> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __reversed__<Self>                                   : Returns<typename Self::key_type> {};
+template <
+    std::derived_from<impl::DictTag> Self,
+    std::convertible_to<typename Self::key_type> Key
+>
+struct __contains__<Self, Key>                              : Returns<bool> {};
+template <
+    std::derived_from<impl::DictTag> Self,
+    std::convertible_to<typename Self::key_type> Key
+>
+struct __getitem__<Self, Key>                               : Returns<typename Self::value_type> {};
+template <
+    std::derived_from<impl::DictTag> Self,
+    std::convertible_to<typename Self::key_type> Key
+>
+struct __setitem__<Self, Key, typename Self::value_type>    : Returns<void> {};
+template <
+    std::derived_from<impl::DictTag> Self,
+    std::convertible_to<typename Self::key_type> Key
+>
+struct __delitem__<Self, Key>                               : Returns<void> {};
+template <std::derived_from<impl::DictTag> Self, typename T>
+    requires (Self::template check<T>())
+struct __or__<Self, T>                                      : Returns<Self> {};
+template <std::derived_from<impl::DictTag> T, std::derived_from<impl::DictTag> Self>
+    requires (!T::template check<Self>() && Self::template check<T>())
+struct __or__<T, Self>                                      : Returns<Self> {};
+template <std::derived_from<impl::DictTag> Self, typename T>
+    requires (Self::template check<T>())
+struct __ior__<Self, T>                                     : Returns<Self&> {};
 
-template <>
-struct __len__<Dict>                                        : Returns<size_t> {};
-template <>
-struct __iter__<Dict>                                       : Returns<Object> {};
-template <>
-struct __reversed__<Dict>                                   : Returns<Object> {};
-template <impl::is_hashable Key>
-struct __contains__<Dict, Key>                              : Returns<bool> {};
-template <impl::is_hashable Key>
-struct __getitem__<Dict, Key>                               : Returns<Object> {};
-template <impl::is_hashable Key, typename Value>
-struct __setitem__<Dict, Key, Value>                        : Returns<void> {};
-template <impl::is_hashable Key>
-struct __delitem__<Dict, Key>                               : Returns<void> {};
-template <>
-struct __or__<Dict, Object>                                 : Returns<Dict> {};
-template <impl::dict_like T>
-struct __or__<Dict, T>                                      : Returns<Dict> {};
-template <>
-struct __ior__<Dict, Object>                                : Returns<Dict&> {};
-template <impl::dict_like T>
-struct __ior__<Dict, T>                                     : Returns<Dict&> {};
+
+namespace impl {
+namespace ops {
+
+    template <typename Return, std::derived_from<DictTag> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            return static_cast<size_t>(PyDict_Size(self.ptr()));
+        }
+    };
+
+    template <typename Return, std::derived_from<impl::DictTag> Self>
+    struct begin<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::KeyIter<Return>>(self);
+        };
+    };
+
+    template <typename Return, std::derived_from<impl::DictTag> Self>
+    struct end<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::KeyIter<Return>>();
+        };
+    };
+
+    template <typename Return, std::derived_from<impl::DictTag> Self>
+    struct rbegin<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::KeyIter<Return>>(self);
+        };
+    };
+
+    template <typename Return, std::derived_from<impl::DictTag> Self>
+    struct rend<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::KeyIter<Return>>();
+        };
+    };
+
+    template <typename Return, std::derived_from<DictTag> Self, typename Key>
+    struct contains<Return, Self, Key> {
+        static bool operator()(const Self& self, const to_object<Key>& key) {
+            int result = PyDict_Contains(self.ptr(), key.ptr());
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    };
+
+}
+}
 
 
 /* Represents a statically-typed Python dictionary in C++. */
+template <typename Key, typename Value>
 class Dict : public Object, public impl::DictTag {
     using Base = Object;
+    static_assert(
+        std::derived_from<Key, Object>,
+        "py::Dict key type must be derived from py::Object."
+    );
+    static_assert(
+        impl::is_hashable<Key>,
+        "py::Dict key type must be hashable."
+    );
+    static_assert(
+        std::derived_from<Value, Object>,
+        "py::Dict value type must be derived from py::Object."
+    );
+
+    static constexpr bool generic_key = std::same_as<Key, Object>;
+    static constexpr bool generic_value = std::same_as<Value, Object>;
+
+    template <typename T>
+    static constexpr bool typecheck_key = std::derived_from<T, Object> ?
+        std::derived_from<T, Key> : std::convertible_to<T, Key>;
+    template <typename T>
+    static constexpr bool typecheck_value = std::derived_from<T, Object> ?
+        std::derived_from<T, Value> : std::convertible_to<T, Value>;
+
+    template <bool check_key, bool check_value>
+    static bool dynamic_check(PyObject* ptr) {
+        PyObject* key;
+        PyObject* value;
+        Py_ssize_t pos = 0;
+        while (PyDict_Next(ptr, &pos, &key, &value)) {
+            if constexpr (check_key && check_value) {
+                if (
+                    !Key::check(reinterpret_borrow<Object>(key)) ||
+                    !Value::check(reinterpret_borrow<Object>(value))
+                ) {
+                    return false;
+                }
+            } else if constexpr (check_key) {
+                if (!Key::check(reinterpret_borrow<Object>(key))) {
+                    return false;
+                }
+            } else if constexpr (check_value) {
+                if (!Value::check(reinterpret_borrow<Object>(value))) {
+                    return false;
+                }
+            } else {
+                static_assert(false, "unreachable");
+            }
+        }
+        return true;
+    }
 
 public:
-    static const Type type;
+    using impl::DictTag::type;
+
+    using size_type = size_t;
+    using key_type = Key;
+    using value_type = Value;
+    using pointer = value_type*;
+    using reference = value_type&;
+    using const_pointer = const value_type*;
+    using const_reference = const value_type&;
+    using iterator = impl::Iterator<impl::KeyIter<value_type>>;
+    using const_iterator = impl::Iterator<impl::KeyIter<const value_type>>;
+    using reverse_iterator = impl::ReverseIterator<impl::KeyIter<value_type>>;
+    using const_reverse_iterator = impl::ReverseIterator<impl::KeyIter<const value_type>>;
+
+    // TODO: std::unordered_map reserves key_type for the key type, mapped_type for the
+    // value type, and value_type for the pair type.  This is a bit confusing, but
+    // we should probably follow the same convention.
 
     template <typename T>
     static consteval bool check() {
-        return impl::dict_like<T>;
+        using U = std::decay_t<T>;
+        if constexpr (!impl::dict_like<U>) {
+            return false;
+
+        } else if constexpr (impl::pybind11_like<U>) {
+            return generic_key && generic_value;
+
+        } else if constexpr (std::derived_from<U, impl::DictTag>) {
+            return typecheck_key<typename U::key_type> &&
+                   typecheck_value<typename U::value_type>;
+
+        } else if constexpr (impl::is_iterable<U>) {
+            using Deref = impl::dereference_type<U>;
+            if constexpr (impl::pair_like<Deref>) {
+                return typecheck_key<decltype(std::declval<Deref>().first)> &&
+                       typecheck_value<decltype(std::declval<Deref>().second)>;
+            } else {
+                return false;
+            }
+
+        } else {
+            return false;
+        }
     }
 
     template <typename T>
     static constexpr bool check(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
             return check<T>();
-        } else if constexpr (check<T>()) {
-            return obj.ptr() != nullptr;
+
         } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyDict_Check(obj.ptr());
+            if constexpr (generic_key && generic_value) {
+                return obj.ptr() != nullptr && PyDict_Check(obj.ptr());
+            } else {
+                return obj.ptr() != nullptr && PyDict_Check(obj.ptr()) &&
+                    dynamic_check<!generic_key, !generic_value>(obj.ptr());
+            }
+
+        } else if constexpr (std::derived_from<T, pybind11::dict>) {
+            if constexpr (generic_key && generic_value) {
+                return obj.ptr() != nullptr;
+            } else {
+                return obj.ptr() != nullptr &&
+                    dynamic_check<!generic_key, !generic_value>(obj.ptr());
+            }
+
+        } else if constexpr (impl::dict_like<T>) {
+            using K = T::key_type;
+            using V = T::value_type;
+            constexpr bool check_key = std::same_as<K, Object> && !generic_key;
+            constexpr bool check_value = std::same_as<V, Object> && !generic_value;
+            if constexpr (check_key && check_value) {
+                return obj.ptr() != nullptr &&
+                    dynamic_check<check_key, check_value>(obj.ptr());
+            } else if constexpr (check_key) {
+                return obj.ptr() != nullptr && typecheck_value<V> &&
+                    dynamic_check<check_key, check_value>(obj.ptr());
+            } else if constexpr (check_value) {
+                return obj.ptr() != nullptr && typecheck_key<K> &&
+                    dynamic_check<check_key, check_value>(obj.ptr());
+            } else {
+                return obj.ptr() != nullptr && typecheck_key<K> && typecheck_value<V>;
+            }
+
         } else {
             return false;
         }
@@ -475,9 +907,6 @@ public:
 
     Dict(Handle h, const borrowed_t& t) : Base(h, t) {}
     Dict(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (check<T>())
-    Dict(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
     Dict(const pybind11::detail::accessor<Policy>& accessor) :
@@ -492,15 +921,58 @@ public:
     }
 
     /* Pack the given arguments into a dictionary using an initializer list. */
-    Dict(const std::initializer_list<impl::DictInitializer>& contents) :
+    Dict(const std::initializer_list<std::pair<key_type, value_type>>& contents) :
         Base(PyDict_New(), stolen_t{})
     {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
         try {
-            for (const impl::DictInitializer& item : contents) {
-                if (PyDict_SetItem(m_ptr, item.key.ptr(), item.value.ptr())) {
+            for (const std::pair<key_type, value_type>& item : contents) {
+                if (PyDict_SetItem(
+                    m_ptr,
+                    item.first.ptr(),
+                    item.second.ptr()
+                )) {
+                    Exception::from_python();
+                }
+            }
+        } catch (...) {
+            Py_DECREF(m_ptr);
+            throw;
+        }
+    }
+
+    /* Copy/move constructors from equivalent pybind11 types or other dicts with a
+    narrower key or value type. */
+    template <impl::python_like T> requires (check<T>())
+    Dict(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Explicitly unpack an arbitrary Python container into a new py::Dict. */
+    template <impl::python_like T> requires (!impl::dict_like<T> && impl::is_iterable<T>)
+    explicit Dict(const T& contents) : Base(
+        PyObject_CallOneArg((PyObject*) &PyDict_Type, contents.ptr()),
+        stolen_t{}
+    ) {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+    }
+
+    /* Explicitly unpack a arbitrary C++ container into a new py::Dict. */
+    template <impl::cpp_like T>
+        requires (impl::is_iterable<T> && impl::pair_like<impl::dereference_type<T>>)
+    explicit Dict(const T& container) : Base(PyDict_New(), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            for (const auto& [k, v] : container) {
+                if (PyDict_SetItem(
+                    m_ptr,
+                    key_type(k).ptr(),
+                    value_type(v).ptr()
+                )) {
                     Exception::from_python();
                 }
             }
@@ -518,11 +990,11 @@ public:
         }
         try {
             while (first != last) {
-                auto&& [k, v] = *first;
+                const auto& [k, v] = *first;
                 if (PyDict_SetItem(
                     m_ptr,
-                    Object(std::forward<decltype(k)>(k)).ptr(),
-                    Object(std::forward<decltype(v)>(v)).ptr()
+                    key_type(k).ptr(),
+                    value_type(v).ptr()
                 )) {
                     Exception::from_python();
                 }
@@ -534,38 +1006,10 @@ public:
         }
     }
 
-    /* Explicitly unpack an arbitrary Python container into a new py::Dict. */
-    template <impl::python_like T>
-        requires (impl::is_iterable<T> && !impl::dict_like<T>)
-    explicit Dict(const T& contents) :
-        Base(PyObject_CallOneArg((PyObject*) &PyDict_Type, contents.ptr()), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly unpack a arbitrary C++ container into a new py::Dict. */
-    template <impl::cpp_like T> requires (impl::is_iterable<T>)
-    explicit Dict(T&& container) : Base(PyDict_New(), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            for (auto&& [k, v] : container) {
-                if (PyDict_SetItem(
-                    m_ptr,
-                    Object(std::forward<decltype(k)>(k)).ptr(),
-                    Object(std::forward<decltype(v)>(v)).ptr()
-                )) {
-                    Exception::from_python();
-                }
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
+    // TODO: properly supporting strict key/value typing for keyword constructor is
+    // difficult because of the way pybind11 handles keyword arguments.  I might have
+    // to roll my own adapter to handle this properly.  For now, you can only use
+    // the keyword constructor on generic dictionaries.
 
     /* Construct a dictionary using pybind11-style keyword arguments.  This is
     technically superceeded by initializer lists, but it is provided for backwards
@@ -580,26 +1024,6 @@ public:
     explicit Dict(Args&&... args) :
         Dict(collector(std::forward<Args>(args)...).kwargs())
     {}
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
-
-    /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
-    template <impl::dict_like T>
-    inline void merge(const T& items) {
-        if (PyDict_Merge(this->ptr(), Object(items).ptr(), 0)) {
-            Exception::from_python();
-        }
-    }
-
-    /* Equivalent to Python `dict.update(items)`, but does not overwrite keys. */
-    template <impl::is_iterable T> requires (!impl::dict_like<T>)
-    inline void merge(const T& items) {
-        if (PyDict_MergeFromSeq2(this->ptr(), Object(items).ptr(), 0)) {
-            Exception::from_python();
-        }
-    }
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
@@ -619,65 +1043,19 @@ public:
         return reinterpret_steal<Dict>(result);
     }
 
-    /* Equivalent to Python `dict.fromkeys(keys)`.  Values default to None. */
-    template <impl::is_iterable K>
-    static inline Dict fromkeys(const K& keys) {
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            for (auto&& key : keys) {
-                if (PyDict_SetItem(
-                    result,
-                    Object(std::forward<decltype(key)>(key)).ptr(),
-                    Py_None
-                )) {
-                    Exception::from_python();
-                }
-            }
-            return reinterpret_steal<Dict>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }
-
-    /* Equivalent to Python `dict.fromkeys(<braced initializer list>)`. */
-    inline Dict fromkeys(const std::initializer_list<impl::HashInitializer>& keys) {
-        PyObject* result = PyDict_New();
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            for (const impl::HashInitializer& init : keys) {
-                if (PyDict_SetItem(
-                    result,
-                    init.value.ptr(),
-                    Py_None
-                )) {
-                    Exception::from_python();
-                }
-            }
-            return reinterpret_steal<Dict>(result);
-        } catch (...) {
-            Py_DECREF(result);
-            throw;
-        }
-    }
-
     /* Equivalent to Python `dict.fromkeys(keys, value)`. */
-    template <impl::is_iterable K>
-    static inline Dict fromkeys(const K& keys, const Object& value) {
+    template <impl::is_iterable T>
+        requires (std::convertible_to<impl::dereference_type<T>, key_type>)
+    inline static Dict fromkeys(const T& keys, const value_type& value) {
         PyObject* result = PyDict_New();
         if (result == nullptr) {
             Exception::from_python();
         }
         try {
-            for (auto&& key : keys) {
+            for (const auto& key : keys) {
                 if (PyDict_SetItem(
                     result,
-                    Object(std::forward<decltype(key)>(key)).ptr(),
+                    key_type(key).ptr(),
                     value.ptr()
                 )) {
                     Exception::from_python();
@@ -692,18 +1070,18 @@ public:
 
     /* Equivalent to Python `dict.fromkeys(<braced initializer list>, value)`. */
     inline Dict fromkeys(
-        const std::initializer_list<impl::HashInitializer>& keys,
-        const Object& value
+        const std::initializer_list<key_type>& keys,
+        const value_type& value
     ) {
         PyObject* result = PyDict_New();
         if (result == nullptr) {
             Exception::from_python();
         }
         try {
-            for (const impl::HashInitializer& init : keys) {
+            for (const key_type& init : keys) {
                 if (PyDict_SetItem(
                     result,
-                    init.value.ptr(),
+                    init.ptr(),
                     value.ptr()
                 )) {
                     Exception::from_python();
@@ -716,52 +1094,48 @@ public:
         }
     }
 
-    /* Equivalent to Python `dict.get(key)`.  Returns None if the key is not found. */
-    template <impl::is_hashable K>
-    inline Object get(const K& key) const {
-        PyObject* result = PyDict_GetItemWithError(this->ptr(), Object(key).ptr());
+    /* Equivalent to Python `dict.get(key)`.  Returns nullopt if the key is not found. */
+    inline std::optional<value_type> get(const key_type& key) const {
+        PyObject* result = PyDict_GetItemWithError(this->ptr(), key.ptr());
         if (result == nullptr) {
             if (PyErr_Occurred()) {
                 Exception::from_python();
             }
-            return reinterpret_borrow<Object>(Py_None);
+            return std::nullopt;
         }
-        return reinterpret_steal<Object>(result);
+        return std::make_optional(reinterpret_steal<value_type>(result));
     }
 
     /* Equivalent to Python `dict.get(key, default_value)`. */
-    template <impl::is_hashable K>
-    inline Object get(const K& key, const Object& default_value) const {
-        PyObject* result = PyDict_GetItemWithError(this->ptr(), Object(key).ptr());
+    inline value_type get(const key_type& key, const value_type& default_value) const {
+        PyObject* result = PyDict_GetItemWithError(this->ptr(), key.ptr());
         if (result == nullptr) {
             if (PyErr_Occurred()) {
                 Exception::from_python();
             }
             return default_value;
         }
-        return reinterpret_steal<Object>(result);
+        return reinterpret_steal<value_type>(result);
     }
 
-    /* Equivalent to Python `dict.pop(key)`.  Returns None if the key is not found. */
-    template <impl::is_hashable K>
-    inline Object pop(const K& key) {
-        PyObject* result = PyDict_GetItemWithError(this->ptr(), Object(key).ptr());
+    /* Equivalent to Python `dict.pop(key)`.  Returns nullopt if the key is not found. */
+    inline std::optional<value_type> pop(const key_type& key) {
+        PyObject* result = PyDict_GetItemWithError(this->ptr(), key.ptr());
         if (result == nullptr) {
             if (PyErr_Occurred()) {
                 Exception::from_python();
             }
-            return reinterpret_borrow<Object>(Py_None);
+            return std::nullopt;
         }
         if (PyDict_DelItem(this->ptr(), result)) {
             Exception::from_python();
         }
-        return reinterpret_steal<Object>(result);
+        return std::make_optional(reinterpret_steal<value_type>(result));
     }
 
     /* Equivalent to Python `dict.pop(key, default_value)`. */
-    template <impl::is_hashable K>
-    inline Object pop(const K& key, const Object& default_value) {
-        PyObject* result = PyDict_GetItemWithError(this->ptr(), Object(key).ptr());
+    inline value_type pop(const key_type& key, const value_type& default_value) {
+        PyObject* result = PyDict_GetItemWithError(this->ptr(), key.ptr());
         if (result == nullptr) {
             if (PyErr_Occurred()) {
                 Exception::from_python();
@@ -771,65 +1145,56 @@ public:
         if (PyDict_DelItem(this->ptr(), result)) {
             Exception::from_python();
         }
-        return reinterpret_steal<Object>(result);
+        return reinterpret_steal<value_type>(result);
     }
 
     /* Equivalent to Python `dict.popitem()`. */
-    inline Object popitem();
-
-    /* Equivalent to Python `dict.setdefault(key)`. */
-    template <impl::is_hashable K>
-    inline Object setdefault(const K& key) {
-        PyObject* result = PyDict_SetDefault(
-            this->ptr(),
-            Object(key).ptr(),
-            Py_None
-        );
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return reinterpret_steal<Object>(result);
-    }
+    inline value_type popitem();
 
     /* Equivalent to Python `dict.setdefault(key, default_value)`. */
-    template <impl::is_hashable K>
-    inline Object setdefault(const K& key, const Object& default_value) {
+    inline value_type setdefault(const key_type& key, const value_type& default_value) {
         PyObject* result = PyDict_SetDefault(
             this->ptr(),
-            Object(key).ptr(),
+            key.ptr(),
             default_value.ptr()
         );
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<Object>(result);
+        return reinterpret_steal<value_type>(result);
     }
 
+
+
     /* Equivalent to Python `dict.update(items)`. */
-    template <impl::dict_like T>
-    inline void update(const T& items) {
+    inline void update(const Dict& items) {
         if (PyDict_Merge(this->ptr(), items.ptr(), 1)) {
             Exception::from_python();
         }
     }
 
+    // TODO: check for convertibility to key_type and value_type
+
+    // TODO: figure out a way to decompose the items into key/value pairs, including
+    // generic objects that might yield iterables of size 2
+
     /* Equivalent to Python `dict.update(items)`. */
-    template <impl::is_iterable T> requires (!impl::dict_like<T>)
+    template <impl::is_iterable T>
     inline void update(const T& items) {
         if constexpr (impl::python_like<T>) {
             if (PyDict_MergeFromSeq2(
                 this->ptr(),
-                Object(items).ptr(),
+                Object(items).ptr(),  // ???
                 1
             )) {
                 Exception::from_python();
             }
         } else {
-            for (auto&& [k, v] : items) {
+            for (const auto& [k, v] : items) {
                 if (PyDict_SetItem(
                     this->ptr(),
-                    Object(std::forward<decltype(k)>(k)).ptr(),
-                    Object(std::forward<decltype(v)>(v)).ptr()
+                    key_type(k).ptr(),
+                    value_type(v).ptr()
                 )) {
                     Exception::from_python();
                 }
@@ -838,11 +1203,30 @@ public:
     }
 
     /* Equivalent to Python `dict.update(<braced initializer list>)`. */
-    inline void update(const std::initializer_list<impl::DictInitializer>& items) {
-        for (const impl::DictInitializer& item : items) {
-            if (PyDict_SetItem(this->ptr(), item.key.ptr(), item.value.ptr())) {
+    inline void update(
+        const std::initializer_list<std::pair<key_type, value_type>>& items
+    ) {
+        for (const auto& [k, v] : items) {
+            if (PyDict_SetItem(this->ptr(), k.ptr(), v.ptr())) {
                 Exception::from_python();
             }
+        }
+    }
+
+    /* Equivalent to Python `dict.update(items)`, but does not overwrite existing
+    keys. */
+    inline void merge(const Dict& items) {
+        if (PyDict_Merge(this->ptr(), items.ptr(), 0)) {
+            Exception::from_python();
+        }
+    }
+
+    /* Equivalent to Python `dict.update(items)`, but does not overwrite existing
+    keys. */
+    template <impl::is_iterable T>
+    inline void merge(const T& items) {
+        if (PyDict_MergeFromSeq2(this->ptr(), List(items).ptr(), 0)) {
+            Exception::from_python();
         }
     }
 
@@ -850,66 +1234,14 @@ public:
     ////    VIEWS    ////
     /////////////////////
 
-    // TODO: do these store a const Dict& ?  If so, then copy/move constructors are
-    // disabled.  This probably isn't a bad thing.
-
-    struct Keys {
-        const Dict& dict;
-
-        Keys(const Dict& dict) : dict(dict) {}
-
-        // inline MappingProxy mapping() const {
-        //     return MappingProxy(dict);
-        // }
-
-        // template <impl::is_iterable T>
-        // inline bool isdisjoint(const T& other) const;
-
-        // inline bool isdisjoint(
-        //     const std::initializer_list<impl::HashInitializer>& other
-        // ) const;
-
-        // TODO: implement size(), begin(), end(), rbegin(), rend(), <, <=, ==, !=, >=,
-        // >, |, &, -, ^
-
-        inline auto begin() const {
-            return impl::Iterator<impl::KeyIter<Object>>(dict);
-        }
-
-        inline auto end() const {
-            return impl::Iterator<impl::KeyIter<Object>>();
-        }
-
-        // TODO: reverse iterators over dictionaries are somewhat complicated, since
-        // keys are always yielded in forward order.  We'd need to make a temporary
-        // stack to iterate over them in reverse order.
-
-        // inline auto rbegin() const {
-        //     return impl::ReverseIterator<impl::KeyIter<Object>>(dict);
-        // }
-
-        // inline auto rend() const {
-        //     return impl::ReverseIterator<impl::KeyIter<Object>>(dict);
-        // }
-
-    };
-
-    struct Values {
-
-    };
-
-    struct Items {
-
-    };
-
     /* Equivalent to Python `dict.keys()`. */
-    inline KeysView keys() const;
+    inline KeyView<Dict> keys() const;
 
     /* Equivalent to Python `dict.values()`. */
-    inline ValuesView values() const;
+    inline ValueView<Dict> values() const;
 
     /* Equivalent to Python `dict.items()`. */
-    inline ItemsView items() const;
+    inline ItemView<Dict> items() const;
 
     /////////////////////////
     ////    OPERATORS    ////
@@ -917,17 +1249,16 @@ public:
 
     inline friend Dict operator|(
         const Dict& self,
-        const std::initializer_list<impl::DictInitializer>& other
+        const std::initializer_list<std::pair<key_type, value_type>>& other
     ) {
         Dict result = self.copy();
         result.update(other);
         return result;
     }
 
-
     inline friend Dict& operator|=(
         Dict& self,
-        const std::initializer_list<impl::DictInitializer>& other
+        const std::initializer_list<std::pair<key_type, value_type>>& other
     ) {
         self.update(other);
         return self;
@@ -937,48 +1268,23 @@ public:
 
 
 /* Implicitly convert a py::Dict into a C++ mapping type. */
-template <std::derived_from<Dict> Self, impl::cpp_like T> requires (impl::dict_like<T>)
+template <std::derived_from<impl::DictTag> Self, impl::cpp_like T>
+    requires (impl::dict_like<T>)
 struct __cast__<Self, T> {
     static T operator()(const Self& self) {
         T result;
-        PyObject* key;
-        PyObject* value;
+        PyObject* k;
+        PyObject* v;
         Py_ssize_t pos = 0;
-        while (PyDict_Next(self.ptr(), &pos, &key, &value)) {
-            using Key = typename T::key_type;
-            using Value = typename T::mapped_type;
-            Key converted_key = Handle(key).template cast<Key>();
-            Value converted_value = Handle(value).template cast<Value>();
-            result[converted_key] = converted_value;
+        while (PyDict_Next(self.ptr(), &pos, &k, &v)) {
+            auto key = reinterpret_borrow<typename Self::key_type>(k);
+            auto value = reinterpret_borrow<typename Self::value_type>(v);
+            result[impl::implicit_cast<typename T::key_type>(key)] =
+                impl::implicit_cast<typename T::mapped_type>(value);
         }
         return result;
     }
 };
-
-
-namespace impl {
-namespace ops {
-
-    template <typename Return, std::derived_from<DictTag> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            return static_cast<size_t>(PyDict_Size(self.ptr()));
-        }
-    };
-
-    template <typename Return, std::derived_from<DictTag> Self, typename Key>
-    struct contains<Return, Self, Key> {
-        static bool operator()(const Self& self, const to_object<Key>& key) {
-            int result = PyDict_Contains(self.ptr(), key.ptr());
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-        }
-    };
-
-}
-}
 
 
 ////////////////////////////
@@ -986,43 +1292,157 @@ namespace ops {
 ////////////////////////////
 
 
-template <>
-struct __getattr__<MappingProxy, "copy">                    : Returns<Function> {};
-template <>
-struct __getattr__<MappingProxy, "get">                     : Returns<Function> {};
-template <>
-struct __getattr__<MappingProxy, "keys">                    : Returns<Function> {};
-template <>
-struct __getattr__<MappingProxy, "values">                  : Returns<Function> {};
-template <>
-struct __getattr__<MappingProxy, "items">                   : Returns<Function> {};
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __getattr__<Self, "copy">                                : Returns<Function> {};
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __getattr__<Self, "get">                                 : Returns<Function> {};
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __getattr__<Self, "keys">                                : Returns<Function> {};
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __getattr__<Self, "values">                              : Returns<Function> {};
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __getattr__<Self, "items">                               : Returns<Function> {};
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __len__<Self>                                            : Returns<size_t> {};
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __iter__<Self>                                           : Returns<typename Self::key_type> {};
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __reversed__<Self>                                       : Returns<typename Self::key_type> {};
+template <
+    std::derived_from<impl::MappingProxyTag> Self,
+    std::convertible_to<typename Self::key_type> Key
+>
+struct __contains__<Self, Key>                                  : Returns<bool> {};
+template <
+    std::derived_from<impl::MappingProxyTag> Self,
+    std::convertible_to<typename Self::key_type> Key
+>
+struct __getitem__<Self, Key>                                   : Returns<typename Self::value_type> {};
+template <std::derived_from<impl::MappingProxyTag> Self, typename T>
+    requires (Self::template check<T>())
+struct __or__<Self, T>                                          : Returns<Dict<typename Self::key_type, typename Self::value_type>> {};
+template <std::derived_from<impl::MappingProxyTag> T, std::derived_from<impl::MappingProxyTag> Self>
+    requires (!T::template check<Self>() && Self::template check<T>())
+struct __or__<T, Self>                                          : Returns<Dict<typename Self::key_type, typename Self::value_type>> {};
+template <std::derived_from<impl::MappingProxyTag> Self, typename T>
+    requires (Dict<typename Self::key_type, typename Self::value_type>::template check<T>())
+struct __or__<Self, T>                                          : Returns<Dict<typename Self::key_type, typename Self::value_type>> {};
+template <typename T, std::derived_from<impl::MappingProxyTag> Self>
+    requires (Dict<typename Self::key_type, typename Self::value_type>::template check<T>())
+struct __or__<T, Self>                                          : Returns<Dict<typename Self::key_type, typename Self::value_type>> {};
 
-template <>
-struct __len__<MappingProxy>                                : Returns<size_t> {};
-template <>
-struct __iter__<MappingProxy>                               : Returns<Object> {};
-template <>
-struct __reversed__<MappingProxy>                           : Returns<Object> {};
-template <impl::is_hashable Key>
-struct __contains__<MappingProxy, Key>                      : Returns<bool> {};
-template <impl::is_hashable Key>
-struct __getitem__<MappingProxy, Key>                       : Returns<Object> {};
-template <>
-struct __or__<MappingProxy, Object>                         : Returns<Dict> {};
-template <impl::dict_like T>
-struct __or__<MappingProxy, T>                              : Returns<Dict> {};
+
+namespace impl {
+namespace ops {
+
+    template <typename Return, std::derived_from<MappingProxyTag> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
+            );
+            return len<Return, typename Self::mapping_type>::operator()(
+                reinterpret_borrow<typename Self::mapping_type>(dict)
+            );
+        }
+    };
+
+    template <typename Return, std::derived_from<MappingProxyTag> Self>
+    struct begin<Return, Self> {
+        static auto operator()(const Self& self) {
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
+            );
+            return begin<Return, typename Self::mapping_type>::operator()(
+                reinterpret_borrow<typename Self::mapping_type>(dict)
+            );
+        };
+    };
+
+    template <typename Return, std::derived_from<MappingProxyTag> Self>
+    struct end<Return, Self> {
+        static auto operator()(const Self& self) {
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
+            );
+            return end<Return, typename Self::mapping_type>::operator()(
+                reinterpret_borrow<typename Self::mapping_type>(dict)
+            );
+        };
+    };
+
+    template <typename Return, std::derived_from<MappingProxyTag> Self>
+    struct rbegin<Return, Self> {
+        static auto operator()(const Self& self) {
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
+            );
+            return rbegin<Return, typename Self::mapping_type>::operator()(
+                reinterpret_borrow<typename Self::mapping_type>(dict)
+            );
+        };
+    };
+
+    template <typename Return, std::derived_from<MappingProxyTag> Self>
+    struct rend<Return, Self> {
+        static auto operator()(const Self& self) {
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
+            );
+            return rend<Return, typename Self::mapping_type>::operator()(
+                reinterpret_borrow<typename Self::mapping_type>(dict)
+            );
+        };
+    };
+
+    template <typename Return, std::derived_from<MappingProxyTag> Self, typename Key>
+    struct contains<Return, Self, Key> {
+        static bool operator()(const Self& self, const Key& key) {
+            PyObject* dict = reinterpret_cast<PyObject*>(
+                reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
+            );
+            return contains<Return, typename Self::mapping_type, Key>::operator()(
+                reinterpret_borrow<typename Self::mapping_type>(dict),
+                key
+            );
+        }
+    };
+
+}
+}
 
 
 /* Represents a statically-typed Python `MappingProxyType` object in C++. */
+template <typename Map>
 class MappingProxy : public Object, public impl::MappingProxyTag {
     using Base = Object;
+    static_assert(
+        std::derived_from<Map, Object>,
+        "py::MappingProxy mapping type must be derived from py::Object."
+    );
+
+    inline Map unwrap() const {
+        PyObject* dict = reinterpret_cast<PyObject*>(
+            reinterpret_cast<impl::mappingproxyobject*>(m_ptr)->mapping
+        );
+        return reinterpret_borrow<Map>(dict);
+    }
 
 public:
-    static const Type type;
+    using impl::MappingProxyTag::type;
+
+    using size_type = size_t;
+    using mapping_type = Map;
+    using key_type = typename Map::key_type;
+    using value_type = typename Map::value_type;
 
     template <typename T>
     static consteval bool check() {
-        return impl::mappingproxy_like<T>;
+        if constexpr (std::derived_from<std::decay_t<T>, impl::MappingProxyTag>) {
+            return mapping_type::template check<typename std::decay_t<T>::mapping_type>();
+        } else {
+            return false;
+        }
     }
 
     template <typename T>
@@ -1043,8 +1463,13 @@ public:
             );
             if (result == -1) {
                 Exception::from_python();
+            } else if (result) {
+                PyObject* dict = reinterpret_cast<PyObject*>(
+                    reinterpret_cast<impl::mappingproxyobject*>(obj.ptr())->mapping
+                );
+                return mapping_type::check(reinterpret_borrow<Object>(dict));
             }
-            return result;
+            return false;
 
         } else {
             return false;
@@ -1058,16 +1483,18 @@ public:
     MappingProxy(Handle h, const borrowed_t& t) : Base(h, t) {}
     MappingProxy(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
-    MappingProxy(T&& other) : Base(std::forward<T>(other)) {}
-
     template <typename Policy>
     MappingProxy(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<MappingProxy>(accessor).release(), stolen_t{})
     {}
 
+    /* Copy/move constructor from equivalent pybind11 type(s) and other proxies with
+    the same or narrower mapping type. */
+    template <impl::python_like T> requires (check<T>())
+    MappingProxy(T&& other) : Base(std::forward<T>(other)) {}
+
     /* Construct a read-only view on an existing dictionary. */
-    MappingProxy(const Dict& dict) : Base(PyDictProxy_New(dict.ptr()), stolen_t{}) {
+    explicit MappingProxy(const Map& dict) : Base(PyDictProxy_New(dict.ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -1078,52 +1505,63 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `mappingproxy.copy()`. */
-    Dict copy() const;
+    inline auto copy() const {
+        return unwrap().copy();
+    }
 
     /* Equivalent to Python `mappingproxy.get(key)`. */
-    template <impl::is_hashable K>
-    inline Object get(const K& key) const;
+    inline auto get(const key_type& key) const {
+        return unwrap().get(key);
+    }
 
     /* Equivalent to Python `mappingproxy.get(key, default)`. */
-    template <impl::is_hashable K>
-    inline Object get(const K& key, const Object& default_value) const;
+    inline auto get(const key_type& key, const value_type& default_value) const {
+        return unwrap().get(key, default_value);
+    }
 
     /* Equivalent to Python `mappingproxy.keys()`. */
-    inline KeysView keys() const;
+    inline auto keys() const {
+        return unwrap().keys();
+    }
 
     /* Equivalent to Python `mappingproxy.values()`. */
-    inline ValuesView values() const;
+    inline auto values() const {
+        return unwrap().values();
+    }
 
     /* Equivalent to Python `mappingproxy.items()`. */
-    inline ItemsView items() const;
+    inline auto items() const {
+        return unwrap().items();
+    }
 
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
 
-    inline friend Dict operator|(
+    inline friend mapping_type operator|(
         const MappingProxy& self,
-        const std::initializer_list<impl::DictInitializer>& other
+        const std::initializer_list<std::pair<key_type, value_type>>& other
     ) {
-        Dict result = self.copy();
-        result |= other;
-        return result;
+        return self.unwrap() | other;
     }
 
 };
 
 
-inline MappingProxy KeysView::mapping() const {
+template <typename Map>
+inline MappingProxy<Map> KeyView<Map>::mapping() const {
     return attr<"mapping">();
 }
 
 
-inline MappingProxy ValuesView::mapping() const {
+template <typename Map>
+inline MappingProxy<Map> ValueView<Map>::mapping() const {
     return attr<"mapping">();
 }
 
 
-inline MappingProxy ItemsView::mapping() const {
+template <typename Map>
+inline MappingProxy<Map> ItemView<Map>::mapping() const {
     return attr<"mapping">();
 }
 

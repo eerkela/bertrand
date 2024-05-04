@@ -626,13 +626,13 @@ public:
     inline Str lstrip(const Str& chars) const;
 
     /* Equivalent to Python (static) `str.maketrans(x)`. */
-    inline static Dict maketrans(const Object& x);
+    inline static Dict<> maketrans(const Object& x);
 
     /* Equivalent to Python (static) `str.maketrans(x, y)`. */
-    inline static Dict maketrans(const Object& x, const Object& y);
+    inline static Dict<> maketrans(const Object& x, const Object& y);
 
     /* Equivalent to Python (static) `str.maketrans(x, y, z)`. */
-    inline static Dict maketrans(const Object& x, const Object& y, const Object& z);
+    inline static Dict<> maketrans(const Object& x, const Object& y, const Object& z);
 
     /* Equivalent to Python `str.partition(sep)`. */
     inline Tuple<Str> partition(const Str& sep) const;

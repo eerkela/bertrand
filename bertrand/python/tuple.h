@@ -8,12 +8,17 @@
 #include "common.h"
 
 
+// TODO: py::Struct replaces py::namedtuple
+
 // TODO: when implementing py::Struct:
 
 // template <std::derived_from<Object>... Args>
 // struct Struct : public Tuple<
 //     std::conditional_t<impl::homogenous<Args...>, impl::first<Args...>, Object>
 // > {
+
+
+// TODO: support py::deque?
 
 
 namespace bertrand {
@@ -239,14 +244,15 @@ public:
 
     template <typename T>
     static consteval bool check() {
-        if constexpr (!impl::tuple_like<std::decay_t<T>>) {
+        using U = std::decay_t<T>;
+        if constexpr (!impl::tuple_like<U>) {
             return false;
-        } else if constexpr (impl::pybind11_like<std::decay_t<T>>) {
+        } else if constexpr (impl::pybind11_like<U>) {
             return generic;
-        } else if constexpr (impl::is_iterable<std::decay_t<T>>) {
-            return typecheck<impl::dereference_type<std::decay_t<T>>>;
-        } else if constexpr (std_tuple_check<std::decay_t<T>>::match) {
-            return std_tuple_check<std::decay_t<T>>::value;
+        } else if constexpr (impl::is_iterable<U>) {
+            return typecheck<impl::dereference_type<U>>;
+        } else if constexpr (std_tuple_check<U>::match) {
+            return std_tuple_check<U>::value;
         } else {
             return false;
         }

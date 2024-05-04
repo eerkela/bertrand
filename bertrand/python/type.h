@@ -91,7 +91,11 @@ public:
     {}
 
     /* Dynamically create a new Python type by calling the type() metaclass. */
-    explicit Type(const Str& name, const Tuple<Type>& bases = {}, const Dict& dict = {});
+    explicit Type(
+        const Str& name,
+        const Tuple<Type>& bases = {},
+        const Dict<Str, Object>& dict = {}
+    );
 
     /////////////////////////////
     ////    C++ INTERFACE    ////

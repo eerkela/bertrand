@@ -20,6 +20,7 @@
 #include <ranges>
 #include <set>
 #include <sstream>
+#include <stack>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -139,11 +140,16 @@ template <typename Key = Object>
 class Set;
 template <typename Key = Object>
 class FrozenSet;
-class KeysView;  // TODO: template on dict
-class ValuesView;  // TODO: template on dict
-class ItemsView;  // TODO: template on dict
-class Dict;  // TODO: CTAD
-class MappingProxy;  // TODO: template on dict
+template <typename Key = Object, typename Val = Object>
+class Dict;
+template <typename Map>
+class KeyView;
+template <typename Map>
+class ValueView;
+template <typename Map>
+class ItemView;
+template <typename Map>
+class MappingProxy;
 class Str;
 class Bytes;
 class ByteArray;
@@ -179,15 +185,28 @@ namespace impl {
     struct FrozenSetTag {
         static const Type type;
     };
-    struct KeysTag {};
-    struct ValuesTag {};
-    struct ItemsTag {};
-    struct DictTag {};
-    struct MappingProxyTag {};
+    struct KeyTag {
+        static const Type type;
+    };
+    struct ValueTag {
+        static const Type type;
+    };
+    struct ItemTag {
+        static const Type type;
+    };
+    struct DictTag {
+        static const Type type;
+    };
+    struct MappingProxyTag {
+    protected:
+        static const Object placeholder;  // TODO: is this necessary?
 
+    public:
+        static const Type type;
+    };
+
+    // TODO: remove SliceInitializer or make it into a std::variant?
     struct SliceInitializer;
-    struct HashInitializer;
-    struct DictInitializer;
 
 }
 

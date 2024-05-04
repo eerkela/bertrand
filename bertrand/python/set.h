@@ -1,4 +1,3 @@
-#include "bertrand/python.h"
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -874,14 +873,14 @@ public:
     using size_type = size_t;
     using key_type = Key;
     using value_type = Key;
-    using pointer = key_type*;
-    using reference = key_type&;
-    using const_pointer = const key_type*;
-    using const_reference = const key_type&;
-    using iterator = impl::Iterator<impl::GenericIter<key_type>>;
-    using const_iterator = impl::Iterator<impl::GenericIter<const key_type>>;
-    using reverse_iterator = impl::ReverseIterator<impl::GenericIter<key_type>>;
-    using const_reverse_iterator = impl::ReverseIterator<impl::GenericIter<const key_type>>;
+    using pointer = value_type*;
+    using reference = value_type&;
+    using const_pointer = const value_type*;
+    using const_reference = const value_type&;
+    using iterator = impl::Iterator<impl::GenericIter<value_type>>;
+    using const_iterator = impl::Iterator<impl::GenericIter<const value_type>>;
+    using reverse_iterator = impl::ReverseIterator<impl::GenericIter<value_type>>;
+    using const_reverse_iterator = impl::ReverseIterator<impl::GenericIter<const value_type>>;
 
     template <typename T>
     static consteval bool check() {

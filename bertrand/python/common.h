@@ -116,6 +116,9 @@ public:
     {}
 
     NoneType() : Base(Py_None, borrowed_t{}) {}
+    NoneType(std::nullptr_t) : Base(Py_None, borrowed_t{}) {}
+    NoneType(std::nullopt_t) : Base(Py_None, borrowed_t{}) {}
+
 };
 
 
@@ -248,18 +251,15 @@ static const EllipsisType Ellipsis;
 static const NotImplementedType NotImplemented;
 
 
+/////////////////////
+////    SLICE    ////
+/////////////////////
+
+
 namespace impl {
 
-    // TODO: initializers have to be nested classes in order to properly account for
-    // template types?
-    // -> Actually, as long as I'm careful about how I write the constructor, then it
-    // does actually work.  I just need to make sure to forward to the templated type
-    // using a secondarily templated constructor, rather than just using the top-level
-    // template type.
-    // -> In fact, I might be able to do away with these entirely if I forward the
-    // template type to the initializer_list directly.  If I static assert that the
-    // element type is hashable and derived from Object, then this should achieve the
-    // same effect.  DictInitializer just uses std::pair, so we don't need any changes.
+    // TODO: SliceInitializer should be a std::variant of py::Int, py::None?
+    // -> Does this work?
 
     /* An initializer that explicitly requires an integer or None. */
     struct SliceInitializer {
@@ -273,39 +273,7 @@ namespace impl {
         SliceInitializer(T&& value) : value(std::forward<T>(value)) {}
     };
 
-    /* An Initializer that converts its argument to a python object and asserts that it
-    is hashable, for static analysis. */
-    struct HashInitializer {
-        Object value;
-        template <typename K>
-            requires (
-                !std::same_as<std::decay_t<K>, Handle> &&
-                impl::is_hashable<std::decay_t<K>>
-            )
-        HashInitializer(K&& key) : value(std::forward<K>(key)) {}
-    };
-
-    /* A hashed Initializer that also stores a second item for dict-like access. */
-    struct DictInitializer {
-        Object key;
-        Object value;
-        template <typename K, typename V>
-            requires (
-                !std::same_as<std::decay_t<K>, Handle> &&
-                !std::same_as<std::decay_t<V>, Handle> &&
-                impl::is_hashable<std::decay_t<K>>
-            )
-        DictInitializer(K&& key, V&& value) :
-            key(std::forward<K>(key)), value(std::forward<V>(value))
-        {}
-    };
-
 }
-
-
-/////////////////////
-////    SLICE    ////
-/////////////////////
 
 
 template <std::derived_from<Slice> Self>

@@ -81,9 +81,13 @@
 #include <iostream>
 #include <string>
 
-
 namespace py = bertrand::py;
 using namespace py::literals;
+
+
+// #include <Python.h>
+// #include <pybind11/pybind11.h>
+// namespace py = pybind11;
 
 
 // static const py::Module np = py::import<"numpy">();
@@ -96,17 +100,62 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
+    // py::Set a = {1, 2, 3};
+    // py::Set b("abc");
+    // py::print(a);
+    // py::print(b);
+    // py::print(typeid(decltype(b)::value_type).name());
 
-    py::Set a = {1, 2, 3};
-    py::Set b("abc");
-    py::print(a);
-    py::print(b);
-    py::print(typeid(decltype(b)::value_type).name());
+
+    // py::Set<py::Tuple<py::Int>> set = {{1, 2, 3}, {4, 5, 6}};
+    // py::print(set);
+    // py::print(typeid(decltype(set)::value_type).name());
 
 
-    py::Set<py::Tuple<py::Int>> set = {{1, 2, 3}, {4, 5, 6}};
-    py::print(set);
-    py::print(typeid(decltype(set)::value_type).name());
+    // PyObject* dict = PyDict_New();
+    // for (size_t i = 0; i < 1'000'000; ++i) {
+    //     PyObject* key = PyLong_FromLong(i);
+    //     PyDict_SetItem(dict, key, Py_None);
+    //     Py_DECREF(key);
+    // }
+
+    // PyObject* keys = PyObject_CallMethod(dict, "keys", nullptr);
+    // // py::print(py::repr(keys));
+
+
+    py::Dict<py::Str> dict = {{"a", 1}, {"b", 2}, {"c", 3}};
+    py::Dict dict2 = dict | py::Dict<py::Str>{{"d", 4}};
+    // decltype(dict2) dict3 = dict2;
+    // dict2[4] = "d";
+    py::print(dict);
+
+    // auto y = dict.keys();  // TODO: causes a segfault during shutdown
+
+    for (const auto& x : dict) {
+        py::print(x);
+    }
+
+
+
+    // for (size_t i = 0; i < 10; ++i) {
+    //     // PyObject* iter = PyObject_GetIter(keys);
+    //     // PyObject* item;
+    //     // while ((item = PyIter_Next(iter))) {
+    //     //     Py_DECREF(item);
+    //     // }
+    //     // Py_DECREF(iter);
+
+    //     PyObject* key;
+    //     PyObject* val;
+    //     Py_ssize_t pos = 0;
+    //     while (PyDict_Next(dict, &pos, &key, &val)) {
+
+    //     }
+    // }
+
+
+
+
 
 
 

@@ -183,7 +183,7 @@ namespace impl {
         }
 
         /* Equivalent to Python (static) `bytes.maketrans(x)`. */
-        inline static Dict maketrans(const Derived& from, const Derived& to);
+        inline static Dict<> maketrans(const Derived& from, const Derived& to);
 
         /* Equivalent to Python `bytes.partition(sep)`. */
         inline Tuple<Derived> partition(const Derived& sep) const {
@@ -323,7 +323,7 @@ namespace impl {
         }
 
         /* Equivalent to Python `bytes.translate(table)`. */
-        inline Derived translate(const Dict& table, const Derived& del = "") const {
+        inline Derived translate(const Dict<>& table, const Derived& del = "") const {
             return reinterpret_steal<Derived>(attr<"translate">()(table, del).release());
         }
 

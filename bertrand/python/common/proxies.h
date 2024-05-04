@@ -12,6 +12,10 @@
 #include "object.h"
 
 
+// TODO: something about the way these are handled calls the copy assignment operator
+// somewhere along the way, which is not optimal.
+
+
 namespace bertrand {
 namespace py {
 namespace impl {

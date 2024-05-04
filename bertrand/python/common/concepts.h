@@ -330,7 +330,7 @@ namespace impl {
 
     template <typename T>
     concept mappingproxy_like = (
-        categories::Traits<std::remove_cvref_t<T>>::dict_like ||
+        // categories::Traits<std::remove_cvref_t<T>>::dict_like ||
         std::derived_from<std::remove_cvref_t<T>, MappingProxyTag>
     );
 
@@ -371,6 +371,12 @@ namespace impl {
     template <typename T>
     concept has_reserve = requires(T& t, size_t n) {
         { t.reserve(n) } -> std::same_as<void>;
+    };
+
+    template <typename T>
+    concept pair_like = requires(const T& t) {
+        { t.first } -> std::same_as<typename T::first_type>;
+        { t.second } -> std::same_as<typename T::second_type>;
     };
 
     template <typename T>

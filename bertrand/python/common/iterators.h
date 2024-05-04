@@ -17,6 +17,16 @@ namespace py {
 namespace impl {
 
 
+template <typename Policy>
+concept random_access = 
+    std::same_as<typename Policy::iterator_category, std::random_access_iterator_tag>;
+
+
+template <typename Policy>
+concept bidirectional = random_access<Policy> || 
+    std::same_as<typename Policy::iterator_category, std::bidirectional_iterator_tag>;
+
+
 /* An optimized iterator that directly accesses tuple or list elements through the
 CPython API. */
 template <typename Policy>
@@ -30,15 +40,6 @@ class Iterator {
 
 protected:
     Policy policy;
-
-    static constexpr bool random_access = std::same_as<
-        typename Policy::iterator_category,
-        std::random_access_iterator_tag
-    >;
-    static constexpr bool bidirectional = random_access || std::same_as<
-        typename Policy::iterator_category,
-        std::bidirectional_iterator_tag
-    >;
 
 public:
     using iterator_category        = Policy::iterator_category;
@@ -111,14 +112,14 @@ public:
     ///////////////////////////////////////
 
     /* Retreat the iterator. */
-    template <typename T = Iterator> requires (bidirectional)
+    template <typename T = Iterator> requires (bidirectional<Policy>)
     inline Iterator& operator--() {
         policy.retreat();
         return *this;
     }
 
     /* Retreat the iterator. */
-    template <typename T = Iterator> requires (bidirectional)
+    template <typename T = Iterator> requires (bidirectional<Policy>)
     inline Iterator operator--(int) {
         Iterator copy = *this;
         policy.retreat();
@@ -130,7 +131,7 @@ public:
     ///////////////////////////////////////
 
     /* Advance the iterator by n steps. */
-    template <typename T = Iterator> requires (random_access)
+    template <typename T = Iterator> requires (random_access<Policy>)
     inline Iterator operator+(difference_type n) const {
         Iterator copy = *this;
         copy += n;
@@ -138,14 +139,14 @@ public:
     }
 
     /* Advance the iterator by n steps. */
-    template <typename T = Iterator> requires (random_access)
+    template <typename T = Iterator> requires (random_access<Policy>)
     inline Iterator& operator+=(difference_type n) {
         policy.advance(n);
         return *this;
     }
 
     /* Retreat the iterator by n steps. */
-    template <typename T = Iterator> requires (random_access)
+    template <typename T = Iterator> requires (random_access<Policy>)
     inline Iterator operator-(difference_type n) const {
         Iterator copy = *this;
         copy -= n;
@@ -153,44 +154,44 @@ public:
     }
 
     /* Retreat the iterator by n steps. */
-    template <typename T = Iterator> requires (random_access)
+    template <typename T = Iterator> requires (random_access<Policy>)
     inline Iterator& operator-=(difference_type n) {
         policy.retreat(n);
         return *this;
     }
 
     /* Calculate the distance between two iterators. */
-    template <typename T = Iterator> requires (random_access)
+    template <typename T = Iterator> requires (random_access<Policy>)
     inline difference_type operator-(const Iterator& other) const {
         return policy.distance(other.policy);
     }
 
     /* Access the iterator at an offset. */
-    template <typename T = Iterator> requires (random_access)
+    template <typename T = Iterator> requires (random_access<Policy>)
     inline value_type operator[](difference_type n) const {
         return *(*this + n);
     }
 
     /* Compare two iterators for ordering. */
-    template <typename T = Iterator> requires (random_access)
+    template <typename T = Iterator> requires (random_access<Policy>)
     inline bool operator<(const Iterator& other) const {
         return !!policy && (*this - other) < 0;
     }
 
     /* Compare two iterators for ordering. */
-    template <typename T = Iterator> requires (random_access)
+    template <typename T = Iterator> requires (random_access<Policy>)
     inline bool operator<=(const Iterator& other) const {
         return !!policy && (*this - other) <= 0;
     }
 
     /* Compare two iterators for ordering. */
-    template <typename T = Iterator> requires (random_access)
+    template <typename T = Iterator> requires (random_access<Policy>)
     inline bool operator>=(const Iterator& other) const {
         return !policy || (*this - other) >= 0;
     }
 
     /* Compare two iterators for ordering. */
-    template <typename T = Iterator> requires (random_access)
+    template <typename T = Iterator> requires (random_access<Policy>)
     inline bool operator>(const Iterator& other) const {
         return !policy || (*this - other) > 0;
     }
@@ -199,7 +200,8 @@ public:
 
 
 /* An adapter for an Iterator class that swaps the meanings of the increment and
-decrement operators, converting a forward iterator into a reverse iterator. */
+decrement operators, effectively converting a forward iterator into a reverse
+iterator. */
 template <typename Policy>
 class ReverseIterator : public Iterator<Policy> {
     using Base = Iterator<Policy>;
@@ -242,7 +244,7 @@ public:
     ////////////////////////////////////////
 
     /* Advance the iterator by n steps. */
-    template <typename T = ReverseIterator> requires (Base::random_access)
+    template <typename T = ReverseIterator> requires (random_access<Policy>)
     inline ReverseIterator operator+(typename Base::difference_type n) const {
         ReverseIterator copy = *this;
         copy -= n;
@@ -250,14 +252,14 @@ public:
     }
 
     /* Advance the iterator by n steps. */
-    template <typename T = ReverseIterator> requires (Base::random_access)
+    template <typename T = ReverseIterator> requires (random_access<Policy>)
     inline ReverseIterator& operator+=(typename Base::difference_type n) {
         Base::operator-=(n);
         return *this;
     }
 
     /* Retreat the iterator by n steps. */
-    template <typename T = ReverseIterator> requires (Base::random_access)
+    template <typename T = ReverseIterator> requires (random_access<Policy>)
     inline ReverseIterator operator-(typename Base::difference_type n) const {
         ReverseIterator copy = *this;
         copy += n;
@@ -265,7 +267,7 @@ public:
     }
 
     /* Retreat the iterator by n steps. */
-    template <typename T = ReverseIterator> requires (Base::random_access)
+    template <typename T = ReverseIterator> requires (random_access<Policy>)
     inline ReverseIterator& operator-=(typename Base::difference_type n) {
         Base::operator+=(n);
         return *this;
@@ -594,8 +596,8 @@ public:
 template <typename Deref>
 class KeyIter {
     Object dict;
-    PyObject* curr;
-    Py_ssize_t pos;
+    PyObject* curr = nullptr;
+    Py_ssize_t pos = 0;
 
 public:
     using iterator_category         = std::input_iterator_tag;
@@ -603,12 +605,10 @@ public:
     using value_type                = Deref;
 
     /* Default constructor.  Initializes to a sentinel iterator. */
-    KeyIter() :
-        dict(reinterpret_steal<Object>(nullptr)), curr(nullptr), pos(0)
-    {}
+    KeyIter() : dict(reinterpret_steal<Object>(nullptr)) {}
 
     /* Construct an iterator from a dictionary. */
-    KeyIter(const Object& dict) : dict(dict), pos(0) {
+    KeyIter(const Object& dict) : dict(dict) {
         if (!PyDict_Next(dict.ptr(), &pos, &curr, nullptr)) {
             curr = nullptr;
         }
@@ -650,7 +650,7 @@ public:
     /* Dereference the iterator. */
     inline Deref deref() const {
         if (curr == nullptr) {
-            throw StopIteration("end of dictionary keys");
+            throw StopIteration();
         }
         return reinterpret_borrow<Deref>(curr);
     }
@@ -678,8 +678,8 @@ public:
 template <typename Deref>
 class ValueIter {
     Object dict;
-    PyObject* curr;
-    Py_ssize_t pos;
+    PyObject* curr = nullptr;
+    Py_ssize_t pos = 0;
 
 public:
     using iterator_category         = std::input_iterator_tag;
@@ -687,12 +687,10 @@ public:
     using value_type                = Deref;
 
     /* Default constructor.  Initializes to a sentinel iterator. */
-    ValueIter() :
-        dict(reinterpret_steal<Object>(nullptr)), curr(nullptr), pos(0)
-    {}
+    ValueIter() : dict(reinterpret_steal<Object>(nullptr)) {}
 
     /* Construct an iterator from a dictionary. */
-    ValueIter(const Object& dict) : dict(dict), pos(0) {
+    ValueIter(const Object& dict) : dict(dict) {
         if (!PyDict_Next(dict.ptr(), &pos, nullptr, &curr)) {
             curr = nullptr;
         }
@@ -734,7 +732,7 @@ public:
     /* Dereference the iterator. */
     inline Deref deref() const {
         if (curr == nullptr) {
-            throw StopIteration("end of dictionary values");
+            throw StopIteration();
         }
         return reinterpret_borrow<Deref>(curr);
     }
@@ -763,9 +761,9 @@ PyDict_Next(). */
 template <typename Deref>
 class ItemIter {
     Object dict;
-    PyObject* key;
-    PyObject* value;
-    Py_ssize_t pos;
+    PyObject* key = nullptr;
+    PyObject* value = nullptr;
+    Py_ssize_t pos = 0;
 
 public:
     using iterator_category         = std::input_iterator_tag;
@@ -773,15 +771,10 @@ public:
     using value_type                = Deref;
 
     /* Default constructor.  Initializes to a sentinel iterator. */
-    ItemIter() :
-        dict(reinterpret_steal<Object>(nullptr)),
-        key(nullptr),
-        value(nullptr),
-        pos(0)
-    {}
+    ItemIter() : dict(reinterpret_steal<Object>(nullptr)) {}
 
     /* Construct an iterator from a dictionary. */
-    ItemIter(const Object& dict) : dict(dict), pos(0) {
+    ItemIter(const Object& dict) : dict(dict) {
         if (!PyDict_Next(dict.ptr(), &pos, &key, &value)) {
             key = nullptr;
             value = nullptr;
@@ -828,7 +821,7 @@ public:
     /* Dereference the iterator. */
     inline Deref deref() const {
         if (key == nullptr || value == nullptr) {
-            throw StopIteration("end of dictionary items");
+            throw StopIteration();
         }
         return Deref(key, value);
     }
