@@ -907,7 +907,6 @@ namespace impl {
     struct visit_helper<Obj, R(C::*)(T, A...) volatile> : visit_helper<Obj, R(*)(T, A...)> {};
     template <typename Obj, typename R, typename C, typename T, typename... A>
     struct visit_helper<Obj, R(C::*)(T, A...) const volatile> : visit_helper<Obj, R(*)(T, A...)> {};
-
     template <typename Obj, has_call_operator T>
     struct visit_helper<Obj, T> : visit_helper<Obj, decltype(&T::operator())> {};
 
@@ -1113,6 +1112,21 @@ This is roughly equivalent to std::visit, but with a few key differences:
         with a message indicating the observed type of the object.
     5.  Overload sets are not supported, as the first argument to an overloaded
         function is not well-defined.  List the functions in order instead.
+
+Here's an example:
+
+    py::Object x = "abc";
+    int choice = py::visit(x,
+        [](const py::Int& x) {
+            return 1;
+        },
+        [](const py::Str& x) {
+            return 2;  // will be chosen
+        },
+        [](const py::Object& x) {  // default case
+            return 3;
+        }
+    );
 */
 template <typename Obj, impl::visitable<Obj>... Funcs>
     requires (std::derived_from<std::decay_t<Obj>, Object>)

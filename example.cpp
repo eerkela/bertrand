@@ -95,6 +95,8 @@ using namespace py::literals;
 // static const py::Type dtype = np.attr<"dtype">();
 
 
+void f() {}
+
 
 void run() {
     using Clock = std::chrono::high_resolution_clock;
@@ -112,6 +114,73 @@ void run() {
     // py::print(typeid(decltype(set)::value_type).name());
 
 
+    // py::Dict<py::Str> dict = {{"a", 1}, {"b", 2}, {"c", 3}};
+    // py::Dict dict2 = dict | py::Dict<py::Str>{{"d", 4}};
+    // // decltype(dict2) dict3 = dict2;
+    // // dict2[4] = "d";
+    // py::print(dict);
+
+    // for (const auto& x : dict.values()) {
+    //     py::print(x);
+    // }
+
+
+
+
+    // py::Dict<py::Int, py::NoneType> dict;
+    // for (size_t i = 0; i < 1'000'000; ++i) {
+    //     dict[i] = py::None;
+    // }
+
+    // auto keys = dict.keys();
+
+    // using Clock = std::chrono::high_resolution_clock;
+    // std::chrono::time_point<Clock> start = Clock::now();
+
+    // for (size_t i = 0; i < 10; ++i) {
+    //     for (const auto& x : keys) {}
+    // }
+
+    py::Function_ func([](
+        const py::Arg<"x", int>& x,
+        const py::Arg<"y", int>& y
+        // const py::Arg<"y", std::optional<int>>& y
+    ) {
+        return x - y;
+        // return x - y->value_or(2);
+    });
+
+    // py::print(typeid(decltype(wrapped)).name());
+
+    // py::Function_ wrapped(func);
+    // py::print(wrapped(1, 2));
+    static constexpr auto x = py::arg_<"x">;
+    static constexpr auto y = py::arg_<"y">;
+    py::print(func(1, 2));
+    py::print(func(1, y = 2));
+    py::print(func(x = 1, y = 2));
+    py::print(func(y = 2, x = 1));
+
+
+
+
+
+    // py::print(py::Function_<decltype(func)>::value);
+
+    // py::print(func(py::arg_<"x"> = 1));
+
+
+
+
+
+
+
+
+    // TODO: the extra speedup comes mostly from not interacting with reference counts
+    // rather than anything else, and the difference is extremely marginal
+
+
+
     // PyObject* dict = PyDict_New();
     // for (size_t i = 0; i < 1'000'000; ++i) {
     //     PyObject* key = PyLong_FromLong(i);
@@ -122,19 +191,8 @@ void run() {
     // PyObject* keys = PyObject_CallMethod(dict, "keys", nullptr);
     // // py::print(py::repr(keys));
 
-
-    py::Dict<py::Str> dict = {{"a", 1}, {"b", 2}, {"c", 3}};
-    py::Dict dict2 = dict | py::Dict<py::Str>{{"d", 4}};
-    // decltype(dict2) dict3 = dict2;
-    // dict2[4] = "d";
-    py::print(dict);
-
-    for (const auto& x : dict.values()) {
-        py::print(x);
-    }
-
-
-
+    // using Clock = std::chrono::high_resolution_clock;
+    // std::chrono::time_point<Clock> start = Clock::now();
 
     // for (size_t i = 0; i < 10; ++i) {
     //     // PyObject* iter = PyObject_GetIter(keys);
@@ -144,12 +202,12 @@ void run() {
     //     // }
     //     // Py_DECREF(iter);
 
-    //     PyObject* key;
-    //     PyObject* val;
-    //     Py_ssize_t pos = 0;
-    //     while (PyDict_Next(dict, &pos, &key, &val)) {
+    //     // PyObject* key;
+    //     // PyObject* val;
+    //     // Py_ssize_t pos = 0;
+    //     // while (PyDict_Next(dict, &pos, &key, &val)) {
 
-    //     }
+    //     // }
     // }
 
 

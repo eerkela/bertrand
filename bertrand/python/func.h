@@ -700,6 +700,222 @@ public:
 };
 
 
+////////////////////////////////////
+////    ARGUMENT ANNOTATIONS    ////
+////////////////////////////////////
+
+
+// TODO: need to figure out a way to handle optional arguments with default values
+// in signatures.
+
+// py::Function func = [](const py::Arg<"x", py::Int>::optional& x = 1, ...)
+
+
+// TODO: Arg should go in proxies.h
+
+
+namespace impl {
+
+    struct ArgTag {};
+
+}
+
+
+/* A simple data struct representing a bound keyword argument to a Python function,
+which is checked at compile time. */
+template <StaticStr Name, typename T>
+struct Arg : public impl::ArgTag {
+    static constexpr bool is_optional = false;
+    static constexpr StaticStr name = Name;
+    using type = T;
+
+    T value;
+
+    Arg(T&& value) : value(std::forward<T>(value)) {}
+    Arg(const Arg& other) : value(other.value) {}
+    Arg(Arg&& other) : value(std::move(other.value)) {}
+
+    const T& operator*() const { return value; }
+    const T* operator->() const { return &value; }
+    operator T&() { return value; }
+    operator const T&() const { return value; }
+};
+
+
+template <StaticStr Name, typename T>
+struct Arg<Name, std::optional<T>> {
+    static constexpr bool is_optional = true;
+    static constexpr StaticStr name = Name;
+    using type = T;
+
+    std::optional<T> value;
+
+    Arg(const T& value) : value(value) {}
+    Arg(T&& value) : value(std::move(value)) {}
+    Arg(const Arg& other) : value(other.value) {}
+    Arg(Arg&& other) : value(std::move(other.value)) {}
+
+    const std::optional<T>& operator*() const { return value; }
+    const std::optional<T>* operator->() const { return &value; }
+    operator std::optional<T>&() { return value; }
+    operator const std::optional<T>&() const { return value; }
+
+};
+
+
+namespace impl {
+
+    /* A compile-time tag that allows for the familiar `py::arg<"name"> = value`
+    syntax.  The `py::arg<"name">` bit resolves to an instance of this class, and the
+    argument becomes bound when the `=` operator is applied to it. */
+    template <StaticStr name>
+    struct UnboundArg {
+        template <typename T>
+        constexpr Arg<name, std::decay_t<T>> operator=(T&& value) const {
+            return {std::forward<T>(value)};
+        }
+    };
+
+}
+
+
+/* Compile-time factory for `UnboundArgument` tags. */
+template <StaticStr name>
+static constexpr impl::UnboundArg<name> arg_ {};
+
+
+template <typename Return, typename... Args>
+class Function_ {
+protected:
+    static constexpr bool accepts_keywords = (std::derived_from<Args, impl::ArgTag> || ...);
+    static constexpr bool accepts_variadic_positional = false;
+    static constexpr bool accepts_variadic_keyword = false;
+
+    static constexpr size_t missing = sizeof...(Args);
+
+    template <typename... As>
+    static constexpr bool callable_with = [] {
+        // TODO: eventually, ensure that the function is callable with the given
+        // arguments to constrain the call operator and give good error messages.
+        return true;
+    }();
+
+
+    template <typename... Ts>
+    static constexpr size_t n_positional = 0;
+    template <typename First, typename... Rest>
+    static constexpr size_t n_positional<First, Rest...> =
+        std::derived_from<std::decay_t<First>, impl::ArgTag> ? 0 : 1 + n_positional<Rest...>;
+
+    /* index uses template recursion to determine the position of a keyword argument T
+    in the expected signature (Args...).  If no match is not found, then the index will
+    be equal to `missing`. */
+    template <typename T, typename... Ts>
+    struct index {
+        static constexpr size_t value = 0;
+    };
+
+    template <typename T, typename First, typename... Rest>
+    struct index<T, First, Rest...> {
+        template <typename T1, typename T2>
+        struct compare {
+            static constexpr bool match = false;
+        };
+
+        template <typename T1, std::derived_from<impl::ArgTag> T2>
+        struct compare<T1, T2> {
+            static constexpr bool match = (T1::name == T2::name);
+        };
+
+        using T1 = std::decay_t<T>;
+        using T2 = std::decay_t<First>;
+        static constexpr size_t value = compare<T1, T2>::match ?
+            0 : 1 + index<T, Rest...>::value;            
+    };
+
+    template <size_t I, typename A, typename... As>
+    auto extract(const std::tuple<As...>& args) const {
+        if constexpr (std::derived_from<std::decay_t<A>, impl::ArgTag>) {
+            static constexpr size_t idx = index<A, Args...>::value;
+            if constexpr (idx == missing) {
+                // TODO: static assert should be handled by template constraint
+                static_assert(std::decay_t<A>::is_optional, "bro, you forgot something");
+                return std::nullopt;
+
+            } else {
+                return *std::get<idx>(args);  // TODO: is index correct in this case?
+            }
+
+        } else {
+            return std::get<I>(args);
+        }
+    };
+
+    template <size_t... Is, typename... As>
+    auto call(std::index_sequence<Is...>, const std::tuple<As...>& args) const {
+        return func(extract<Is, As>(args)...);
+    }
+
+public:
+    std::function<Return(Args...)> func;
+
+    template <typename T>
+    Function_(T&& func) : func(std::forward<T>(func)) {}
+
+    template <typename... As> requires (callable_with<As...>)
+    Return operator()(As&&... args) const {
+        return call(std::index_sequence_for<As...>{}, std::tie(args...));
+    }
+
+};
+
+
+template <typename R, typename... A>
+class Function_<R(*)(A...)> : public Function_<R, A...> {};
+template <typename R, typename C, typename... A>
+class Function_<R(C::*)(A...)> : public Function_<R, A...> {};
+template <typename R, typename C, typename... A>
+class Function_<R(C::*)(A...) const> : public Function_<R, A...> {};
+template <typename R, typename C, typename... A>
+class Function_<R(C::*)(A...) volatile> : public Function_<R, A...> {};
+template <typename R, typename C, typename... A>
+class Function_<R(C::*)(A...) const volatile> : public Function_<R, A...> {};
+template <impl::has_call_operator T>
+class Function_<T> : public Function_<decltype(&T::operator())> {};
+
+
+template <typename R, typename... A>
+Function_(R(*)(A...)) -> Function_<R, A...>;
+template <typename R, typename C, typename... A>
+Function_(R(C::*)(A...)) -> Function_<R, A...>;
+template <typename R, typename C, typename... A>
+Function_(R(C::*)(A...) const) -> Function_<R, A...>;
+template <typename R, typename C, typename... A>
+Function_(R(C::*)(A...) volatile) -> Function_<R, A...>;
+template <typename R, typename C, typename... A>
+Function_(R(C::*)(A...) const volatile) -> Function_<R, A...>;
+template <impl::has_call_operator T>
+Function_(T) -> Function_<decltype(&T::operator())>;
+
+
+
+// template <typename T>
+// struct Args {
+//     Tuple<T> args;
+//     template <typename... As>
+//     Args(Tuple<T>&& args) : args(std::move(args)) {}
+// };
+
+
+
+// TODO: Kwargs will need to accept a bunch of py::Arg instances
+
+// template <typename T>
+// struct Kwargs {
+//     Dict<Str, T> kwargs;
+// };
+
+
 ////////////////////////
 ////    FUNCTION    ////
 ////////////////////////

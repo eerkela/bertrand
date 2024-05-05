@@ -1,6 +1,7 @@
 #ifndef BERTRAND_STATIC_STRING_H
 #define BERTRAND_STATIC_STRING_H
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <initializer_list>

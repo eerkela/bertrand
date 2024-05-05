@@ -18,6 +18,15 @@ namespace bertrand {
 namespace py {
 
 
+// NOTE: using dedicated Key, Value, and Item iterators (which use PyDict_Next) is
+// faster than using a generic iterator, but only by ~10-15% due to reference counting.
+// It's not clear if this is worth the extra complexity, especially since using a
+// generic iterator would allow key, value, and item views to be used on any dict-like
+// object, not just py::Dict.  That being said, we still need to keep the typedefs
+// around in order to dynamically check mapping type at runtime, so we might as well
+// use them for the iterators as well.
+
+
 namespace impl {
 
     /* A replication of Python's internal data format for MappingProxyType objects,
@@ -168,14 +177,6 @@ namespace ops {
             return impl::Iterator<impl::KeyIter<Return>>();
         };
     };
-
-    // TODO: Item iterator can use an internal tuple object that it can reuse to
-    // store the key and value, rather than creating a new tuple each time.  This
-    // should have no extra overhead over std::pair, and would be more consistent with
-    // the Python implementation.  It requires a py::Struct class though.
-
-    // TODO: ReverseIterator<KeyIter> will not compile as written, since KeyIter is a
-    // forward iterator.
 
 }
 }
@@ -490,6 +491,15 @@ namespace ops {
             return impl::Iterator<impl::ItemIter<Return>>();
         };
     };
+
+
+    // TODO: Item iterator can use an internal tuple object that it can reuse to
+    // store the key and value, rather than creating a new tuple each time.  This
+    // should have no extra overhead over std::pair, and would be more consistent with
+    // the Python implementation.  It requires a py::Struct class though.
+
+    // -> This is the exact use case for py::Struct, but py::Struct requires elements
+    // from the function refactor (namely py::arg<name, type>)
 
 }
 }
