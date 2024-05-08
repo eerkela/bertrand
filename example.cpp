@@ -78,6 +78,7 @@
 #include <bertrand/python.h>
 
 #include <chrono>
+#include <cstddef>
 #include <iostream>
 #include <string>
 
@@ -95,7 +96,9 @@ using namespace py::literals;
 // static const py::Type dtype = np.attr<"dtype">();
 
 
-void f() {}
+int subtract(int x, int y) {
+    return x - y;
+}
 
 
 void run() {
@@ -141,25 +144,43 @@ void run() {
     //     for (const auto& x : keys) {}
     // }
 
-    py::Function_ func([](
-        const py::Arg<"x", int>& x,
-        const py::Arg<"y", int>& y
-        // const py::Arg<"y", std::optional<int>>& y
+
+
+
+    // using T = py::Arg<"z", const int&>;
+    // T z(1);
+    // py::print(std::same_as<typename T::type, const int&>);
+
+
+
+
+    // TODO: this should be an example showcase
+
+    auto lambda = [](
+        py::Arg<"x", int>::optional x,  // TODO: cv qualifications and references cause all sorts of problems
+        py::Arg<"y", int>::optional y = 2
     ) {
         return x - y;
-        // return x - y->value_or(2);
-    });
+    };
 
-    // py::print(typeid(decltype(wrapped)).name());
-
-    // py::Function_ wrapped(func);
-    // py::print(wrapped(1, 2));
     static constexpr auto x = py::arg_<"x">;
     static constexpr auto y = py::arg_<"y">;
+    // static constexpr auto z = py::arg_<"z">;
+
+    py::Function_ func("subtract", lambda, y = 2, x = 1);
+    // py::Function_ func("subtract", lambda, y = 2, x = 1, z = 3);
+
+    py::print(func());
+
+    py::print(func(1));
+    py::print(func(x = 1));
+
     py::print(func(1, 2));
     py::print(func(1, y = 2));
     py::print(func(x = 1, y = 2));
     py::print(func(y = 2, x = 1));
+
+
 
 
 

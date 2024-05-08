@@ -705,18 +705,15 @@ public:
 ////////////////////////////////////
 
 
-// TODO: need to figure out a way to handle optional arguments with default values
-// in signatures.
-
-// py::Function func = [](const py::Arg<"x", py::Int>::optional& x = 1, ...)
-
-
-// TODO: Arg should go in proxies.h
-
-
 namespace impl {
 
     struct ArgTag {};
+    struct OptionalArgTag {};
+    struct VariadicPositionalTag {};
+    struct VariadicKeywordTag {};
+
+    template <StaticStr Name, typename T>
+    struct OptionalArg;
 
 }
 
@@ -725,45 +722,50 @@ namespace impl {
 which is checked at compile time. */
 template <StaticStr Name, typename T>
 struct Arg : public impl::ArgTag {
-    static constexpr bool is_optional = false;
-    static constexpr StaticStr name = Name;
     using type = T;
+    using optional = impl::OptionalArg<Name, T>;
+    static constexpr StaticStr name = Name;
 
     T value;
 
-    Arg(T&& value) : value(std::forward<T>(value)) {}
+    Arg(T&& value) : value(std::forward<T>(value)) {}  // also, if I template this to be convertible, I get errors
     Arg(const Arg& other) : value(other.value) {}
     Arg(Arg&& other) : value(std::move(other.value)) {}
+
+    // TODO: things break as soon as I uncomment these, which are necessary to
+    // allow references as values.
+
+    // template <std::convertible_to<T> V>
+    // Arg(const Arg<Name, V>& other) : value(other.value) {}
+    // template <std::convertible_to<T> V>
+    // Arg(Arg<Name, V>&& other) : value(std::move(other.value)) {}
 
     const T& operator*() const { return value; }
-    const T* operator->() const { return &value; }
-    operator T&() { return value; }
-    operator const T&() const { return value; }
-};
+    const std::remove_reference_t<T>* operator->() const { return &value; }  // TODO: storing reference types breaks the -> operator
 
-
-template <StaticStr Name, typename T>
-struct Arg<Name, std::optional<T>> {
-    static constexpr bool is_optional = true;
-    static constexpr StaticStr name = Name;
-    using type = T;
-
-    std::optional<T> value;
-
-    Arg(const T& value) : value(value) {}
-    Arg(T&& value) : value(std::move(value)) {}
-    Arg(const Arg& other) : value(other.value) {}
-    Arg(Arg&& other) : value(std::move(other.value)) {}
-
-    const std::optional<T>& operator*() const { return value; }
-    const std::optional<T>* operator->() const { return &value; }
-    operator std::optional<T>&() { return value; }
-    operator const std::optional<T>&() const { return value; }
-
+    operator T&() & { return value; }
+    operator T&&() && { return std::move(value); }
+    operator const std::remove_const_t<T>&() const & { return value; }
+    operator const std::remove_const_t<T>&&() const && { return value; }
 };
 
 
 namespace impl {
+
+    /* An annotated argument subclass that marks the argument as being optional when
+    the function is called.  A matching default must be supplied to the constructor
+    when the function is initialized. */
+    template <StaticStr Name, typename T>
+    struct OptionalArg : public Arg<Name, T>, public OptionalArgTag {
+        OptionalArg(T&& value) : Arg<Name, T>(std::forward<T>(value)) {}
+        OptionalArg(const Arg<Name, T>& other) : Arg<Name, T>(other) {}
+        OptionalArg(Arg<Name, T>&& other) : Arg<Name, T>(std::move(other)) {}
+
+        // template <std::convertible_to<T> V>
+        // OptionalArg(const Arg<Name, V>& other) : Arg<Name, T>(other) {}
+        // template <std::convertible_to<T> V>
+        // OptionalArg(Arg<Name, V>&& other) : Arg<Name, T>(std::move(other)) {}
+    };
 
     /* A compile-time tag that allows for the familiar `py::arg<"name"> = value`
     syntax.  The `py::arg<"name">` bit resolves to an instance of this class, and the
@@ -776,6 +778,66 @@ namespace impl {
         }
     };
 
+    /* Introspect the proper signature for a py::Function instance from a generic
+    function pointer, reference, or object, such as a lambda. */
+    template <typename T>
+    struct GetSignature;
+
+    template <typename R, typename... A>
+    struct GetSignature<R(*)(A...)> {
+        using type = R(A...);
+    };
+
+    template <typename R, typename... A>
+    struct GetSignature<R(*)(A...) noexcept> {
+        using type = R(A...);
+    };
+
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...)> {
+        using type = R(A...);
+    };
+
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) noexcept> {
+        using type = R(A...);
+    };
+
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) const> {
+        using type = R(A...);
+    };
+
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) const noexcept> {
+        using type = R(A...);
+    };
+
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) volatile> {
+        using type = R(A...);
+    };
+
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) volatile noexcept> {
+        using type = R(A...);
+    };
+
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) const volatile> {
+        using type = R(A...);
+    };
+
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) const volatile noexcept> {
+        using type = R(A...);
+    };
+
+    template <impl::has_call_operator T>
+    struct GetSignature<T> {
+        using type = GetSignature<decltype(&T::operator())>::type;
+    };
+
 }
 
 
@@ -784,119 +846,886 @@ template <StaticStr name>
 static constexpr impl::UnboundArg<name> arg_ {};
 
 
-template <typename Return, typename... Args>
-class Function_ {
+/* A universal function wrapper that can represent either a Python function exposed to
+C++, or a C++ function exposed to Python with equivalent semantics.
+
+This class contains 2 complementary components depending on how it was constructed:
+
+    1.  A Python function object, which can be automatically generated from a C++
+        function pointer, lambda, or object with an overloaded call operator.  If
+        it was automatically generated, it will appear to Python as a
+        `builtin_function_or_method` that forwards to the C++ function when called.
+
+    2.  A C++ `std::function` that holds the C++ implementation in a type-erased
+        form.  This is directly called when the function is invoked from C++, and it
+        can be automatically generated from a Python function using the ::borrow() and
+        ::steal() constructors.  If it was automatically generated, it will delegate to
+        the Python function through the C API.
+
+The combination of these two components allows the function to be passed and called
+with identical semantics in both languages, including automatic type conversions, error
+handling, keyword arguments, default values, and container unpacking, all of which is
+resolved statically at compile time by introspecting the underlying signature (which
+can be deduced using CTAD).  In order to facilitate this, bertrand provides a
+lightweight `py::Arg` annotation, which can be placed directly in the function
+signature to enable these features without impacting performance or type safety.
+
+For instance, consider the following function:
+
+    int subtract(int x, int y) {
+        return x - y;
+    }
+
+We can directly wrap this as a `py::Function` if we want, which does not alter the
+calling convention or signature in any way:
+
+    py::Function func("subtract", subtract);
+    func(1, 2);  // returns -1
+
+If this function is exported to Python, it's call signature will remain unchanged,
+meaning that both arguments must be supplied as positional-only arguments, and no
+default values will be considered.
+
+    static const py::Code script = R"(
+        func(1, 2)  # ok
+        # func(1)  # error: missing required positional argument
+        # func(x = 1, y = 2)  # error: unexpected keyword argument
+    )"_python;
+
+    script({{"func", func}});  // prints -1
+
+We can add parameter names and default values by annotating the C++ function (or a
+wrapper around it) with `py::Arg` tags.  For instance:
+
+    auto wrapper = [](py::Arg<"x", int> x, py::Arg<"y", int>::optional y = 2) {
+        return subtract(x, y);
+    };
+
+    py::Function func("subtract", wrapper, py::arg<"y"> = 2);
+
+Note that the annotations themselves are implicitly convertible to the underlying
+argument types, so they should be acceptable as inputs to most functions without any
+additional syntax.  If necessary, they can be explicitly dereferenced through the `*`
+and `->` operators, or by accessing their `.value` member directly, which comprises
+their entire interface.  Also note that for each argument marked as `::optional`, we
+must provide a default value within the function's constructor, which will be
+substituted whenever we call the function without specifying that argument.
+
+With this in place, we can now do the following:
+
+    func(1);
+    func(1, 2);
+    func(1, py::arg<"y"> = 2);
+
+    // or, equivalently:
+    static constexpr auto x = py::arg<"x">;
+    static constexpr auto y = py::arg<"y">;
+
+    func(x = 1);
+    func(x = 1, y = 2);
+    func(y = 2, x = 1);  // keyword arguments can have arbitrary order
+
+All of which will return the same result as before.  The function can also be passed to
+Python and called with the same semantics:
+
+    static const py::Code script = R"(
+        func(1)
+        func(1, 2)
+        func(1, y = 2)
+        func(x = 1)
+        func(x = 1, y = 2)
+        func(y = 2, x = 1)
+    )"_python;
+
+    script({{"func", func}});
+
+What's more, all of the logic necessary to handle these cases is resolved statically at
+compile time, meaning that there is no runtime overhead for using these annotations,
+and no additional code is generated for the function itself.  When it is called from
+C++, all we have to do is inspect the provided arguments and match them against the
+underlying signature, which generates a compile time index sequence that can be used to
+reorder the arguments and insert default values as needed.  In fact, each of the above
+invocations will be transformed into the same underlying function call, with the same
+performance characteristics as the original function (disregarding any overhead from
+the `std::function` wrapper itself).
+
+Additionally, since all arguments are evaluated purely at compile time, we can enforce
+strong type safety guarantees on the function signature and disallow invalid calls
+using a template constraint.  This means that proper call syntax is automatically
+enforced throughout the codebase, in a way that allows static analyzers (like clangd)
+to give proper syntax highlighting and LSP support.
+
+Lastly, besides the `py::Arg` annotation, Bertrand also provides equivalent `py::Args`
+and `py::Kwargs` tags, which represent variadic positional and keyword arguments,
+respectively.  These will automatically capture an arbitrary number of arguments in
+addition to those specified in the function signature itself, and will encapsulate them
+in either a `std::vector<T>` or `std::unordered_map<std::string_view, T>`, respectively.
+The allowable types can be specified by templating the annotation on the desired type,
+to which all captured arguments must be convertible.
+
+Similarly, Bertrand allows Pythonic unpacking of supported containers into the function
+signature via the `*` and `**` operators, which emulate their Python equivalents.  Note
+that in order to properly enable this, the `*` operator must be overloaded to return a
+`py::Unpack` object or one of its subclasses, which is done automatically for any
+iterable subclass of py::Object.  Additionally, unpacking a container like this carries
+with it special restrictions, including the following:
+
+    1.  The unpacked container must be the last argument in its respective category
+        (positional or keyword), and there can only be at most one of each at the call
+        site.  These are not reflected in ordinary Python, but are necessary to ensure
+        that compile-time argument matching is unambiguous.
+    2.  The container's value type must be convertible to each of the argument types
+        that follow it in the function signature, or else a compile error will be
+        raised.
+    3.  If double unpacking is performed, then the container must yield key-value pairs
+        where the key is implicitly convertible to a string, and the value is
+        convertible to the corresponding argument type.  If this is not the case, a
+        compile error will be raised.
+    4.  If the container does not contain enough elements to satisfy the remaining
+        arguments, or it contains too many, a runtime error will be raised when the
+        function is called.  Because it is impossible to know the size of the container
+        at compile time, this is the only way to enforce this constraint.
+*/
+template <typename F>
+class Function_ : public Function_<typename impl::GetSignature<F>::type> {};
+
+
+template <typename Return, typename... Target>
+class Function_<Return(Target...)> {
 protected:
-    static constexpr bool accepts_keywords = (std::derived_from<Args, impl::ArgTag> || ...);
-    static constexpr bool accepts_variadic_positional = false;
-    static constexpr bool accepts_variadic_keyword = false;
 
-    static constexpr size_t missing = sizeof...(Args);
+    /* First, a collection of helper structs and constexpr variables that allow us
+     * to introspect generic types and argument packs at compile time.
+     */
 
-    template <typename... As>
-    static constexpr bool callable_with = [] {
-        // TODO: eventually, ensure that the function is callable with the given
-        // arguments to constrain the call operator and give good error messages.
-        return true;
+    // TODO: refine this to support cv qualifications and ref types as well.  Probably,
+    // this just requires paying really close attention to how the Argument's type
+    // is propagated through the system, and ensuring that it is properly deduced.
+    // Arguments need to hold references to their values, but must be forwarded according
+    // to their original value category.  This will be tricky to get right, but it
+    // would be amazing for C++ usability.
+
+    // DefaultArg always needs to hold a value, but Arg<> and OptionalArg<> should be
+    // able to hold references.
+
+    template <typename T>
+    struct inspect {
+        using type                                      = T;
+        template <StaticStr name>
+        static constexpr bool named                     = false;
+        static constexpr bool optional                  = false;
+        static constexpr bool positional_only           = true;
+        static constexpr bool keyword                   = false;
+        static constexpr bool variadic_positional       = false;
+        static constexpr bool variadic_keyword          = false;
+    };
+
+    template <std::derived_from<impl::ArgTag> T>
+    struct inspect<T> {
+        using type                                      = std::decay_t<T>::type;
+        template <StaticStr name>
+        static constexpr bool named                     = std::decay_t<T>::name == name;
+        static constexpr bool optional                  =
+            std::derived_from<std::decay_t<T>, impl::OptionalArgTag>;
+        static constexpr bool positional_only           = false;
+        static constexpr bool keyword                   = true;
+        static constexpr bool variadic_positional       = false;
+        static constexpr bool variadic_keyword          = false;
+    };
+
+    template <std::derived_from<impl::VariadicPositionalTag> T>
+    struct inspect<T> {
+        using type                                      = std::decay_t<T>::type;
+        template <StaticStr name>
+        static constexpr bool named                     = false;
+        static constexpr bool optional                  = false;
+        static constexpr bool positional_only           = false;
+        static constexpr bool keyword                   = false;
+        static constexpr bool variadic_positional       = true;
+        static constexpr bool variadic_keyword          = false;
+    };
+
+    template <std::derived_from<impl::VariadicKeywordTag> T>
+    struct inspect<T> {
+        using type                                      = std::decay_t<T>::type;
+        template <StaticStr name>
+        static constexpr bool named                     = false;
+        static constexpr bool optional                  = false;
+        static constexpr bool positional_only           = false;
+        static constexpr bool keyword                   = false;
+        static constexpr bool variadic_positional       = false;
+        static constexpr bool variadic_keyword          = true;
+    };
+
+    /* Retrieve the type at index I of the given parameter pack. */
+    template <size_t I, typename... Ts>
+    using type = std::tuple_element<I, std::tuple<Ts...>>::type;
+
+    /* Find the index of the given keyword in the paremeter pack, or its total size if
+    the keyword is not present. */
+    template <StaticStr name, typename... Ts>
+    static constexpr size_t index = 0;
+    template <StaticStr name, typename T, typename... Ts>
+    static constexpr size_t index<name, T, Ts...> =
+        inspect<std::decay_t<T>>::template named<name> ? 0 : 1 + index<name, Ts...>;
+
+    /* Get the index of the first optional argument in the parameter pack, or its total
+    size if no optional arguments are present. */
+    template <typename... Ts>
+    static constexpr size_t optional_index = 0;
+    template <typename T, typename... Ts>
+    static constexpr size_t optional_index<T, Ts...> =
+        inspect<std::decay_t<T>>::optional ? 0 : 1 + optional_index<Ts...>;
+
+    template <size_t I, typename... Ts>
+    static constexpr size_t n_optional_recursive = I;
+    template <size_t I, typename T, typename... Ts>
+    static constexpr size_t n_optional_recursive<I, T, Ts...> = n_optional_recursive<
+         I + std::derived_from<std::decay_t<T>,
+         impl::OptionalArgTag>,
+         Ts...
+    >;
+
+    /* Get the total number of optional arguments in the parameter pack. */
+    template <typename... Ts>
+    static constexpr size_t n_optional = n_optional_recursive<0, Ts...>;
+
+    /* Get the index of the first keyword argument in the parameter pack, or its total
+    size if no keywords are found. */
+    template <typename... Ts>
+    static constexpr size_t keyword_index = 0;
+    template <typename T, typename... Ts>
+    static constexpr size_t keyword_index<T, Ts...> =
+        inspect<std::decay_t<T>>::keyword ? 0 : 1 + keyword_index<Ts...>;
+
+    /* Get the index of the first variadic positional argument in the parameter pack,
+    or its total size if variadic positional arguments are not allowed. */
+    template <typename... Ts>
+    static constexpr size_t args_index = 0;
+    template <typename T, typename... Ts>
+    static constexpr size_t args_index<T, Ts...> =
+        inspect<std::decay_t<T>>::variadic_positional ? 0 : 1 + args_index<Ts...>;
+
+    /* Get the index of the first variadic keyword argument in the parameter pack, or
+    its total size if variadic keyword arguments are not allowed. */
+    template <typename... Ts>
+    static constexpr size_t kwargs_index = 0;
+    template <typename T, typename... Ts>
+    static constexpr size_t kwargs_index<T, Ts...> =
+        inspect<std::decay_t<T>>::variadic_keyword ? 0 : 1 + kwargs_index<Ts...>;
+
+    /* Index into a parameter pack to forward the associated argument.  Triggers a
+    static assertion if the index is out of range. */
+    template <size_t I>
+    static void get_arg() {
+        static_assert(false, "index out of range for parameter pack");
+    }
+
+    template <size_t I, typename T, typename... Ts>
+    static decltype(auto) get_arg(T&& curr, Ts&&... next) {
+        if constexpr (I == 0) {
+            return std::forward<T>(curr);
+        } else {
+            return get_arg<I - 1>(std::forward<Ts>(next)...);
+        }
+    }
+
+    /* Next, a collection of static assertions to ensure that the target signature
+     * conforms to Python calling conventions (i.e. no positional arguments after a
+     * keyword, no duplicate keywords, etc.).
+     */
+
+    template <size_t I, typename... Ts>
+    static constexpr bool validate_target_signature = true;
+
+    template <size_t I, typename T, typename... Ts>
+    static constexpr bool validate_target_signature<I, T, Ts...> = [] {
+        if constexpr (inspect<T>::positional_only) {
+            static_assert(
+                I < keyword_index<Target...>,
+                "positional-only arguments must precede keywords"
+            );
+            static_assert(
+                I < args_index<Target...>,
+                "positional-only arguments must precede variadic positional arguments"
+            );
+            static_assert(
+                I < kwargs_index<Target...>,
+                "positional-only arguments must precede variadic keyword arguments"
+            );
+            static_assert(
+                I < optional_index<Target...> || inspect<T>::optional,
+                "all arguments after the first optional argument must also be optional"
+            );
+
+        } else if constexpr (inspect<T>::keyword) {
+            static_assert(
+                I < kwargs_index<Target...>,
+                "keyword arguments must precede variadic keyword arguments"
+            );
+            static_assert(
+                I == index<T::name, Target...>,
+                "signature contains multiple keyword arguments with the same name"
+            );
+            static_assert(
+                I < optional_index<Target...> || inspect<T>::optional,
+                "all arguments after the first optional argument must also be optional"
+            );
+
+        } else if constexpr (inspect<T>::variadic_positional) {
+            static_assert(
+                I < kwargs_index<Target...>,
+                "variadic positional arguments must precede variadic keyword arguments"
+            );
+            static_assert(
+                I == args_index<Target...>,
+                "signature contains multiple variadic positional arguments"
+            );
+
+        } else if constexpr (inspect<T>::variadic_keyword) {
+            static_assert(
+                I == kwargs_index<Target...>,
+                "signature contains multiple variadic keyword arguments"
+            );
+        }
+
+        return validate_target_signature<I + 1, Ts...>;
     }();
 
+    static_assert(validate_target_signature<0, std::decay_t<Target>...>);
 
-    template <typename... Ts>
-    static constexpr size_t n_positional = 0;
-    template <typename First, typename... Rest>
-    static constexpr size_t n_positional<First, Rest...> =
-        std::derived_from<std::decay_t<First>, impl::ArgTag> ? 0 : 1 + n_positional<Rest...>;
+    /* Next, we record the positions, annotations, and total number of all optional
+     * arguments in the target signature, so that we can forward them at the call site.
+     */
 
-    /* index uses template recursion to determine the position of a keyword argument T
-    in the expected signature (Args...).  If no match is not found, then the index will
-    be equal to `missing`. */
-    template <typename T, typename... Ts>
-    struct index {
+    /* Represents a default value in the Defaults tuple.  Identifies each argument by
+    its index in the target signature. */
+    template <size_t I, std::derived_from<impl::OptionalArgTag> Base>
+    struct DefaultArg : public Base {
+        static constexpr size_t index = I;
+        using type = typename Base::type;
+        DefaultArg(type&& value) : Base(std::forward<type>(value)) {}
+        DefaultArg(const Arg<Base::name, type>& other) : Base(other) {}
+        DefaultArg(Arg<Base::name, type>&& other) : Base(std::move(other)) {}
+    };
+
+    /* Extracts all optional arguments in the target signature into a Defaults tuple of
+    DefaultArg instances. */
+    template <size_t I, typename Tuple, typename... Ts>
+    struct CollectDefaults {
+        using type = Tuple;
+    };
+
+    template <size_t I, typename... Defaults, typename T, typename... Ts>
+    struct CollectDefaults<I, std::tuple<Defaults...>, T, Ts...> {
+
+        template <typename U>
+        struct Wrap {
+            using type = CollectDefaults<
+                I + 1,
+                std::tuple<Defaults...>,
+                Ts...
+            >::type;
+        };
+
+        template <std::derived_from<impl::OptionalArgTag> U>
+        struct Wrap<U> {
+            using type = CollectDefaults<
+                I + 1,
+                std::tuple<Defaults..., DefaultArg<I, U>>,
+                Ts...
+            >::type;
+        };
+
+        using type = Wrap<std::decay_t<T>>::type;
+    };
+
+    /* A tuple type that encapsulates the default values that are associated with this
+    function, which must be set when the function is constructed. */
+    using Defaults = CollectDefaults<0, std::tuple<>, Target...>::type;
+
+    /* Recursive helper counts along the Defaults tuple to return the first index that
+    matches the target index I. */
+    template <size_t I, typename... Ts>
+    struct find_default_recursive;
+
+    template <size_t I>
+    struct find_default_recursive<I, std::tuple<>> {
         static constexpr size_t value = 0;
     };
 
-    template <typename T, typename First, typename... Rest>
-    struct index<T, First, Rest...> {
-        template <typename T1, typename T2>
-        struct compare {
-            static constexpr bool match = false;
-        };
-
-        template <typename T1, std::derived_from<impl::ArgTag> T2>
-        struct compare<T1, T2> {
-            static constexpr bool match = (T1::name == T2::name);
-        };
-
-        using T1 = std::decay_t<T>;
-        using T2 = std::decay_t<First>;
-        static constexpr size_t value = compare<T1, T2>::match ?
-            0 : 1 + index<T, Rest...>::value;            
+    template <size_t I, typename T, typename... Ts>
+    struct find_default_recursive<I, std::tuple<T, Ts...>> {
+        static constexpr size_t value = 
+            (I == std::decay_t<T>::index) ?
+            0 : 1 + find_default_recursive<I, std::tuple<Ts...>>::value;
     };
 
-    template <size_t I, typename A, typename... As>
-    auto extract(const std::tuple<As...>& args) const {
-        if constexpr (std::derived_from<std::decay_t<A>, impl::ArgTag>) {
-            static constexpr size_t idx = index<A, Args...>::value;
-            if constexpr (idx == missing) {
-                // TODO: static assert should be handled by template constraint
-                static_assert(std::decay_t<A>::is_optional, "bro, you forgot something");
-                return std::nullopt;
+    /* Find the index within the Defaults tuple for the target argument at index I. */
+    template <size_t I>
+    static constexpr size_t find_default = find_default_recursive<I, Defaults>::value;
+
+    /* Get the default value associated with the target argument at index I. */
+    template <size_t I>
+    static decltype(auto) get_default(const Defaults& defaults) {
+        return std::get<find_default<I>>(defaults);
+    };
+
+    /* Statically analyzes the arguments that are supplied to the function's
+    constructor, so that they fully satisfy the default value annotations. */
+    template <typename... Values>
+    struct ParseDefaults {
+
+        // TODO: not sure if I'm properly decaying types here, or in this whole class
+        // more generally.
+
+        /* Recursively check whether the default values conform to Python calling
+        conventions (i.e. no positional arguments after a keyword, no duplicate
+        keywords, etc.). */
+        template <size_t I, typename... Ts>
+        static constexpr bool validate_defaults = true;
+
+        template <size_t I, typename T, typename... Ts>
+        static constexpr bool validate_defaults<I, T, Ts...> = [] {
+            if constexpr (inspect<T>::positional_only) {
+                if constexpr (I >= keyword_index<Values...>) {
+                    return false;
+                } else if constexpr (I >= n_optional<Target...>) {
+                    return false;
+                }
+
+            } else if constexpr (inspect<T>::keyword) {
+                if constexpr (I != index<T::name, Values...>) {
+                    return false;
+                } else if constexpr (index<T::name, Target...> == sizeof...(Target)) {
+                    return false;
+                }
 
             } else {
-                return *std::get<idx>(args);  // TODO: is index correct in this case?
+                return false;
             }
 
+            return validate_defaults<I + 1, Ts...>;
+        }();
+
+        // TODO: this causes an infinite template recursion, which murders the compiler
+        // What would be best is if I inverted the logic
+
+        /* Recursively check whether the default values fully satisfy the Defaults
+        tuple, accounting for keyword arguments. */
+        template <size_t I, typename... Ts>
+        static constexpr bool match_defaults = true;
+
+        template <size_t I, typename T, typename... Ts>
+            requires (I >= sizeof...(Target))
+        static constexpr bool match_defaults<I, T, Ts...> = true;
+
+        template <size_t I, typename T, typename... Ts>
+        static constexpr bool match_defaults<I, T, Ts...> = [] {
+            using Arg = std::decay_t<type<I, Target...>>;
+
+            if constexpr (!inspect<Arg>::optional) {
+                return match_defaults<I + 1, T, Ts...>;
+
+            } else {
+                using D = std::tuple_element<find_default<I>, Defaults>::type;
+
+                if constexpr (inspect<T>::positional_only) {
+                    if constexpr (!std::convertible_to<T, D>) {
+                        return false;
+                    }
+
+                } else if constexpr (inspect<T>::keyword) {
+                    if constexpr (index<Arg::name, Values...> != sizeof...(Values)) {
+                        using V = type<index<Arg::name, Values...>, Values...>;
+                        if constexpr (!std::convertible_to<V, D>) {
+                            return false;
+                        }
+                    }
+                }
+
+                return match_defaults<I + 1, Ts...>;
+            }
+        }();
+
+        /* Constructor is only enabled if the default values are fully satisfied. */
+        static constexpr bool enable =
+            sizeof...(Values) == n_optional<Target...> &&
+            validate_defaults<0, std::decay_t<Values>...> &&
+            match_defaults<0, std::decay_t<Values>...>;
+
+        /* Given an index into the defaults tuple, forward the correct value from the
+        parameter pack. */
+        template <size_t I>
+        static decltype(auto) extract_helper(Values&&... values) {
+            if constexpr (I < keyword_index<Values...>) {
+                return get_arg<I>(std::forward<Values>(values)...);
+            } else {
+                using D = std::tuple_element<I, Defaults>::type;
+                return get_arg<index<D::name, Values...>>(std::forward<Values>(values)...);
+            }
+        }
+
+        /* For each type in the default values tuple, forward the correct value from
+        the parameter pack. */
+        template <size_t... Is>
+        static Defaults extract(std::index_sequence<Is...>, Values&&... values) {
+            return {extract_helper<Is>(std::forward<Values>(values)...)...};
+        }
+
+        /* Build the default values tuple from the provided arguments, reordering them
+        as needed to account for keywords. */
+        static constexpr Defaults build(Values&&... values) {
+            return extract(
+                std::make_index_sequence<sizeof...(Values)>{},
+                std::forward<Values>(values)...
+            );
+        }
+
+    };
+
+    /* Next, we define another helper struct that binds to the arguments at the call
+     * site, enables/disables the call operator, and parses their values according to
+     * each of the various argument protocols.
+     */
+
+    /* Statically analyzes the arguments that are supplied at the function's call site,
+    so that they can be reconciled with the target signature. */
+    template <typename... Source>
+    struct Arguments {
+
+        /* Recursively check whether the source signature conforms to Python calling
+        conventions (i.e. no positional arguments after a keyword, no duplicate
+        keywords, no extra arguments, etc.). */
+        template <size_t I, typename... Ts>
+        static constexpr bool validate_source = true;
+
+        template <size_t I, typename T, typename... Ts>
+        static constexpr bool validate_source<I, T, Ts...> = [] {
+            if constexpr (inspect<T>::positional_only) {
+                if constexpr (I >= keyword_index<Source...>) {
+                    return false;
+                } else if constexpr (
+                    args_index<Target...> == sizeof...(Target) &&
+                    I >= sizeof...(Target)
+                ) {
+                    return false;
+                }
+
+            } else if constexpr (inspect<T>::keyword) {
+                if constexpr (I != index<T::name, Source...>) {
+                    return false;
+                } else if constexpr (
+                    kwargs_index<Target...> == sizeof...(Target) &&
+                    index<T::name, Target...> == sizeof...(Target)
+                ) {
+                    return false;
+                }
+
+            } else {
+                return false;
+            }
+
+            return validate_source<I + 1, Ts...>;
+        }();
+
+        /* Recursively check whether the source arguments fully satisfy the target
+        signature, after accounting for default values. */
+        template <size_t I, typename... Ts>
+        static constexpr bool match_target = true;
+
+        template <size_t I, typename T, typename... Ts>
+        static constexpr bool match_target<I, T, Ts...> = [] {
+            if constexpr (!inspect<T>::optional) {
+                if constexpr (inspect<T>::positional_only) {
+                    if constexpr (I >= keyword_index<Source...>) {
+                        return false;
+                    }
+
+                } else if constexpr (inspect<T>::keyword) {
+                    if constexpr (
+                        I >= keyword_index<Source...> &&
+                        index<T::name, Source...> == sizeof...(Source)
+                    ) {
+                        return false;
+                    }
+                }
+            }
+
+            return match_target<I + 1, Ts...>;
+        }();
+
+        /* Call operator is only enabled if source arguments are well-formed and match
+        the target signature. */
+        static constexpr bool enable =
+            validate_source<0, std::decay_t<Source>...> &&
+            match_target<0, std::decay_t<Target>...>;
+
+    private:
+
+        // TODO: these could maybe just use pure template recursion, rather than
+        // requiring an index sequence.
+
+        template <size_t I, typename Result>
+        static void build_keywords(Result& result, Source&&... args) {
+            using Arg = std::decay_t<type<I, Source...>>;
+            if constexpr (index<Arg::name, Target...> == sizeof...(Source)) {
+                result.emplace(Arg::name, get_arg<I>(std::forward<Source>(args)...));
+            }
+        }
+
+        template <typename T, size_t... Is>
+        static std::unordered_map<std::string, T> variadic_keyword_helper(
+            std::index_sequence<Is...>,
+            Source&&... args
+        ) {
+            std::unordered_map<std::string, T> result;
+            (
+                build_keywords<keyword_index<Source...> + Is>(
+                    result,
+                    std::forward<Source>(args)...
+                ),
+                ...
+            );
+            return result;
+        }
+
+        template <size_t I, typename T, size_t... Is>
+        static std::vector<T> variadic_positional_helper(
+            std::index_sequence<Is...>,
+            Source&&... args
+        ) {
+            return {get_arg<I + Is>(std::forward<Source>(args)...)...};
+        }
+
+    public:
+
+        /* Extract a positional-only argument from the source signature at the given
+        index. */
+        template <size_t I>
+        static decltype(auto) positional_only(
+            const Defaults& defaults,
+            Source&&... args
+        ) {
+            if constexpr (I < keyword_index<Source...>) {
+                return get_arg<I>(std::forward<Source>(args)...);
+            } else {
+                return get_default<I>(defaults);
+            }
+        }
+
+        /* Extract a keyword-only argument from the source signature at the given
+        index. */
+        template <size_t I, StaticStr name>
+        static decltype(auto) keyword_only(
+            const Defaults& defaults,
+            Source&&... args
+        ) {
+            if constexpr (index<name, Source...> < sizeof...(Source)) {
+                return get_arg<index<name, Source...>>(std::forward<Source>(args)...);
+            } else {
+                return get_default<I>(defaults);
+            }
+        }
+
+        /* Extract a positional-or-keyword argument from the source signature. */
+        template <size_t I, StaticStr name>
+        static decltype(auto) positional_or_keyword(
+            const Defaults& defaults,
+            Source&&... args
+        ) {
+            if constexpr (I < keyword_index<Source...>) {
+                return get_arg<I>(std::forward<Source>(args)...);
+            } else if constexpr (index<name, Source...> < sizeof...(Source)) {
+                return get_arg<index<name, Source...>>(std::forward<Source>(args)...);
+            } else {
+                return get_default<I>(defaults);
+            }
+        }
+
+        /* Extract variadic positional arguments from the source signature starting at
+        the given index. */
+        template <size_t I, typename T>
+        static std::vector<T> variadic_positional(
+            const Defaults& defaults,
+            Source&&... args
+        ) {
+            if constexpr (I < keyword_index<Source...>) {
+                return variadic_positional_helper<I, T>(
+                    std::make_index_sequence<keyword_index<Source...> - I>{},
+                    std::forward<Source>(args)...
+                );
+            } else {
+                return {};
+            }
+        }
+
+        /* Extract variadic keyword arguments from the source signature by comparing
+        them against the target signature. */
+        template <typename T>
+        static std::unordered_map<std::string, T> variadic_keyword(
+            const Defaults& defaults,
+            Source&&... args
+        ) {
+            return variadic_keyword_helper<T>(
+                std::make_index_sequence<sizeof...(Source) - keyword_index<Source...>>{},
+                std::forward<Source>(args)...
+            );
+        }
+
+
+        // TODO: eventually support unpacking operator in a similar way.  This would
+        // basically be the inverse of the variadic positional and keyword arguments,
+        // except that I won't be able to determine the number of arguments at compile
+        // time.  That would have to be done at runtime, or not at all.  This would be
+        // really hard to do.
+
+        // It might be possible to just disable missing argument errors if a container
+        // unpacking operator is present, but that could result in some inconsistent
+        // behavior.  First of all, it would only work for Python functions, since we're
+        // building dynamic arguments anyways, and secondly, it would force the
+        // unpacking operator to be the last in its respective positional/keyword list.
+        // This is because we can't determine the number of arguments to unpack at
+        // compile time, so we can't apply the same level of validation that we do for
+        // the other arguments.
+
+        // Perhaps unpacking is handled entirely through `py::Struct`?  Single unpacking
+        // would expand it into positional arguments (the number of which is known at
+        // compile time), and double unpacking would expand it into keyword arguments,
+        // where the names are taken from the field names of the struct.
+        // Also, when doing the inverse and building an Args/Kwargs pack, I could encode
+        // them as a Struct, where the types are known at compile time, and may include
+        // the respective names.
+
+        // Of course, in practice I will be wrapping a PyCFunction, so I'll have to
+        // build dynamic arguments no matter what.  That means I should theoretically
+        // be able to support unpacking operators at the cost of some type safety
+        // and the above restrictions on ordering, etc.
+
+        // Maybe unpacking operators are only allowed to match an Args or Kwargs pack,
+        // possibly along with other arguments that can be accumulated.
+
+        // In fact, when building the final arguments, I'm going to have to filter
+        // out nullopts anyways when building the resulting argument list.  Also, I
+        // might want to do that myself, without going through cpp_function.  I can
+        // build the argument list myself, and then call the function directly.
+
+        // -> It just boils down to building the args/kwargs and then calling
+        // PyObject_Call, which should always work since the argument types will be
+        // restricted to Python objects, and implicit constructors will be invoked
+        // as needed.
+
+        // For signatures that contain parameter packs, I have to fall back to pybind11,
+        // which has implemented the necessary logic to handle them.  I can't/won't
+        // do that myself.  You'll just have to live with runtime errors in that case.
+
+    };
+
+    /* Finally, the actual call logic itself, which iterates through each of the
+     * target arguments and computes the appropriate compile-time sequence to forward
+     * the corresponding source arguments and insert default values as needed.
+     */
+
+    /* Process a single target argument, searching for a match in the source arguments
+    and forwarding it as needed. */
+    template <size_t I, typename... Source>
+    static decltype(auto) extract(const Defaults& defaults, Source&&... args) {
+        using T = std::decay_t<type<I, Target...>>;
+        using Args = Arguments<Source...>;
+
+        if constexpr (inspect<T>::positional_only) {
+            return Args::template positional_only<I>(
+                defaults,
+                std::forward<Source>(args)...
+            );
+
+        } else if constexpr (inspect<T>::keyword) {
+            return Args::template positional_or_keyword<I, T::name>(
+                defaults,
+                std::forward<Source>(args)...
+            );
+
+        } else if constexpr (inspect<T>::variadic_positional) {
+            return Args::template variadic_positional<I, typename T::type>(
+                defaults,
+                std::forward<Source>(args)...
+            );
+
+        } else if constexpr (inspect<T>::variadic_keyword) {
+            return Args::template variadic_keyword<typename T::type>(
+                defaults,
+                std::forward<Source>(args)...
+            );
+
         } else {
-            return std::get<I>(args);
+            static_assert(false, "unreachable");
         }
     };
 
-    template <size_t... Is, typename... As>
-    auto call(std::index_sequence<Is...>, const std::tuple<As...>& args) const {
-        return func(extract<Is, As>(args)...);
+    template <size_t... Is, typename... Source>
+    Return call(std::index_sequence<Is...>, Source&&... args) const {
+        return func(extract<Is>(defaults, std::forward<Source>(args)...)...);
     }
 
+    std::string name;
+    std::function<Return(Target...)> func;
+    Defaults defaults;
+
 public:
-    std::function<Return(Args...)> func;
 
-    template <typename T>
-    Function_(T&& func) : func(std::forward<T>(func)) {}
+    /* Construct a py::Function from a valid C++ function object with the templated
+    signature.  Use CTAD to deduce the signature if not explicitly provided.  If the
+    signature contains default value annotations, they must be specified here. */
+    template <typename Func, typename... Values>
+        requires (
+            std::is_invocable_r_v<Return, Func, Target...> &&
+            ParseDefaults<Values...>::enable
+        )
+    Function_(std::string name, Func&& func, Values&&... defaults) :
+        name(name),
+        func(std::forward<Func>(func)),
+        defaults(ParseDefaults<Values...>::build(std::forward<Values>(defaults)...))
+    {}
 
-    template <typename... As> requires (callable_with<As...>)
-    Return operator()(As&&... args) const {
-        return call(std::index_sequence_for<As...>{}, std::tie(args...));
+    /* Call the C++ function with the given arguments. */
+    template <typename... Source> requires (Arguments<Source...>::enable)
+    Return operator()(Source&&... args) const {
+        return call(
+            std::make_index_sequence<sizeof...(Target)>{},
+            std::forward<Source>(args)...
+        );
+    }
+
+    // TODO: ::borrow/steal(name, handle, defaults...) replaces reinterpret_borrow/steal with
+    // a function type, which is disabled due to special handling for default arguments.
+    // This will borrow/steal the function object, and then generate a lambda that
+    // invokes it using PyObject_Call.  The tuple can be allocated to a fixed width as
+    // an optimization.
+
+    // TODO: basically, this will fuse a std::function with an equivalent PyCFunction
+    // object, which will allow me to call it symmetrically in both directions.  A
+    // py::Function that is defined in C++ will generate a PyCFunction that wraps
+    // around the std::function and converts arguments according to the function
+    // signature.  A py::Function that is received from Python will generate a
+    // std::function that calls the Python function using PyObject_Call.
+
+    /* Implicitly convert a py::Function to an instance of the std::function that it
+    wraps.  Note that this disables Python calling conventions, including default
+    values. */
+    template <typename R, typename... Args>
+        requires (
+            std::convertible_to<Return, R> &&
+            (std::convertible_to<Target, Args> && ...)
+        )
+    operator std::function<R(Args...)>() const {
+        return func;
     }
 
 };
 
 
-template <typename R, typename... A>
-class Function_<R(*)(A...)> : public Function_<R, A...> {};
-template <typename R, typename C, typename... A>
-class Function_<R(C::*)(A...)> : public Function_<R, A...> {};
-template <typename R, typename C, typename... A>
-class Function_<R(C::*)(A...) const> : public Function_<R, A...> {};
-template <typename R, typename C, typename... A>
-class Function_<R(C::*)(A...) volatile> : public Function_<R, A...> {};
-template <typename R, typename C, typename... A>
-class Function_<R(C::*)(A...) const volatile> : public Function_<R, A...> {};
-template <impl::has_call_operator T>
-class Function_<T> : public Function_<decltype(&T::operator())> {};
-
-
-template <typename R, typename... A>
-Function_(R(*)(A...)) -> Function_<R, A...>;
-template <typename R, typename C, typename... A>
-Function_(R(C::*)(A...)) -> Function_<R, A...>;
-template <typename R, typename C, typename... A>
-Function_(R(C::*)(A...) const) -> Function_<R, A...>;
-template <typename R, typename C, typename... A>
-Function_(R(C::*)(A...) volatile) -> Function_<R, A...>;
-template <typename R, typename C, typename... A>
-Function_(R(C::*)(A...) const volatile) -> Function_<R, A...>;
-template <impl::has_call_operator T>
-Function_(T) -> Function_<decltype(&T::operator())>;
-
+template <typename F, typename... D>
+Function_(std::string, F, D...) -> Function_<typename impl::GetSignature<std::decay_t<F>>::type>;
 
 
 // template <typename T>
