@@ -101,6 +101,14 @@ int subtract(int x, int y) {
 }
 
 
+py::Object hello() {
+    py::Function_ func("hello", [] {
+        return std::string("hello, world!\n");
+    });
+    return py::reinterpret_borrow<py::Object>(func.ptr());
+}
+
+
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
@@ -157,30 +165,27 @@ void run() {
     // TODO: this should be an example showcase
 
     auto lambda = [](
-        py::Arg<"x", int>::optional x,  // TODO: cv qualifications and references cause all sorts of problems
-        py::Arg<"y", int>::optional y = 2
+        py::Arg<"x", const int&>::optional x,
+        py::Arg<"y", const int&>::optional y = 2
     ) {
         return x - y;
     };
 
     static constexpr auto x = py::arg_<"x">;
     static constexpr auto y = py::arg_<"y">;
-    // static constexpr auto z = py::arg_<"z">;
 
     py::Function_ func("subtract", lambda, y = 2, x = 1);
-    // py::Function_ func("subtract", lambda, y = 2, x = 1, z = 3);
 
     py::print(func());
 
     py::print(func(1));
     py::print(func(x = 1));
+    py::print(func(y = 2));
 
     py::print(func(1, 2));
     py::print(func(1, y = 2));
     py::print(func(x = 1, y = 2));
     py::print(func(y = 2, x = 1));
-
-
 
 
 
@@ -936,5 +941,6 @@ void run() {
 
 PYBIND11_MODULE(example, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring
+    m.def("hello", &hello, "pass a python function from C++ to Python");
     m.def("run", &run, "A test function to demonstrate pybind11");
 }

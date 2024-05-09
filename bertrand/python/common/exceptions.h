@@ -1129,6 +1129,20 @@ public:
         PyThreadState* thread = nullptr
     );
 
+    /* Convert an arbitrary C++ error into an equivalent Python exception, so that it
+    can be propagate back to the Python interpreter. */
+    static void to_python() {
+        try {
+            throw;
+        } catch (const Exception& err) {
+            err.set_error();
+        } catch (const std::exception& err) {
+            PyErr_SetString(PyExc_Exception, err.what());
+        } catch (...) {
+            PyErr_SetString(PyExc_Exception, "unknown C++ exception");
+        }
+    }
+
 };
 
 
