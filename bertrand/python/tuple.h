@@ -181,16 +181,11 @@ namespace ops {
 
 
 template <typename T>
-Tuple(const std::initializer_list<T>&) -> Tuple<Object>;
-template <typename T, typename... Args>
-    requires (!std::derived_from<std::decay_t<T>, impl::TupleTag>)
-Tuple(T&&, Args&&...) -> Tuple<Object>;
+Tuple(const std::initializer_list<T>&) -> Tuple<to_python<T>>;
 template <typename T>
-Tuple(const Tuple<T>&) -> Tuple<T>;
-template <typename T>
-Tuple(Tuple<T>&&) -> Tuple<T>;
-template <impl::str_like T>
-explicit Tuple(T string) -> Tuple<Str>;
+Tuple(T) -> Tuple<typename to_python<T>::value_type>;
+template <typename T1, typename T2, typename... Args>
+Tuple(T1, T2, Args...) -> Tuple<Object>;
 
 
 /* Represents a statically-typed Python tuple in C++. */

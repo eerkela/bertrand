@@ -755,6 +755,7 @@ public:
 
     using size_type = size_t;
     using key_type = Key;
+    using mapped_type = Value;
     using value_type = Value;
     using pointer = value_type*;
     using reference = value_type&;

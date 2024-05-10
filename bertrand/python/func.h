@@ -1,4 +1,3 @@
-#include "pyport.h"
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -719,8 +718,8 @@ namespace impl {
 }
 
 
-/* A simple data struct representing a bound keyword argument to a Python function,
-which is checked at compile time. */
+/* A compile-time argument annotation that represents a bound positional or keyword
+argument to a py::Function. */
 template <StaticStr Name, typename T>
 struct Arg : public impl::ArgTag {
     static constexpr StaticStr name = Name;
@@ -744,6 +743,60 @@ struct Arg : public impl::ArgTag {
     operator T&&() && { return std::move(value); }
     operator const std::remove_const_t<T>&() const & { return value; }
     operator const std::remove_const_t<T>&&() const && { return value; }
+};
+
+
+/* A compile-time argument annotation that represents variadic positional arguments to
+a py::Function. */
+template <typename T>
+struct Args : public impl::VariadicPositionalTag {
+    using type = T;
+
+    std::vector<T> value;
+
+    Args(const std::vector<T>& value) : value(value) {}
+    Args(std::vector<T>&& value) : value(std::move(value)) {}
+    Args(const Args<T>& other) : value(other.value) {}
+    template <std::convertible_to<T> V>
+    Args(const Args<V>& other) : value(other.value) {}
+    Args(Args<T>&& other) : value(std::move(other.value)) {}
+    template <std::convertible_to<T> V>
+    Args(Args<V>&& other) : value(std::move(other.value)) {}
+
+    const std::vector<T>& operator*() const { return value; }
+    const std::vector<T>* operator->() const { return &value; }
+
+    operator std::vector<T>&() & { return value; }
+    operator std::vector<T>&&() && { return std::move(value); }
+    operator const std::vector<T>&() const & { return value; }
+    operator const std::vector<T>&&() const && { return value; }
+};
+
+
+/* A compile-time argument annotation that represents variadic keyword arguments to a
+py::Function. */
+template <typename T>
+struct Kwargs : public impl::VariadicKeywordTag {
+    using type = T;
+
+    std::unordered_map<std::string, T> value;  // TODO: string_view?
+
+    Kwargs(const std::unordered_map<std::string, T>& value) : value(value) {}
+    Kwargs(std::unordered_map<std::string, T>&& value) : value(std::move(value)) {}
+    Kwargs(const Kwargs<T>& other) : value(other.value) {}
+    template <std::convertible_to<T> V>
+    Kwargs(const Kwargs<V>& other) : value(other.value) {}
+    Kwargs(Kwargs<T>&& other) : value(std::move(other.value)) {}
+    template <std::convertible_to<T> V>
+    Kwargs(Kwargs<V>&& other) : value(std::move(other.value)) {}
+
+    const std::unordered_map<std::string, T>& operator*() const { return value; }
+    const std::unordered_map<std::string, T>* operator->() const { return &value; }
+
+    operator std::unordered_map<std::string, T>&() & { return value; }
+    operator std::unordered_map<std::string, T>&&() && { return std::move(value); }
+    operator const std::unordered_map<std::string, T>&() const & { return value; }
+    operator const std::unordered_map<std::string, T>&&() const && { return value; }
 };
 
 
@@ -977,8 +1030,7 @@ with it special restrictions, including the following:
         function is called.  Because it is impossible to know the size of the container
         at compile time, this is the only way to enforce this constraint.
 */
-// template <typename F = Object(Args<Object>, Kwargs<Object>)>
-template <typename F>
+template <typename F = Object(Args<Object>, Kwargs<Object>)>
 class Function_ : public Function_<typename impl::GetSignature<F>::type> {};
 
 
@@ -1096,8 +1148,7 @@ protected:
     static constexpr size_t kwargs_index<T, Ts...> =
         inspect<std::decay_t<T>>::variadic_keyword ? 0 : 1 + kwargs_index<Ts...>;
 
-    /* Index into a parameter pack to forward the associated argument.  Triggers a
-    static assertion if the index is out of range. */
+    /* Index into a parameter pack to forward the associated argument. */
     template <size_t I>
     static void get_arg() {
         static_assert(false, "index out of range for parameter pack");
@@ -1173,6 +1224,8 @@ protected:
         return validate_target_signature<I + 1, Ts...>;
     }();
 
+    /* If the target signature does not conform to Python calling conventions, throw
+    an informative static assertion. */
     static_assert(validate_target_signature<0, std::decay_t<Target>...>);
 
     //////////////////////////////
@@ -1189,8 +1242,6 @@ protected:
         type value;
     };
 
-    /* Extracts all optional arguments in the target signature into a Defaults tuple of
-    DefaultValue instances. */
     template <size_t I, typename Tuple, typename... Ts>
     struct CollectDefaults {
         using type = Tuple;
@@ -1224,8 +1275,6 @@ protected:
     function, which must be set when the function is constructed. */
     using Defaults = CollectDefaults<0, std::tuple<>, Target...>::type;
 
-    /* Recursive helper counts along the Defaults tuple to return the first index that
-    matches the target index I. */
     template <size_t I, typename... Ts>
     struct find_default_recursive;
 
@@ -1330,8 +1379,6 @@ protected:
             validate_defaults<0, std::decay_t<Values>...> &&
             match_defaults<0, std::decay_t<Values>...>;
 
-        /* Given an index into the defaults tuple, forward the correct value from the
-        parameter pack. */
         template <size_t I>
         static decltype(auto) extract_helper(Values&&... values) {
             if constexpr (I < keyword_index<Values...>) {
@@ -1342,8 +1389,6 @@ protected:
             }
         }
 
-        /* For each type in the default values tuple, forward the correct value from
-        the default values parameter pack. */
         template <size_t... Is>
         static Defaults extract(std::index_sequence<Is...>, Values&&... values) {
             return {{extract_helper<Is>(std::forward<Values>(values)...)}...};
@@ -1359,309 +1404,6 @@ protected:
         }
 
     };
-
-    ///////////////////////////////
-    ////    PYTHON BINDINGS    ////
-    ///////////////////////////////
-
-    /* A heap-allocated data structure that holds the core members of the function
-    object.  A pointer to this object is stored in both the `py::Function` instance and
-    a special `PyCapsule` that is passed up to the equivalent CPython wrapper.
-
-    The lifetime of the `CapsuleContents` is complicated, and depends on how the
-    `py::Function` was created.  If it was generated from a C++ function, then a
-    corresponding `PyCFunction` wrapper will be created, which forwards to the C++
-    function and makes it callable from Python.  In order for this to work, the
-    `CapsuleContents` must remain valid for the lifetime of the `PyCFunction` wrapper,
-    which can potentially outlive the `py::Function` that created it.  This means we
-    have to heap-allocate the `CapsuleContents` and manage its lifetime from the
-    CPython wrapper.  Since `py::Function` holds a strong reference to this wrapper,
-    the `CapsuleContents` will always outlive any referencing `py::Function` instances.
-
-    Conversely, if the `py::Function` was generated from a Python function, then the
-    `PyCFunction` wrapper is not created, and the `CapsuleContents` is owned by the
-    `py::Function` itself. */
-    struct CapsuleContents {
-        std::string name;
-        std::function<Return(Target...)> func;
-        Defaults defaults;
-        PyMethodDef method_def;
-
-        CapsuleContents(
-            std::string func_name,
-            std::function<Return(Target...)> func,
-            Defaults defaults
-        );
-
-    };
-
-    /* PyCapsule deleter that cleans up the `CapsuleContents` when the PyCFunction
-    wrapper is garbage collected. */
-    static void capsule_deleter(PyObject* capsule) {
-        auto contents = reinterpret_cast<CapsuleContents*>(
-            PyCapsule_GetPointer(capsule, nullptr)
-        );
-        delete contents;
-    }
-
-    /* Build a PyCFunction wrapper around the given function object. */
-    static PyObject* wrap_python(CapsuleContents* contents) {
-        PyObject* capsule = PyCapsule_New(
-            contents,
-            nullptr,
-            &capsule_deleter
-        );
-        if (capsule == nullptr) {
-            delete contents;
-            Exception::from_python();
-        }
-
-        PyObject* result = PyCFunction_New(
-            &contents->method_def,
-            capsule
-        );
-        Py_DECREF(capsule);  // PyCFunction owns the only reference to the capsule
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
-    /* Get the `CapsuleContents` stored within a Python capsule, which replaces the
-    `self` argument to the function wrapper. */
-    static auto get_contents(PyObject* capsule) {
-        auto result = reinterpret_cast<CapsuleContents*>(
-            PyCapsule_GetPointer(capsule, nullptr)
-        );
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
-    enum class CallPolicy {
-        no_args,
-        one_arg,
-        positional,
-        keyword
-    };
-
-    static constexpr CallPolicy call_policy = [] {
-        if constexpr (sizeof...(Target) == 0) {
-            return CallPolicy::no_args;
-        } else if constexpr (
-            sizeof...(Target) == 1 &&
-            inspect<std::decay_t<type<0, Target...>>>::positional_only
-        ) {
-            return CallPolicy::one_arg;
-        } else if constexpr (
-            keyword_index<Target...> == sizeof...(Target) &&
-            kwargs_index<Target...> == sizeof...(Target)
-        ) {
-            return CallPolicy::positional;
-        } else {
-            return CallPolicy::keyword;
-        }
-    }();
-
-    // TODO: really, these implementations are pretty abominable at the moment.
-
-    /* Helper that initializes a PyMethodDef structure which wraps this function for
-    use in Python. */
-    template <CallPolicy policy, typename Dummy = void>
-    struct Def;
-
-    template <typename Dummy>
-    struct Def<CallPolicy::no_args, Dummy> {
-        static constexpr int flags = METH_NOARGS;
-
-        static PyObject* python(PyObject* capsule, PyObject* /* unused */) {
-            try {
-                return Object(get_contents(capsule)->func()).release().ptr();
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static std::function<Return(Target...)> cpp(
-            PyObject* func,
-            const Defaults& defaults
-        ) {
-            return [func, &defaults]() {
-                PyObject* result = PyObject_CallNoArgs(func);
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return static_cast<Return>(reinterpret_steal<Object>(result));
-            };
-        }
-
-    };
-
-    template <typename Dummy>
-    struct Def<CallPolicy::one_arg, Dummy> {
-        static constexpr int flags = METH_O;
-
-        static PyObject* python(PyObject* capsule, PyObject* obj) {
-            try {
-                return Object(get_contents(capsule)->func(
-                    reinterpret_borrow<Object>(obj)
-                )).release().ptr();
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static std::function<Return(Target...)> cpp(
-            PyObject* func,
-            const Defaults& defaults
-        ) {
-            return [func, &defaults](Target... args) {
-                PyObject* result = PyObject_CallOneArg(func, Object(args).ptr()...);
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return static_cast<Return>(reinterpret_steal<Object>(result));
-            };
-        }
-
-    };
-
-    template <typename Dummy>
-    struct Def<CallPolicy::positional, Dummy> {
-        static constexpr int flags = METH_FASTCALL;
-
-        // TODO: these last two protocols need to validate the Python arguments and
-        // account for extra ones, etc.
-
-        template <size_t I>
-        static Object python_arg(PyObject* const* args, Py_ssize_t nargs) {
-            // TODO: do stuff here.  All arguments are guaranteed to be positional-only,
-            // but may include *args.
-
-            // if (I < nargs) {
-            //     return reinterpret_borrow<Object>(args[I]);
-            // } else {
-            //     return Object(get_default<I>(defaults));
-            // }
-        }
-
-        template <size_t... Is>
-        static PyObject* call_python(
-            std::index_sequence<Is...>,
-            PyObject* capsule,
-            PyObject* const* args,
-            Py_ssize_t nargs
-        ) {
-            return get_contents(capsule)->func(
-                python_arg<Is>(args, nargs)...
-            ).release().ptr();
-        };
-
-        static PyObject* python(
-            PyObject* capsule,
-            PyObject* const* args,
-            Py_ssize_t nargs
-        ) {
-            try {
-                return call_python(
-                    std::make_index_sequence<sizeof...(Target)>{},
-                    capsule,
-                    args,
-                    nargs
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        // TODO: This needs to build an array of PyObject* const values, and then call
-        // the function with them.  Maybe I do this in two arrays, one for the Object
-        // values and one that holds their PyObject* pointers.  That should be the
-        // fastest way to do this.
-
-        static std::function<Return(Target...)> cpp(
-            PyObject* func,
-            const Defaults& defaults
-        ) {
-            return [func, &defaults](Target... args) {
-                PyObject* result = PyObject_VectorCall(func, Object(args).ptr()...);  // incorrect
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return static_cast<Return>(reinterpret_steal<Object>(result));
-            };
-        }
-
-    };
-
-    template <typename Dummy>
-    struct Def<CallPolicy::keyword, Dummy> {
-        static constexpr int flags = METH_FASTCALL | METH_KEYWORDS;
-
-        template <size_t I>
-        static Object python_arg(
-            PyObject* const* args,
-            Py_ssize_t nargs,
-            PyObject* kwnames
-        ) {
-            // TODO: do complicated stuff here
-        }
-
-        template <size_t... Is>
-        static PyObject* call_python(
-            std::index_sequence<Is...>,
-            PyObject* capsule,
-            PyObject* const* args,
-            Py_ssize_t nargs,
-            PyObject* kwnames
-        ) {
-            return Object(get_contents(capsule)->func(
-                python_arg<Is>(args, nargs, kwnames)...
-            )).release().ptr();
-        }
-
-        static PyObject* python(
-            PyObject* capsule,
-            PyObject* const* args,
-            Py_ssize_t nargs,
-            PyObject* kwnames
-        ) {
-            try {
-                return call_python(
-                    std::make_index_sequence<sizeof...(Target)>{},
-                    capsule,
-                    args,
-                    nargs,
-                    kwnames
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        static std::function<Return(Target...)> cpp(
-            PyObject* func,
-            const Defaults& defaults
-        ) {
-            return [func, &defaults](Target... args) {
-                PyObject* result = PyObject_VectorCall(func, args...);
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return static_cast<Return>(reinterpret_steal<Object>(result));
-            };
-        }
-
-    };
-
-    CapsuleContents* contents;
-    PyObject* m_ptr;
-    bool owns_contents;
 
     /////////////////////////////
     ////    CALL OPERATOR    ////
@@ -1899,8 +1641,6 @@ protected:
 
     };
 
-    /* Process a single target argument, searching for a match in the source arguments
-    and forwarding it as needed. */
     template <size_t I, typename... Source>
     static decltype(auto) extract_arg(const Defaults& defaults, Source&&... args) {
         using T = std::decay_t<type<I, Target...>>;
@@ -1935,6 +1675,7 @@ protected:
         }
     };
 
+    /* Implements the C++ call operator. */
     template <size_t... Is, typename... Source>
     Return call(std::index_sequence<Is...>, Source&&... args) const {
         return contents->func(
@@ -1944,6 +1685,329 @@ protected:
             )...
         );
     }
+
+    ///////////////////////////////
+    ////    PYTHON BINDINGS    ////
+    ///////////////////////////////
+
+    /* A heap-allocated data structure that holds the core members of the function
+    object.  A pointer to this object is stored in both the `py::Function` instance and
+    a special `PyCapsule` that is passed up to the equivalent CPython wrapper.
+
+    The lifetime of the `CapsuleContents` is complicated, and depends on how the
+    `py::Function` was created.  If it was generated from a C++ function, then a
+    corresponding `PyCFunction` wrapper will be created, which forwards to the C++
+    function and makes it callable from Python.  In order for this to work, the
+    `CapsuleContents` must remain valid for the lifetime of the `PyCFunction` wrapper,
+    which can potentially outlive the `py::Function` that created it.  This means we
+    have to heap-allocate the `CapsuleContents` and manage its lifetime from the
+    CPython wrapper.  Since `py::Function` holds a strong reference to this wrapper,
+    the `CapsuleContents` will always outlive any referencing `py::Function` instances.
+
+    Conversely, if the `py::Function` was generated from a Python function, then the
+    `PyCFunction` wrapper is not created, and the `CapsuleContents` is owned by the
+    `py::Function` itself. */
+    struct CapsuleContents {
+        std::string name;
+        std::function<Return(Target...)> func;
+        Defaults defaults;
+        PyMethodDef method_def;
+
+        CapsuleContents(
+            std::string func_name,
+            std::function<Return(Target...)> func,
+            Defaults defaults
+        );
+
+    };
+
+    /* PyCapsule deleter that cleans up the `CapsuleContents` when the PyCFunction
+    wrapper is garbage collected. */
+    static void capsule_deleter(PyObject* capsule) {
+        auto contents = reinterpret_cast<CapsuleContents*>(
+            PyCapsule_GetPointer(capsule, nullptr)
+        );
+        delete contents;
+    }
+
+    /* Build a PyCFunction wrapper around the given function object. */
+    static PyObject* wrap_python(CapsuleContents* contents) {
+        PyObject* capsule = PyCapsule_New(
+            contents,
+            nullptr,
+            &capsule_deleter
+        );
+        if (capsule == nullptr) {
+            delete contents;
+            Exception::from_python();
+        }
+
+        PyObject* result = PyCFunction_New(
+            &contents->method_def,
+            capsule
+        );
+        Py_DECREF(capsule);  // PyCFunction owns the only reference to the capsule
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return result;
+    }
+
+    /* Get the `CapsuleContents` stored within a Python capsule, which replaces the
+    `self` argument to the function wrapper. */
+    static auto get_contents(PyObject* capsule) {
+        auto result = reinterpret_cast<CapsuleContents*>(
+            PyCapsule_GetPointer(capsule, nullptr)
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return result;
+    }
+
+    enum class CallPolicy {
+        no_args,
+        one_arg,
+        positional,
+        keyword
+    };
+
+    /* Choose an optimized Python call protocol based on the target signature. */
+    static constexpr CallPolicy call_policy = [] {
+        if constexpr (sizeof...(Target) == 0) {
+            return CallPolicy::no_args;
+        } else if constexpr (
+            sizeof...(Target) == 1 &&
+            inspect<std::decay_t<type<0, Target...>>>::positional_only
+        ) {
+            return CallPolicy::one_arg;
+        } else if constexpr (
+            keyword_index<Target...> == sizeof...(Target) &&
+            kwargs_index<Target...> == sizeof...(Target)
+        ) {
+            return CallPolicy::positional;
+        } else {
+            return CallPolicy::keyword;
+        }
+    }();
+
+    // TODO: really, these implementations are pretty abominable at the moment.
+
+    /* Defines Python/C++ wrappers that allow the function to be called equivalently
+    from both languages. */
+    template <CallPolicy policy, typename Dummy = void>
+    struct Def;
+
+    template <typename Dummy>
+    struct Def<CallPolicy::no_args, Dummy> {
+        static constexpr int flags = METH_NOARGS;
+
+        static PyObject* python(PyObject* capsule, PyObject* /* unused */) {
+            try {
+                return Object(get_contents(capsule)->func()).release().ptr();
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static std::function<Return(Target...)> cpp(
+            PyObject* func,
+            const Defaults& defaults
+        ) {
+            return [func, &defaults]() {
+                PyObject* result = PyObject_CallNoArgs(func);
+                if (result == nullptr) {
+                    Exception::from_python();
+                }
+                return static_cast<Return>(reinterpret_steal<Object>(result));
+            };
+        }
+
+    };
+
+    template <typename Dummy>
+    struct Def<CallPolicy::one_arg, Dummy> {
+        static constexpr int flags = METH_O;
+
+        static PyObject* python(PyObject* capsule, PyObject* obj) {
+            try {
+                return Object(get_contents(capsule)->func(
+                    reinterpret_borrow<Object>(obj)
+                )).release().ptr();
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static std::function<Return(Target...)> cpp(
+            PyObject* func,
+            const Defaults& defaults
+        ) {
+            return [func, &defaults](Target... args) {
+                PyObject* result = PyObject_CallOneArg(func, Object(args).ptr()...);
+                if (result == nullptr) {
+                    Exception::from_python();
+                }
+                return static_cast<Return>(reinterpret_steal<Object>(result));
+            };
+        }
+
+    };
+
+    template <typename Dummy>
+    struct Def<CallPolicy::positional, Dummy> {
+        static constexpr int flags = METH_FASTCALL;
+
+        // TODO: these last two protocols need to validate the Python arguments and
+        // account for extra ones, etc.
+
+        template <size_t I>
+        static Object python_arg(PyObject* const* args, Py_ssize_t nargs) {
+            // TODO: do stuff here.  All arguments are guaranteed to be positional-only,
+            // but may include *args.
+
+            // if (I < nargs) {
+            //     return reinterpret_borrow<Object>(args[I]);
+            // } else {
+            //     return Object(get_default<I>(defaults));
+            // }
+        }
+
+        template <size_t... Is>
+        static PyObject* call_python(
+            std::index_sequence<Is...>,
+            PyObject* capsule,
+            PyObject* const* args,
+            Py_ssize_t nargs
+        ) {
+            return Object(get_contents(capsule)->func(
+                python_arg<Is>(args, nargs)...
+            )).release().ptr();
+        };
+
+        static PyObject* python(
+            PyObject* capsule,
+            PyObject* const* args,
+            Py_ssize_t nargs
+        ) {
+            try {
+                return call_python(
+                    std::make_index_sequence<sizeof...(Target)>{},
+                    capsule,
+                    args,
+                    nargs
+                );
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        // TODO: This needs to build an array of PyObject* const values, and then call
+        // the function with them.  Maybe I do this in two arrays, one for the Object
+        // values and one that holds their PyObject* pointers.  That should be the
+        // fastest way to do this.
+
+        static std::function<Return(Target...)> cpp(
+            PyObject* func,
+            const Defaults& defaults
+        ) {
+            return [func, &defaults](Target... args) {
+                PyObject* result = PyObject_VectorCall(func, Object(args).ptr()...);  // incorrect
+                if (result == nullptr) {
+                    Exception::from_python();
+                }
+                return static_cast<Return>(reinterpret_steal<Object>(result));
+            };
+        }
+
+    };
+
+    template <typename Dummy>
+    struct Def<CallPolicy::keyword, Dummy> {
+        static constexpr int flags = METH_FASTCALL | METH_KEYWORDS;
+
+        template <size_t I>
+        static Object python_arg(
+            PyObject* const* args,
+            Py_ssize_t nargs,
+            PyObject* kwnames
+        ) {
+            // TODO: do complicated stuff here
+        }
+
+        template <size_t... Is>
+        static PyObject* call_python(
+            std::index_sequence<Is...>,
+            PyObject* capsule,
+            PyObject* const* args,
+            Py_ssize_t nargs,
+            PyObject* kwnames
+        ) {
+            return Object(get_contents(capsule)->func(
+                python_arg<Is>(args, nargs, kwnames)...
+            )).release().ptr();
+        }
+
+        static PyObject* python(
+            PyObject* capsule,
+            PyObject* const* args,
+            Py_ssize_t nargs,
+            PyObject* kwnames
+        ) {
+            try {
+                return call_python(
+                    std::make_index_sequence<sizeof...(Target)>{},
+                    capsule,
+                    args,
+                    nargs,
+                    kwnames
+                );
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        static std::function<Return(Target...)> cpp(
+            PyObject* func,
+            const Defaults& defaults
+        ) {
+            return [func, &defaults](Target... args) {
+                PyObject* result = PyObject_VectorCall(func, args...);
+                if (result == nullptr) {
+                    Exception::from_python();
+                }
+                return static_cast<Return>(reinterpret_steal<Object>(result));
+            };
+        }
+
+    };
+
+    CapsuleContents* contents;
+    PyObject* m_ptr;
+    bool owns_contents;
+
+    struct from_python_t {};
+
+    // TODO: inefficient -> creates defaults twice.  Perhaps I need to make a separate
+    // constructor for this.  It's also probably too similar to the other constructor.
+    // I should use from_python_t{}.
+
+    // // TODO: private constructor needs to take a PyObject* function and then generate
+    // // an equivalent C++ function from it.
+    // template <typename... Values>
+    // Function_(std::string name, PyObject* func, Values&&... defaults) :
+    //     contents(new CapsuleContents {
+    //         name,
+    //         Def<call_policy>::cpp(func, ParseDefaults<Values...>::build(defaults...)),
+    //         ParseDefaults<Values...>::build(defaults...)
+    //     }),
+    //     m_ptr(func),
+    //     owns_contents(true)
+    // {}
 
 public:
 
@@ -1957,7 +2021,7 @@ public:
         )
     Function_(std::string name, Func&& func, Values&&... defaults) :
         contents(new CapsuleContents {
-            name,  // moves the string
+            name,
             std::forward<Func>(func),
             ParseDefaults<Values...>::build(std::forward<Values>(defaults)...)
         }),
@@ -2032,8 +2096,22 @@ public:
     // only be able to expose the (*args, **kwargs) version, since templates can't be
     // transmitted up to Python.
 
-    /* Attach this function to a Python type as an instance method. */
-    void def_method(Type& type) {
+    enum class Descr {
+        METHOD,
+        CLASSMETHOD,
+        STATICMETHOD,
+        PROPERTY
+    };
+
+    // TODO: rather than using an enum, just make separate C++ types and template
+    // attach accordingly.
+
+    // function.attach<py::Method>(type);
+    // function.attach<py::Method>(type, "foo");
+
+    /* Attach a descriptor with the same name as this function to the type, which
+    forwards to this function when accessed. */
+    void attach(Type& type, Descr policy = Descr::METHOD) {
         PyObject* descriptor = PyDescr_NewMethod(type.ptr(), contents->method_def);
         if (descriptor == nullptr) {
             Exception::from_python();
@@ -2045,7 +2123,11 @@ public:
         }
     };
 
-
+    /* Attach a descriptor with a custom name to the type, which forwards to this
+    function when accessed. */
+    void attach(Type& type, std::string name, Descr policy = Descr::METHOD) {
+        // TODO: same as above.
+    };
 
     // TODO: PyCFunctions do carry a __name__ attribute, so we can at least use that.
 
@@ -2063,7 +2145,7 @@ public:
     // values or the function name.  The only way to solve this would be to modify the
     // PyCFunction_Type itself or subclass it to add support for these features only
     // within the context of this class.  That would be a pretty big undertaking, but
-    // it would make a good PEP.
+    // it would make a decent PEP.
 
     // -> This also means I have to handle all of my optional argument logic just the
     // same as in C++ when I generate the 2-way Python bindings.  The PyCFunction
@@ -2095,6 +2177,7 @@ public:
 
 };
 
+
 template <typename Return, typename... Target>
 Function_<Return(Target...)>::CapsuleContents::CapsuleContents(
     std::string func_name,
@@ -2113,29 +2196,14 @@ Function_<Return(Target...)>::CapsuleContents::CapsuleContents(
 
 
 template <typename F, typename... D>
-Function_(std::string, F, D...) -> Function_<typename impl::GetSignature<std::decay_t<F>>::type>;
+Function_(std::string, F, D...) -> Function_<
+    typename impl::GetSignature<std::decay_t<F>>::type
+>;
 
 
 /* Compile-time factory for `UnboundArgument` tags. */
 template <StaticStr name>
 static constexpr impl::UnboundArg<name> arg_ {};
-
-
-// template <typename T>
-// struct Args {
-//     Tuple<T> args;
-//     template <typename... As>
-//     Args(Tuple<T>&& args) : args(std::move(args)) {}
-// };
-
-
-
-// TODO: Kwargs will need to accept a bunch of py::Arg instances
-
-// template <typename T>
-// struct Kwargs {
-//     Dict<Str, T> kwargs;
-// };
 
 
 ////////////////////////

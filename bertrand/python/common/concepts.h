@@ -21,102 +21,6 @@ namespace impl {
         return std::forward<U>(value);
     }
 
-    namespace categories {
-
-        struct Base {
-            static constexpr bool bool_like = false;
-            static constexpr bool int_like = false;
-            static constexpr bool float_like = false;
-            static constexpr bool complex_like = false;
-            static constexpr bool str_like = false;
-            static constexpr bool timedelta_like = false;
-            static constexpr bool timezone_like = false;
-            static constexpr bool date_like = false;
-            static constexpr bool time_like = false;
-            static constexpr bool datetime_like = false;
-            static constexpr bool tuple_like = false;
-            static constexpr bool list_like = false;
-            static constexpr bool set_like = false;
-            static constexpr bool dict_like = false;
-        };
-
-        template <typename T>
-        class Traits : public Base {};
-
-        template <typename T>
-        struct Traits<std::complex<T>> : public Base {
-            static constexpr bool complex_like = true;
-        };
-
-        template <typename... Args>
-        struct Traits<std::chrono::duration<Args...>> : public Base {
-            static constexpr bool timedelta_like = true;
-        };
-
-        template <typename... Args>
-        struct Traits<std::chrono::time_point<Args...>> : public Base {
-            static constexpr bool time_like = true;
-        };
-
-        // TODO: std::time_t?
-
-        template <typename... Args>
-        struct Traits<std::pair<Args...>> : public Base {
-            static constexpr bool tuple_like = true;
-        };
-
-        template <typename... Args>
-        struct Traits<std::tuple<Args...>> : public Base {
-            static constexpr bool tuple_like = true;
-        };
-
-        template <typename T, size_t N>
-        struct Traits<std::array<T, N>> : public Base {
-            static constexpr bool list_like = true;
-        };
-
-        template <typename... Args>
-        struct Traits<std::vector<Args...>> : public Base {
-            static constexpr bool list_like = true;
-        };
-
-        template <typename... Args>
-        struct Traits<std::deque<Args...>> : public Base {
-            static constexpr bool list_like = true;
-        };
-
-        template <typename... Args>
-        struct Traits<std::list<Args...>> : public Base {
-            static constexpr bool list_like = true;
-        };
-
-        template <typename... Args>
-        struct Traits<std::forward_list<Args...>> : public Base {
-            static constexpr bool list_like = true;
-        };
-
-        template <typename... Args>
-        struct Traits<std::set<Args...>> : public Base {
-            static constexpr bool set_like = true;
-        };
-
-        template <typename... Args>
-        struct Traits<std::unordered_set<Args...>> : public Base {
-            static constexpr bool set_like = true;
-        };
-
-        template <typename... Args>
-        struct Traits<std::map<Args...>> : public Base {
-            static constexpr bool dict_like = true;
-        };
-
-        template <typename... Args>
-        struct Traits<std::unordered_map<Args...>> : public Base {
-            static constexpr bool dict_like = true;
-        };
-
-    }
-
     template <typename T, typename... Ts>
     using first = T;
 
@@ -173,49 +77,6 @@ namespace impl {
     concept initializer_like = is_initializer_list<std::remove_cvref_t<T>>::value;
 
     template <typename T>
-    concept none_like = (
-        std::same_as<std::remove_cvref_t<T>, std::nullptr_t> ||
-        std::derived_from<std::remove_cvref_t<T>, NoneType> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::none>
-    );
-
-    template <typename T>
-    concept slice_like = (
-        std::derived_from<std::remove_cvref_t<T>, Slice> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::slice>
-    );
-
-    template <typename T>
-    concept module_like = (
-        std::derived_from<std::remove_cvref_t<T>, Module> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::module>
-    );
-
-    template <typename T>
-    concept bool_like = (
-        std::same_as<std::remove_cvref_t<T>, bool> ||
-        std::derived_from<std::remove_cvref_t<T>, Bool> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::bool_>
-    );
-
-    template <typename T>
-    concept int_like = (
-        std::derived_from<std::remove_cvref_t<T>, Int> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::int_> ||
-        (
-            std::integral<std::remove_cvref_t<T>> &&
-            !std::same_as<std::remove_cvref_t<T>, bool>
-        )
-    );
-
-    template <typename T>
-    concept float_like = (
-        std::floating_point<std::remove_cvref_t<T>> ||
-        std::derived_from<std::remove_cvref_t<T>, Float> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::float_>
-    );
-
-    template <typename T>
     concept complex_like = requires(const T& t) {
         { t.real() } -> std::convertible_to<double>;
         { t.imag() } -> std::convertible_to<double>;
@@ -225,123 +86,6 @@ namespace impl {
     concept string_literal = requires(const T& t) {
         { []<size_t N>(const char(&)[N]){}(t) } -> std::same_as<void>;
     };
-
-    template <typename T>
-    concept str_like = (
-        string_literal<std::remove_cvref_t<T>> ||
-        std::same_as<std::remove_cvref_t<T>, const char*> ||
-        std::same_as<std::remove_cvref_t<T>, std::string> ||
-        std::same_as<std::remove_cvref_t<T>, std::string_view> ||
-        std::derived_from<std::remove_cvref_t<T>, Str> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::str>
-    );
-
-    template <typename T>
-    concept bytes_like = (
-        string_literal<std::remove_cvref_t<T>> ||
-        std::same_as<std::remove_cvref_t<T>, void*> ||
-        std::derived_from<std::remove_cvref_t<T>, Bytes> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::bytes>
-    );
-
-    template <typename T>
-    concept bytearray_like = (
-        string_literal<std::remove_cvref_t<T>> ||
-        std::same_as<std::remove_cvref_t<T>, void*> ||
-        std::derived_from<std::remove_cvref_t<T>, ByteArray> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::bytearray>
-    );
-
-    template <typename T>
-    concept anybytes_like = bytes_like<T> || bytearray_like<T>;
-
-    template <typename T>
-    concept timedelta_like = (
-        categories::Traits<std::remove_cvref_t<T>>::timedelta_like ||
-        std::derived_from<std::remove_cvref_t<T>, Timedelta>
-    );
-
-    template <typename T>
-    concept timezone_like = (
-        categories::Traits<std::remove_cvref_t<T>>::timezone_like ||
-        std::derived_from<std::remove_cvref_t<T>, Timezone>
-    );
-
-    template <typename T>
-    concept date_like = (
-        categories::Traits<std::remove_cvref_t<T>>::date_like ||
-        std::derived_from<std::remove_cvref_t<T>, Date>
-    );
-
-    template <typename T>
-    concept time_like = (
-        categories::Traits<std::remove_cvref_t<T>>::time_like ||
-        std::derived_from<std::remove_cvref_t<T>, Time>
-    );
-
-    template <typename T>
-    concept datetime_like = (
-        categories::Traits<std::remove_cvref_t<T>>::datetime_like ||
-        std::derived_from<std::remove_cvref_t<T>, Datetime>
-    );
-
-    template <typename T>
-    concept range_like = (
-        std::derived_from<std::remove_cvref_t<T>, Range>
-    );
-
-    template <typename T>
-    concept tuple_like = (
-        categories::Traits<std::remove_cvref_t<T>>::tuple_like ||
-        std::derived_from<std::remove_cvref_t<T>, TupleTag> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::tuple>
-    );
-
-    template <typename T>
-    concept list_like = (
-        categories::Traits<std::remove_cvref_t<T>>::list_like ||
-        std::derived_from<std::remove_cvref_t<T>, ListTag> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::list>
-    );
-
-    template <typename T>
-    concept set_like = (
-        categories::Traits<std::remove_cvref_t<T>>::set_like ||
-        std::derived_from<std::remove_cvref_t<T>, SetTag> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::set>
-    );
-
-    template <typename T>
-    concept frozenset_like = (
-        categories::Traits<std::remove_cvref_t<T>>::set_like ||
-        std::derived_from<std::remove_cvref_t<T>, FrozenSetTag> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::frozenset>
-    );
-
-    template <typename T>
-    concept anyset_like = set_like<T> || frozenset_like<T>;
-
-    template <typename T>
-    concept dict_like = (
-        categories::Traits<std::remove_cvref_t<T>>::dict_like ||
-        std::derived_from<std::remove_cvref_t<T>, DictTag> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::dict>
-    );
-
-    template <typename T>
-    concept mappingproxy_like = (
-        // categories::Traits<std::remove_cvref_t<T>>::dict_like ||
-        std::derived_from<std::remove_cvref_t<T>, MappingProxyTag>
-    );
-
-    template <typename T>
-    concept anydict_like = dict_like<T> || mappingproxy_like<T>;
-
-    template <typename T>
-    concept type_like = (
-        std::derived_from<std::remove_cvref_t<T>, Type> ||
-        std::derived_from<std::remove_cvref_t<T>, pybind11::type>
-    );
 
     template <typename From, typename To>
     concept explicitly_convertible_to = requires(const From& from) {
@@ -565,6 +309,266 @@ namespace impl {
     };
 
 }  // namespace impl
+
+
+/* Base class for enabled control structures.  Encodes the return type as a template
+parameter. */
+template <typename T>
+struct Returns {
+    static constexpr bool enable = true;
+    using Return = T;
+};
+
+
+/* Control structure maps C++ types to their Bertrand equivalents, for use in CTAD and
+implicit conversions.  This is enabled by default, falling back to Object if no
+specialization could be found. */
+template <typename T>
+struct __to_python__ : Returns<Object> {};
+
+template <typename T>
+using to_python = __to_python__<std::remove_cvref_t<T>>::Return;
+
+template <>
+struct __to_python__<std::nullptr_t> : Returns<NoneType> {};
+template <>
+struct __to_python__<std::nullopt_t> : Returns<NoneType> {};
+template <std::derived_from<NoneType> T>
+struct __to_python__<T> : Returns<NoneType> {};
+template <std::derived_from<pybind11::none> T>
+struct __to_python__<T> : Returns<NoneType> {};
+
+template <std::derived_from<Slice> T>
+struct __to_python__<T> : Returns<Slice> {};
+template <std::derived_from<pybind11::slice> T>
+struct __to_python__<T> : Returns<Slice> {};
+
+template <std::derived_from<Module> T>
+struct __to_python__<T> : Returns<Module> {};
+template <std::derived_from<pybind11::module_> T>
+struct __to_python__<T> : Returns<Module> {};
+
+template <>
+struct __to_python__<bool> : Returns<Bool> {};
+template <std::derived_from<Bool> T>
+struct __to_python__<T> : Returns<Bool> {};
+template <std::derived_from<pybind11::bool_> T>
+struct __to_python__<T> : Returns<Bool> {};
+
+template <std::integral T> requires (!std::same_as<bool, T>)
+struct __to_python__<T> : Returns<Int> {};
+template <std::derived_from<Int> T>
+struct __to_python__<T> : Returns<Int> {};
+template <std::derived_from<pybind11::int_> T>
+struct __to_python__<T> : Returns<Int> {};
+
+template <std::floating_point T>
+struct __to_python__<T> : Returns<Float> {};
+template <std::derived_from<Float> T>
+struct __to_python__<T> : Returns<Float> {};
+template <std::derived_from<pybind11::float_> T>
+struct __to_python__<T> : Returns<Float> {};
+
+template <impl::complex_like T>
+struct __to_python__<T> : Returns<Complex> {};
+
+template <>
+struct __to_python__<const char*> : Returns<Str> {};
+template <size_t N>
+struct __to_python__<const char(&)[N]> : Returns<Str> {};
+template <std::derived_from<std::string> T>
+struct __to_python__<T> : Returns<Str> {};
+template <std::derived_from<std::string_view> T>
+struct __to_python__<T> : Returns<Str> {};
+template <std::derived_from<Str> T>
+struct __to_python__<T> : Returns<Str> {};
+template <std::derived_from<pybind11::str> T>
+struct __to_python__<T> : Returns<Str> {};
+
+template <>
+struct __to_python__<void*> : Returns<Bytes> {};
+template <std::derived_from<Bytes> T>
+struct __to_python__<T> : Returns<Bytes> {};
+template <std::derived_from<pybind11::bytes> T>
+struct __to_python__<T> : Returns<Bytes> {};
+
+template <std::derived_from<ByteArray> T>
+struct __to_python__<T> : Returns<ByteArray> {};
+template <std::derived_from<pybind11::bytearray> T>
+struct __to_python__<T> : Returns<ByteArray> {};
+
+template <typename... Args>
+struct __to_python__<std::chrono::duration<Args...>> : Returns<Timedelta> {};
+template <std::derived_from<Timedelta> T>
+struct __to_python__<T> : Returns<Timedelta> {};
+
+template <std::derived_from<Timezone> T>
+struct __to_python__<T> : Returns<Timezone> {};
+
+template <std::derived_from<Date> T>
+struct __to_python__<T> : Returns<Date> {};
+
+// TODO: std::time_t?
+template <std::derived_from<Time> T>
+struct __to_python__<T> : Returns<Time> {};
+
+template <typename... Args>
+struct __to_python__<std::chrono::time_point<Args...>> : Returns<Datetime> {};
+template <std::derived_from<Datetime> T>
+struct __to_python__<T> : Returns<Datetime> {};
+
+template <std::derived_from<Range> T>
+struct __to_python__<T> : Returns<Range> {};
+
+template <typename First, typename Second>
+struct __to_python__<std::pair<First, Second>> : Returns<Tuple<Object>> {};  // TODO: should return Struct?
+template <typename... Args>
+struct __to_python__<std::tuple<Args...>> : Returns<Tuple<Object>> {};  // TODO: should return Struct?
+template <typename T, size_t N>
+struct __to_python__<std::array<T, N>> : Returns<Tuple<to_python<T>>> {};
+template <std::derived_from<impl::TupleTag> T>
+struct __to_python__<T> : Returns<Tuple<typename T::value_type>> {};
+template <std::derived_from<pybind11::tuple> T>
+struct __to_python__<T> : Returns<Tuple<Object>> {};
+
+template <typename T, typename... Args>
+struct __to_python__<std::vector<T, Args...>> : Returns<List<to_python<T>>> {};
+template <typename T, typename... Args>
+struct __to_python__<std::deque<T, Args...>> : Returns<List<to_python<T>>> {};
+template <typename T, typename... Args>
+struct __to_python__<std::list<T, Args...>> : Returns<List<to_python<T>>> {};
+template <typename T, typename... Args>
+struct __to_python__<std::forward_list<T, Args...>> : Returns<List<to_python<T>>> {};
+template <std::derived_from<impl::ListTag> T>
+struct __to_python__<T> : Returns<List<typename T::value_type>> {};
+template <std::derived_from<pybind11::list> T>
+struct __to_python__<T> : Returns<List<Object>> {};
+
+template <typename T, typename... Args>
+struct __to_python__<std::unordered_set<T, Args...>> : Returns<Set<to_python<T>>> {};
+template <typename T, typename... Args>
+struct __to_python__<std::set<T, Args...>> : Returns<Set<to_python<T>>> {};
+template <std::derived_from<impl::SetTag> T>
+struct __to_python__<T> : Returns<Set<typename T::value_type>> {};
+template <std::derived_from<pybind11::set> T>
+struct __to_python__<T> : Returns<Set<Object>> {};
+
+template <std::derived_from<impl::FrozenSetTag> T>
+struct __to_python__<T> : Returns<FrozenSet<typename T::value_type>> {};
+template <std::derived_from<pybind11::frozenset> T>
+struct __to_python__<T> : Returns<FrozenSet<Object>> {};
+
+template <typename K, typename V, typename... Args>
+struct __to_python__<std::unordered_map<K, V, Args...>> : Returns<Dict<to_python<K>, to_python<V>>> {};
+template <typename K, typename V, typename... Args>
+struct __to_python__<std::map<K, V, Args...>> : Returns<Dict<to_python<K>, to_python<V>>> {};
+template <std::derived_from<impl::DictTag> T>
+struct __to_python__<T> : Returns<Dict<typename T::key_type, typename T::mapped_type>> {};
+template <std::derived_from<pybind11::dict> T>
+struct __to_python__<T> : Returns<Dict<Object, Object>> {};
+
+template <std::derived_from<impl::MappingProxyTag> T>
+struct __to_python__<T> : Returns<MappingProxy<typename T::mapping_type>> {};
+
+template <std::derived_from<Type> T>
+struct __to_python__<T> : Returns<Type> {};
+template <std::derived_from<pybind11::type> T>
+struct __to_python__<T> : Returns<Type> {};
+
+
+
+
+
+
+namespace impl {
+
+
+    template <typename T>
+    concept none_like = std::same_as<to_python<T>, NoneType>;
+
+    template <typename T>
+    concept slice_like = std::same_as<to_python<T>, Slice>;
+
+    template <typename T>
+    concept module_like = std::same_as<to_python<T>, Module>;
+
+    template <typename T>
+    concept bool_like = std::same_as<to_python<T>, Bool>;
+
+    template <typename T>
+    concept int_like = std::same_as<to_python<T>, Int>;
+
+    template <typename T>
+    concept float_like = std::same_as<to_python<T>, Float>;
+
+    template <typename T>
+    concept str_like = std::same_as<to_python<T>, Str>;
+
+    template <typename T>
+    concept bytes_like = (
+        string_literal<std::remove_cvref_t<T>> ||
+        std::same_as<to_python<T>, Bytes>
+    );
+
+    template <typename T>
+    concept bytearray_like = (
+        string_literal<std::remove_cvref_t<T>> ||
+        std::same_as<std::remove_cvref_t<T>, void*> ||
+        std::same_as<to_python<T>, ByteArray>
+    );
+
+    template <typename T>
+    concept anybytes_like = bytes_like<T> || bytearray_like<T>;
+
+    template <typename T>
+    concept timedelta_like = std::same_as<to_python<T>, Timedelta>;
+
+    template <typename T>
+    concept timezone_like = std::same_as<to_python<T>, Timezone>;
+
+    template <typename T>
+    concept date_like = std::same_as<to_python<T>, Date>;
+
+    template <typename T>
+    concept time_like = std::same_as<to_python<T>, Time>;
+
+    template <typename T>
+    concept datetime_like = std::same_as<to_python<T>, Datetime>;
+
+    template <typename T>
+    concept range_like = std::same_as<to_python<T>, Range>;
+
+    template <typename T>
+    concept tuple_like = std::derived_from<to_python<T>, TupleTag>;
+
+    template <typename T>
+    concept list_like = std::derived_from<to_python<T>, ListTag>;
+
+    template <typename T>
+    concept set_like = std::derived_from<to_python<T>, SetTag>;
+
+    template <typename T>
+    concept frozenset_like = std::derived_from<to_python<T>, FrozenSetTag>;
+
+    template <typename T>
+    concept anyset_like = set_like<T> || frozenset_like<T>;
+
+    template <typename T>
+    concept dict_like = std::derived_from<to_python<T>, DictTag>;
+
+    template <typename T>
+    concept mappingproxy_like = std::derived_from<to_python<T>, MappingProxyTag>;
+
+    template <typename T>
+    concept anydict_like = dict_like<T> || mappingproxy_like<T>;
+
+    template <typename T>
+    concept type_like = std::same_as<to_python<T>, Type>;
+
+
+}
+
+
 }  // namespace py
 }  // namespace bertrand
 

@@ -101,14 +101,6 @@ int subtract(int x, int y) {
 }
 
 
-py::Object hello() {
-    py::Function_ func("hello", [] {
-        return std::string("hello, world!\n");
-    });
-    return py::reinterpret_borrow<py::Object>(func.ptr());
-}
-
-
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
@@ -164,39 +156,54 @@ void run() {
 
     // TODO: this should be an example showcase
 
-    auto lambda = [](
-        py::Arg<"x", const int&>::optional x,
-        py::Arg<"y", const int&>::optional y = 2
-    ) {
-        return x - y;
-    };
+    // auto lambda = [](
+    //     py::Arg<"x", const int&>::optional x,
+    //     py::Arg<"y", const int&>::optional y = 2
+    // ) {
+    //     return x - y;
+    // };
 
-    static constexpr auto x = py::arg_<"x">;
-    static constexpr auto y = py::arg_<"y">;
+    // static constexpr auto x = py::arg_<"x">;
+    // static constexpr auto y = py::arg_<"y">;
 
-    py::Function_ func("subtract", lambda, y = 2, x = 1);
+    // py::Function_ func("subtract", lambda, y = 2, x = 1);
 
-    py::print(func());
+    // py::print(func());
 
-    py::print(func(1));
-    py::print(func(x = 1));
-    py::print(func(y = 2));
+    // py::print(func(1));
+    // py::print(func(x = 1));
+    // py::print(func(y = 2));
 
-    py::print(func(1, 2));
-    py::print(func(1, y = 2));
-    py::print(func(x = 1, y = 2));
-    py::print(func(y = 2, x = 1));
-
-
+    // py::print(func(1, 2));
+    // py::print(func(1, y = 2));
+    // py::print(func(x = 1, y = 2));
+    // py::print(func(y = 2, x = 1));
 
 
 
-    // py::print(py::Function_<decltype(func)>::value);
+    // py::Function_ variadic(
+    //     "variadic_positional",
+    //     [](py::Args<int> args, py::Kwargs<int> kwargs) {
+    //         return args.value;
+    //     }
+    // );
 
-    // py::print(func(py::arg_<"x"> = 1));
+    // // py::print(variadic(py::arg_<"x"> = 1, py::arg_<"y"> = 2, py::arg_<"z"> = 3));
+    // py::print(variadic(1, 2, 3));
 
 
 
+
+    py::List list = {true, false, true};
+    py::print(typeid(decltype(list)).name());
+    for (const auto& x : list) {
+        py::print(x);
+    }
+
+    py::List list2(std::vector<int>{1, 2, 3});
+    for (const auto& x : list2) {
+
+    }
 
 
 
@@ -938,6 +945,20 @@ void run() {
     std::chrono::duration<double> elapsed = end - start;
     std::cout << "Elapsed time: " << elapsed.count() << "s\n";
 }
+
+
+
+
+
+
+
+py::Object hello() {
+    py::Function_ func("hello", [] {
+        return std::string("hello, world!\n");
+    });
+    return py::reinterpret_borrow<py::Object>(func.ptr());
+}
+
 
 PYBIND11_MODULE(example, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring

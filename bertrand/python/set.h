@@ -671,6 +671,14 @@ public:
 };
 
 
+template <typename T>
+FrozenSet(const std::initializer_list<T>&) -> FrozenSet<to_python<T>>;
+template <typename T>
+FrozenSet(T) -> FrozenSet<typename to_python<T>::value_type>;
+template <typename T1, typename T2, typename... Args>
+FrozenSet(T1, T2, Args...) -> FrozenSet<Object>;
+
+
 template <std::derived_from<impl::FrozenSetTag> Self, impl::cpp_like T>
     requires (impl::anyset_like<T>)
 struct __cast__<Self, T> : Returns<T> {
@@ -836,16 +844,11 @@ namespace ops {
 
 
 template <typename T>
-Set(const std::initializer_list<T>&) -> Set<Object>;
-template <typename T, typename... Args>
-    requires (!std::derived_from<std::decay_t<T>, impl::SetTag>)
-Set(T&&, Args&&...) -> Set<Object>;
+Set(const std::initializer_list<T>&) -> Set<to_python<T>>;
 template <typename T>
-Set(const Set<T>&) -> Set<T>;
-template <typename T>
-Set(Set<T>&&) -> Set<T>;
-template <impl::str_like T>
-explicit Set(T string) -> Set<Str>;
+Set(T) -> Set<typename to_python<T>::value_type>;
+template <typename T1, typename T2, typename... Args>
+Set(T1, T2, Args...) -> Set<Object>;
 
 
 /* Represents a statically-typed Python set in C++. */

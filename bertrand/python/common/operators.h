@@ -14,15 +14,6 @@ namespace bertrand {
 namespace py {
 
 
-/* Base class for enabled operators.  Encodes the return type as a template
-parameter. */
-template <typename T>
-struct Returns {
-    static constexpr bool enable = true;
-    using Return = T;
-};
-
-
 namespace impl {
 
     namespace ops {
@@ -841,9 +832,9 @@ namespace impl {
 }
 
 
-///////////////////////
-////    CONVERT    ////
-///////////////////////
+////////////////////////////////////
+////    IMPLICIT CONVERSIONS    ////
+////////////////////////////////////
 
 
 template <typename Self, typename T>

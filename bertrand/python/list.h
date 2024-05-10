@@ -128,6 +128,7 @@ template <impl::list_like T, std::derived_from<impl::ListTag> Self>
         impl::Broadcast<impl::gt_comparable, Self, T>::value
     )
 struct __gt__<T, Self>                                          : Returns<bool> {};
+
 template <std::derived_from<impl::ListTag> Self, typename T>
     requires (Self::template check<T>())
 struct __add__<Self, T>                                         : Returns<Self> {};
@@ -204,19 +205,6 @@ namespace ops {
 
 }
 }
-
-
-template <typename T>
-List(const std::initializer_list<T>&) -> List<Object>;
-template <typename T, typename... Args>
-    requires (!std::derived_from<std::decay_t<T>, impl::ListTag>)
-List(T&&, Args&&...) -> List<Object>;
-template <typename T>
-List(const List<T>&) -> List<T>;
-template <typename T>
-List(List<T>&&) -> List<T>;
-template <impl::str_like T>
-explicit List(T string) -> List<Str>;
 
 
 /* Represents a statically-typed Python list in C++. */
@@ -731,6 +719,14 @@ protected:
     }
 
 };
+
+
+template <typename T>
+List(const std::initializer_list<T>&) -> List<to_python<T>>;
+template <typename T>
+List(T) -> List<typename to_python<T>::value_type>;
+template <typename T1, typename T2, typename... Args>
+List(T1, T2, Args...) -> List<Object>;
 
 
 template <std::derived_from<impl::ListTag> Self, impl::list_like T>
