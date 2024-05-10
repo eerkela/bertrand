@@ -207,6 +207,19 @@ namespace ops {
 }
 
 
+template <typename T>
+List(const std::initializer_list<T>&) -> List<to_python<T>>;
+template <impl::is_iterable T>
+List(T) -> List<to_python<impl::dereference_type<T>>>;
+template <typename T, typename... Args>
+    requires (!impl::is_iterable<T> && !impl::str_like<T>)
+List(T, Args...) -> List<Object>;
+template <impl::str_like T>
+List(T) -> List<Str>;
+template <size_t N>
+List(const char(&)[N]) -> List<Str>;
+
+
 /* Represents a statically-typed Python list in C++. */
 template <typename Val>
 class List : public Object, public impl::ListTag {
@@ -719,14 +732,6 @@ protected:
     }
 
 };
-
-
-template <typename T>
-List(const std::initializer_list<T>&) -> List<to_python<T>>;
-template <typename T>
-List(T) -> List<typename to_python<T>::value_type>;
-template <typename T1, typename T2, typename... Args>
-List(T1, T2, Args...) -> List<Object>;
 
 
 template <std::derived_from<impl::ListTag> Self, impl::list_like T>

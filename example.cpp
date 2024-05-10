@@ -193,9 +193,8 @@ void run() {
 
 
 
-
-    py::List list = {true, false, true};
-    py::print(typeid(decltype(list)).name());
+    const char* s = "abc";
+    py::List list(s);
     for (const auto& x : list) {
         py::print(x);
     }

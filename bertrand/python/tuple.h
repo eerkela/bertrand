@@ -182,10 +182,15 @@ namespace ops {
 
 template <typename T>
 Tuple(const std::initializer_list<T>&) -> Tuple<to_python<T>>;
-template <typename T>
-Tuple(T) -> Tuple<typename to_python<T>::value_type>;
-template <typename T1, typename T2, typename... Args>
-Tuple(T1, T2, Args...) -> Tuple<Object>;
+template <impl::is_iterable T>
+Tuple(T) -> Tuple<to_python<impl::dereference_type<T>>>;
+template <typename T, typename... Args>
+    requires (!impl::is_iterable<T> && !impl::str_like<T>)
+Tuple(T, Args...) -> Tuple<Object>;
+template <impl::str_like T>
+Tuple(T) -> Tuple<Str>;
+template <size_t N>
+Tuple(const char(&)[N]) -> Tuple<Str>;
 
 
 /* Represents a statically-typed Python tuple in C++. */

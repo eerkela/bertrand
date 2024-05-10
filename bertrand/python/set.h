@@ -153,16 +153,16 @@ namespace ops {
 
 
 template <typename T>
-FrozenSet(const std::initializer_list<T>&) -> FrozenSet<Object>;
+FrozenSet(const std::initializer_list<T>&) -> FrozenSet<to_python<T>>;
+template <impl::is_iterable T>
+FrozenSet(T) -> FrozenSet<to_python<impl::dereference_type<T>>>;
 template <typename T, typename... Args>
-    requires (!std::derived_from<std::decay_t<T>, impl::FrozenSetTag>)
-FrozenSet(T&&, Args&&...) -> FrozenSet<Object>;
-template <typename T>
-FrozenSet(const FrozenSet<T>&) -> FrozenSet<T>;
-template <typename T>
-FrozenSet(FrozenSet<T>&&) -> FrozenSet<T>;
+    requires (!impl::is_iterable<T> && !impl::str_like<T>)
+FrozenSet(T, Args...) -> FrozenSet<Object>;
 template <impl::str_like T>
-explicit FrozenSet(T string) -> FrozenSet<Str>;
+FrozenSet(T) -> FrozenSet<Str>;
+template <size_t N>
+FrozenSet(const char(&)[N]) -> FrozenSet<Str>;
 
 
 /* Represents a statically-typed Python `frozenset` object in C++. */
@@ -671,14 +671,6 @@ public:
 };
 
 
-template <typename T>
-FrozenSet(const std::initializer_list<T>&) -> FrozenSet<to_python<T>>;
-template <typename T>
-FrozenSet(T) -> FrozenSet<typename to_python<T>::value_type>;
-template <typename T1, typename T2, typename... Args>
-FrozenSet(T1, T2, Args...) -> FrozenSet<Object>;
-
-
 template <std::derived_from<impl::FrozenSetTag> Self, impl::cpp_like T>
     requires (impl::anyset_like<T>)
 struct __cast__<Self, T> : Returns<T> {
@@ -845,10 +837,15 @@ namespace ops {
 
 template <typename T>
 Set(const std::initializer_list<T>&) -> Set<to_python<T>>;
-template <typename T>
-Set(T) -> Set<typename to_python<T>::value_type>;
-template <typename T1, typename T2, typename... Args>
-Set(T1, T2, Args...) -> Set<Object>;
+template <impl::is_iterable T>
+Set(T) -> Set<to_python<impl::dereference_type<T>>>;
+template <typename T, typename... Args>
+    requires (!impl::is_iterable<T> && !impl::str_like<T>)
+Set(T, Args...) -> Set<Object>;
+template <impl::str_like T>
+Set(T) -> Set<Str>;
+template <size_t N>
+Set(const char(&)[N]) -> Set<Str>;
 
 
 /* Represents a statically-typed Python set in C++. */
