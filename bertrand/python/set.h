@@ -153,9 +153,9 @@ namespace ops {
 
 
 template <typename T>
-FrozenSet(const std::initializer_list<T>&) -> FrozenSet<to_python<T>>;
+FrozenSet(const std::initializer_list<T>&) -> FrozenSet<as_object_t<T>>;
 template <impl::is_iterable T>
-FrozenSet(T) -> FrozenSet<to_python<impl::dereference_type<T>>>;
+FrozenSet(T) -> FrozenSet<as_object_t<impl::dereference_type<T>>>;
 template <typename T, typename... Args>
     requires (!impl::is_iterable<T> && !impl::str_like<T>)
 FrozenSet(T, Args...) -> FrozenSet<Object>;
@@ -836,9 +836,9 @@ namespace ops {
 
 
 template <typename T>
-Set(const std::initializer_list<T>&) -> Set<to_python<T>>;
+Set(const std::initializer_list<T>&) -> Set<as_object_t<T>>;
 template <impl::is_iterable T>
-Set(T) -> Set<to_python<impl::dereference_type<T>>>;
+Set(T) -> Set<as_object_t<impl::dereference_type<T>>>;
 template <typename T, typename... Args>
     requires (!impl::is_iterable<T> && !impl::str_like<T>)
 Set(T, Args...) -> Set<Object>;

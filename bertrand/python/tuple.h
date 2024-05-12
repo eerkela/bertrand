@@ -181,9 +181,9 @@ namespace ops {
 
 
 template <typename T>
-Tuple(const std::initializer_list<T>&) -> Tuple<to_python<T>>;
+Tuple(const std::initializer_list<T>&) -> Tuple<as_object_t<T>>;
 template <impl::is_iterable T>
-Tuple(T) -> Tuple<to_python<impl::dereference_type<T>>>;
+Tuple(T) -> Tuple<as_object_t<impl::dereference_type<T>>>;
 template <typename T, typename... Args>
     requires (!impl::is_iterable<T> && !impl::str_like<T>)
 Tuple(T, Args...) -> Tuple<Object>;

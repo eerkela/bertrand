@@ -324,247 +324,243 @@ struct Returns {
 implicit conversions.  This is enabled by default, falling back to Object if no
 specialization could be found. */
 template <typename T>
-struct __to_python__ : Returns<Object> {};
+struct __as_object__ : Returns<Object> {};
+
 
 template <typename T>
-using to_python = __to_python__<std::remove_cvref_t<T>>::Return;
+using as_object_t = __as_object__<std::remove_cvref_t<T>>::Return;
+
+
+// TODO: use as_object in operator overloads/function signature conversions.
+
+
+/* Convert an arbitrary C++ value to an equivalent Python object if it isn't one
+already. */
+template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
+auto as_object(T&& value) -> __as_object__<std::remove_cvref_t<T>>::Return {
+    return std::forward<T>(value);
+}
+
+
+template <std::derived_from<Object> T>
+struct __as_object__<T> : Returns<T> {};
+
+// template <typename R, typename... A>
+// struct __as_object__<R(A...)> : Returns<Function<R(A...)>> {};
+// template <typename R, typename... A>
+// struct __as_object__<R(*)(A...)> : Returns<Function<R(A...)>> {};
+// template <typename R, typename C, typename... A>
+// struct __as_object__<R(C::*)(A...)> : Returns<Function<R(A...)>> {};
+// template <typename R, typename C, typename... A>
+// struct __as_object__<R(C::*)(A...) noexcept> : Returns<Function<R(A...)>> {};
+// template <typename R, typename C, typename... A>
+// struct __as_object__<R(C::*)(A...) const> : Returns<Function<R(A...)>> {};
+// template <typename R, typename C, typename... A>
+// struct __as_object__<R(C::*)(A...) const noexcept> : Returns<Function<R(A...)>> {};
+// template <typename R, typename C, typename... A>
+// struct __as_object__<R(C::*)(A...) volatile> : Returns<Function<R(A...)>> {};
+// template <typename R, typename C, typename... A>
+// struct __as_object__<R(C::*)(A...) volatile noexcept> : Returns<Function<R(A...)>> {};
+// template <typename R, typename C, typename... A>
+// struct __as_object__<R(C::*)(A...) const volatile> : Returns<Function<R(A...)>> {};
+// template <typename R, typename C, typename... A>
+// struct __as_object__<R(C::*)(A...) const volatile noexcept> : Returns<Function<R(A...)>> {};
+// template <typename R, typename... A>
+// struct __as_object__<std::function<R(A...)>> : Returns<Function<R(A...)>> {};
+// template <std::derived_from<pybind11::function> T>
+// struct __as_object__<T> : Returns<Function<Object(Args<Object>, Kwargs<Object>)>> {};
 
 template <>
-struct __to_python__<std::nullptr_t> : Returns<NoneType> {};
+struct __as_object__<std::nullptr_t> : Returns<NoneType> {};
 template <>
-struct __to_python__<std::nullopt_t> : Returns<NoneType> {};
-template <std::derived_from<NoneType> T>
-struct __to_python__<T> : Returns<NoneType> {};
+struct __as_object__<std::nullopt_t> : Returns<NoneType> {};
 template <std::derived_from<pybind11::none> T>
-struct __to_python__<T> : Returns<NoneType> {};
+struct __as_object__<T> : Returns<NoneType> {};
 
-template <std::derived_from<Slice> T>
-struct __to_python__<T> : Returns<Slice> {};
+template <std::derived_from<pybind11::ellipsis> T>
+struct __as_object__<T> : Returns<EllipsisType> {};
+
 template <std::derived_from<pybind11::slice> T>
-struct __to_python__<T> : Returns<Slice> {};
+struct __as_object__<T> : Returns<Slice> {};
 
-template <std::derived_from<Module> T>
-struct __to_python__<T> : Returns<Module> {};
 template <std::derived_from<pybind11::module_> T>
-struct __to_python__<T> : Returns<Module> {};
+struct __as_object__<T> : Returns<Module> {};
 
 template <>
-struct __to_python__<bool> : Returns<Bool> {};
-template <std::derived_from<Bool> T>
-struct __to_python__<T> : Returns<Bool> {};
+struct __as_object__<bool> : Returns<Bool> {};
 template <std::derived_from<pybind11::bool_> T>
-struct __to_python__<T> : Returns<Bool> {};
+struct __as_object__<T> : Returns<Bool> {};
 
 template <std::integral T> requires (!std::same_as<bool, T>)
-struct __to_python__<T> : Returns<Int> {};
-template <std::derived_from<Int> T>
-struct __to_python__<T> : Returns<Int> {};
+struct __as_object__<T> : Returns<Int> {};
 template <std::derived_from<pybind11::int_> T>
-struct __to_python__<T> : Returns<Int> {};
+struct __as_object__<T> : Returns<Int> {};
 
 template <std::floating_point T>
-struct __to_python__<T> : Returns<Float> {};
-template <std::derived_from<Float> T>
-struct __to_python__<T> : Returns<Float> {};
+struct __as_object__<T> : Returns<Float> {};
 template <std::derived_from<pybind11::float_> T>
-struct __to_python__<T> : Returns<Float> {};
+struct __as_object__<T> : Returns<Float> {};
 
-template <impl::complex_like T>
-struct __to_python__<T> : Returns<Complex> {};
+template <impl::complex_like T> requires (!std::derived_from<T, Object>)
+struct __as_object__<T> : Returns<Complex> {};
 
 template <>
-struct __to_python__<const char*> : Returns<Str> {};
+struct __as_object__<const char*> : Returns<Str> {};
 template <size_t N>
-struct __to_python__<const char(&)[N]> : Returns<Str> {};
+struct __as_object__<const char(&)[N]> : Returns<Str> {};
 template <std::derived_from<std::string> T>
-struct __to_python__<T> : Returns<Str> {};
+struct __as_object__<T> : Returns<Str> {};
 template <std::derived_from<std::string_view> T>
-struct __to_python__<T> : Returns<Str> {};
-template <std::derived_from<Str> T>
-struct __to_python__<T> : Returns<Str> {};
+struct __as_object__<T> : Returns<Str> {};
 template <std::derived_from<pybind11::str> T>
-struct __to_python__<T> : Returns<Str> {};
+struct __as_object__<T> : Returns<Str> {};
 
 template <>
-struct __to_python__<void*> : Returns<Bytes> {};
-template <std::derived_from<Bytes> T>
-struct __to_python__<T> : Returns<Bytes> {};
+struct __as_object__<void*> : Returns<Bytes> {};
 template <std::derived_from<pybind11::bytes> T>
-struct __to_python__<T> : Returns<Bytes> {};
+struct __as_object__<T> : Returns<Bytes> {};
 
-template <std::derived_from<ByteArray> T>
-struct __to_python__<T> : Returns<ByteArray> {};
 template <std::derived_from<pybind11::bytearray> T>
-struct __to_python__<T> : Returns<ByteArray> {};
+struct __as_object__<T> : Returns<ByteArray> {};
 
 template <typename... Args>
-struct __to_python__<std::chrono::duration<Args...>> : Returns<Timedelta> {};
-template <std::derived_from<Timedelta> T>
-struct __to_python__<T> : Returns<Timedelta> {};
-
-template <std::derived_from<Timezone> T>
-struct __to_python__<T> : Returns<Timezone> {};
-
-template <std::derived_from<Date> T>
-struct __to_python__<T> : Returns<Date> {};
+struct __as_object__<std::chrono::duration<Args...>> : Returns<Timedelta> {};
 
 // TODO: std::time_t?
-template <std::derived_from<Time> T>
-struct __to_python__<T> : Returns<Time> {};
 
 template <typename... Args>
-struct __to_python__<std::chrono::time_point<Args...>> : Returns<Datetime> {};
-template <std::derived_from<Datetime> T>
-struct __to_python__<T> : Returns<Datetime> {};
-
-template <std::derived_from<Range> T>
-struct __to_python__<T> : Returns<Range> {};
+struct __as_object__<std::chrono::time_point<Args...>> : Returns<Datetime> {};
 
 template <typename First, typename Second>
-struct __to_python__<std::pair<First, Second>> : Returns<Tuple<Object>> {};  // TODO: should return Struct?
+struct __as_object__<std::pair<First, Second>> : Returns<Tuple<Object>> {};  // TODO: should return Struct?
 template <typename... Args>
-struct __to_python__<std::tuple<Args...>> : Returns<Tuple<Object>> {};  // TODO: should return Struct?
+struct __as_object__<std::tuple<Args...>> : Returns<Tuple<Object>> {};  // TODO: should return Struct?
 template <typename T, size_t N>
-struct __to_python__<std::array<T, N>> : Returns<Tuple<to_python<T>>> {};
-template <std::derived_from<impl::TupleTag> T>
-struct __to_python__<T> : Returns<Tuple<typename T::value_type>> {};
+struct __as_object__<std::array<T, N>> : Returns<Tuple<as_object_t<T>>> {};
 template <std::derived_from<pybind11::tuple> T>
-struct __to_python__<T> : Returns<Tuple<Object>> {};
+struct __as_object__<T> : Returns<Tuple<Object>> {};
 
 template <typename T, typename... Args>
-struct __to_python__<std::vector<T, Args...>> : Returns<List<to_python<T>>> {};
+struct __as_object__<std::vector<T, Args...>> : Returns<List<as_object_t<T>>> {};
 template <typename T, typename... Args>
-struct __to_python__<std::deque<T, Args...>> : Returns<List<to_python<T>>> {};
+struct __as_object__<std::deque<T, Args...>> : Returns<List<as_object_t<T>>> {};
 template <typename T, typename... Args>
-struct __to_python__<std::list<T, Args...>> : Returns<List<to_python<T>>> {};
+struct __as_object__<std::list<T, Args...>> : Returns<List<as_object_t<T>>> {};
 template <typename T, typename... Args>
-struct __to_python__<std::forward_list<T, Args...>> : Returns<List<to_python<T>>> {};
-template <std::derived_from<impl::ListTag> T>
-struct __to_python__<T> : Returns<List<typename T::value_type>> {};
+struct __as_object__<std::forward_list<T, Args...>> : Returns<List<as_object_t<T>>> {};
 template <std::derived_from<pybind11::list> T>
-struct __to_python__<T> : Returns<List<Object>> {};
+struct __as_object__<T> : Returns<List<Object>> {};
 
 template <typename T, typename... Args>
-struct __to_python__<std::unordered_set<T, Args...>> : Returns<Set<to_python<T>>> {};
+struct __as_object__<std::unordered_set<T, Args...>> : Returns<Set<as_object_t<T>>> {};
 template <typename T, typename... Args>
-struct __to_python__<std::set<T, Args...>> : Returns<Set<to_python<T>>> {};
-template <std::derived_from<impl::SetTag> T>
-struct __to_python__<T> : Returns<Set<typename T::value_type>> {};
+struct __as_object__<std::set<T, Args...>> : Returns<Set<as_object_t<T>>> {};
 template <std::derived_from<pybind11::set> T>
-struct __to_python__<T> : Returns<Set<Object>> {};
+struct __as_object__<T> : Returns<Set<Object>> {};
 
-template <std::derived_from<impl::FrozenSetTag> T>
-struct __to_python__<T> : Returns<FrozenSet<typename T::value_type>> {};
 template <std::derived_from<pybind11::frozenset> T>
-struct __to_python__<T> : Returns<FrozenSet<Object>> {};
+struct __as_object__<T> : Returns<FrozenSet<Object>> {};
 
 template <typename K, typename V, typename... Args>
-struct __to_python__<std::unordered_map<K, V, Args...>> : Returns<Dict<to_python<K>, to_python<V>>> {};
+struct __as_object__<std::unordered_map<K, V, Args...>> : Returns<Dict<as_object_t<K>, as_object_t<V>>> {};
 template <typename K, typename V, typename... Args>
-struct __to_python__<std::map<K, V, Args...>> : Returns<Dict<to_python<K>, to_python<V>>> {};
-template <std::derived_from<impl::DictTag> T>
-struct __to_python__<T> : Returns<Dict<typename T::key_type, typename T::mapped_type>> {};
+struct __as_object__<std::map<K, V, Args...>> : Returns<Dict<as_object_t<K>, as_object_t<V>>> {};
 template <std::derived_from<pybind11::dict> T>
-struct __to_python__<T> : Returns<Dict<Object, Object>> {};
+struct __as_object__<T> : Returns<Dict<Object, Object>> {};
 
-template <std::derived_from<impl::MappingProxyTag> T>
-struct __to_python__<T> : Returns<MappingProxy<typename T::mapping_type>> {};
-
-template <std::derived_from<Type> T>
-struct __to_python__<T> : Returns<Type> {};
 template <std::derived_from<pybind11::type> T>
-struct __to_python__<T> : Returns<Type> {};
-
-
-
-
+struct __as_object__<T> : Returns<Type> {};
 
 
 namespace impl {
 
+    template <typename T>
+    concept none_like = std::derived_from<as_object_t<T>, NoneType>;
 
     template <typename T>
-    concept none_like = std::same_as<to_python<T>, NoneType>;
+    concept ellipsis_like = std::derived_from<as_object_t<T>, EllipsisType>;
 
     template <typename T>
-    concept slice_like = std::same_as<to_python<T>, Slice>;
+    concept slice_like = std::derived_from<as_object_t<T>, Slice>;
 
     template <typename T>
-    concept module_like = std::same_as<to_python<T>, Module>;
+    concept module_like = std::derived_from<as_object_t<T>, Module>;
+
+    // TODO: if I swap this to std::derived_from, I get compile errors
+    template <typename T>
+    concept bool_like = std::same_as<as_object_t<T>, Bool>;
+
+    // TODO: if I swap this to std::derived_from, I get compile errors
+    template <typename T>
+    concept int_like = std::same_as<as_object_t<T>, Int>;
+
+    // TODO: if I swap this to std::derived_from, I get compile errors
+    template <typename T>
+    concept float_like = std::same_as<as_object_t<T>, Float>;
 
     template <typename T>
-    concept bool_like = std::same_as<to_python<T>, Bool>;
-
-    template <typename T>
-    concept int_like = std::same_as<to_python<T>, Int>;
-
-    template <typename T>
-    concept float_like = std::same_as<to_python<T>, Float>;
-
-    template <typename T>
-    concept str_like = std::same_as<to_python<T>, Str>;
+    concept str_like = std::derived_from<as_object_t<T>, Str>;
 
     template <typename T>
     concept bytes_like = (
         string_literal<std::remove_cvref_t<T>> ||
-        std::same_as<to_python<T>, Bytes>
+        std::derived_from<as_object_t<T>, Bytes>
     );
 
     template <typename T>
     concept bytearray_like = (
         string_literal<std::remove_cvref_t<T>> ||
         std::same_as<std::remove_cvref_t<T>, void*> ||
-        std::same_as<to_python<T>, ByteArray>
+        std::derived_from<as_object_t<T>, ByteArray>
     );
 
     template <typename T>
     concept anybytes_like = bytes_like<T> || bytearray_like<T>;
 
     template <typename T>
-    concept timedelta_like = std::same_as<to_python<T>, Timedelta>;
+    concept timedelta_like = std::derived_from<as_object_t<T>, Timedelta>;
 
     template <typename T>
-    concept timezone_like = std::same_as<to_python<T>, Timezone>;
+    concept timezone_like = std::derived_from<as_object_t<T>, Timezone>;
 
     template <typename T>
-    concept date_like = std::same_as<to_python<T>, Date>;
+    concept date_like = std::derived_from<as_object_t<T>, Date>;
 
     template <typename T>
-    concept time_like = std::same_as<to_python<T>, Time>;
+    concept time_like = std::derived_from<as_object_t<T>, Time>;
 
     template <typename T>
-    concept datetime_like = std::same_as<to_python<T>, Datetime>;
+    concept datetime_like = std::derived_from<as_object_t<T>, Datetime>;
 
     template <typename T>
-    concept range_like = std::same_as<to_python<T>, Range>;
+    concept range_like = std::derived_from<as_object_t<T>, Range>;
 
     template <typename T>
-    concept tuple_like = std::derived_from<to_python<T>, TupleTag>;
+    concept tuple_like = std::derived_from<as_object_t<T>, TupleTag>;
 
     template <typename T>
-    concept list_like = std::derived_from<to_python<T>, ListTag>;
+    concept list_like = std::derived_from<as_object_t<T>, ListTag>;
 
     template <typename T>
-    concept set_like = std::derived_from<to_python<T>, SetTag>;
+    concept set_like = std::derived_from<as_object_t<T>, SetTag>;
 
     template <typename T>
-    concept frozenset_like = std::derived_from<to_python<T>, FrozenSetTag>;
+    concept frozenset_like = std::derived_from<as_object_t<T>, FrozenSetTag>;
 
     template <typename T>
     concept anyset_like = set_like<T> || frozenset_like<T>;
 
     template <typename T>
-    concept dict_like = std::derived_from<to_python<T>, DictTag>;
+    concept dict_like = std::derived_from<as_object_t<T>, DictTag>;
 
     template <typename T>
-    concept mappingproxy_like = std::derived_from<to_python<T>, MappingProxyTag>;
+    concept mappingproxy_like = std::derived_from<as_object_t<T>, MappingProxyTag>;
 
     template <typename T>
     concept anydict_like = dict_like<T> || mappingproxy_like<T>;
 
     template <typename T>
-    concept type_like = std::same_as<to_python<T>, Type>;
-
+    concept type_like = std::derived_from<as_object_t<T>, Type>;
 
 }
 

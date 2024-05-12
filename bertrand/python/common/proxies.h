@@ -234,6 +234,24 @@ public:
 };
 
 
+/* Base class that stores a static Python string for use during Attr lookups.
+Separating this into its own class ensures that only one string is allocated per
+attribute name, even if that attribute name is repeated across multiple classes. */
+template <StaticStr name>
+class AttrBase {
+protected:
+
+    inline static PyObject* key() {
+        static PyObject* result = PyUnicode_FromStringAndSize(
+            name.buffer,
+            name.size()
+        );
+        return result;  // NOTE: string will be garbage collected at shutdown
+    }
+
+};
+
+
 /* A subclass of Proxy that replaces the result of pybind11's `.attr()` method.
 These attributes accept the attribute name as a compile-time template parameter,
 allowing them to enforce strict type safety through the __getattr__, __setattr__,
@@ -241,7 +259,10 @@ and __delattr__ control structs.  If no specialization of these control structs
 exist for a given attribute name, then attempting to access it will result in a
 compile-time error. */
 template <typename Obj, StaticStr name> requires (__getattr__<Obj, name>::enable)
-class Attr : public Proxy<typename __getattr__<Obj, name>::Return, Attr<Obj, name>> {
+class Attr :
+    public Proxy<typename __getattr__<Obj, name>::Return, Attr<Obj, name>>,
+    public AttrBase<name>
+{
 public:
     using Wrapped = typename __getattr__<Obj, name>::Return;
     static_assert(
@@ -255,14 +276,6 @@ private:
     using Base = Proxy<Wrapped, Attr>;
     Object obj;
 
-    inline static PyObject* key() {
-        static PyObject* result = PyUnicode_FromStringAndSize(
-            name.buffer,
-            name.size()
-        );
-        return result;  // NOTE: string will be garbage collected at shutdown
-    }
-
     void get_attr() const {
         if (obj.ptr() == nullptr) {
             throw ValueError(
@@ -270,7 +283,7 @@ private:
                 "accessor was moved from or not properly constructed to begin with."
             );
         }
-        PyObject* result = PyObject_GetAttr(obj.ptr(), key());
+        PyObject* result = PyObject_GetAttr(obj.ptr(), this->key());
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -347,6 +360,9 @@ public:
             Base::initialized = true;
             PyObject* value_ptr = reinterpret_cast<Wrapped&>(Base::buffer).ptr();
 
+            // TODO: revisit this with the updated py::Function wrapper and
+            // descriptor objects
+
             // manually trigger the descriptor protocol for py::Function objects
             if constexpr (std::derived_from<std::decay_t<T>, Function>) {
                 if constexpr (std::derived_from<Obj, Type>) {
@@ -354,7 +370,7 @@ public:
                     if (descr == nullptr) {
                         Exception::from_python();
                     }
-                    if (PyObject_SetAttr(obj.ptr(), key(), descr) < 0) {
+                    if (PyObject_SetAttr(obj.ptr(), this->key(), descr) < 0) {
                         Py_DECREF(descr);
                         Exception::from_python();
                     }
@@ -366,7 +382,7 @@ public:
                     if (descr == nullptr) {
                         Exception::from_python();
                     }
-                    if (PyObject_SetAttr(obj.ptr(), key(), descr) < 0) {
+                    if (PyObject_SetAttr(obj.ptr(), this->key(), descr) < 0) {
                         Py_DECREF(descr);
                         Exception::from_python();
                     }
@@ -375,7 +391,7 @@ public:
 
             // otherwise, just set the attribute normally
             } else {
-                if (PyObject_SetAttr(obj.ptr(), key(), value_ptr) < 0) {
+                if (PyObject_SetAttr(obj.ptr(), this->key(), value_ptr) < 0) {
                     Exception::from_python();
                 }
             }
@@ -400,7 +416,7 @@ public:
             "specialization of __delattr__ for these types and ensure the Return "
             "type is set to void."
         );
-        if (PyObject_DelAttr(obj.ptr(), key()) < 0) {
+        if (PyObject_DelAttr(obj.ptr(), this->key()) < 0) {
             Exception::from_python();
         }
         if (Base::initialized) {

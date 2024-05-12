@@ -9,6 +9,15 @@
 #include "bool.h"
 
 
+// TODO: right now, containers are convertible to but not from their equivalent types.
+// This is an asymmetry that could cause bugs down the line, so it should probably be
+// rethought.
+
+// Also, I might be able to make implicit constructors more generic using the
+// __as_object__ control struct.  Anything that is mapped to List is a candidate for
+// implicit conversion.
+
+
 namespace bertrand {
 namespace py {
 
@@ -208,9 +217,9 @@ namespace ops {
 
 
 template <typename T>
-List(const std::initializer_list<T>&) -> List<to_python<T>>;
+List(const std::initializer_list<T>&) -> List<as_object_t<T>>;
 template <impl::is_iterable T>
-List(T) -> List<to_python<impl::dereference_type<T>>>;
+List(T) -> List<as_object_t<impl::dereference_type<T>>>;
 template <typename T, typename... Args>
     requires (!impl::is_iterable<T> && !impl::str_like<T>)
 List(T, Args...) -> List<Object>;

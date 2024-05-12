@@ -163,10 +163,12 @@ void run() {
     //     return x - y;
     // };
 
-    // static constexpr auto x = py::arg_<"x">;
-    // static constexpr auto y = py::arg_<"y">;
+    // constexpr auto x = py::arg_<"x">;
+    // constexpr auto y = py::arg_<"y">;
+    // constexpr auto z = py::arg_<"z">;
 
     // py::Function_ func("subtract", lambda, y = 2, x = 1);
+    // // py::Function_ func("subtract", lambda, 1, 2);
 
     // py::print(func());
 
@@ -181,28 +183,20 @@ void run() {
 
 
 
-    // py::Function_ variadic(
-    //     "variadic_positional",
-    //     [](py::Args<int> args, py::Kwargs<int> kwargs) {
-    //         return args.value;
-    //     }
-    // );
+    py::Function_ variadic(
+        "variadic_positional",
+        [](
+            std::string,
+            py::Args<int> args,
+            // py::Arg<"x", std::string>,  // TODO: this is not optional, but is not correctly enforced
+            py::Kwargs<int> kwargs
+        ) {
+            return args.value;
+        }
+    );
 
-    // // py::print(variadic(py::arg_<"x"> = 1, py::arg_<"y"> = 2, py::arg_<"z"> = 3));
-    // py::print(variadic(1, 2, 3));
-
-
-
-    const char* s = "abc";
-    py::List list(s);
-    for (const auto& x : list) {
-        py::print(x);
-    }
-
-    py::List list2(std::vector<int>{1, 2, 3});
-    for (const auto& x : list2) {
-
-    }
+    // py::print(variadic(py::arg_<"x"> = 1, py::arg_<"y"> = 2, py::arg_<"z"> = 3));
+    py::print(variadic("abc", 1, 2, 3, py::arg_<"z"> = 2));
 
 
 
