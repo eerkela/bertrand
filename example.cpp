@@ -187,16 +187,18 @@ void run() {
         "variadic_positional",
         [](
             std::string,
+            py::Arg<"x", std::string>,
             py::Args<int> args,
-            // py::Arg<"x", std::string>,  // TODO: this is not optional, but is not correctly enforced
+            // py::Arg<"x", std::string>,
             py::Kwargs<int> kwargs
         ) {
-            return args.value;
+            // return args.value;
+            return 2;
         }
     );
 
     // py::print(variadic(py::arg_<"x"> = 1, py::arg_<"y"> = 2, py::arg_<"z"> = 3));
-    py::print(variadic("abc", 1, 2, 3, py::arg_<"z"> = 2));
+    py::print(variadic("abc", "def", 1, 2, py::arg_<"z"> = 2));
 
 
 

@@ -781,7 +781,8 @@ struct Arg : public impl::ArgTag {
 
     T value;
 
-    Arg(T&& value) : value(std::forward<T>(value)) {}
+    template <std::convertible_to<T> V>
+    Arg(V&& value) : value(std::forward<V>(value)) {}
     Arg(const Arg<Name, T>& other) : value(other.value) {}
     template <std::convertible_to<T> V>
     Arg(const Arg<Name, V>& other) : value(other.value) {}
@@ -860,7 +861,8 @@ namespace impl {
     when the function is initialized. */
     template <StaticStr Name, typename T>
     struct OptionalArg : public Arg<Name, T>, public OptionalArgTag {
-        OptionalArg(T&& value) : Arg<Name, T>(std::forward<T>(value)) {}
+        template <std::convertible_to<T> V>
+        OptionalArg(V&& value) : Arg<Name, T>(std::forward<V>(value)) {}
         OptionalArg(const Arg<Name, T>& other) : Arg<Name, T>(other) {}
         template <std::convertible_to<T> V>
         OptionalArg(const Arg<Name, V>& other) : Arg<Name, T>(other) {}
@@ -1090,6 +1092,9 @@ class Function_ : public Function_<typename impl::GetSignature<F>::type> {};
 template <typename Return, typename... Target>
 class Function_<Return(Target...)> {
 protected:
+
+    // TODO: not sure if I'm properly decaying types here, or in this whole class
+    // more generally.
 
     ///////////////////////
     ////    HELPERS    ////
@@ -1336,8 +1341,8 @@ protected:
     ////    DEFAULT VALUES    ////
     //////////////////////////////
 
-    /* Represents a default value in the Defaults tuple.  Identifies each argument by
-    its index in the target signature. */
+    /* Represents a value in the Defaults tuple.  Identifies each argument by its index
+    in the target signature. */
     template <size_t I, StaticStr Name, typename T>
     struct DefaultValue  {
         static constexpr StaticStr name = Name;
@@ -1350,10 +1355,8 @@ protected:
     struct CollectDefaults {
         using type = Tuple;
     };
-
     template <size_t I, typename... Defaults, typename T, typename... Ts>
     struct CollectDefaults<I, std::tuple<Defaults...>, T, Ts...> {
-
         template <typename U>
         struct Wrap {
             using type = CollectDefaults<
@@ -1362,7 +1365,6 @@ protected:
                 Ts...
             >::type;
         };
-
         template <std::derived_from<impl::OptionalArgTag> U>
         struct Wrap<U> {
             using type = CollectDefaults<
@@ -1371,7 +1373,6 @@ protected:
                 Ts...
             >::type;
         };
-
         using type = Wrap<std::decay_t<T>>::type;
     };
 
@@ -1381,12 +1382,10 @@ protected:
 
     template <size_t I, typename... Ts>
     struct find_default_recursive;
-
     template <size_t I>
     struct find_default_recursive<I, std::tuple<>> {
         static constexpr size_t value = 0;
     };
-
     template <size_t I, typename T, typename... Ts>
     struct find_default_recursive<I, std::tuple<T, Ts...>> {
         static constexpr size_t value = 
@@ -1398,19 +1397,10 @@ protected:
     template <size_t I>
     static constexpr size_t find_default = find_default_recursive<I, Defaults>::value;
 
-    /* Get the default value associated with the target argument at index I. */
-    template <size_t I>
-    static decltype(auto) get_default(const Defaults& defaults) {
-        return std::get<find_default<I>>(defaults).value;
-    };
-
     /* Statically analyzes the arguments that are supplied to the function's
     constructor, so that they fully satisfy the default value annotations. */
     template <typename... Values>
     struct ParseDefaults {
-
-        // TODO: not sure if I'm properly decaying types here, or in this whole class
-        // more generally.
 
         /* Recursively check whether the default values conform to Python calling
         conventions (i.e. no positional arguments after a keyword, no duplicate
@@ -1460,7 +1450,7 @@ protected:
             sizeof...(Values) == n_optional<Target...> && enable_recursive<0, 0>;
 
         template <size_t I>
-        static constexpr decltype(auto) extract_helper(Values&&... values) {
+        static constexpr decltype(auto) build_recursive(Values&&... values) {
             if constexpr (I < keyword_index<Values...>) {
                 return get_arg<I>(std::forward<Values>(values)...);
             } else {
@@ -1470,19 +1460,28 @@ protected:
         }
 
         template <size_t... Is>
-        static constexpr Defaults extract(std::index_sequence<Is...>, Values&&... values) {
-            return {{extract_helper<Is>(std::forward<Values>(values)...)}...};
+        static constexpr Defaults build_helper(
+            std::index_sequence<Is...>,
+            Values&&... values
+        ) {
+            return {{build_recursive<Is>(std::forward<Values>(values)...)}...};
         }
 
         /* Build the default values tuple from the provided arguments, reordering them
         as needed to account for keywords. */
         static constexpr Defaults build(Values&&... values) {
-            return extract(
+            return build_helper(
                 std::make_index_sequence<sizeof...(Values)>{},
                 std::forward<Values>(values)...
             );
         }
 
+    };
+
+    /* Get the default value associated with the target argument at index I. */
+    template <size_t I>
+    static decltype(auto) get_default(const Defaults& defaults) {
+        return std::get<find_default<I>>(defaults).value;
     };
 
     /////////////////////////////
@@ -1499,14 +1498,8 @@ protected:
         template <size_t J, typename P> requires (J < keyword_index<Source...>)
         static constexpr bool check_variadic_positional<J, P> = [] {
             using S = type<J, Source...>;
-            if constexpr (inspect<S>::positional_unpack) {
-                if constexpr (!std::convertible_to<typename inspect<S>::type, P>) {
-                    return false;
-                }
-            } else {
-                if constexpr (!std::convertible_to<S, P>) {
-                    return false;
-                }
+            if constexpr (!std::convertible_to<typename inspect<S>::type, P>) {
+                return false;
             }
             return check_variadic_positional<J + 1, P>;
         }();
@@ -1520,8 +1513,16 @@ protected:
                 if constexpr (!std::convertible_to<typename inspect<S>::type, KW>) {
                     return false;
                 }
-            } else if constexpr (index<S::name, Target...> == sizeof...(Target)) {
-                if constexpr (!std::convertible_to<S, KW>) {
+            } else {
+                constexpr size_t idx = index<S::name, Target...>;
+                constexpr size_t args_idx = args_index<Target...>;
+                if constexpr (
+                    (args_idx != sizeof...(Target) && idx < args_idx) ||
+                    (
+                        idx == sizeof...(Target) &&
+                        !std::convertible_to<typename inspect<S>::type, KW>
+                    )
+                ) {
                     return false;
                 }
             }
@@ -1533,14 +1534,11 @@ protected:
         template <size_t I, typename P> requires (I <= args_index<Target...> && I < sizeof...(Target))
         static constexpr bool check_positional_unpack<I, P> = [] {
             using T = type<I, Target...>;
-            if constexpr (inspect<T>::variadic_positional) {
-                if constexpr (!std::convertible_to<P, typename T::type>) {
-                    return false;
-                }
-            } else {
-                if constexpr (!std::convertible_to<P, T>) {
-                    return false;
-                }
+            if constexpr (
+                !std::convertible_to<P, typename inspect<T>::type> ||
+                (inspect<T>::keyword && index<T::name, Source...> != sizeof...(Source))
+            ) {
+                return false;
             }
             return check_positional_unpack<I + 1, P>;
         }();
@@ -1589,13 +1587,18 @@ protected:
 
             // ensure target arguments are present & expand variadic parameter packs
             if constexpr (inspect<T>::positional_only) {
-                if (J >= keyword_index<Source...> && !inspect<T>::optional) {
+                if constexpr (J >= keyword_index<Source...> && !inspect<T>::optional) {
                     return false;
                 }
             } else if constexpr (inspect<T>::keyword) {
+                constexpr size_t idx = index<T::name, Source...>;
                 if constexpr (
-                    index<T::name, Source...> == sizeof...(Source) &&
-                    !inspect<T>::optional
+                    (J < keyword_index<Source...> && idx != sizeof...(Source)) ||
+                    (
+                        J >= keyword_index<Source...> &&
+                        idx == sizeof...(Source) &&
+                        !inspect<T>::optional
+                    )
                 ) {
                     return false;
                 }
@@ -1614,7 +1617,7 @@ protected:
                     J > keyword_index<Source...> ||
                     J > positional_unpack_index<Source...> ||
                     J > keyword_unpack_index<Source...> ||
-                    !std::convertible_to<S, T>
+                    !std::convertible_to<S, typename inspect<T>::type>
                 ) {
                     return false;
                 }
@@ -1665,62 +1668,283 @@ protected:
 
         // TODO: properly supporting argument extraction for unpacking operators is a
         // bit of a headscratcher here.
-        // -> This might need to be handled using paired recursion as well, similar to
-        // above.  Or there needs to be separate implementations for C++ and Python
+        // -> Maybe there needs to be separate implementations for C++ and Python
         // calls.  The C++ implementation reorders arguments without an intermediate
         // data structure, while the Python implementation allocates an array suitable
         // as the argument list for PyObject_Vectorcall.
 
-        // TODO: using a recursive strategy probably means I need to inline these
-        // within the calling function?
+        // TODO: I can't use an iterator for keyword unpacking, since keywords might not
+        // be in the same order.  It needs to pass a mapping object instead.  Positional
+        // unpacking does use iterators for efficiency, though.
+
+        template <size_t I>
+        struct Unpack {
+            using T = type<I, Target...>;
+            // TODO: caller generates an index sequence over target and then calls
+            // contents->func(
+            //     Unpack<Is>::unpack{_xxx}(
+            //         contents->defaults,
+            //         std::forward<Source>(args)...
+            //     )...
+            // )
+
+            static constexpr decltype(auto) unpack(
+                const Defaults& defaults,
+                Source&&... args
+            ) {
+                if constexpr (I < keyword_index<Source...>) {
+                    return get_arg<I>(std::forward<Source>(args)...);
+                } else {
+                    return get_default<I>(defaults);
+                }
+            }
+
+            template <typename Iter, std::sentinel_for<Iter> End>
+            static constexpr decltype(auto) unpack_positional(
+                const Defaults& defaults,
+                Iter& iter,
+                const End& end,
+                Source&&... args
+            ) {
+                if constexpr (I < keyword_index<Source...>) {
+                    return get_arg<I>(std::forward<Source>(args)...);
+                } else {
+                    if (iter != end) {
+                        return *(iter++);
+                    } else {
+                        if constexpr (inspect<T>::optional) {
+                            return get_default<I>(defaults);
+                        } else {
+                            throw TypeError(
+                                "could not unpack positional args - no match for "
+                                "positional-only parameter at index " +
+                                std::to_string(I)
+                            );
+                        }
+                    }
+                }
+            }
+
+            template <typename Mapping>
+            static constexpr decltype(auto) unpack_keyword(
+                const Defaults& defaults,
+                const Mapping& map,
+                Source&&... args
+            ) {
+                return unpack(defaults, std::forward<Source>(args)...);
+            }
+
+            template <typename Iter, std::sentinel_for<Iter> End, typename Mapping>
+            static constexpr decltype(auto) unpack_positional_keyword(
+                const Defaults& defaults,
+                Iter& iter,
+                const End& end,
+                const Mapping& map,
+                Source&&... args
+            ) {
+                return unpack_positional(
+                    defaults,
+                    iter,
+                    end,
+                    std::forward<Source>(args)...
+                );
+            }
+
+        };
+
+        template <size_t I> requires (I >= keyword_index<Target...> && I < kwargs_index<Target...>)
+        struct Unpack<I> {
+            using T = type<I, Target...>;
+
+            static constexpr decltype(auto) unpack(
+                const Defaults& defaults,
+                Source&&... args
+            ) {
+                if constexpr (I < keyword_index<Source...>) {
+                    return get_arg<I>(std::forward<Source>(args)...);
+                } else if constexpr (index<T::name, Source...> != sizeof...(Source)) {
+                    return get_arg<index<T::name, Source...>>(std::forward<Source>(args)...);
+                } else {
+                    return get_default<I>(defaults);
+                }
+            }
+
+            template <typename Iter, std::sentinel_for<Iter> End>
+            static constexpr decltype(auto) unpack_positional(
+                const Defaults& defaults,
+                Iter& iter,
+                const End& end,
+                Source&&... args
+            ) {
+
+            }
+
+            template <typename Mapping>
+            static constexpr decltype(auto) unpack_keyword(
+                const Defaults& defaults,
+                const Mapping& map,
+                Source&&... args
+            ) {
+
+            }
+
+            template <typename Iter, std::sentinel_for<Iter> End, typename Mapping>
+            static constexpr decltype(auto) unpack_positional_keyword(
+                const Defaults& defaults,
+                Iter& iter,
+                const End& end,
+                const Mapping& map,
+                Source&&... args
+            ) {
+                
+            }
+
+        };
+
+        template <size_t I> requires (I == args_index<Target...>)
+        struct Unpack<I> {
+            using T = type<I, Target...>;
+
+            static constexpr decltype(auto) unpack(
+                const Defaults& defaults,
+                Source&&... args
+            ) {
+
+            }
+
+            template <typename Iter, std::sentinel_for<Iter> End>
+            static constexpr decltype(auto) unpack_positional(
+                const Defaults& defaults,
+                Iter& iter,
+                const End& end,
+                Source&&... args
+            ) {
+
+            }
+
+            template <typename Mapping>
+            static constexpr decltype(auto) unpack_keyword(
+                const Defaults& defaults,
+                const Mapping& map,
+                Source&&... args
+            ) {
+                return unpack(defaults, std::forward<Source>(args)...);
+            }
+
+            template <typename Iter, std::sentinel_for<Iter> End, typename Mapping>
+            static constexpr decltype(auto) unpack_positional_keyword(
+                const Defaults& defaults,
+                Iter& iter,
+                const End& end,
+                const Mapping& map,
+                Source&&... args
+            ) {
+                return unpack_positional(
+                    defaults,
+                    iter,
+                    end,
+                    std::forward<Source>(args)...
+                );
+            }
+
+        };
+
+        template <size_t I> requires (I == kwargs_index<Target...>)
+        struct Unpack<I> {
+            using T = type<I, Target...>;
+
+            static constexpr decltype(auto) unpack(
+                const Defaults& defaults,
+                Source&&... args
+            ) {
+
+            }
+
+            template <typename Iter, std::sentinel_for<Iter> End>
+            static constexpr decltype(auto) unpack_positional(
+                const Defaults& defaults,
+                Iter& iter,
+                const End& end,
+                Source&&... args
+            ) {
+                return unpack(defaults, std::forward<Source>(args)...);
+            }
+
+            template <typename Mapping>
+            static constexpr decltype(auto) unpack_keyword(
+                const Defaults& defaults,
+                const Mapping& map,
+                Source&&... args
+            ) {
+
+            }
+
+            template <typename Iter, std::sentinel_for<Iter> End, typename Mapping>
+            static constexpr decltype(auto) unpack_positional_keyword(
+                const Defaults& defaults,
+                Iter& iter,
+                const End& end,
+                const Mapping& map,
+                Source&&... args
+            ) {
+                return unpack_keyword(defaults, map, std::forward<Source>(args)...);
+            }
+
+        };
+
+        // TODO: There needs to be a completely separate set of structs for Python
+        // calls, possibly within the Def classes.
+
+
+
 
         /* Extract a positional-only argument from the source signature at the given
         index. */
-        template <size_t J>
+        template <size_t I>
         static constexpr decltype(auto) positional_only(
             const Defaults& defaults,
             Source&&... args
         ) {
-            if constexpr (J < keyword_index<Source...>) {
-                return get_arg<J>(std::forward<Source>(args)...);
+            if constexpr (I < keyword_index<Source...>) {
+                return get_arg<I>(std::forward<Source>(args)...);
             } else {
-                return get_default<J>(defaults);
+                return get_default<I>(defaults);
             }
         }
 
         /* Extract a positional-or-keyword argument from the source signature. */
-        template <size_t J, StaticStr name>
+        template <size_t I, StaticStr name>
         static constexpr decltype(auto) keyword(
             const Defaults& defaults,
             Source&&... args
         ) {
-            if constexpr (J < keyword_index<Source...>) {
-                return get_arg<J>(std::forward<Source>(args)...);
+            if constexpr (I < keyword_index<Source...>) {
+                return get_arg<I>(std::forward<Source>(args)...);
             } else if constexpr (index<name, Source...> < sizeof...(Source)) {
                 return get_arg<index<name, Source...>>(std::forward<Source>(args)...);
             } else {
-                return get_default<J>(defaults);
+                return get_default<I>(defaults);
             }
         }
 
-        template <size_t J, typename T, size_t... Js>
+        template <size_t I, typename T, size_t... Is>
         static constexpr std::vector<T> variadic_positional_helper(
-            std::index_sequence<Js...>,
+            std::index_sequence<Is...>,
             Source&&... args
         ) {
-            return {get_arg<J + Js>(std::forward<Source>(args)...)...};
+            return {get_arg<I + Is>(std::forward<Source>(args)...)...};
         }
 
         /* Extract variadic positional arguments from the source signature starting at
         the given index. */
-        template <size_t J, typename T>
+        template <size_t I, typename T>
         static constexpr std::vector<T> variadic_positional(
             const Defaults& defaults,
             Source&&... args
         ) {
-            if constexpr (J < keyword_index<Source...>) {
-                return variadic_positional_helper<J, T>(
-                    std::make_index_sequence<keyword_index<Source...> - J>{},
+            if constexpr (I < keyword_index<Source...>) {
+                return variadic_positional_helper<I, T>(
+                    std::make_index_sequence<keyword_index<Source...> - I>{},
                     std::forward<Source>(args)...
                 );
             } else {
@@ -1728,24 +1952,24 @@ protected:
             }
         }
 
-        template <size_t J, typename T>
+        template <size_t I, typename T>
         static constexpr void build_keywords(
             std::unordered_map<std::string, T>& result,
             Source&&... args
         ) {
-            using Arg = std::decay_t<type<keyword_index<Source...> + J, Source...>>;
+            using Arg = std::decay_t<type<keyword_index<Source...> + I, Source...>>;
             if constexpr (index<Arg::name, Target...> == sizeof...(Source)) {
-                result.emplace(Arg::name, get_arg<J>(std::forward<Source>(args)...));
+                result.emplace(Arg::name, get_arg<I>(std::forward<Source>(args)...));
             }
         }
 
-        template <typename T, size_t... Js>
+        template <typename T, size_t... Is>
         static constexpr auto variadic_keyword_helper(
-            std::index_sequence<Js...>,
+            std::index_sequence<Is...>,
             Source&&... args
         ) {
             std::unordered_map<std::string, T> result;
-            (build_keywords<Js>(result, std::forward<Source>(args)...), ...);
+            (build_keywords<Is>(result, std::forward<Source>(args)...), ...);
             return result;
         }
 
@@ -1861,7 +2085,7 @@ protected:
         delete contents;
     }
 
-    /* Build a PyCFunction wrapper around the given function object. */
+    /* Build a PyCFunction wrapper around the C++ function object. */
     static PyObject* wrap_python(CapsuleContents* contents) {
         PyObject* capsule = PyCapsule_New(
             contents,
@@ -1873,11 +2097,8 @@ protected:
             Exception::from_python();
         }
 
-        PyObject* result = PyCFunction_New(
-            &contents->method_def,
-            capsule
-        );
-        Py_DECREF(capsule);  // PyCFunction owns the only reference to the capsule
+        PyObject* result = PyCFunction_New(&contents->method_def, capsule);
+        Py_DECREF(capsule);  // PyCFunction now owns the only reference to the capsule
         if (result == nullptr) {
             Exception::from_python();
         }
