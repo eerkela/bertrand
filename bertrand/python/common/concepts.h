@@ -21,6 +21,135 @@ namespace impl {
         return std::forward<U>(value);
     }
 
+    template <typename From, typename To>
+    concept has_conversion_operator = requires(const From& from) {
+        from.operator To();
+    };
+
+    template <typename From, typename To>
+    concept explicitly_convertible_to = requires(const From& from) {
+        static_cast<To>(from);
+    };
+
+    template <typename T>
+    constexpr bool is_initializer_list = false;
+    template <typename T>
+    constexpr bool is_initializer_list<std::initializer_list<T>> = true;
+    template <typename T>
+    concept initializer_like = is_initializer_list<std::remove_cvref_t<T>>;
+
+    template <typename T>
+    concept is_iterable = requires(T t) {
+        { std::begin(t) } -> std::input_or_output_iterator;
+        { std::end(t) } -> std::input_or_output_iterator;
+    };
+
+    template <typename T>
+    using dereference_type = decltype(*std::begin(std::declval<T>()));
+
+    template <typename T>
+    concept is_reverse_iterable = requires(const T& t) {
+        { std::rbegin(t) } -> std::input_or_output_iterator;
+        { std::rend(t) } -> std::input_or_output_iterator;
+    };
+
+    template <typename T>
+    using reverse_dereference_type = decltype(*std::rbegin(std::declval<T>()));
+
+    template <typename T>
+    concept iterator_like = requires(T it, T end) {
+        { *it } -> std::convertible_to<typename T::value_type>;
+        { ++it } -> std::same_as<T&>;
+        { it++ } -> std::same_as<T>;
+        { it == end } -> std::convertible_to<bool>;
+        { it != end } -> std::convertible_to<bool>;
+    };
+
+    template <typename T>
+    concept has_size = requires(const T& t) {
+        { std::size(t) } -> std::convertible_to<size_t>;
+    };
+
+    template <typename T>
+    concept sequence_like = is_iterable<T> && has_size<T> && requires(const T& t) {
+        { t[0] };
+    };
+
+    template <typename T>
+    concept has_empty = requires(const T& t) {
+        { t.empty() } -> std::convertible_to<bool>;
+    };
+
+    template <typename T>
+    concept has_reserve = requires(T& t, size_t n) {
+        { t.reserve(n) } -> std::same_as<void>;
+    };
+
+    template <typename T, typename Key>
+    concept has_contains = requires(const T& t, const Key& key) {
+        { t.contains(key) } -> std::convertible_to<bool>;
+    };
+
+    template <typename T, typename Key>
+    concept supports_lookup = requires(T t, const Key& key) {
+        { t[key] };
+    } && !std::integral<T> && !std::is_pointer_v<T>;
+
+    template <typename T, typename Key, typename Value>
+    concept lookup_yields = requires(T t, const Key& key, const Value& value) {
+        { t[key] } -> std::convertible_to<Value>;
+    };
+
+    template <typename T, typename Key>
+    using lookup_type = decltype(std::declval<T>()[std::declval<Key>()]);
+
+    template <typename T>
+    concept pair_like = requires(const T& t) {
+        { t.first } -> std::same_as<typename T::first_type>;
+        { t.second } -> std::same_as<typename T::second_type>;
+    };
+
+    template <typename T>
+    concept complex_like = requires(const T& t) {
+        { t.real() } -> std::convertible_to<double>;
+        { t.imag() } -> std::convertible_to<double>;
+    };
+
+    template <typename T>
+    concept string_literal = requires(const T& t) {
+        { []<size_t N>(const char(&)[N]){}(t) } -> std::same_as<void>;
+    };
+
+    // NOTE: decay is necessary to treat `const char[N]` like `const char*`
+    template <typename T>
+    concept is_hashable = requires(T&& t) {
+        { std::hash<std::decay_t<T>>{}(std::forward<T>(t)) } -> std::convertible_to<size_t>;
+    };
+
+    template <typename T>
+    concept has_abs = requires(const T& t) {
+        { std::abs(t) };
+    };
+
+    template <typename T>
+    concept has_to_string = requires(const T& t) {
+        { std::to_string(t) } -> std::convertible_to<std::string>;
+    };
+
+    template <typename T>
+    concept has_stream_insertion = requires(std::ostream& os, const T& t) {
+        { os << t } -> std::convertible_to<std::ostream&>;
+    };
+
+    template <typename T>
+    concept has_call_operator = requires { &std::decay_t<T>::operator(); };
+
+    template <typename T>
+    concept is_callable_any = 
+        std::is_function_v<std::remove_pointer_t<std::decay_t<T>>> ||
+        std::is_member_function_pointer_v<std::decay_t<T>> ||
+        has_call_operator<T>;
+
     template <typename T, typename... Ts>
     using first = T;
 
@@ -50,121 +179,6 @@ namespace impl {
 
     template <typename T>
     concept cpp_like = !python_like<T>;
-
-    template <typename T>
-    concept sequence_like = requires(const T& t) {
-        { std::begin(t) } -> std::input_or_output_iterator;
-        { std::end(t) } -> std::input_or_output_iterator;
-        { std::size(t) } -> std::convertible_to<size_t>;
-        { t[0] };
-    };
-
-    template <typename T>
-    concept iterator_like = requires(T it, T end) {
-        { *it } -> std::convertible_to<typename T::value_type>;
-        { ++it } -> std::same_as<T&>;
-        { it++ } -> std::same_as<T>;
-        { it == end } -> std::convertible_to<bool>;
-        { it != end } -> std::convertible_to<bool>;
-    };
-
-    template <typename T>
-    struct is_initializer_list : std::false_type {};
-    template <typename T>
-    struct is_initializer_list<std::initializer_list<T>> : std::true_type {};
-
-    template <typename T>
-    concept initializer_like = is_initializer_list<std::remove_cvref_t<T>>::value;
-
-    template <typename T>
-    concept complex_like = requires(const T& t) {
-        { t.real() } -> std::convertible_to<double>;
-        { t.imag() } -> std::convertible_to<double>;
-    };
-
-    template <typename T>
-    concept string_literal = requires(const T& t) {
-        { []<size_t N>(const char(&)[N]){}(t) } -> std::same_as<void>;
-    };
-
-    template <typename From, typename To>
-    concept explicitly_convertible_to = requires(const From& from) {
-        static_cast<To>(from);
-    };
-
-    template <typename From, typename To>
-    concept has_conversion_operator = requires(const From& from) {
-        from.operator To();
-    };
-
-    template <typename T>
-    concept has_abs = requires(const T& t) {
-        { std::abs(t) };
-    };
-
-    template <typename T>
-    concept has_size = requires(const T& t) {
-        { std::size(t) } -> std::convertible_to<size_t>;
-    };
-
-    template <typename T>
-    concept has_empty = requires(const T& t) {
-        { t.empty() } -> std::convertible_to<bool>;
-    };
-
-    template <typename T>
-    concept has_reserve = requires(T& t, size_t n) {
-        { t.reserve(n) } -> std::same_as<void>;
-    };
-
-    template <typename T>
-    concept pair_like = requires(const T& t) {
-        { t.first } -> std::same_as<typename T::first_type>;
-        { t.second } -> std::same_as<typename T::second_type>;
-    };
-
-    template <typename T>
-    concept is_iterable = requires(T t) {
-        { std::begin(t) } -> std::input_or_output_iterator;
-        { std::end(t) } -> std::input_or_output_iterator;
-    };
-
-    template <typename T>
-    using dereference_type = decltype(*std::begin(std::declval<T>()));
-
-    template <typename T>
-    concept is_reverse_iterable = requires(const T& t) {
-        { std::rbegin(t) } -> std::input_or_output_iterator;
-        { std::rend(t) } -> std::input_or_output_iterator;
-    };
-
-    template <typename T>
-    using reverse_dereference_type = decltype(*std::rbegin(std::declval<T>()));
-
-    // NOTE: decay is necessary to treat `const char[N]` like `const char*`
-    template <typename T>
-    concept is_hashable = requires(T&& t) {
-        { std::hash<std::decay_t<T>>{}(std::forward<T>(t)) } -> std::convertible_to<size_t>;
-    };
-
-    template <typename T>
-    concept has_to_string = requires(const T& t) {
-        { std::to_string(t) } -> std::convertible_to<std::string>;
-    };
-
-    template <typename T>
-    concept has_stream_insertion = requires(std::ostream& os, const T& t) {
-        { os << t } -> std::convertible_to<std::ostream&>;
-    };
-
-    template <typename T>
-    concept has_call_operator = requires { &std::decay_t<T>::operator(); };
-
-    template <typename T>
-    concept is_callable_any = 
-        std::is_function_v<std::remove_pointer_t<std::decay_t<T>>> ||
-        std::is_member_function_pointer_v<std::decay_t<T>> ||
-        has_call_operator<T>;
 
     template <typename L, typename R>
     struct lt_comparable {
