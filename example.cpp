@@ -156,30 +156,30 @@ void run() {
 
     // TODO: this should be an example showcase
 
-    auto lambda = [](
-        py::Arg<"x", const int&>::opt x,
-        py::Arg<"y", const int&>::opt y
-    ) {
-        return x - y;
-    };
+    // auto lambda = [](
+    //     py::Arg<"x", const int&>::opt x,
+    //     py::Arg<"y", const int&>::opt y
+    // ) {
+    //     return x - y;
+    // };
 
-    constexpr auto x = py::arg_<"x">;
-    constexpr auto y = py::arg_<"y">;
-    constexpr auto z = py::arg_<"z">;
+    // constexpr auto x = py::arg_<"x">;
+    // constexpr auto y = py::arg_<"y">;
+    // constexpr auto z = py::arg_<"z">;
 
-    py::Function_ func("subtract", lambda, y = 2, x = 1);
-    // py::Function_ func("subtract", lambda, 1, 2);
+    // py::Function_ func("subtract", lambda, y = 2, x = 1);
+    // // py::Function_ func("subtract", lambda, 1, 2);
 
-    py::print(func());
+    // py::print(func());
 
-    py::print(func(1));
-    py::print(func(x = 1));
-    py::print(func(y = 2));
+    // py::print(func(1));
+    // py::print(func(x = 1));
+    // py::print(func(y = 2));
 
-    py::print(func(1, 2));
-    py::print(func(1, y = 2));
-    py::print(func(x = 1, y = 2));
-    py::print(func(y = 2, x = 1));
+    // py::print(func(1, 2));
+    // py::print(func(1, y = 2));
+    // py::print(func(x = 1, y = 2));
+    // py::print(func(y = 2, x = 1));
 
 
 
@@ -201,23 +201,23 @@ void run() {
 
 
 
-    // py::Function_ variadic(
-    //     "variadic_positional",
-    //     [](
-    //         std::string,
-    //         py::Arg<"x", std::string>,
-    //         py::Args<std::vector<int>> args,
-    //         py::Arg<"y", std::string>::kw::opt,
-    //         py::Kwargs<py::Dict<py::Str, py::Int>> kwargs
-    //     ) {
-    //         // return args.value;
-    //         return 2;
-    //     },
-    //     "def"
-    // );
+    py::Function_ variadic(
+        "variadic_positional",
+        [](
+            std::string x,
+            py::Arg<"y", std::string> y,
+            py::Arg<"args", int>::args args,
+            py::Arg<"z", std::string>::kw::opt z,
+            py::Arg<"kwargs", int>::kwargs kwargs
+        ) {
+            return py::List(args.value);
+        },
+        "xyz"
+    );
 
-    // py::print(variadic(py::arg_<"x"> = 1, py::arg_<"y"> = 2, py::arg_<"z"> = 3));
+    py::print(variadic("abc", "def", 1, 2, 3, py::arg_<"key"> = 2));
     // py::print(variadic("abc", py::arg_<"x"> = "xyz", py::arg_<"z"> = 2));
+
 
 
     // py::print(py::impl::supports_lookup<std::unordered_map<std::string, int>, const char*>);
