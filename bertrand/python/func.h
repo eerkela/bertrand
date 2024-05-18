@@ -1,4 +1,3 @@
-#include "bertrand/python.h"
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -14,6 +13,16 @@
 #include "tuple.h"
 #include "list.h"
 #include "type.h"
+
+
+#if defined(__GNUC__) || defined(__clang__)
+#include <cxxabi.h>
+#include <cstdlib>
+#elif defined(_MSC_VER)
+#include <windows.h>
+#include <dbghelp.h>
+#pragma comment(lib, "dbghelp.lib")
+#endif
 
 
 namespace bertrand {
@@ -706,6 +715,14 @@ public:
 ////////////////////////////////////
 
 
+// TODO: descriptors might also allow for multiple dispatch if I manage it correctly.
+// -> The descriptor would store an internal map of types to Python/C++ functions, and
+// could be appended to from either side.  This would replace pybind11's overloading
+// mechanism, and would store signatures in topographical order.  When the descriptor
+// is called, it would test each signature in order, and call the first one that
+// fully matches
+
+
 namespace impl {
     struct ArgTag {};
 }
@@ -716,8 +733,97 @@ argument to a py::Function. */
 template <StaticStr Name, typename T>
 class Arg : public impl::ArgTag {
 
+    template <typename>
+    friend class Function_;
+
     template <bool positional, bool keyword>
-    struct Optional : public impl::ArgTag {
+    class Optional : public impl::ArgTag {
+
+        /* Implementation detail:  Optional arguments need to be able to represent a
+         * special, uninitialized state in order to be properly forwarded during Python
+         * function calls.  Normally, the buffer will always be initialized, either
+         * with an explicit value supplied at the call site or a default value provided
+         * to the `py::Function` constructor.  However, if the py::Function is backed
+         * by a Python function object, then no such defaults will be provided.  As
+         * such, the buffer will be left uninitialized, which causes the argument to be
+         * omitted from the final invocation.  This allows Python to supply its own
+         * default values, and means we don't have to redefine them unnecessarily.
+         *
+         * Users should never need to consider this, as it is handled automatically by
+         * the `py::Function` class.  The uninitialized state never leaks out to the
+         * public interface, and is heavily constrained so we can safely ignore it in
+         * practice.
+         */
+
+        template <typename V>
+        struct storage {
+            alignas(V) char buffer[sizeof(V)];
+            bool initialized;
+
+            void assume_initialized() const {
+                #if defined(__clang__)
+                    __builtin_assume(initialized);
+                #elif defined(__GNUC__)
+                    [[assume(initialized)]];
+                #elif defined(_MSC_VER)
+                    __assume(initialized);
+                #endif
+            }
+
+            storage() : initialized(false) {}
+            template <std::convertible_to<V> U>
+            storage(U&& value) : initialized(true) {
+                new (buffer) V(std::forward<U>(value));
+            }
+            storage(const storage& other) : initialized(other.initialized) {
+                if (initialized) {
+                    new (buffer) V(other.value());
+                }
+            }
+            storage(storage&& other) : initialized(other.initialized) {
+                if (initialized) {
+                    new (buffer) V(std::move(other.value()));
+                }
+            }
+            ~storage() noexcept {
+                if (initialized) {
+                    value().~V();
+                }
+            }
+            bool has_value() const { return initialized; }
+            V& value() & {
+                assume_initialized();
+                return reinterpret_cast<V&>(buffer);
+            }
+            V&& value() && {
+                assume_initialized();
+                return std::move(reinterpret_cast<V&>(buffer));
+            }
+            const V& value() const & {
+                assume_initialized();
+                return reinterpret_cast<const V&>(buffer);
+            }
+        };
+
+        template <typename V> requires (std::is_reference_v<V>)
+        struct storage<V> {
+            std::remove_reference_t<V>* ptr;
+            storage() : ptr(nullptr) {}
+            storage(V&& value) : ptr(&value) {}
+            storage(const storage& other) : ptr(other.ptr) {}
+            storage(storage&& other) : ptr(other.ptr) { other.ptr = nullptr; }
+            bool has_value() const { return ptr != nullptr; }
+            V& value() & { return *ptr; }
+            V&& value() && { return std::move(*ptr); }
+            const V& value() const & { return *ptr; }
+        };
+
+        storage<T> m_value;
+
+        template <typename>
+        friend class Function_;
+
+    public:
         using type = T;
         static constexpr StaticStr name = Name;
         static constexpr bool is_positional = positional;
@@ -725,24 +831,31 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = true;
         static constexpr bool is_variadic = false;
 
-        T value;
-
-        template <typename = void> requires (std::is_default_constructible_v<T>)
-        Optional() : value() {}
+        Optional() : m_value() {}
         template <std::convertible_to<T> V>
-        Optional(V&& value) : value(std::forward<V>(value)) {}
-        Optional(const Arg& other) : value(other.value) {}
-        Optional(Arg&& other) : value(std::move(other.value)) {}
+        Optional(V&& value) : m_value(std::forward<V>(value)) {}
+        Optional(const Arg& other) : m_value(other.m_value) {}
+        Optional(Arg&& other) : m_value(std::move(other.m_value)) {}
 
-        operator T&() & { return value; }
-        operator T&&() && { return std::move(value); }
-        operator const std::remove_const_t<T>&() const & { return value; }
+        std::remove_reference_t<T>& value() & { return m_value.value(); }
+        std::remove_reference_t<T>&& value() && { return std::move(m_value.value()); }
+        const std::remove_const_t<std::remove_reference_t<T>>& value() const & { return m_value.value(); }
+        operator T&() & { return value(); }
+        operator T&&() && { return std::move(value()); }
+        operator const std::remove_const_t<T>&() const & { return value(); }
         template <typename V> requires (std::convertible_to<T, V>)
-        operator V() const { return value; }
+        operator V() const { return value(); }
     };
 
     template <bool optional>
-    struct Positional : public impl::ArgTag {
+    class Positional : public impl::ArgTag {
+
+        template <typename>
+        friend class Function_;
+
+        T m_value;
+
+    public:
         using type = T;
         using opt = Optional<true, false>;
         static constexpr StaticStr name = Name;
@@ -751,24 +864,31 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = optional;
         static constexpr bool is_variadic = false;
 
-        T value;
-
-        template <typename = void> requires (std::is_default_constructible_v<T>)
-        Positional() : value() {}
         template <std::convertible_to<T> V>
-        Positional(V&& value) : value(std::forward<V>(value)) {}
-        Positional(const Arg& other) : value(other.value) {}
-        Positional(Arg&& other) : value(std::move(other.value)) {}
+        Positional(V&& value) : m_value(std::forward<V>(value)) {}
+        Positional(const Arg& other) : m_value(other.m_value) {}
+        Positional(Arg&& other) : m_value(std::move(other.m_value)) {}
 
-        operator T&() & { return value; }
-        operator T&&() && { return std::move(value); }
-        operator const std::remove_const_t<T>&() const & { return value; }
+        std::remove_reference_t<T>& value() & { return m_value; }
+        std::remove_reference_t<T>&& value() && { return std::move(m_value); }
+        const std::remove_const_t<std::remove_reference_t<T>>& value() const & { return m_value; }
+
+        operator T&() & { return m_value; }
+        operator T&&() && { return std::move(m_value); }
+        operator const std::remove_const_t<T>&() const & { return m_value; }
         template <typename V> requires (std::convertible_to<T, V>)
-        operator V() const { return value; }
+        operator V() const { return m_value; }
     };
 
     template <bool optional>
-    struct Keyword : public impl::ArgTag {
+    class Keyword : public impl::ArgTag {
+
+        template <typename>
+        friend class Function_;
+
+        T m_value;
+
+    public:
         using type = T;
         using opt = Optional<false, true>;
         static constexpr StaticStr name = Name;
@@ -777,23 +897,30 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = optional;
         static constexpr bool is_variadic = false;
 
-        T value;
-
-        template <typename = void> requires (std::is_default_constructible_v<T>)
-        Keyword() : value() {}
         template <std::convertible_to<T> V>
-        Keyword(V&& value) : value(std::forward<V>(value)) {}
-        Keyword(const Arg& other) : value(other.value) {}
-        Keyword(Arg&& other) : value(std::move(other.value)) {}
+        Keyword(V&& value) : m_value(std::forward<V>(value)) {}
+        Keyword(const Arg& other) : m_value(other.m_value) {}
+        Keyword(Arg&& other) : m_value(std::move(other.m_value)) {}
 
-        operator T&() & { return value; }
-        operator T&&() && { return std::move(value); }
-        operator const std::remove_const_t<T>&() const & { return value; }
+        std::remove_reference_t<T>& value() & { return m_value; }
+        std::remove_reference_t<T>&& value() && { return std::move(m_value); }
+        const std::remove_const_t<std::remove_reference_t<T>>& value() const & { return m_value; }
+
+        operator T&() & { return m_value; }
+        operator T&&() && { return std::move(m_value); }
+        operator const std::remove_const_t<T>&() const & { return m_value; }
         template <typename V> requires (std::convertible_to<T, V>)
-        operator V() const { return value; }
+        operator V() const { return m_value; }
     };
 
-    struct Args : public impl::ArgTag {
+    class Args : public impl::ArgTag {
+
+        template <typename>
+        friend class Function_;
+
+        std::vector<T> m_value;
+
+    public:
         using type = T;
         static constexpr StaticStr name = Name;
         static constexpr bool is_positional = true;
@@ -801,37 +928,53 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = false;
         static constexpr bool is_variadic = true;
 
-        std::vector<T> value;
+        Args() = default;
+        Args(const std::vector<T>& value) : m_value(value) {}
+        Args(std::vector<T>&& value) : m_value(std::move(value)) {}
+        template <std::convertible_to<T> V>
+        Args(const std::vector<V>& value) {
+            m_value.reserve(value.size());
+            for (const auto& item : value) {
+                m_value.push_back(item);
+            }
+        }
+        Args(const Args& other) : m_value(other.m_value) {}
+        Args(Args&& other) : m_value(std::move(other.m_value)) {}
 
-        Args();
-        Args(const std::vector<T>& value) : value(value) {}
-        Args(std::vector<T>&& value) : value(std::move(value)) {}
-        Args(const Args& other) : value(other.value) {}
-        Args(Args&& other) : value(std::move(other.value)) {}
+        std::vector<T>& value() & { return m_value; }
+        std::vector<T>&& value() && { return std::move(m_value); }
+        const std::vector<T>& value() const & { return m_value; }
 
-        operator std::vector<T>&() & { return value; }
-        operator std::vector<T>&&() && { return std::move(value); }
-        operator const std::vector<T>&() const & { return value; }
+        operator std::vector<T>&() & { return m_value; }
+        operator std::vector<T>&&() && { return std::move(m_value); }
+        operator const std::vector<T>&() const & { return m_value; }
         template <typename V> requires (std::convertible_to<std::vector<T>, V>)
-        operator V() const { return value; }
+        operator V() const { return m_value; }
 
-        auto begin() const { return value.begin(); }
-        auto cbegin() const { return value.cbegin(); }
-        auto end() const { return value.end(); }
-        auto cend() const { return value.cend(); }
-        auto rbegin() const { return value.rbegin(); }
-        auto crbegin() const { return value.crbegin(); }
-        auto rend() const { return value.rend(); }
-        auto crend() const { return value.crend(); }
-        constexpr auto size() const { return value.size(); }
-        constexpr auto empty() const { return value.empty(); }
-        constexpr auto data() const { return value.data(); }
-        constexpr decltype(auto) front() const { return value.front(); }
-        constexpr decltype(auto) back() const { return value.back(); }
-        constexpr decltype(auto) operator[](size_t index) const { return value.at(index); } 
+        auto begin() const { return m_value.begin(); }
+        auto cbegin() const { return m_value.cbegin(); }
+        auto end() const { return m_value.end(); }
+        auto cend() const { return m_value.cend(); }
+        auto rbegin() const { return m_value.rbegin(); }
+        auto crbegin() const { return m_value.crbegin(); }
+        auto rend() const { return m_value.rend(); }
+        auto crend() const { return m_value.crend(); }
+        constexpr auto size() const { return m_value.size(); }
+        constexpr auto empty() const { return m_value.empty(); }
+        constexpr auto data() const { return m_value.data(); }
+        constexpr decltype(auto) front() const { return m_value.front(); }
+        constexpr decltype(auto) back() const { return m_value.back(); }
+        constexpr decltype(auto) operator[](size_t index) const { return m_value.at(index); } 
     };
 
-    struct Kwargs : public impl::ArgTag {
+    class Kwargs : public impl::ArgTag {
+
+        template <typename>
+        friend class Function_;
+
+        std::unordered_map<std::string, T> m_value;
+
+    public:
         using type = T;
         static constexpr StaticStr name = Name;
         static constexpr bool is_positional = false;
@@ -839,33 +982,46 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = false;
         static constexpr bool is_variadic = true;
 
-        std::unordered_map<std::string, T> value;
-
         Kwargs();
-        Kwargs(const std::unordered_map<std::string, T>& value) : value(value) {}
-        Kwargs(std::unordered_map<std::string, T>&& value) : value(std::move(value)) {}
-        Kwargs(const Kwargs& other) : value(other.value) {}
-        Kwargs(Kwargs&& other) : value(std::move(other.value)) {}
+        Kwargs(const std::unordered_map<std::string, T>& value) : m_value(m_value) {}
+        Kwargs(std::unordered_map<std::string, T>&& value) : m_value(std::move(m_value)) {}
+        template <std::convertible_to<T> V>
+        Kwargs(const std::unordered_map<std::string, V>& value) {
+            m_value.reserve(value.size());
+            for (const auto& [k, v] : value) {
+                m_value.emplace(k, v);
+            }
+        }
+        Kwargs(const Kwargs& other) : m_value(other.m_value) {}
+        Kwargs(Kwargs&& other) : m_value(std::move(other.m_value)) {}
 
-        operator std::unordered_map<std::string, T>&() & { return value; }
-        operator std::unordered_map<std::string, T>&&() && { return std::move(value); }
-        operator const std::unordered_map<std::string, T>&() const & { return value; }
+        std::unordered_map<std::string, T>& value() & { return m_value; }
+        std::unordered_map<std::string, T>&& value() && { return std::move(m_value); }
+        const std::unordered_map<std::string, T>& value() const & { return m_value; }
+
+        operator std::unordered_map<std::string, T>&() & { return m_value; }
+        operator std::unordered_map<std::string, T>&&() && { return std::move(m_value); }
+        operator const std::unordered_map<std::string, T>&() const & { return m_value; }
         template <typename V> requires (std::convertible_to<std::unordered_map<std::string, T>, V>)
-        operator V() const { return value; }
+        operator V() const { return m_value; }
 
-        auto begin() const { return value.begin(); }
-        auto cbegin() const { return value.cbegin(); }
-        auto end() const { return value.end(); }
-        auto cend() const { return value.cend(); }
-        constexpr auto size() const { return value.size(); }
-        constexpr bool empty() const { return value.empty(); }
-        constexpr bool contains(const std::string& key) const { return value.contains(key); }
-        constexpr auto count(const std::string& key) const { return value.count(key); }
-        decltype(auto) find(const std::string& key) const { return value.find(key); }
-        decltype(auto) operator[](const std::string& key) const { return value.at(key); }
+        auto begin() const { return m_value.begin(); }
+        auto cbegin() const { return m_value.cbegin(); }
+        auto end() const { return m_value.end(); }
+        auto cend() const { return m_value.cend(); }
+        constexpr auto size() const { return m_value.size(); }
+        constexpr bool empty() const { return m_value.empty(); }
+        constexpr bool contains(const std::string& key) const { return m_value.contains(key); }
+        constexpr auto count(const std::string& key) const { return m_value.count(key); }
+        decltype(auto) find(const std::string& key) const { return m_value.find(key); }
+        decltype(auto) operator[](const std::string& key) const { return m_value.at(key); }
     };
 
+    T m_value;
+
 public:
+    static_assert(Name != "", "Argument name cannot be an empty string.");
+
     using type = T;
     using pos = Positional<false>;
     using kw = Keyword<false>;
@@ -878,22 +1034,20 @@ public:
     static constexpr bool is_optional = false;
     static constexpr bool is_variadic = false;
 
-    static_assert(name != "", "Argument name cannot be an empty string.");
-
-    T value;
-
-    template <typename = void> requires (std::is_default_constructible_v<T>)
-    Arg() : value() {}
     template <std::convertible_to<T> V>
-    Arg(V&& value) : value(std::forward<V>(value)) {}
-    Arg(const Arg& other) : value(other.value) {}
-    Arg(Arg&& other) : value(std::move(other.value)) {}
+    Arg(V&& value) : m_value(std::forward<V>(value)) {}
+    Arg(const Arg& other) : m_value(other.m_value) {}
+    Arg(Arg&& other) : m_value(std::move(other.m_value)) {}
 
-    operator std::remove_reference_t<T>&() & { return value; }
-    operator std::remove_reference_t<T>&&() && { return std::move(value); }
-    operator const std::remove_const_t<std::remove_reference_t<T>>&() const & { return value; }
+    std::remove_reference_t<T>& value() & { return m_value; }
+    std::remove_reference_t<T>&& value() && { return std::move(m_value); }
+    const std::remove_const_t<std::remove_reference_t<T>>& value() const & { return m_value; }
+
+    operator std::remove_reference_t<T>&() & { return m_value; }
+    operator std::remove_reference_t<T>&&() && { return std::move(m_value); }
+    operator const std::remove_const_t<std::remove_reference_t<T>>&() const & { return m_value; }
     template <typename V> requires (std::convertible_to<T, V>)
-    operator V() const { return value; }
+    operator V() const { return m_value; }
 };
 
 
@@ -1000,7 +1154,7 @@ wrapper around it) with `py::Arg` tags.  For instance:
 Note that the annotations themselves are implicitly convertible to the underlying
 argument types, so they should be acceptable as inputs to most functions without any
 additional syntax.  If necessary, they can be explicitly dereferenced through the `*`
-and `->` operators, or by accessing their `.value` member directly, which comprises
+and `->` operators, or by accessing their `.value()` member directly, which comprises
 their entire interface.  Also note that for each argument marked as `::optional`, we
 must provide a default value within the function's constructor, which will be
 substituted whenever we call the function without specifying that argument.
@@ -1415,7 +1569,7 @@ protected:
         /* Get the default value associated with the target argument at index I. */
         template <size_t I>
         auto get() const {
-            return std::get<find<I, tuple>::value>(values).value;
+            return std::get<find<I, tuple>::value>(values).value;  // TODO: change to .value() when DefaultValue supports optionals
         };
 
     };
@@ -2166,12 +2320,29 @@ protected:
     // a Python function using reinterpret_borrow/steal.
 
     /* A heap-allocated data structure that holds the core members of the function
-    object, which is shared between Python and C++.  A reference to this object is
+    object, which are shared between Python and C++.  A reference to this object is
     stored in both the `py::Function` instance and a special `PyCapsule` that is
     passed up to the PyCFunction wrapper.  It will be kept alive as long as either of
-    these references are alive, and allows additional references to be passed along
+    these references are in scope, and allows additional references to be passed along
     whenever a `py::Function` is copied or moved, mirroring the reference counts of the
-    underlying PyObject*. */
+    underlying PyObject*.
+
+    The PyCapsule is annotated with the mangled function type, which includes the
+    signature of the underlying C++ function.  By matching against this identifier,
+    Bertrand can determine whether an arbitrary Python function is:
+        1.  Backed by a py::Function object, in which case it will extract the
+            underlying PyCapsule, and
+        2.  Whether the receiving function exactly matches the signature of the
+            original py::Function.
+
+    If both of these conditions are met, Bertrand will unpack the C++ Capsule and take
+    a new reference to it, extending its lifetime.  This avoids creating an additional
+    wrapper around the Python function, and allows the function to be passed
+    arbitrarily across the language boundary without losing any of its original
+    properties.
+
+    If condition (1) is met but (2) is not, then a TypeError is raised that contains
+    the mismatched signatures, which are demangled for clarity where possible. */
     class Capsule {
 
         struct from_python_t {};
@@ -2192,7 +2363,39 @@ protected:
             )
         {}
 
+        static std::string demangle(const char* name) {
+            #if defined(__GNUC__) || defined(__clang__)
+                int status = 0;
+                std::unique_ptr<char, void(*)(void*)> res {
+                    abi::__cxa_demangle(
+                        name,
+                        nullptr,
+                        nullptr,
+                        &status
+                    ),
+                    std::free
+                };
+                return (status == 0) ? res.get() : name;
+            #elif defined(_MSC_VER)
+                char undecorated_name[1024];
+                if (UnDecorateSymbolName(
+                    name,
+                    undecorated_name,
+                    sizeof(undecorated_name),
+                    UNDNAME_COMPLETE
+                )) {
+                    return std::string(undecorated_name);
+                } else {
+                    return name;
+                }
+            #else
+                return name; // fallback: no demangling
+            #endif
+        }
+
     public:
+        static constexpr StaticStr capsule_name = "bt";
+        static const char* capsule_id;
         std::string name;
         std::function<Return(Target...)> func;
         DefaultValues defaults;
@@ -2215,8 +2418,6 @@ protected:
             )
         {}
 
-        static constexpr const char capsule_id[] = "bertrand_func";
-
         /* This proxy is what's actually stored in the PyCapsule, so that it uses the
         same shared_ptr to the C++ Capsule at the Python level. */
         struct Reference {
@@ -2227,7 +2428,7 @@ protected:
         function when it is garbage collected. */
         static void deleter(PyObject* capsule) {
             auto contents = reinterpret_cast<Reference*>(
-                PyCapsule_GetPointer(capsule, capsule_id)
+                PyCapsule_GetPointer(capsule, capsule_name)
             );
             delete contents;
         }
@@ -2238,11 +2439,16 @@ protected:
             Reference* ref = new Reference{contents};
             PyObject* py_capsule = PyCapsule_New(
                 ref,
-                capsule_id,
+                capsule_name,
                 &deleter
             );
             if (py_capsule == nullptr) {
                 delete ref;
+                Exception::from_python();
+            }
+
+            if (PyCapsule_SetContext(py_capsule, (void*)capsule_id)) {
+                Py_DECREF(py_capsule);
                 Exception::from_python();
             }
 
@@ -2258,7 +2464,7 @@ protected:
         argument to the PyCFunction wrapper. */
         static Capsule* get(PyObject* capsule) {
             auto result = reinterpret_cast<Reference*>(
-                PyCapsule_GetPointer(capsule, capsule_id)
+                PyCapsule_GetPointer(capsule, capsule_name)
             );
             if (result == nullptr) {
                 Exception::from_python();
@@ -2271,11 +2477,22 @@ protected:
         static std::shared_ptr<Capsule> from_python(PyObject* func) {
             if (PyCFunction_Check(func)) {
                 PyObject* self = PyCFunction_GET_SELF(func);
-                if (PyCapsule_IsValid(self, capsule_id)) {
-                    auto result = reinterpret_cast<Reference*>(
-                        PyCapsule_GetPointer(self, capsule_id)
-                    );
-                    return result->ptr;
+                if (PyCapsule_IsValid(self, capsule_name)) {
+                    const char* id = (const char*)PyCapsule_GetContext(self);
+                    if (id == nullptr) {
+                        Exception::from_python();
+                    } else if (std::strcmp(id, capsule_id) == 0) {
+                        auto result = reinterpret_cast<Reference*>(
+                            PyCapsule_GetPointer(self, capsule_name)
+                        );
+                        return result->ptr;  // shared_ptr copy
+
+                    } else {
+                        std::string message = "Incompatible function signatures:";
+                        message += "\n    Expected: " + demangle(capsule_id);
+                        message += "\n    Received: " + demangle(id);
+                        throw TypeError(message);
+                    }
                 }
             }
 
@@ -2298,6 +2515,8 @@ protected:
                 {}  // TODO: all defaults are optional, and are omitted from call
             );
         }
+
+        // TODO: delete forward<>()
 
         /* C++ functions might define the target signature to take reference types,
         which can interfere with conversions when calling the function from Python.  In
@@ -2339,6 +2558,10 @@ protected:
 
         template <CallPolicy policy, typename Dummy = void>
         struct Wrap;
+
+        // TODO: forwarding argument annotations to as_object forces a conversion to
+        // Object rather than potentially reusing the current value if it is an object
+        // subclass.  That adds extra overhead to the function call.
 
         template <typename Dummy>
         struct Wrap<CallPolicy::no_args, Dummy> {
@@ -2393,7 +2616,7 @@ protected:
                     PyObject* result = PyObject_CallOneArg(
                         func,
                         as_object(
-                            get_arg<0>(std::forward<Target>(args)...)
+                            get_arg<0>(std::forward<Target>(args)...).value()
                         ).ptr()
                     );
                     if (result == nullptr) {
@@ -2436,11 +2659,6 @@ protected:
         struct Wrap<CallPolicy::positional, Dummy> {
             static constexpr int flags = METH_FASTCALL;
 
-            // TODO: I need to write a constructor for py::Args that takes a std::vector
-            // of a compatible type (like a decayed reference) and then constructs a
-            // new vector of converted types, which allows variadic args to be passed
-            // as references.
-
             template <size_t I, typename T> requires (Inspect<T>::args)
             static auto python_arg(
                 const DefaultValues& defaults,
@@ -2461,10 +2679,17 @@ protected:
                 PyObject* const* args,
                 Py_ssize_t nargs
             ) {
-                if (I < nargs) {
+                if (static_cast<Py_ssize_t>(I) < nargs) {
                     return reinterpret_borrow<Object>(args[I]);
                 } else {
-                    return defaults.template get<I>();
+                    if constexpr (Inspect<T>::opt) {
+                        return defaults.template get<I>();
+                    } else {
+                        throw TypeError(
+                            "missing required positional-only argument at "
+                            "index " + std::to_string(I)
+                        );
+                    }
                 }
             }
 
@@ -2482,23 +2707,22 @@ protected:
                     ) {
                         Capsule* contents = get(capsule);
                         Py_ssize_t true_nargs = PyVectorcall_NARGS(nargs);
-
-                        // create a tuple of decayed types to stabilize lifetimes
-                        auto tuple = std::make_tuple(
-                            python_arg<Is, typename target::template type<Is>>(
-                                contents->defaults,
-                                args,
-                                true_nargs
-                            )...
-                        );
-
-                        // forwarding from the tuple allows l/rvalues to bind correctly
+                        if constexpr (!target::has_args) {
+                            if (true_nargs > static_cast<Py_ssize_t>(target::size)) {
+                                throw TypeError(
+                                    "expected at most " + std::to_string(target::size) +
+                                    " positional arguments, but received " +
+                                    std::to_string(true_nargs)
+                                );    
+                            }
+                        }
                         return as_object(
-                            std::apply(
-                                [&contents](auto&... vals) {
-                                    return contents->func(forward<Is>(vals)...);
-                                },
-                                tuple
+                            contents->func(
+                                python_arg<Is, typename target::template type<Is>>(
+                                    contents->defaults,
+                                    args,
+                                    true_nargs
+                                )...
                             )
                         ).release().ptr();
                     }(
@@ -2513,63 +2737,45 @@ protected:
                 }
             }
 
-            template <typename = void> requires (target::has_args)
-            static std::function<Return(Target...)> cpp(
-                PyObject* func,
-                const DefaultValues& defaults
-            ) {
-                // variadic case requires a heap-allocated array
-                return [func, &defaults](Target&&... args) -> Return {
-                    auto var_args = get_arg<target::args_index>(
-                        std::forward<Target>(args)...
-                    );
-                    size_t nargs = target::size + var_args.size();
+            // TODO: extract the guts of this into a separate invoke_py method that can
+            // be called from the enclosing py::Function wrapper.
+            // -> Also, handle the default value thing at the same time.
 
-                    auto array = std::unique_ptr(
-                        new PyObject*[1 + nargs],
-                        [nargs](PyObject** array) {
-                            for (size_t i = 1; i <= nargs; ++i) {
-                                Py_XDECREF(array[i]);
-                            }
-                            delete[] array;
-                        }
-                    );
-                    array[0] = nullptr;
-
-                    []<size_t... Is>(
-                        std::index_sequence<Is...>,
-                        PyObject** array,
-                        Target&&... args
-                    ) {
-                        (
-                            (array[Is + 1] = as_object(
-                                std::forward<Target>(args)
-                            ).release().ptr()),
-                            ...
-                        );
-                    }(
-                        std::make_index_sequence<target::size>{},
-                        array,
-                        std::forward<Target>(args)...
-                    );
-
-                    size_t i = target::size + 1;
-                    for (auto&& val : var_args) {
-                        array[i++] = as_object(val).release().ptr();
+            template <size_t I, typename T>
+            static void cpp_arg(PyObject** array, T&& arg) {
+                // TODO: after doing default value refactor, this needs to check if the
+                // argument is optional and not given, in which case it is not added to
+                // the array.
+                try {
+                    // TODO: forwarding the argument annotation to as_object forces an
+                    // extra conversion to Object, which is unnecessary if the value is
+                    // already an Object subclass.
+                    array[I + 1] = as_object(std::forward<T>(arg)).release().ptr();
+                } catch (...) {
+                    for (size_t i = 1; i <= I; ++i) {
+                        Py_XDECREF(array[i]);
                     }
-
-                    PyObject* result = PyObject_Vectorcall(
-                        func,
-                        array.get() + 1,
-                        nargs | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                    if (result == nullptr) {
-                        Exception::from_python();
-                    }
-                    return reinterpret_steal<Object>(result);
-                };
+                    throw;
+                }
             }
+
+            // TODO: default value refactor makes this super complicated.  It means I
+            // need to check the number of optional arguments that were given at the
+            // call site and adjust the size of the array accordingly.
+
+            // -> Maybe what I can do is hold a boolean that indicates whether the
+            // underlying function is a C++ or Python function.  If It's a C++ function,
+            // I do what I'm doing now and fully parse the signature.  If it's a
+            // Python function, then while I'm parsing the arguments, I can check if
+            // optional arguments are given at compile time.  If they aren't I omit
+            // them from the argument array, which can be computed at compile time.
+
+            // -> it might be possible to just track an offset instead.  That would
+            // mean I still iterate over the optional arguments, but every time I find
+            // an empty one, I add to an offset that is subtracted at every index.
+            // That would overallocate the array, but it's almost certainly the
+            // faster/cleaner option, rather than reimplementing the argument parsing
+            // logic once again.
 
             template <typename = void> requires (!target::has_args)
             static std::function<Return(Target...)> cpp(
@@ -2581,20 +2787,12 @@ protected:
                     PyObject* array[1 + target::size];
                     array[0] = nullptr;
 
-                    // TODO: ensure reference counts are properly cleaned up in the
-                    // even of a conversion error.
-
                     []<size_t... Is>(
                         std::index_sequence<Is...>,
                         PyObject** array,
                         Target&&... args
                     ) {
-                        (
-                            (array[Is + 1] = as_object(
-                                std::forward<Target>(args)
-                            ).release().ptr()),
-                            ...
-                        );
+                        (cpp_arg<Is>(array, std::forward<Target>(args)), ...);
                     }(
                         std::make_index_sequence<target::size>{},
                         array,
@@ -2612,6 +2810,75 @@ protected:
                         Py_XDECREF(array[i]);
                     }
 
+                    if (result == nullptr) {
+                        Exception::from_python();
+                    }
+                    return reinterpret_steal<Object>(result);
+                };
+            }
+
+            template <typename = void> requires (target::has_args)
+            static std::function<Return(Target...)> cpp(
+                PyObject* func,
+                const DefaultValues& defaults
+            ) {
+                // variadic case requires a heap-allocated array
+                return [func, &defaults](Target&&... args) -> Return {
+                    auto var_args = get_arg<target::args_index>(
+                        std::forward<Target>(args)...
+                    );
+                    size_t nargs = target::size + var_args.size();
+                    // if constexpr (!target::has_args) {
+                    //     if (true_nargs > static_cast<Py_ssize_t>(target::size)) {
+                    //         throw TypeError(
+                    //             "expected at most " + std::to_string(target::size) +
+                    //             " positional arguments, but received " +
+                    //             std::to_string(true_nargs)
+                    //         );    
+                    //     }
+                    // }
+
+                    auto array = std::unique_ptr(
+                        new PyObject*[1 + nargs],
+                        [nargs](PyObject** array) {
+                            for (size_t i = 1; i <= nargs; ++i) {
+                                Py_XDECREF(array[i]);
+                            }
+                            delete[] array;
+                        }
+                    );
+                    array[0] = nullptr;
+
+                    []<size_t... Is>(
+                        std::index_sequence<Is...>,
+                        PyObject** array,
+                        Target&&... args
+                    ) {
+                        (cpp_arg(array, std::forward<Target>(args)), ...);
+                    }(
+                        std::make_index_sequence<target::size>{},
+                        array,
+                        std::forward<Target>(args)...
+                    );
+
+                    size_t i = target::size;
+                    try {
+                        for (auto&& val : var_args) {
+                            array[++i] = as_object(val).release().ptr();
+                        }
+                    } catch (...) {
+                        for (size_t j = 1; j < i; ++j) {
+                            Py_XDECREF(array[j]);
+                        }
+                        throw;
+                    }
+
+                    PyObject* result = PyObject_Vectorcall(
+                        func,
+                        array.get() + 1,
+                        nargs | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
                     if (result == nullptr) {
                         Exception::from_python();
                     }
@@ -2959,6 +3226,10 @@ template <typename F, typename... D>
 Function_(std::string, F, D...) -> Function_<
     typename impl::GetSignature<std::decay_t<F>>::type
 >;
+
+
+template <typename R, typename... T>
+inline const char* Function_<R(T...)>::Capsule::capsule_id = typeid(Function_).name();
 
 
 /* Compile-time factory for `UnboundArgument` tags. */

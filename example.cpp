@@ -156,30 +156,30 @@ void run() {
 
     // TODO: this should be an example showcase
 
-    // auto lambda = [](
-    //     py::Arg<"x", const int&>::opt x,
-    //     py::Arg<"y", const int&>::opt y
-    // ) {
-    //     return x - y;
-    // };
+    auto lambda = [](
+        py::Arg<"x", int>::opt x,
+        py::Arg<"y", int>::opt y
+    ) {
+        return x - y;
+    };
 
-    // constexpr auto x = py::arg_<"x">;
-    // constexpr auto y = py::arg_<"y">;
+    constexpr auto x = py::arg_<"x">;
+    constexpr auto y = py::arg_<"y">;
     // constexpr auto z = py::arg_<"z">;
 
-    // py::Function_ func("subtract", lambda, y = 2, x = 1);
-    // // py::Function_ func("subtract", lambda, 1, 2);
+    py::Function_ func("subtract", lambda, y = 2, x = 1);
+    // py::Function_ func("subtract", lambda, 1, 2);
 
-    // py::print(func());
+    py::print(func());
 
-    // py::print(func(1));
-    // py::print(func(x = 1));
-    // py::print(func(y = 2));
+    py::print(func(1));
+    py::print(func(x = 1));
+    py::print(func(y = 2));
 
-    // py::print(func(1, 2));
-    // py::print(func(1, y = 2));
-    // py::print(func(x = 1, y = 2));
-    // py::print(func(y = 2, x = 1));
+    py::print(func(1, 2));
+    py::print(func(1, y = 2));
+    py::print(func(x = 1, y = 2));
+    py::print(func(y = 2, x = 1));
 
 
 
@@ -201,22 +201,23 @@ void run() {
 
 
 
-    py::Function_ variadic(
-        "variadic_positional",
-        [](
-            std::string x,
-            py::Arg<"y", std::string> y,
-            py::Arg<"args", int>::args args,
-            py::Arg<"z", std::string>::kw::opt z,
-            py::Arg<"kwargs", int>::kwargs kwargs
-        ) {
-            return py::List(args.value);
-        },
-        "xyz"
-    );
+    // py::Function_ variadic(
+    //     "variadic_positional",
+    //     [](
+    //         std::string x,
+    //         py::Arg<"y", std::string> y,
+    //         py::Arg<"args", int>::args args,
+    //         py::Arg<"z", std::string>::kw::opt z,
+    //         py::Arg<"kwargs", int>::kwargs kwargs
+    //     ) {
+    //         return py::List(args.value);
+    //     },
+    //     "xyz"
+    // );
 
-    py::print(variadic("abc", "def", 1, 2, 3, py::arg_<"key"> = 2));
+    // py::print(variadic("abc", "def", 1, 2, 3, py::arg_<"key"> = 2));
     // py::print(variadic("abc", py::arg_<"x"> = "xyz", py::arg_<"z"> = 2));
+
 
 
 
@@ -970,10 +971,21 @@ void run() {
 
 
 py::Object hello() {
-    py::Function_ func("hello", [] {
-        return std::string("hello, world!\n");
-    });
-    return py::reinterpret_borrow<py::Object>(func.ptr());
+    // py::Function_ func("hello", [] {
+    //     return std::string("hello, world!\n");
+    // });
+    // return py::reinterpret_borrow<py::Object>(func.ptr());
+
+    py::Function_ example(
+        "example",
+        [](
+            py::Arg<"x", const py::Object&>::pos x,
+            py::Arg<"y", const py::Object&>::pos y  // TODO: breaks if I use a default value
+        ) {
+            return x.value() - y.value();
+        }
+    );
+    return py::reinterpret_borrow<py::Object>(example.ptr());
 }
 
 
