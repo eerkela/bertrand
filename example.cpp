@@ -157,8 +157,8 @@ void run() {
     // TODO: this should be an example showcase
 
     auto lambda = [](
-        py::Arg<"x", int>::opt x,
-        py::Arg<"y", int>::opt y
+        py::Arg<"x", const int&>::opt x,
+        py::Arg<"y", const int&>::opt y
     ) {
         return x - y;
     };
@@ -958,7 +958,6 @@ void run() {
     // py::print(tz);
 
 
-
     std::chrono::time_point<Clock> end = Clock::now();
     std::chrono::duration<double> elapsed = end - start;
     std::cout << "Elapsed time: " << elapsed.count() << "s\n";
@@ -980,10 +979,11 @@ py::Object hello() {
         "example",
         [](
             py::Arg<"x", const py::Object&>::pos x,
-            py::Arg<"y", const py::Object&>::pos y  // TODO: breaks if I use a default value
+            py::Arg<"y", const py::Object&>::pos::opt y
         ) {
             return x.value() - y.value();
-        }
+        },
+        py::arg_<"y"> = 2
     );
     return py::reinterpret_borrow<py::Object>(example.ptr());
 }
