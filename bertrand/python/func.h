@@ -1110,13 +1110,6 @@ template <typename F = Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::
 class Function_ : public Function_<typename impl::GetSignature<F>::type> {};
 
 
-// TODO: work on shortening error messages where possible.  Currently, they come out
-// as walls of text, which is not ideal.  The best way to do this is to start lifting
-// components out of the function class and into the impl:: namespace.  Also, using
-// nested lambdas produces a lot of noise, so extracting them into standalone functions
-// might be beneficial.
-
-
 template <typename Return, typename... Target>
 class Function_<Return(Target...)> {
 protected:
@@ -1483,35 +1476,23 @@ protected:
 
     template <typename... Source>
     class Arguments {
-
-        template <size_t I, typename T>
-        static constexpr void build_kwargs(
-            std::unordered_map<std::string, T>& map,
-            Source&&... args
-        ) {
-            using Arg = source::template type<source::kw_index + I>;
-            if constexpr (!target::template contains<Inspect<Arg>::name>) {
-                map.emplace(
-                    Inspect<Arg>::name,
-                    get_arg<source::kw_index + I>(std::forward<Source>(args)...)
-                );
-            }
-        }
-
-    public:
         using source = Signature<Source...>;
+
+        template <size_t I>
+        using T = target::template type<I>;
+        template <size_t J>
+        using S = source::template type<J>;
 
         template <size_t J, typename P>
         static constexpr bool check_target_args = true;
         template <size_t J, typename P> requires (J < source::kw_index)
         static constexpr bool check_target_args<J, P> = [] {
-            using S = source::template type<J>;
-            if constexpr (Inspect<S>::args) {
-                if constexpr (!std::convertible_to<typename Inspect<S>::type, P>) {
+            if constexpr (Inspect<S<J>>::args) {
+                if constexpr (!std::convertible_to<typename Inspect<S<J>>::type, P>) {
                     return false;
                 }
             } else {
-                if constexpr (!std::convertible_to<S, P>) {
+                if constexpr (!std::convertible_to<S<J>, P>) {
                     return false;
                 }
             }
@@ -1522,19 +1503,18 @@ protected:
         static constexpr bool check_target_kwargs = true;
         template <size_t J, typename KW> requires (J < source::size)
         static constexpr bool check_target_kwargs<J, KW> = [] {
-            using S = source::template type<J>;
-            if constexpr (Inspect<S>::kwargs) {
-                if constexpr (!std::convertible_to<typename Inspect<S>::type, KW>) {
+            if constexpr (Inspect<S<J>>::kwargs) {
+                if constexpr (!std::convertible_to<typename Inspect<S<J>>::type, KW>) {
                     return false;
                 }
             } else {
                 if constexpr (
                     (
                         target::has_args &&
-                        target::template index<Inspect<S>::name> < target::args_index
+                        target::template index<Inspect<S<J>>::name> < target::args_index
                     ) || (
-                        !target::template contains<Inspect<S>::name> &&
-                        !std::convertible_to<typename Inspect<S>::type, KW>
+                        !target::template contains<Inspect<S<J>>::name> &&
+                        !std::convertible_to<typename Inspect<S<J>>::type, KW>
                     )
                 ) {
                     return false;
@@ -1547,15 +1527,14 @@ protected:
         static constexpr bool check_source_args = true;
         template <size_t I, typename P> requires (I < target::size && I <= target::args_index)
         static constexpr bool check_source_args<I, P> = [] {
-            using T = target::template type<I>;
-            if constexpr (Inspect<T>::args) {
-                if constexpr (!std::convertible_to<P, typename Inspect<T>::type>) {
+            if constexpr (Inspect<T<I>>::args) {
+                if constexpr (!std::convertible_to<P, typename Inspect<T<I>>::type>) {
                     return false;
                 }
             } else {
                 if constexpr (
-                    !std::convertible_to<P, typename Inspect<T>::type> ||
-                    source::template contains<Inspect<T>::name>
+                    !std::convertible_to<P, typename Inspect<T<I>>::type> ||
+                    source::template contains<Inspect<T<I>>::name>
                 ) {
                     return false;
                 }
@@ -1567,14 +1546,13 @@ protected:
         static constexpr bool check_source_kwargs = true;
         template <size_t I, typename KW> requires (I < target::size)
         static constexpr bool check_source_kwargs<I, KW> = [] {
-            using T = target::template type<I>;
             // TODO: does this work as expected?
-            if constexpr (Inspect<T>::kwargs) {
-                if constexpr (!std::convertible_to<KW, typename Inspect<T>::type>) {
+            if constexpr (Inspect<T<I>>::kwargs) {
+                if constexpr (!std::convertible_to<KW, typename Inspect<T<I>>::type>) {
                     return false;
                 }
             } else {
-                if constexpr (!std::convertible_to<KW, typename Inspect<T>::type>) {
+                if constexpr (!std::convertible_to<KW, typename Inspect<T<I>>::type>) {
                     return false;
                 }
             }
@@ -1589,11 +1567,10 @@ protected:
         static constexpr bool enable_recursive = true;
         template <size_t I, size_t J> requires (I < target::size && J >= source::size)
         static constexpr bool enable_recursive<I, J> = [] {
-            using T = target::template type<I>;
-            if constexpr (Inspect<T>::args || Inspect<T>::opt) {
+            if constexpr (Inspect<T<I>>::args || Inspect<T<I>>::opt) {
                 return enable_recursive<I + 1, J>;
-            } else if constexpr (Inspect<T>::kwargs) {
-                return check_target_kwargs<source::kw_index, typename Inspect<T>::type>;
+            } else if constexpr (Inspect<T<I>>::kwargs) {
+                return check_target_kwargs<source::kw_index, typename Inspect<T<I>>::type>;
             }
             return false;
         }();
@@ -1601,74 +1578,67 @@ protected:
         static constexpr bool enable_recursive<I, J> = false;
         template <size_t I, size_t J> requires (I < target::size && J < source::size)
         static constexpr bool enable_recursive<I, J> = [] {
-            using T = target::template type<I>;
-            using S = source::template type<J>;
-
             // ensure target arguments are present & expand variadic parameter packs
-            if constexpr (Inspect<T>::pos) {
+            if constexpr (Inspect<T<I>>::pos) {
                 if constexpr (
-                    (J >= source::kw_index && !Inspect<T>::opt) ||
-                    (Inspect<T>::name != "" && source::template contains<Inspect<T>::name>)
+                    (J >= source::kw_index && !Inspect<T<I>>::opt) ||
+                    (Inspect<T<I>>::name != "" && source::template contains<Inspect<T<I>>::name>)
                 ) {
                     return false;
                 }
-            } else if constexpr (Inspect<T>::kw_only) {
+            } else if constexpr (Inspect<T<I>>::kw_only) {
                 if constexpr (
                     J < source::kw_index ||
-                    (!source::template contains<Inspect<T>::name> && !Inspect<T>::opt)
+                    (!source::template contains<Inspect<T<I>>::name> && !Inspect<T<I>>::opt)
                 ) {
                     return false;
                 }
-            } else if constexpr (Inspect<T>::kw) {
+            } else if constexpr (Inspect<T<I>>::kw) {
                 if constexpr ((
                     J < source::kw_index &&
-                    source::template contains<Inspect<T>::name>
+                    source::template contains<Inspect<T<I>>::name>
                 ) || (
                     J >= source::kw_index &&
-                    !source::template contains<Inspect<T>::name> &&
-                    !Inspect<T>::opt
+                    !source::template contains<Inspect<T<I>>::name> &&
+                    !Inspect<T<I>>::opt
                 )) {
                     return false;
                 }
-            } else if constexpr (Inspect<T>::args) {
-                if constexpr (!check_target_args<J, typename Inspect<T>::type>) {
+            } else if constexpr (Inspect<T<I>>::args) {
+                if constexpr (!check_target_args<J, typename Inspect<T<I>>::type>) {
                     return false;
                 }
                 return enable_recursive<I + 1, source::kw_index>;
-            } else if constexpr (Inspect<T>::kwargs) {
-                return check_target_kwargs<source::kw_index, typename Inspect<T>::type>;
+            } else if constexpr (Inspect<T<I>>::kwargs) {
+                return check_target_kwargs<source::kw_index, typename Inspect<T<I>>::type>;
             } else {
                 return false;
             }
 
             // validate source arguments & expand unpacking operators
-            if constexpr (Inspect<S>::pos) {
-                if constexpr (!std::convertible_to<S, T>) {
+            if constexpr (Inspect<S<J>>::pos) {
+                if constexpr (!std::convertible_to<S<J>, T<I>>) {
                     return false;
                 }
-            } else if constexpr (Inspect<S>::kw) {
-                if constexpr (target::template contains<Inspect<S>::name>) {
-                    using type = target::template type<
-                        target::template index<Inspect<S>::name>
-                    >;
-                    if constexpr (!std::convertible_to<S, type>) {
+            } else if constexpr (Inspect<S<J>>::kw) {
+                if constexpr (target::template contains<Inspect<S<J>>::name>) {
+                    using type = T<target::template index<Inspect<S<J>>::name>>;
+                    if constexpr (!std::convertible_to<S<J>, type>) {
                         return false;
                     }
                 } else if constexpr (!target::has_kwargs) {
-                    using type = Inspect<
-                        typename target::template type<target::kwargs_idx>
-                    >::type;
-                    if constexpr (!std::convertible_to<S, type>) {
+                    using type = Inspect<T<target::kwargs_idx>>::type;
+                    if constexpr (!std::convertible_to<S<J>, type>) {
                         return false;
                     }
                 }
-            } else if constexpr (Inspect<S>::args) {
-                if constexpr (!check_source_args<I, typename Inspect<S>::type>) {
+            } else if constexpr (Inspect<S<J>>::args) {
+                if constexpr (!check_source_args<I, typename Inspect<S<J>>::type>) {
                     return false;
                 }
                 return enable_recursive<target::args_index + 1, J + 1>;
-            } else if constexpr (Inspect<S>::kwargs) {
-                return check_source_kwargs<I, typename Inspect<S>::type>;
+            } else if constexpr (Inspect<S<J>>::kwargs) {
+                return check_source_kwargs<I, typename Inspect<S<J>>::type>;
             } else {
                 return false;
             }
@@ -1676,6 +1646,22 @@ protected:
             // advance to next argument pair
             return enable_recursive<I + 1, J + 1>;
         }();
+
+        template <size_t I, typename T>
+        static constexpr void build_kwargs(
+            std::unordered_map<std::string, T>& map,
+            Source&&... args
+        ) {
+            using Arg = S<source::kw_index + I>;
+            if constexpr (!target::template contains<Inspect<Arg>::name>) {
+                map.emplace(
+                    Inspect<Arg>::name,
+                    get_arg<source::kw_index + I>(std::forward<Source>(args)...)
+                );
+            }
+        }
+
+    public:
 
         /* Call operator is only enabled if source arguments are well-formed and match
         the target signature. */
@@ -1685,7 +1671,7 @@ protected:
         ////    C++ -> C++    ////
         //////////////////////////
 
-        /* The unpack() method is used to convert an index sequence over the target
+        /* The cpp() method is used to convert an index sequence over the target
          * signature into the corresponding values passed from the call site or drawn
          * from the function's defaults.  It is complicated by the presence of variadic
          * parameter packs in both the target signature and the call arguments, which
@@ -1701,30 +1687,19 @@ protected:
          * extract values at runtime, and may therefore raise an error if a
          * corresponding value does not exist in the parameter pack, or if there are
          * extras that are not included in the target signature.
-         *
-         * NOTE: this method should only be called if `enable` evalutes to true, which
-         * means we never have to consider missing/invalid/duplicate inputs.  Thus, we
-         * can safely assume that every target argument has exactly one matching value
-         * in either the call signature or default values.
          */
 
         #define NO_UNPACK \
-            template <size_t I, typename T>
+            template <size_t I>
         #define ARGS_UNPACK \
-            template <size_t I, typename T, typename Iter, std::sentinel_for<Iter> End>
+            template <size_t I, typename Iter, std::sentinel_for<Iter> End>
         #define KWARGS_UNPACK \
-            template <size_t I, typename T, typename Mapping>
+            template <size_t I, typename Mapping>
         #define ARGS_KWARGS_UNPACK \
-            template < \
-                size_t I, \
-                typename T, \
-                typename Iter, \
-                std::sentinel_for<Iter> End, \
-                typename Mapping \
-            >
+            template <size_t I, typename Iter, std::sentinel_for<Iter> End, typename Mapping>
 
         NO_UNPACK
-        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
+        static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
             const DefaultValues& defaults,
             Source&&... args
         ) {
@@ -1735,40 +1710,40 @@ protected:
             }
         }
 
-        NO_UNPACK requires (Inspect<T>::kw && !Inspect<T>::kw_only)
-        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
+        NO_UNPACK requires (Inspect<T<I>>::kw && !Inspect<T<I>>::kw_only)
+        static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
             const DefaultValues& defaults,
             Source&&... args
         ) {
             if constexpr (I < source::kw_index) {
                 return get_arg<I>(std::forward<Source>(args)...);
-            } else if constexpr (source::template contains<Inspect<T>::name>) {
-                constexpr size_t idx = source::template index<Inspect<T>::name>;
+            } else if constexpr (source::template contains<Inspect<T<I>>::name>) {
+                constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
                 return get_arg<idx>(std::forward<Source>(args)...);
             } else {
                 return defaults.template get<I>();
             }
         }
 
-        NO_UNPACK requires (Inspect<T>::kw_only)
-        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
+        NO_UNPACK requires (Inspect<T<I>>::kw_only)
+        static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
             const DefaultValues& defaults,
             Source&&... args
         ) {
-            if constexpr (source::template contains<Inspect<T>::name>) {
-                constexpr size_t idx = source::template index<Inspect<T>::name>;
+            if constexpr (source::template contains<Inspect<T<I>>::name>) {
+                constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
                 return get_arg<idx>(std::forward<Source>(args)...);
             } else {
                 return defaults.template get<I>();
             }
         }
 
-        NO_UNPACK requires (Inspect<T>::args)
+        NO_UNPACK requires (Inspect<T<I>>::args)
         static constexpr auto cpp(
             const DefaultValues& defaults,
             Source&&... args
         ) {
-            using Pack = std::vector<typename Inspect<T>::type>;
+            using Pack = std::vector<typename Inspect<T<I>>::type>;
             Pack vec;
             if constexpr (I < source::kw_index) {
                 constexpr size_t diff = source::kw_index - I;
@@ -1788,12 +1763,12 @@ protected:
             return vec;
         }
 
-        NO_UNPACK requires (Inspect<T>::kwargs)
+        NO_UNPACK requires (Inspect<T<I>>::kwargs)
         static constexpr auto cpp(
             const DefaultValues& defaults,
             Source&&... args
         ) {
-            using Pack = std::unordered_map<std::string, typename Inspect<T>::type>;
+            using Pack = std::unordered_map<std::string, typename Inspect<T<I>>::type>;
             Pack pack;
             []<size_t... Js>(
                 std::index_sequence<Js...>,
@@ -1810,7 +1785,7 @@ protected:
         }
 
         ARGS_UNPACK
-        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
+        static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
@@ -1821,7 +1796,7 @@ protected:
                 return get_arg<I>(std::forward<Source>(args)...);
             } else {
                 if (iter == end) {
-                    if constexpr (Inspect<T>::opt) {
+                    if constexpr (Inspect<T<I>>::opt) {
                         return defaults.template get<I>();
                     } else {
                         throw TypeError(
@@ -1836,8 +1811,8 @@ protected:
             }
         }
 
-        ARGS_UNPACK requires (Inspect<T>::kw && !Inspect<T>::kw_only)
-        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
+        ARGS_UNPACK requires (Inspect<T<I>>::kw && !Inspect<T<I>>::kw_only)
+        static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
@@ -1846,17 +1821,17 @@ protected:
         ) {
             if constexpr (I < source::kw_index) {
                 return get_arg<I>(std::forward<Source>(args)...);
-            } else if constexpr (source::template contains<Inspect<T>::name>) {
-                constexpr size_t idx = source::template index<Inspect<T>::name>;
+            } else if constexpr (source::template contains<Inspect<T<I>>::name>) {
+                constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
                 return get_arg<idx>(std::forward<Source>(args)...);
             } else {
                 if (iter == end) {
-                    if constexpr (Inspect<T>::opt) {
+                    if constexpr (Inspect<T<I>>::opt) {
                         return defaults.template get<I>();
                     } else {
                         throw TypeError(
                             "could not unpack positional args - no match for "
-                            "parameter '" + T::name + "' at index " +
+                            "parameter '" + std::string(T<I>::name) + "' at index " +
                             std::to_string(I)
                         );
                     }
@@ -1866,18 +1841,18 @@ protected:
             }
         }
 
-        ARGS_UNPACK requires (Inspect<T>::kw_only)
-        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
+        ARGS_UNPACK requires (Inspect<T<I>>::kw_only)
+        static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
             const End& end,
             Source&&... args
         ) {
-            return cpp<I, T>(defaults, std::forward<Source>(args)...);  // no unpack
+            return cpp<I>(defaults, std::forward<Source>(args)...);  // no unpack
         }
 
-        ARGS_UNPACK requires (Inspect<T>::args)
+        ARGS_UNPACK requires (Inspect<T<I>>::args)
         static constexpr auto cpp(
             const DefaultValues& defaults,
             size_t size,
@@ -1885,7 +1860,7 @@ protected:
             const End& end,
             Source&&... args
         ) {
-            using Pack = std::vector<typename Inspect<T>::type>;
+            using Pack = std::vector<typename Inspect<T<I>>::type>;
             Pack vec;
             if constexpr (I < source::args_index) {
                 constexpr size_t diff = source::args_index - I;
@@ -1906,7 +1881,7 @@ protected:
             return vec;
         }
 
-        ARGS_UNPACK requires (Inspect<T>::kwargs)
+        ARGS_UNPACK requires (Inspect<T<I>>::kwargs)
         static constexpr auto cpp(
             const DefaultValues& defaults,
             size_t size,
@@ -1914,52 +1889,52 @@ protected:
             const End& end,
             Source&&... args
         ) {
-            return cpp<I, T>(defaults, std::forward<Source>(args)...);  // no unpack
+            return cpp<I>(defaults, std::forward<Source>(args)...);  // no unpack
         }
 
         KWARGS_UNPACK
-        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
+        static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
             const DefaultValues& defaults,
             const Mapping& map,
             Source&&... args
         ) {
-            return cpp<I, T>(defaults, std::forward<Source>(args)...);  // no unpack
+            return cpp<I>(defaults, std::forward<Source>(args)...);  // no unpack
         }
 
-        KWARGS_UNPACK requires (Inspect<T>::kw && !Inspect<T>::kw_only)
-        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
+        KWARGS_UNPACK requires (Inspect<T<I>>::kw && !Inspect<T<I>>::kw_only)
+        static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
             const DefaultValues& defaults,
             const Mapping& map,
             Source&&... args
         ) {
-            auto val = map.find(T::name);
+            auto val = map.find(T<I>::name);
             if constexpr (I < source::kw_index) {
                 if (val != map.end()) {
                     throw TypeError(
-                        "duplicate value for parameter '" + T::name +
+                        "duplicate value for parameter '" + std::string(T<I>::name) +
                         "' at index " + std::to_string(I)
                     );
                 }
                 return get_arg<I>(std::forward<Source>(args)...);
-            } else if constexpr (source::template contains<Inspect<T>::name>) {
+            } else if constexpr (source::template contains<Inspect<T<I>>::name>) {
                 if (val != map.end()) {
                     throw TypeError(
-                        "duplicate value for parameter '" + T::name +
+                        "duplicate value for parameter '" + std::string(T<I>::name) +
                         "' at index " + std::to_string(I)
                     );
                 }
-                constexpr size_t idx = source::template index<Inspect<T>::name>;
+                constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
                 return get_arg<idx>(std::forward<Source>(args)...);
             } else {
                 if (val != map.end()) {
                     return *val;
                 } else {
-                    if constexpr (Inspect<T>::opt) {
+                    if constexpr (Inspect<T<I>>::opt) {
                         return defaults.template get<I>();
                     } else {
                         throw TypeError(
                             "could not unpack keyword args - no match for "
-                            "parameter '" + T::name + "' at index " +
+                            "parameter '" + std::string(T<I>::name) + "' at index " +
                             std::to_string(I)
                         );
                     }
@@ -1967,32 +1942,32 @@ protected:
             }
         }
 
-        KWARGS_UNPACK requires (Inspect<T>::kw_only)
-        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
+        KWARGS_UNPACK requires (Inspect<T<I>>::kw_only)
+        static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
             const DefaultValues& defaults,
             const Mapping& map,
             Source&&... args
         ) {
-            auto val = map.find(T::name);
-            if constexpr (source::template contains<Inspect<T>::name>) {
+            auto val = map.find(T<I>::name);
+            if constexpr (source::template contains<Inspect<T<I>>::name>) {
                 if (val != map.end()) {
                     throw TypeError(
-                        "duplicate value for parameter '" + T::name +
+                        "duplicate value for parameter '" + std::string(T<I>::name) +
                         "' at index " + std::to_string(I)
                     );
                 }
-                constexpr size_t idx = source::template index<Inspect<T>::name>;
+                constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
                 return get_arg<idx>(std::forward<Source>(args)...);
             } else {
                 if (val != map.end()) {
                     return *val;
                 } else {
-                    if constexpr (Inspect<T>::opt) {
+                    if constexpr (Inspect<T<I>>::opt) {
                         return defaults.template get<I>();
                     } else {
                         throw TypeError(
                             "could not unpack keyword args - no match for "
-                            "parameter '" + T::name + "' at index " +
+                            "parameter '" + std::string(T<I>::name) + "' at index " +
                             std::to_string(I)
                         );
                     }
@@ -2000,22 +1975,22 @@ protected:
             }
         }
 
-        KWARGS_UNPACK requires (Inspect<T>::args)
+        KWARGS_UNPACK requires (Inspect<T<I>>::args)
         static constexpr auto cpp(
             const DefaultValues& defaults,
             const Mapping& map,
             Source&&... args
         ) {
-            return cpp<I, T>(defaults, std::forward<Source>(args)...);  // no unpack
+            return cpp<I>(defaults, std::forward<Source>(args)...);  // no unpack
         }
 
-        KWARGS_UNPACK requires (Inspect<T>::kwargs)
+        KWARGS_UNPACK requires (Inspect<T<I>>::kwargs)
         static constexpr auto cpp(
             const DefaultValues& defaults,
             const Mapping& map,
             Source&&... args
         ) {
-            using Pack = std::unordered_map<std::string, typename Inspect<T>::type>;
+            using Pack = std::unordered_map<std::string, typename Inspect<T<I>>::type>;
             Pack pack;
             []<size_t... Js>(
                 std::index_sequence<Js...>,
@@ -2038,7 +2013,7 @@ protected:
         }
 
         ARGS_KWARGS_UNPACK
-        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
+        static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
@@ -2046,7 +2021,7 @@ protected:
             const Mapping& map,
             Source&&... args
         ) {
-            return cpp<I, T>(
+            return cpp<I>(
                 defaults,
                 size,
                 iter,
@@ -2055,8 +2030,8 @@ protected:
             );  // positional unpack
         }
 
-        ARGS_KWARGS_UNPACK requires (Inspect<T>::kw && !Inspect<T>::kw_only)
-        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
+        ARGS_KWARGS_UNPACK requires (Inspect<T<I>>::kw && !Inspect<T<I>>::kw_only)
+        static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
@@ -2064,23 +2039,23 @@ protected:
             const Mapping& map,
             Source&&... args
         ) {
-            auto val = map.find(T::name);
+            auto val = map.find(T<I>::name);
             if constexpr (I < source::kw_index) {
                 if (val != map.end()) {
                     throw TypeError(
-                        "duplicate value for parameter '" + T::name +
+                        "duplicate value for parameter '" + std::string(T<I>::name) +
                         "' at index " + std::to_string(I)
                     );
                 }
                 return get_arg<I>(std::forward<Source>(args)...);
-            } else if constexpr (source::template contains<Inspect<T>::name>) {
+            } else if constexpr (source::template contains<Inspect<T<I>>::name>) {
                 if (val != map.end()) {
                     throw TypeError(
-                        "duplicate value for parameter '" + T::name +
+                        "duplicate value for parameter '" + std::string(T<I>::name) +
                         "' at index " + std::to_string(I)
                     );
                 }
-                constexpr size_t idx = source::template index<Inspect<T>::name>;
+                constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
                 return get_arg<idx>(std::forward<Source>(args)...);
             } else {
                 if (iter != end) {
@@ -2088,20 +2063,21 @@ protected:
                 } else if (val != map.end()) {
                     return *val;
                 } else {
-                    if constexpr (Inspect<T>::opt) {
+                    if constexpr (Inspect<T<I>>::opt) {
                         return defaults.template get<I>();
                     } else {
                         throw TypeError(
                             "could not unpack args - no match for parameter '" +
-                            T::name + "' at index " + std::to_string(I)
+                            std::string(T<I>::name) + "' at index " +
+                            std::to_string(I)
                         );
                     }
                 }
             }
         }
 
-        ARGS_KWARGS_UNPACK requires (Inspect<T>::kw_only)
-        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
+        ARGS_KWARGS_UNPACK requires (Inspect<T<I>>::kw_only)
+        static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
@@ -2109,14 +2085,14 @@ protected:
             const Mapping& map,
             Source&&... args
         ) {
-            return cpp<I, T>(
+            return cpp<I>(
                 defaults,
                 map,
                 std::forward<Source>(args)...
             );  // keyword unpack
         }
 
-        ARGS_KWARGS_UNPACK requires (Inspect<T>::args)
+        ARGS_KWARGS_UNPACK requires (Inspect<T<I>>::args)
         static constexpr auto cpp(
             const DefaultValues& defaults,
             size_t size,
@@ -2125,7 +2101,7 @@ protected:
             const Mapping& map,
             Source&&... args
         ) {
-            return cpp<I, T>(
+            return cpp<I>(
                 defaults,
                 size,
                 iter,
@@ -2134,7 +2110,7 @@ protected:
             );  // positional unpack
         }
 
-        ARGS_KWARGS_UNPACK requires (Inspect<T>::kwargs)
+        ARGS_KWARGS_UNPACK requires (Inspect<T<I>>::kwargs)
         static constexpr auto cpp(
             const DefaultValues& defaults,
             size_t size,
@@ -2143,7 +2119,7 @@ protected:
             const Mapping& map,
             Source&&... args
         ) {
-            return cpp<I, T>(
+            return cpp<I>(
                 defaults,
                 map,
                 std::forward<Source>(args)...
@@ -2156,13 +2132,13 @@ protected:
         #undef ARGS_KWARGS_UNPACK
 
         /////////////////////////////
-        ////    C++ -> Python    ////
+        ////    Python -> C++    ////
         /////////////////////////////
 
-        /* NOTE: these wrappers will always use the vectorcall protocol if it is
-         * enabled, which is the fastest calling convention available in CPython.  This
-         * requires us to parse or allocate an array of PyObject* pointers with a
-         * binary layout that looks something like this:
+        /* NOTE: these wrappers will always use the vectorcall protocol where possible,
+         * which is the fastest calling convention available in CPython.  This requires
+         * us to parse or allocate an array of PyObject* pointers with a binary layout
+         * that looks something like this:
          *
          *                          { kwnames tuple }
          *      -------------------------------------
@@ -2186,7 +2162,139 @@ protected:
          * extra allocations.
          */
 
-        template <size_t J, typename T>
+        template <size_t I>
+        static std::decay_t<typename Inspect<T<I>>::type> from_python(
+            const DefaultValues& defaults,
+            PyObject* const* array,
+            size_t nargs,
+            PyObject* kwnames,
+            size_t kwcount
+        ) {
+            if (I < nargs) {
+                return reinterpret_borrow<Object>(array[I]);
+            }
+            if constexpr (Inspect<T<I>>::opt) {
+                return defaults.template get<I>();
+            } else {
+                throw TypeError(
+                    "missing required positional-only argument at index " +
+                    std::to_string(I)
+                );
+            }
+        }
+
+        template <size_t I> requires (Inspect<T<I>>::kw)
+        static std::decay_t<typename Inspect<T<I>>::type> from_python(
+            const DefaultValues& defaults,
+            PyObject* const* array,
+            size_t nargs,
+            PyObject* kwnames,
+            size_t kwcount
+        ) {
+            if (I < nargs) {
+                return reinterpret_borrow<Object>(array[I]);
+            } else if (kwnames != nullptr) {
+                for (size_t i = 0; i < kwcount; ++i) {
+                    const char* name = PyUnicode_AsUTF8(
+                        PyTuple_GET_ITEM(kwnames, i)
+                    );
+                    if (name == nullptr) {
+                        Exception::from_python();
+                    } else if (std::strcmp(name, Inspect<T<I>>::name) == 0) {
+                        return reinterpret_borrow<Object>(array[nargs + i]);
+                    }
+                }
+            }
+            if constexpr (Inspect<T<I>>::opt) {
+                return defaults.template get<I>();
+            } else {
+                throw TypeError(
+                    "missing required argument '" + std::string(T<I>::name) +
+                    "' at index " + std::to_string(I)
+                );
+            }
+        }
+
+        template <size_t I> requires (Inspect<T<I>>::kw_only)
+        static std::decay_t<typename Inspect<T<I>>::type> from_python(
+            const DefaultValues& defaults,
+            PyObject* const* array,
+            size_t nargs,
+            PyObject* kwnames,
+            size_t kwcount
+        ) {
+            if (kwnames != nullptr) {
+                for (size_t i = 0; i < kwcount; ++i) {
+                    const char* name = PyUnicode_AsUTF8(
+                        PyTuple_GET_ITEM(kwnames, i)
+                    );
+                    if (name == nullptr) {
+                        Exception::from_python();
+                    } else if (std::strcmp(name, Inspect<T<I>>::name) == 0) {
+                        return reinterpret_borrow<Object>(array[i]);
+                    }
+                }
+            }
+            if constexpr (Inspect<T<I>>::opt) {
+                return defaults.template get<I>();
+            } else {
+                throw TypeError(
+                    "missing required keyword-only argument '" +
+                    std::string(T<I>::name) + "'"
+                );
+            }
+        }
+
+        template <size_t I> requires (Inspect<T<I>>::args)
+        static auto from_python(
+            const DefaultValues& defaults,
+            PyObject* const* array,
+            size_t nargs,
+            PyObject* kwnames,
+            size_t kwcount
+        ) {
+            std::vector<typename Inspect<T<I>>::type> vec;
+            for (size_t i = I; i < nargs; ++i) {
+                vec.push_back(reinterpret_borrow<Object>(array[i]));
+            }
+            return vec;
+        }
+
+        template <size_t I> requires (Inspect<T<I>>::kwargs)
+        static auto from_python(
+            const DefaultValues& defaults,
+            PyObject* const* array,
+            size_t nargs,
+            PyObject* kwnames,
+            size_t kwcount
+        ) {
+            std::unordered_map<std::string, typename Inspect<T<I>>::type> map;
+            if (kwnames != nullptr) {
+                auto sequence = std::make_index_sequence<target::kw_count>{};
+                for (size_t i = 0; i < kwcount; ++i) {
+                    Py_ssize_t length;
+                    const char* name = PyUnicode_AsUTF8AndSize(
+                        PyTuple_GET_ITEM(kwnames, i),
+                        &length
+                    );
+                    if (name == nullptr) {
+                        Exception::from_python();
+                    } else if (!target::has_keyword(sequence)) {
+                        map.emplace(
+                            std::string(name, length),
+                            reinterpret_borrow<Object>(array[nargs + i])
+                        );
+                    }
+                }
+            }
+            return map;
+        }
+
+        /////////////////////////////
+        ////    C++ -> Python    ////
+        /////////////////////////////
+
+        template <size_t J>
         static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             try {
                 array[J + 1] = as_object(
@@ -2199,12 +2307,12 @@ protected:
             }
         }
 
-        template <size_t J, typename T> requires (Inspect<T>::kw)
+        template <size_t J> requires (Inspect<S<J>>::kw)
         static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             try {
                 PyObject* name = PyUnicode_FromStringAndSize(
-                    Inspect<T>::name,
-                    Inspect<T>::name.size()
+                    Inspect<S<J>>::name,
+                    Inspect<S<J>>::name.size()
                 );
                 if (name == nullptr) {
                     Exception::from_python();
@@ -2220,7 +2328,7 @@ protected:
             }
         }
 
-        template <size_t J, typename T> requires (Inspect<T>::args)
+        template <size_t J> requires (Inspect<S<J>>::args)
         static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             size_t curr = J + 1;
             try {
@@ -2236,7 +2344,7 @@ protected:
             }
         }
 
-        template <size_t J, typename T> requires (Inspect<T>::kwargs)
+        template <size_t J> requires (Inspect<S<J>>::kwargs)
         static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             size_t curr = J + 1;
             try {
@@ -2258,140 +2366,6 @@ protected:
                     Py_XDECREF(array[i]);
                 }
             }
-        }
-
-        /////////////////////////////
-        ////    Python -> C++    ////
-        /////////////////////////////
-
-        template <size_t I, typename T>
-        static std::decay_t<typename Inspect<T>::type> from_python(
-            const DefaultValues& defaults,
-            PyObject* const* array,
-            size_t nargs,
-            PyObject* kwnames
-        ) {
-            if (I < nargs) {
-                return reinterpret_borrow<Object>(array[I]);
-            }
-            if constexpr (Inspect<T>::opt) {
-                return defaults.template get<I>();
-            } else {
-                throw TypeError(
-                    "missing required positional-only argument at "
-                    "index " + std::to_string(I)
-                );
-            }
-        }
-
-        template <size_t I, typename T> requires (Inspect<T>::kw)
-        static std::decay_t<typename Inspect<T>::type> from_python(
-            const DefaultValues& defaults,
-            PyObject* const* array,
-            size_t nargs,
-            PyObject* kwnames
-        ) {
-            if (I < nargs) {
-                return reinterpret_borrow<Object>(array[I]);
-            } else if (kwnames != nullptr) {
-                Py_ssize_t size = PyTuple_GET_SIZE(kwnames);
-                for (Py_ssize_t i = 0; i < size; ++i) {
-                    Py_ssize_t length;
-                    const char* name = PyUnicode_AsUTF8AndSize(
-                        PyTuple_GET_ITEM(kwnames, i),
-                        &length
-                    );
-                    if (name == nullptr) {
-                        Exception::from_python();
-                    } else if (std::strcmp(name, Inspect<T>::name) == 0) {
-                        return reinterpret_borrow<Object>(array[nargs + i]);
-                    }
-                }
-            }
-            if constexpr (Inspect<T>::opt) {
-                return defaults.template get<I>();
-            } else {
-                throw TypeError(
-                    "missing required argument '" + std::string(T::name) + "' at index " +
-                    std::to_string(I)
-                );
-            }
-        }
-
-        template <size_t I, typename T> requires (Inspect<T>::kw_only)
-        static std::decay_t<typename Inspect<T>::type> from_python(
-            const DefaultValues& defaults,
-            PyObject* const* array,
-            size_t nargs,
-            PyObject* kwnames
-        ) {
-            if (kwnames != nullptr) {
-                Py_ssize_t size = PyTuple_GET_SIZE(kwnames);
-                for (Py_ssize_t i = 0; i < size; ++i) {
-                    Py_ssize_t length;
-                    const char* name = PyUnicode_AsUTF8AndSize(
-                        PyTuple_GET_ITEM(kwnames, i),
-                        &length
-                    );
-                    if (name == nullptr) {
-                        Exception::from_python();
-                    } else if (std::strcmp(name, Inspect<T>::name) == 0) {
-                        return reinterpret_borrow<Object>(array[i]);
-                    }
-                }
-            }
-            if constexpr (Inspect<T>::opt) {
-                return defaults.template get<I>();
-            } else {
-                throw TypeError(
-                    "missing required keyword-only argument '" +
-                    std::string(T::name) + "'"
-                );
-            }
-        }
-
-        template <size_t I, typename T> requires (Inspect<T>::args)
-        static auto from_python(
-            const DefaultValues& defaults,
-            PyObject* const* array,
-            size_t nargs,
-            PyObject* kwnames
-        ) {
-            std::vector<typename Inspect<T>::type> vec;
-            for (size_t i = I; i < nargs; ++i) {
-                vec.push_back(reinterpret_borrow<Object>(array[i]));
-            }
-            return vec;
-        }
-
-        template <size_t I, typename T> requires (Inspect<T>::kwargs)
-        static auto from_python(
-            const DefaultValues& defaults,
-            PyObject* const* array,
-            size_t nargs,
-            PyObject* kwnames
-        ) {
-            std::unordered_map<std::string, typename Inspect<T>::type> map;
-            if (kwnames != nullptr) {
-                Py_ssize_t size = PyTuple_GET_SIZE(kwnames);
-                auto sequence = std::make_index_sequence<target::kw_count>{};
-                for (Py_ssize_t i = 0; i < size; ++i) {
-                    Py_ssize_t length;
-                    const char* name = PyUnicode_AsUTF8AndSize(
-                        PyTuple_GET_ITEM(kwnames, i),
-                        &length
-                    );
-                    if (name == nullptr) {
-                        Exception::from_python();
-                    } else if (!target::has_keyword(sequence)) {
-                        map.emplace(
-                            std::string(name, length),
-                            reinterpret_borrow<Object>(array[nargs + i])
-                        );
-                    }
-                }
-            }
-            return map;
         }
 
     };
@@ -2435,13 +2409,13 @@ protected:
         }
     }
 
-    /* A heap-allocated data structure that holds the core members of the function
-    object, which are shared between Python and C++.  A reference to this object is
-    stored in both the `py::Function` instance and a special `PyCapsule` that is
-    passed up to the PyCFunction wrapper.  It will be kept alive as long as either of
-    these references are in scope, and allows additional references to be passed along
-    whenever a `py::Function` is copied or moved, mirroring the reference counts of the
-    underlying PyObject*.
+    /* A heap-allocated data structure that allows a C++ function to be efficiently
+    passed between Python and C++ without losing any of its original properties.  A
+    shared reference to this object is stored in both the `py::Function` instance and a
+    special `PyCapsule` that is passed up to the PyCFunction wrapper.  It will be kept
+    alive as long as either of these references are in scope, and allows additional
+    references to be passed along whenever a `py::Function` is copied or moved,
+    mirroring the reference count of the underlying PyObject*.
 
     The PyCapsule is annotated with the mangled function type, which includes the
     signature of the underlying C++ function.  By matching against this identifier,
@@ -2454,11 +2428,10 @@ protected:
     If both of these conditions are met, Bertrand will unpack the C++ Capsule and take
     a new reference to it, extending its lifetime.  This avoids creating an additional
     wrapper around the Python function, and allows the function to be passed
-    arbitrarily across the language boundary without losing any of its original
-    properties.
+    arbitrarily across the language boundary without introducing any overhead.
 
     If condition (1) is met but (2) is not, then a TypeError is raised that contains
-    the mismatched signatures, which are demangled for clarity where possible. */
+    the mismatched signatures, which are demangled for clarity. */
     class Capsule {
 
         static std::string demangle(const char* name) {
@@ -2637,11 +2610,19 @@ protected:
         struct Wrap<impl::CallPolicy::one_arg, Dummy> {
             static constexpr int flags = METH_O;
 
-            // TODO: account for default value?
-
             static PyObject* python(PyObject* capsule, PyObject* obj) {
                 try {
-                    return as_object(get(capsule)->func(
+                    Capsule* contents = get(capsule);
+                    if (obj == nullptr) {
+                        if constexpr (target::has_opt) {
+                            return as_object(contents->func(
+                                contents->defaults.template get<0>()
+                            )).release().ptr();
+                        } else {
+                            throw TypeError("missing required argument");
+                        }
+                    }
+                    return as_object(contents->func(
                         reinterpret_borrow<Object>(obj)
                     )).release().ptr();
                 } catch (...) {
@@ -2681,14 +2662,12 @@ protected:
                         Capsule* contents = get(capsule);
                         return as_object(
                             contents->func(
-                                Arguments<Target...>::template from_python<
-                                    Is,
-                                    typename target::template type<Is>
-                                >(
+                                Arguments<Target...>::template from_python<Is>(
                                     contents->defaults,
                                     args,
                                     true_nargs,
-                                    nullptr
+                                    nullptr,
+                                    0
                                 )...
                             )
                         ).release().ptr();
@@ -2724,9 +2703,9 @@ protected:
                         Py_ssize_t nargs,
                         PyObject* kwnames
                     ) {
-                        Py_ssize_t true_nargs = PyVectorcall_NARGS(nargs);
+                        size_t true_nargs = PyVectorcall_NARGS(nargs);
                         if constexpr (!target::has_args) {
-                            if (true_nargs > static_cast<Py_ssize_t>(target::size)) {
+                            if (true_nargs > target::size) {
                                 throw TypeError(
                                     "expected at most " + std::to_string(target::size) +
                                     " positional arguments, but received " +
@@ -2734,10 +2713,11 @@ protected:
                                 );
                             }
                         }
-                        if constexpr (!target::has_kwargs) {
-                            if (kwnames != nullptr) {
-                                Py_ssize_t size = PyTuple_GET_SIZE(kwnames);
-                                for (Py_ssize_t i = 0; i < size; ++i) {
+                        size_t kwcount = 0;
+                        if (kwnames != nullptr) {
+                            kwcount = PyTuple_GET_SIZE(kwnames);
+                            if constexpr (!target::has_kwargs) {
+                                for (size_t i = 0; i < kwcount; ++i) {
                                     Py_ssize_t length;
                                     const char* name = PyUnicode_AsUTF8AndSize(
                                         PyTuple_GET_ITEM(kwnames, i),
@@ -2757,14 +2737,12 @@ protected:
                         Capsule* contents = get(capsule);
                         return as_object(
                             contents->func(
-                                Arguments<Target...>::template from_python<
-                                    Is,
-                                    typename target::template type<Is>
-                                >(
+                                Arguments<Target...>::template from_python<Is>(
                                     contents->defaults,
                                     args,
                                     true_nargs,
-                                    kwnames
+                                    kwnames,
+                                    kwcount
                                 )...
                             )
                         ).release().ptr();
@@ -2874,10 +2852,7 @@ public:
                         kwnames = nullptr;
                     }
                     (
-                        Arguments<Source...>::template to_python<
-                            Is,
-                            typename source::template type<Is>
-                        >(
+                        Arguments<Source...>::template to_python<Is>(
                             kwnames,
                             array,  // TODO: 1-indexed
                             std::forward<Source>(args)...
@@ -2909,10 +2884,7 @@ public:
                     kwnames = nullptr;
                 }
                 (
-                    Arguments<Source...>::template to_python<
-                        Is,
-                        typename source::template type<Is>
-                    >(
+                    Arguments<Source...>::template to_python<Is>(
                         kwnames,
                         array,
                         std::forward<Source>(args)...
@@ -2938,10 +2910,7 @@ public:
                 array[0] = nullptr;
                 PyObject* kwnames = PyTuple_New(source::kw_count + var_kwargs.size());
                 (
-                    Arguments<Source...>::template to_python<
-                        Is,
-                        typename source::template type<Is>
-                    >(
+                    Arguments<Source...>::template to_python<Is>(
                         kwnames,
                         array,
                         std::forward<Source>(args)...
@@ -2968,10 +2937,7 @@ public:
                 array[0] = nullptr;
                 PyObject* kwnames = PyTuple_New(source::kw_count + var_kwargs.size());
                 (
-                    Arguments<Source...>::template to_python<
-                        Is,
-                        typename source::template type<Is>
-                    >(
+                    Arguments<Source...>::template to_python<Is>(
                         kwnames,
                         array,
                         std::forward<Source>(args)...
@@ -3016,7 +2982,7 @@ public:
             using source = Signature<Source...>;
             if constexpr (!source::has_args && !source::has_kwargs) {
                 return func(
-                    Arguments<Source...>::template cpp<Is, typename target::template type<Is>>(
+                    Arguments<Source...>::template cpp<Is>(
                         defaults,
                         std::forward<Source>(args)...
                     )...
@@ -3027,7 +2993,7 @@ public:
                 auto iter = var_args.begin();
                 auto end = var_args.end();
                 return func(
-                    Arguments<Source...>::template cpp<Is, typename target::template type<Is>>(
+                    Arguments<Source...>::template cpp<Is>(
                         defaults,
                         var_args.size(),
                         iter,
@@ -3048,7 +3014,7 @@ public:
                     );
                 }
                 return func(
-                    Arguments<Source...>::template cpp<Is, typename target::template type<Is>>(
+                    Arguments<Source...>::template cpp<Is>(
                         defaults,
                         var_kwargs,
                         std::forward<Source>(args)...
@@ -3067,7 +3033,7 @@ public:
                 auto iter = var_args.begin();
                 auto end = var_args.end();
                 return func(
-                    Arguments<Source...>::template cpp<Is, typename target::template type<Is>>(
+                    Arguments<Source...>::template cpp<Is>(
                         defaults,
                         var_args.size(),
                         iter,

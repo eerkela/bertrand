@@ -984,11 +984,12 @@ py::Object hello() {
     py::Function_ example(
         "example",
         [](
-            py::Arg<"x", const py::Object&> x,
-            py::Arg<"y", const py::Object&>::opt y
+            py::Arg<"x", const int&>::opt x,
+            py::Arg<"y", const int&>::opt y
         ) {
             return x.value - y.value;
         },
+        1,
         py::arg_<"y"> = 2
     );
     return py::reinterpret_borrow<py::Object>(example.ptr());
