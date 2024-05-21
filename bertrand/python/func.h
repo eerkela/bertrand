@@ -739,89 +739,10 @@ class Arg : public impl::ArgTag {
     template <bool positional, bool keyword>
     class Optional : public impl::ArgTag {
 
-        /* Implementation detail:  Optional arguments need to be able to represent a
-         * special, uninitialized state in order to be properly forwarded during Python
-         * function calls.  Normally, the buffer will always be initialized, either
-         * with an explicit value supplied at the call site or a default value provided
-         * to the `py::Function` constructor.  However, if the py::Function is backed
-         * by a Python function object, then no such defaults will be provided.  As
-         * such, the buffer will be left uninitialized, which causes the argument to be
-         * omitted from the final invocation.  This allows Python to supply its own
-         * default values, and means we don't have to redefine them unnecessarily.
-         *
-         * Users should never need to consider this, as it is handled automatically by
-         * the `py::Function` class.  The uninitialized state never leaks out to the
-         * public interface, and is heavily constrained so we can safely ignore it in
-         * practice.
-         */
-
-        template <typename V>
-        struct storage {
-            alignas(V) char buffer[sizeof(V)];
-            bool initialized;
-
-            void assume_initialized() const {
-                #if defined(__clang__)
-                    __builtin_assume(initialized);
-                #elif defined(__GNUC__)
-                    [[assume(initialized)]];
-                #elif defined(_MSC_VER)
-                    __assume(initialized);
-                #endif
-            }
-
-            storage() : initialized(false) {}
-            template <std::convertible_to<V> U>
-            storage(U&& value) : initialized(true) {
-                new (buffer) V(std::forward<U>(value));
-            }
-            storage(const storage& other) : initialized(other.initialized) {
-                if (initialized) {
-                    new (buffer) V(other.value());
-                }
-            }
-            storage(storage&& other) : initialized(other.initialized) {
-                if (initialized) {
-                    new (buffer) V(std::move(other.value()));
-                }
-            }
-            ~storage() noexcept {
-                if (initialized) {
-                    value().~V();
-                }
-            }
-            bool has_value() const { return initialized; }
-            V& value() & {
-                assume_initialized();
-                return reinterpret_cast<V&>(buffer);
-            }
-            V&& value() && {
-                assume_initialized();
-                return std::move(reinterpret_cast<V&>(buffer));
-            }
-            const V& value() const & {
-                assume_initialized();
-                return reinterpret_cast<const V&>(buffer);
-            }
-        };
-
-        template <typename V> requires (std::is_reference_v<V>)
-        struct storage<V> {
-            std::remove_reference_t<V>* ptr;
-            storage() : ptr(nullptr) {}
-            storage(V&& value) : ptr(&value) {}
-            storage(const storage& other) : ptr(other.ptr) {}
-            storage(storage&& other) : ptr(other.ptr) { other.ptr = nullptr; }
-            bool has_value() const { return ptr != nullptr; }
-            V& value() & { return *ptr; }
-            V&& value() && { return std::move(*ptr); }
-            const V& value() const & { return *ptr; }
-        };
-
-        storage<T> m_value;
-
         template <typename>
         friend class Function_;
+
+        T m_value;
 
     public:
         using type = T;
@@ -831,22 +752,21 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = true;
         static constexpr bool is_variadic = false;
 
-        Optional() : m_value() {}
         template <std::convertible_to<T> V>
         Optional(V&& value) : m_value(std::forward<V>(value)) {}
         Optional(const Arg& other) : m_value(other.m_value) {}
         Optional(Arg&& other) : m_value(std::move(other.m_value)) {}
 
-        std::remove_reference_t<T>& value() & { return m_value.value(); }
-        std::remove_reference_t<T>&& value() && { return std::move(m_value.value()); }
+        std::remove_reference_t<T>& value() & { return m_value; }
+        std::remove_reference_t<T>&& value() && { return std::move(m_value); }
         const std::remove_const_t<std::remove_reference_t<T>>& value() const & {
-            return m_value.value();
+            return m_value;
         }
 
-        operator std::remove_reference_t<T>&() & { return value(); }
-        operator std::remove_reference_t<T>&&() && { return std::move(value()); }
+        operator std::remove_reference_t<T>&() & { return m_value; }
+        operator std::remove_reference_t<T>&&() && { return std::move(m_value); }
         operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
-            return value();
+            return m_value;
         }
     };
 
@@ -1059,7 +979,7 @@ public:
 namespace impl {
 
     /* A compile-time tag that allows for the familiar `py::arg<"name"> = value`
-    syntax.  The `py::arg<"name">` bit resolves to an instance of this class, and the
+    syntax.  The `py::arg<"name">` part resolves to an instance of this class, and the
     argument becomes bound when the `=` operator is applied to it. */
     template <StaticStr name>
     struct UnboundArg {
@@ -1246,7 +1166,7 @@ with it special restrictions, including the following:
         function is called.  Since it is impossible to know the size of the container
         at compile time, this is the only way to enforce this constraint.
 */
-template <typename F = Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)>
+template <typename F = Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)>  // TODO: const references?
 class Function_ : public Function_<typename impl::GetSignature<F>::type> {};
 
 
@@ -1479,14 +1399,16 @@ protected:
         an informative compile error. */
         static constexpr bool valid = validate<0, Args...>;
 
+        /* Check whether the signature contains a keyword with the given name at
+        runtime.  Use contains<"name"> to check at compile time instead. */
+        static bool has_keyword(const char* name) {
+            return ((std::strcmp(Inspect<Args>::name, name) == 0) || ...);
+        }
+
     };
 
     using target = Signature<Target...>;
     static_assert(target::valid);
-
-    // TODO: if each value is accounted for separately, then it could allow me to
-    // mutate these values later on, without extra complications from the DefaultValues
-    // tuple itself.
 
     class DefaultValues {
 
@@ -1496,53 +1418,7 @@ protected:
             using type = std::remove_cvref_t<typename Inspect<annotation>::type>;
             static constexpr StaticStr name = Inspect<annotation>::name;
             static constexpr size_t index = I;
-            bool initialized = false;
-            alignas(type) char buffer[sizeof(type)];
-
-            void assume_initialized() const {
-                #if defined(__clang__)
-                    __builtin_assume(initialized);
-                #elif defined(__GNUC__)
-                    [[assume(initialized)]];
-                #elif defined(_MSC_VER)
-                    __assume(initialized);
-                #endif
-            }
-
-            Value(const type& value) : initialized(true) {
-                new (buffer) type(value);
-            }
-            Value(type&& value) : initialized(true) {
-                new (buffer) type(std::move(value));
-            }
-            Value(const Value& other) : initialized(other.initialized) {
-                if (initialized) {
-                    new (buffer) type(other.value());
-                }
-            }
-            Value(Value&& other) : initialized(other.initialized) {
-                if (initialized) {
-                    new (buffer) type(std::move(other.value()));
-                }
-            }
-            ~Value() {
-                if (initialized) {
-                    value().~type();
-                }
-            }
-
-            type& value() & {
-                assume_initialized();
-                return reinterpret_cast<type&>(buffer);
-            }
-            type&& value() && {
-                assume_initialized();
-                return std::move(reinterpret_cast<type&>(buffer));
-            }
-            const type& value() const & {
-                assume_initialized();
-                return reinterpret_cast<const type&>(buffer);
-            }
+            type value;
         };
 
         template <size_t I, typename Tuple, typename... Ts>
@@ -1659,8 +1535,8 @@ protected:
 
         /* Get the default value associated with the target argument at index I. */
         template <size_t I>
-        const Value<I>& get() const {
-            return std::get<find<I, tuple>::value>(values);
+        const auto get() const {
+            return std::get<find<I, tuple>::value>(values).value;
         };
 
     };
@@ -1865,6 +1741,10 @@ protected:
         the target signature. */
         static constexpr bool enable = source::valid && enable_recursive<0, 0>;
 
+        //////////////////////////
+        ////    C++ -> C++    ////
+        //////////////////////////
+
         /* The unpack() method is used to convert an index sequence over the target
          * signature into the corresponding values passed from the call site or drawn
          * from the function's defaults.  It is complicated by the presence of variadic
@@ -1911,7 +1791,7 @@ protected:
             if constexpr (I < source::kw_index) {
                 return get_arg<I>(std::forward<Source>(args)...);
             } else {
-                return defaults.template get<I>().value();
+                return defaults.template get<I>();
             }
         }
 
@@ -1926,7 +1806,7 @@ protected:
                 constexpr size_t idx = source::template index<Inspect<T>::name>;
                 return get_arg<idx>(std::forward<Source>(args)...);
             } else {
-                return defaults.template get<I>().value();
+                return defaults.template get<I>();
             }
         }
 
@@ -1939,7 +1819,7 @@ protected:
                 constexpr size_t idx = source::template index<Inspect<T>::name>;
                 return get_arg<idx>(std::forward<Source>(args)...);
             } else {
-                return defaults.template get<I>().value();
+                return defaults.template get<I>();
             }
         }
 
@@ -2002,7 +1882,7 @@ protected:
             } else {
                 if (iter == end) {
                     if constexpr (Inspect<T>::opt) {
-                        return defaults.template get<I>().value();
+                        return defaults.template get<I>();
                     } else {
                         throw TypeError(
                             "could not unpack positional args - no match for "
@@ -2032,7 +1912,7 @@ protected:
             } else {
                 if (iter == end) {
                     if constexpr (Inspect<T>::opt) {
-                        return defaults.template get<I>().value();
+                        return defaults.template get<I>();
                     } else {
                         throw TypeError(
                             "could not unpack positional args - no match for "
@@ -2135,7 +2015,7 @@ protected:
                     return *val;
                 } else {
                     if constexpr (Inspect<T>::opt) {
-                        return defaults.template get<I>().value();
+                        return defaults.template get<I>();
                     } else {
                         throw TypeError(
                             "could not unpack keyword args - no match for "
@@ -2168,7 +2048,7 @@ protected:
                     return *val;
                 } else {
                     if constexpr (Inspect<T>::opt) {
-                        return defaults.template get<I>().value();
+                        return defaults.template get<I>();
                     } else {
                         throw TypeError(
                             "could not unpack keyword args - no match for "
@@ -2269,7 +2149,7 @@ protected:
                     return *val;
                 } else {
                     if constexpr (Inspect<T>::opt) {
-                        return defaults.template get<I>().value();
+                        return defaults.template get<I>();
                     } else {
                         throw TypeError(
                             "could not unpack args - no match for parameter '" +
@@ -2335,8 +2215,39 @@ protected:
         #undef KW_UNPACK
         #undef POS_KW_UNPACK
 
+        /////////////////////////////
+        ////    C++ -> Python    ////
+        /////////////////////////////
+
+        /* NOTE: these wrappers will always use the vectorcall protocol if it is
+         * enabled, which is the fastest calling convention available in CPython.  This
+         * requires us to parse or allocate an array of PyObject* pointers with a
+         * binary layout that looks something like this:
+         *
+         *                          { kwnames tuple }
+         *      -------------------------------------
+         *      | x | p | p | p |...| k | k | k |...|
+         *      -------------------------------------
+         *            ^             ^
+         *            |             nargs ends here
+         *            *args starts here
+         *
+         * Where 'x' is an optional first element that can be temporarily written to
+         * in order to efficiently forward the `self` argument for bound methods, etc.
+         * The presence of this argument is determined by the
+         * PY_VECTORCALL_ARGUMENTS_OFFSET flag, which is encoded in nargs.  You can
+         * check for its presence by bitwise AND-ing against nargs, and the true
+         * number of arguments must be extracted using `PyVectorcall_NARGS(nargs)`
+         * to account for this.
+         *
+         * If PY_VECTORCALL_ARGUMENTS_OFFSET is set and 'x' is written to, then it must
+         * always be reset to its original value before the function returns.  This
+         * allows for nested forwarding/scoping using the same argument list, with no
+         * extra allocations.
+         */
+
         template <size_t J, typename T>
-        static void python(PyObject* kwnames, PyObject** array, Source&&... args) {
+        static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             try {
                 array[J + 1] = as_object(
                     get_arg<J>(std::forward<Source>(args)...)
@@ -2349,7 +2260,7 @@ protected:
         }
 
         template <size_t J, typename T> requires (Inspect<T>::kw)
-        static void python(PyObject* kwnames, PyObject** array, Source&&... args) {
+        static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             try {
                 PyObject* name = PyUnicode_FromStringAndSize(
                     Inspect<T>::name,
@@ -2358,7 +2269,7 @@ protected:
                 if (name == nullptr) {
                     Exception::from_python();
                 }
-                PyTuple_SET_ITEM(kwnames, J, name);
+                PyTuple_SET_ITEM(kwnames, J - source::kw_index, name);
                 array[J + 1] = as_object(
                     get_arg<J>(std::forward<Source>(args)...)
                 ).release().ptr();
@@ -2370,7 +2281,7 @@ protected:
         }
 
         template <size_t J, typename T> requires (Inspect<T>::args)
-        static void python(PyObject* kwnames, PyObject** array, Source&&... args) {
+        static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             size_t curr = J + 1;
             try {
                 const auto& var_args = get_arg<J>(std::forward<Source>(args)...);
@@ -2386,7 +2297,7 @@ protected:
         }
 
         template <size_t J, typename T> requires (Inspect<T>::kwargs)
-        static void python(PyObject* kwnames, PyObject** array, Source&&... args) {
+        static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             size_t curr = J + 1;
             try {
                 const auto& var_kwargs = get_arg<J>(std::forward<Source>(args)...);
@@ -2398,7 +2309,7 @@ protected:
                     if (name == nullptr) {
                         Exception::from_python();
                     }
-                    PyTuple_SET_ITEM(kwnames, curr, name);
+                    PyTuple_SET_ITEM(kwnames, curr - source::kw_index, name);
                     array[curr] = as_object(value).release().ptr();
                     ++curr;
                 }
@@ -2407,6 +2318,139 @@ protected:
                     Py_XDECREF(array[i]);
                 }
             }
+        }
+
+        /////////////////////////////
+        ////    Python -> C++    ////
+        /////////////////////////////
+
+        template <size_t I, typename T>
+        static std::decay_t<T> from_python(
+            const DefaultValues& defaults,
+            PyObject* const* array,
+            size_t nargs,
+            PyObject* kwnames
+        ) {
+            if (I < nargs) {
+                return reinterpret_borrow<Object>(array[I]);
+            }
+            if constexpr (Inspect<T>::opt) {
+                return std::decay_t<T>{defaults.template get<I>()};
+            } else {
+                throw TypeError(
+                    "missing required positional-only argument at "
+                    "index " + std::to_string(I)
+                );
+            }
+        }
+
+        template <size_t I, typename T> requires (Inspect<T>::kw)
+        static std::decay_t<T> from_python(
+            const DefaultValues& defaults,
+            PyObject* const* array,
+            size_t nargs,
+            PyObject* kwnames
+        ) {
+            if (I < nargs) {
+                return reinterpret_borrow<Object>(array[I]);
+            } else if (kwnames != nullptr) {
+                Py_ssize_t size = PyTuple_GET_SIZE(kwnames);
+                for (Py_ssize_t i = 0; i < size; ++i) {
+                    Py_ssize_t length;
+                    const char* name = PyUnicode_AsUTF8AndSize(
+                        PyTuple_GET_ITEM(kwnames, i),
+                        &length
+                    );
+                    if (name == nullptr) {
+                        Exception::from_python();
+                    } else if (std::strcmp(name, Inspect<T>::name) == 0) {
+                        return reinterpret_borrow<Object>(array[nargs + i]);
+                    }
+                }
+            }
+            if constexpr (Inspect<T>::opt) {
+                return std::decay_t<T>{defaults.template get<I>()};
+            } else {
+                throw TypeError(
+                    "missing required argument '" + std::string(T::name) + "' at index " +
+                    std::to_string(I)
+                );
+            }
+        }
+
+        template <size_t I, typename T> requires (Inspect<T>::kw_only)
+        static std::decay_t<T> from_python(
+            const DefaultValues& defaults,
+            PyObject* const* array,
+            size_t nargs,
+            PyObject* kwnames
+        ) {
+            if (kwnames != nullptr) {
+                Py_ssize_t size = PyTuple_GET_SIZE(kwnames);
+                for (Py_ssize_t i = 0; i < size; ++i) {
+                    Py_ssize_t length;
+                    const char* name = PyUnicode_AsUTF8AndSize(
+                        PyTuple_GET_ITEM(kwnames, i),
+                        &length
+                    );
+                    if (name == nullptr) {
+                        Exception::from_python();
+                    } else if (std::strcmp(name, Inspect<T>::name) == 0) {
+                        return reinterpret_borrow<Object>(array[i]);
+                    }
+                }
+            }
+            if constexpr (Inspect<T>::opt) {
+                return std::decay_t<T>{defaults.template get<I>()};
+            } else {
+                throw TypeError(
+                    "missing required keyword-only argument '" + T::name + "'"
+                );
+            }
+        }
+
+        template <size_t I, typename T> requires (Inspect<T>::args)
+        static std::decay_t<T> from_python(
+            const DefaultValues& defaults,
+            PyObject* const* array,
+            size_t nargs,
+            PyObject* kwnames
+        ) {
+            std::vector<typename Inspect<T>::type> vec;
+            for (size_t i = I; i < nargs; ++i) {
+                vec.push_back(reinterpret_borrow<Object>(array[i]));
+            }
+            return vec;
+        }
+
+        template <size_t I, typename T> requires (Inspect<T>::kwargs)
+        static std::decay_t<T> from_python(
+            const DefaultValues& defaults,
+            PyObject* const* array,
+            size_t nargs,
+            PyObject* kwnames
+        ) {
+            std::unordered_map<std::string, typename Inspect<T>::type> map;
+            if (kwnames != nullptr) {
+                Py_ssize_t size = PyTuple_GET_SIZE(kwnames);
+                auto sequence = std::make_index_sequence<target::kw_count>{};
+                for (Py_ssize_t i = 0; i < size; ++i) {
+                    Py_ssize_t length;
+                    const char* name = PyUnicode_AsUTF8AndSize(
+                        PyTuple_GET_ITEM(kwnames, i),
+                        &length
+                    );
+                    if (name == nullptr) {
+                        Exception::from_python();
+                    } else if (!target::has_keyword(sequence)) {
+                        map.emplace(
+                            std::string(name, length),
+                            reinterpret_borrow<Object>(array[nargs + i])
+                        );
+                    }
+                }
+            }
+            return map;
         }
 
     };
@@ -2476,24 +2520,6 @@ protected:
     the mismatched signatures, which are demangled for clarity where possible. */
     class Capsule {
 
-        struct from_python_t {};
-
-        explicit Capsule(
-            const from_python_t&,
-            std::string&& func_name,
-            std::function<Return(Target...)>&& func,
-            DefaultValues&& defaults
-        ) : name(std::move(func_name)),
-            func(std::move(func)),
-            defaults(std::move(defaults)),
-            method_def(
-                name.c_str(),
-                (PyCFunction) &Wrap<call_policy>::python,
-                Wrap<call_policy>::flags,
-                nullptr
-            )
-        {}
-
         static std::string demangle(const char* name) {
             #if defined(__GNUC__) || defined(__clang__)
                 int status = 0;
@@ -2525,7 +2551,7 @@ protected:
         }
 
     public:
-        static constexpr StaticStr capsule_name = "bt";
+        static constexpr StaticStr capsule_name = "bertrand";
         static const char* capsule_id;
         std::string name;
         std::function<Return(Target...)> func;
@@ -2555,6 +2581,33 @@ protected:
             std::shared_ptr<Capsule> ptr;
         };
 
+        /* Extract the Capsule from a Bertrand-enabled Python function or create a new
+        one to represent a Python function at the C++ level. */
+        static std::shared_ptr<Capsule> from_python(PyObject* func) {
+            if (PyCFunction_Check(func)) {
+                PyObject* self = PyCFunction_GET_SELF(func);
+                if (PyCapsule_IsValid(self, capsule_name)) {
+                    const char* id = (const char*)PyCapsule_GetContext(self);
+                    if (id == nullptr) {
+                        Exception::from_python();
+                    } else if (std::strcmp(id, capsule_id) == 0) {
+                        auto result = reinterpret_cast<Reference*>(
+                            PyCapsule_GetPointer(self, capsule_name)
+                        );
+                        return result->ptr;  // shared_ptr copy
+
+                    } else {
+                        std::string message = "Incompatible function signatures:";
+                        message += "\n    Expected: " + demangle(capsule_id);
+                        message += "\n    Received: " + demangle(id);
+                        throw TypeError(message);
+                    }
+                }
+            }
+
+            return nullptr;
+        }
+
         /* PyCapsule deleter that releases the shared_ptr reference held by the Python
         function when it is garbage collected. */
         static void deleter(PyObject* capsule) {
@@ -2562,6 +2615,18 @@ protected:
                 PyCapsule_GetPointer(capsule, capsule_name)
             );
             delete contents;
+        }
+
+        /* Get the C++ Capsule from the PyCapsule object that's passed as the `self`
+        argument to the PyCFunction wrapper. */
+        static Capsule* get(PyObject* capsule) {
+            auto result = reinterpret_cast<Reference*>(
+                PyCapsule_GetPointer(capsule, capsule_name)
+            );
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return result->ptr.get();
         }
 
         /* Build a PyCFunction wrapper around the C++ function object.  Uses a
@@ -2591,86 +2656,8 @@ protected:
             return result;
         }
 
-        /* Get the C++ Capsule from the PyCapsule object that's passed as the `self`
-        argument to the PyCFunction wrapper. */
-        static Capsule* get(PyObject* capsule) {
-            auto result = reinterpret_cast<Reference*>(
-                PyCapsule_GetPointer(capsule, capsule_name)
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return result->ptr.get();
-        }
-
-        /* Extract the Capsule from a Bertrand-enabled Python function or create a new
-        one to represent a Python function at the C++ level. */
-        static std::shared_ptr<Capsule> from_python(PyObject* func) {
-            if (PyCFunction_Check(func)) {
-                PyObject* self = PyCFunction_GET_SELF(func);
-                if (PyCapsule_IsValid(self, capsule_name)) {
-                    const char* id = (const char*)PyCapsule_GetContext(self);
-                    if (id == nullptr) {
-                        Exception::from_python();
-                    } else if (std::strcmp(id, capsule_id) == 0) {
-                        auto result = reinterpret_cast<Reference*>(
-                            PyCapsule_GetPointer(self, capsule_name)
-                        );
-                        return result->ptr;  // shared_ptr copy
-
-                    } else {
-                        std::string message = "Incompatible function signatures:";
-                        message += "\n    Expected: " + demangle(capsule_id);
-                        message += "\n    Received: " + demangle(id);
-                        throw TypeError(message);
-                    }
-                }
-            }
-
-            PyObject* name_obj = PyObject_GetAttrString(func, "__name__");
-            if (name_obj == nullptr) {
-                Exception::from_python();
-            }
-
-            Py_ssize_t name_len;
-            const char* name_str = PyUnicode_AsUTF8AndSize(name_obj, &name_len);
-            Py_DECREF(name_obj);
-            if (name_str == nullptr) {
-                Exception::from_python();
-            }
-
-            return new Capsule(
-                from_python_t{},
-                std::string(name_str, name_len),
-                Wrap<call_policy>::cpp(),
-                {}  // TODO: all defaults are optional, and are omitted from call
-            );
-        }
-
-
-        // TODO: all this class needs to do is generate a C++ wrapper around a
-        // Python function that calls invoke_py() with the appropriate arguments.  It
-        // also does the opposite, generating a Python wrapper around a C++ function
-        // that accepts vectorcall arguments and forwards them to the C++ function.
-
-
-        // TODO: delete forward<>()
-
-        /* C++ functions might define the target signature to take reference types,
-        which can interfere with conversions when calling the function from Python.  In
-        order to work around this, we store decayed arguments in a local tuple and then
-        selectively move from them when calling std::apply.  This allows references to
-        be respected at all times, without incurring any lifetime issues or compiler
-        warnings about binding lvalues to converted temporaries.  */
-        template <size_t I>
-        static decltype(auto) forward(auto& val) {
-            using T = target::template type<I>;
-            if constexpr (std::is_lvalue_reference_v<typename Inspect<T>::type>) {
-                return val;
-            } else {
-                return std::move(val);
-            }
-        }
+        // TODO: try to lift a bunch of behavior out of this class to shorten error
+        // messages.
 
         /* Choose an optimized Python call protocol based on the target signature. */
         static constexpr impl::CallPolicy call_policy = [] {
@@ -2690,36 +2677,17 @@ protected:
         template <impl::CallPolicy policy, typename Dummy = void>
         struct Wrap;
 
-        // TODO: forwarding argument annotations to as_object forces a conversion to
-        // Object rather than potentially reusing the current value if it is an object
-        // subclass.  That adds extra overhead to the function call.
-
         template <typename Dummy>
         struct Wrap<impl::CallPolicy::no_args, Dummy> {
             static constexpr int flags = METH_NOARGS;
 
             static PyObject* python(PyObject* capsule, PyObject* /* unused */) {
                 try {
-                    return as_object(
-                        get(capsule)->func()
-                    ).release().ptr();
+                    return as_object(get(capsule)->func()).release().ptr();
                 } catch (...) {
                     Exception::to_python();
                     return nullptr;
                 }
-            }
-
-            static std::function<Return(Target...)> cpp(
-                PyObject* func,
-                const DefaultValues& defaults
-            ) {
-                return [func, &defaults]() -> Return {
-                    PyObject* result = PyObject_CallNoArgs(func);
-                    if (result == nullptr) {
-                        Exception::from_python();
-                    }
-                    return reinterpret_steal<Object>(result);
-                };
             }
 
         };
@@ -2727,6 +2695,8 @@ protected:
         template <typename Dummy>
         struct Wrap<impl::CallPolicy::one_arg, Dummy> {
             static constexpr int flags = METH_O;
+
+            // TODO: account for default value?
 
             static PyObject* python(PyObject* capsule, PyObject* obj) {
                 try {
@@ -2739,94 +2709,11 @@ protected:
                 }
             }
 
-            static std::function<Return(Target...)> cpp(
-                PyObject* func,
-                const DefaultValues& defaults
-            ) {
-                return [func, &defaults](Target&&... args) -> Return {
-                    PyObject* result = PyObject_CallOneArg(
-                        func,
-                        as_object(
-                            get_arg<0>(std::forward<Target>(args)...).value()
-                        ).ptr()
-                    );
-                    if (result == nullptr) {
-                        Exception::from_python();
-                    }
-                    return reinterpret_steal<Object>(result);
-                };
-            }
-
         };
-
-        /* NOTE: these wrappers will always use the vectorcall protocol if it is
-         * enabled, which is the fastest calling convention available in CPython.  This
-         * requires us to parse or allocate an array of PyObject* pointers with a
-         * binary layout that looks something like this:
-         *
-         *                          { kwnames tuple }
-         *      -------------------------------------
-         *      | x | p | p | p |...| k | k | k |...|
-         *      -------------------------------------
-         *            ^             ^
-         *            |             nargs ends here
-         *            *args starts here
-         *
-         * Where 'x' is an optional first element that can be temporarily written to
-         * in order to efficiently forward the `self` argument for bound methods, etc.
-         * The presence of this argument is determined by the
-         * PY_VECTORCALL_ARGUMENTS_OFFSET flag, which is encoded in nargs.  You can
-         * check for its presence by bitwise AND-ing against nargs, and the true
-         * number of arguments must be extracted using `PyVectorcall_NARGS(nargs)`
-         * to account for this.
-         *
-         * If PY_VECTORCALL_ARGUMENTS_OFFSET is set and 'x' is written to, then it must
-         * always be reset to its original value before the function returns.  This
-         * allows for nested forwarding/scoping using the same argument list, with no
-         * extra allocations.
-         */
 
         template <typename Dummy>
         struct Wrap<impl::CallPolicy::positional, Dummy> {
             static constexpr int flags = METH_FASTCALL;
-
-            template <size_t I, typename T> requires (Inspect<T>::args)
-            static auto python_arg(
-                const DefaultValues& defaults,
-                PyObject* const* args,
-                Py_ssize_t nargs
-            ) {
-                using Vec = std::vector<std::decay_t<typename Inspect<T>::type>>;
-                Vec var_args;
-                for (Py_ssize_t i = I; i < nargs; ++i) {
-                    var_args.push_back(reinterpret_borrow<Object>(args[i]));
-                }
-                return var_args;
-            }
-
-            // TODO: correctly handle optional arguments here.  If the default is not
-            // initialized, then don't forward it and maintain an offset to correct for
-            // this.
-
-            template <size_t I, typename T> requires (!Inspect<T>::args)
-            static std::decay_t<typename Inspect<T>::type> python_arg(
-                const DefaultValues& defaults,
-                PyObject* const* args,
-                Py_ssize_t nargs
-            ) {
-                if (static_cast<Py_ssize_t>(I) < nargs) {
-                    return reinterpret_borrow<Object>(args[I]);
-                } else {
-                    if constexpr (Inspect<T>::opt) {
-                        return defaults.template get<I>().value();
-                    } else {
-                        throw TypeError(
-                            "missing required positional-only argument at "
-                            "index " + std::to_string(I)
-                        );
-                    }
-                }
-            }
 
             static PyObject* python(
                 PyObject* capsule,
@@ -2840,7 +2727,6 @@ protected:
                         PyObject* const* args,
                         Py_ssize_t nargs
                     ) {
-                        Capsule* contents = get(capsule);
                         Py_ssize_t true_nargs = PyVectorcall_NARGS(nargs);
                         if constexpr (!target::has_args) {
                             if (true_nargs > static_cast<Py_ssize_t>(target::size)) {
@@ -2851,12 +2737,17 @@ protected:
                                 );    
                             }
                         }
+                        Capsule* contents = get(capsule);
                         return as_object(
                             contents->func(
-                                python_arg<Is, typename target::template type<Is>>(
+                                Arguments<Target...>::template from_python<
+                                    Is,
+                                    typename target::template type<Is>
+                                >(
                                     contents->defaults,
                                     args,
-                                    true_nargs
+                                    true_nargs,
+                                    nullptr
                                 )...
                             )
                         ).release().ptr();
@@ -2872,170 +2763,11 @@ protected:
                 }
             }
 
-            // TODO: extract the guts of this into a separate invoke_py method that can
-            // be called from the enclosing py::Function wrapper.
-            // -> Also, handle the default value thing at the same time.
-
-            template <size_t I, typename T>
-            static void cpp_arg(PyObject** array, T&& arg) {
-                // TODO: after doing default value refactor, this needs to check if the
-                // argument is optional and not given, in which case it is not added to
-                // the array.
-                try {
-                    // TODO: forwarding the argument annotation to as_object forces an
-                    // extra conversion to Object, which is unnecessary if the value is
-                    // already an Object subclass.
-                    array[I + 1] = as_object(std::forward<T>(arg)).release().ptr();
-                } catch (...) {
-                    for (size_t i = 1; i <= I; ++i) {
-                        Py_XDECREF(array[i]);
-                    }
-                    throw;
-                }
-            }
-
-            // TODO: default value refactor makes this super complicated.  It means I
-            // need to check the number of optional arguments that were given at the
-            // call site and adjust the size of the array accordingly.
-
-            // -> Maybe what I can do is hold a boolean that indicates whether the
-            // underlying function is a C++ or Python function.  If It's a C++ function,
-            // I do what I'm doing now and fully parse the signature.  If it's a
-            // Python function, then while I'm parsing the arguments, I can check if
-            // optional arguments are given at compile time.  If they aren't I omit
-            // them from the argument array, which can be computed at compile time.
-
-            // -> it might be possible to just track an offset instead.  That would
-            // mean I still iterate over the optional arguments, but every time I find
-            // an empty one, I add to an offset that is subtracted at every index.
-            // That would overallocate the array, but it's almost certainly the
-            // faster/cleaner option, rather than reimplementing the argument parsing
-            // logic once again.
-
-            template <typename = void> requires (!target::has_args)
-            static std::function<Return(Target...)> cpp(
-                PyObject* func,
-                const DefaultValues& defaults
-            ) {
-                // non-variadic case can use a stack-allocated array
-                return [func, &defaults](Target&&... args) -> Return {
-                    PyObject* array[1 + target::size];
-                    array[0] = nullptr;
-
-                    []<size_t... Is>(
-                        std::index_sequence<Is...>,
-                        PyObject** array,
-                        Target&&... args
-                    ) {
-                        (cpp_arg<Is>(array, std::forward<Target>(args)), ...);
-                    }(
-                        std::make_index_sequence<target::size>{},
-                        array,
-                        std::forward<Target>(args)...
-                    );
-
-                    PyObject* result = PyObject_Vectorcall(
-                        func,
-                        array + 1,
-                        target::size | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-
-                    for (size_t i = 1; i <= target::size; ++i) {
-                        Py_XDECREF(array[i]);
-                    }
-
-                    if (result == nullptr) {
-                        Exception::from_python();
-                    }
-                    return reinterpret_steal<Object>(result);
-                };
-            }
-
-            template <typename = void> requires (target::has_args)
-            static std::function<Return(Target...)> cpp(
-                PyObject* func,
-                const DefaultValues& defaults
-            ) {
-                // variadic case requires a heap-allocated array
-                return [func, &defaults](Target&&... args) -> Return {
-                    auto var_args = get_arg<target::args_index>(
-                        std::forward<Target>(args)...
-                    );
-                    size_t nargs = target::size + var_args.size();
-                    // if constexpr (!target::has_args) {
-                    //     if (true_nargs > static_cast<Py_ssize_t>(target::size)) {
-                    //         throw TypeError(
-                    //             "expected at most " + std::to_string(target::size) +
-                    //             " positional arguments, but received " +
-                    //             std::to_string(true_nargs)
-                    //         );    
-                    //     }
-                    // }
-
-                    auto array = std::unique_ptr(
-                        new PyObject*[1 + nargs],
-                        [nargs](PyObject** array) {
-                            for (size_t i = 1; i <= nargs; ++i) {
-                                Py_XDECREF(array[i]);
-                            }
-                            delete[] array;
-                        }
-                    );
-                    array[0] = nullptr;
-
-                    []<size_t... Is>(
-                        std::index_sequence<Is...>,
-                        PyObject** array,
-                        Target&&... args
-                    ) {
-                        (cpp_arg(array, std::forward<Target>(args)), ...);
-                    }(
-                        std::make_index_sequence<target::size>{},
-                        array,
-                        std::forward<Target>(args)...
-                    );
-
-                    size_t i = target::size;
-                    try {
-                        for (auto&& val : var_args) {
-                            array[++i] = as_object(val).release().ptr();
-                        }
-                    } catch (...) {
-                        for (size_t j = 1; j < i; ++j) {
-                            Py_XDECREF(array[j]);
-                        }
-                        throw;
-                    }
-
-                    PyObject* result = PyObject_Vectorcall(
-                        func,
-                        array.get() + 1,
-                        nargs | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                    if (result == nullptr) {
-                        Exception::from_python();
-                    }
-                    return reinterpret_steal<Object>(result);
-                };
-            }
-
         };
 
         template <typename Dummy>
         struct Wrap<impl::CallPolicy::keyword, Dummy> {
             static constexpr int flags = METH_FASTCALL | METH_KEYWORDS;
-
-            template <size_t I, typename T>
-            static Object python_arg(
-                PyObject* const* args,
-                Py_ssize_t nargs,
-                PyObject* kwnames
-            ) {
-                // TODO: do complicated stuff here
-                return {};
-            }
 
             static PyObject* python(
                 PyObject* capsule,
@@ -3051,25 +2783,48 @@ protected:
                         Py_ssize_t nargs,
                         PyObject* kwnames
                     ) {
-                        Capsule* contents = get(capsule);
                         Py_ssize_t true_nargs = PyVectorcall_NARGS(nargs);
-
-                        // create a tuple of decayed types to stabilize lifetimes
-                        auto tuple = std::make_tuple(
-                            python_arg<Is, typename target::template type<Is>>(
-                                args,
-                                true_nargs,
-                                kwnames
-                            )...
-                        );
-
-                        // forwarding from the tuple allows l/rvalues to bind correctly
+                        if constexpr (!target::has_args) {
+                            if (true_nargs > static_cast<Py_ssize_t>(target::size)) {
+                                throw TypeError(
+                                    "expected at most " + std::to_string(target::size) +
+                                    " positional arguments, but received " +
+                                    std::to_string(true_nargs)
+                                );
+                            }
+                        }
+                        if constexpr (!target::has_kwargs) {
+                            if (kwnames != nullptr) {
+                                Py_ssize_t size = PyTuple_GET_SIZE(kwnames);
+                                for (Py_ssize_t i = 0; i < size; ++i) {
+                                    Py_ssize_t length;
+                                    const char* name = PyUnicode_AsUTF8AndSize(
+                                        PyTuple_GET_ITEM(kwnames, i),
+                                        &length
+                                    );
+                                    if (name == nullptr) {
+                                        Exception::from_python();
+                                    } else if (!target::has_keyword(name)) {
+                                        throw TypeError(
+                                            "unexpected keyword argument '" +
+                                            std::string(name, length) + "'"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Capsule* contents = get(capsule);
                         return as_object(
-                            std::apply(
-                                [&contents](auto&... vals) {
-                                    return contents->func(forward<Is>(vals)...);
-                                },
-                                tuple
+                            contents->func(
+                                Arguments<Target...>::template from_python<
+                                    Is,
+                                    typename target::template type<Is>
+                                >(
+                                    contents->defaults,
+                                    args,
+                                    true_nargs,
+                                    kwnames
+                                )...
                             )
                         ).release().ptr();
                     }(
@@ -3085,38 +2840,6 @@ protected:
                 }
             }
 
-            template <typename = void> requires (target::has_args && target::has_kwargs)
-            static std::function<Return(Target...)> cpp(
-                PyObject* func,
-                const DefaultValues& defaults
-            ) {
-                
-            }
-
-            template <typename = void> requires (target::has_args)
-            static std::function<Return(Target...)> cpp(
-                PyObject* func,
-                const DefaultValues& defaults
-            ) {
-
-            }
-
-            template <typename = void> requires (target::has_kwargs)
-            static std::function<Return(Target...)> cpp(
-                PyObject* func,
-                const DefaultValues& defaults
-            ) {
-
-            }
-
-            template <typename = void> requires (!target::has_args && !target::has_kwargs)
-            static std::function<Return(Target...)> cpp(
-                PyObject* func,
-                const DefaultValues& defaults
-            ) {
-
-            }
-
         };
 
     };
@@ -3127,8 +2850,10 @@ protected:
 public:
     using Defaults = DefaultValues;
 
-    template <typename... Args>
-    static constexpr bool invocable = Arguments<Args...>::enable;
+    /* Template constraint that evaluates to true if this function can be called with
+    the templated argument types. */
+    template <typename... Source>
+    static constexpr bool invocable = Arguments<Source...>::enable;
 
     /* Construct a py::Function from a valid C++ function with the templated signature.
     Use CTAD to deduce the signature if not explicitly provided.  If the signature
@@ -3147,41 +2872,51 @@ public:
         m_ptr(Capsule::to_python(contents))
     {}
 
+    /* Copy constructor. */
+    Function_(const Function_& other) : contents(other.contents), m_ptr(other.m_ptr) {
+        Py_XINCREF(m_ptr);
+    }
+
+    /* Move constructor. */
+    Function_(Function_&& other) : contents(std::move(other.contents)), m_ptr(other.m_ptr) {
+        other.m_ptr = nullptr;
+    }
+
     ~Function_() {
         Py_XDECREF(m_ptr);
     }
 
     /* Call an external Python function that matches the target signature using
     Python-style arguments. */
-    template <typename... Args> requires (invocable<Args...>)
-    static Return invoke_py(Handle func, Args&&... args) {
+    template <typename... Source> requires (invocable<Source...>)
+    static Return invoke_py(Handle func, Source&&... args) {
         return []<size_t... Is>(
             std::index_sequence<Is...>,
             const Handle& func,
-            Args&&... args
+            Source&&... args
         ) {
-            using sig = Signature<Args...>;
+            using source = Signature<Source...>;
             PyObject* result;
 
             // if there are no arguments, we can use an optimized protocol
-            if constexpr (sig::size == 0) {
+            if constexpr (source::size == 0) {
                 result = PyObject_CallNoArgs(func.ptr());
 
-            } else if constexpr (!sig::has_args && !sig::has_kwargs) {
+            } else if constexpr (!source::has_args && !source::has_kwargs) {
                 // if there is only one argument, we can use an optimized protocol
-                if constexpr (sig::size == 1) {
-                    if constexpr (sig::has_kw) {
+                if constexpr (source::size == 1) {
+                    if constexpr (source::has_kw) {
                         result = PyObject_CallOneArg(
                             func.ptr(),
                             as_object(
-                                get_arg<0>(std::forward<Args>(args)...).value()
+                                get_arg<0>(std::forward<Source>(args)...).value()
                             ).ptr()
                         );
                     } else {
                         result = PyObject_CallOneArg(
                             func.ptr(),
                             as_object(
-                                get_arg<0>(std::forward<Args>(args)...)
+                                get_arg<0>(std::forward<Source>(args)...)
                             ).ptr()
                         );
                     }
@@ -3189,115 +2924,127 @@ public:
                 // if there are no *args, **kwargs, we can stack allocate the argument
                 // array with a fixed size
                 } else {
-                    PyObject* array[sig::size + 1];
+                    PyObject* array[source::size + 1];
                     array[0] = nullptr;
                     PyObject* kwnames;
-                    if constexpr (sig::has_kw) {
-                        kwnames = PyTuple_New(sig::kw_count);
+                    if constexpr (source::has_kw) {
+                        kwnames = PyTuple_New(source::kw_count);
                     } else {
                         kwnames = nullptr;
                     }
                     (
-                        Arguments<Args...>::template python<Is>(
-                            kwnames,  // TODO: index computed as Is - sig::kw_index
+                        Arguments<Source...>::template to_python<
+                            Is,
+                            typename source::template type<Is>
+                        >(
+                            kwnames,
                             array,  // TODO: 1-indexed
-                            std::forward<Args>(args)...
+                            std::forward<Source>(args)...
                         ),
                         ...
                     );
-                    Py_ssize_t npos = sig::size - sig::kw_count;
+                    Py_ssize_t npos = source::size - source::kw_count;
                     result = PyObject_Vectorcall(
                         func.ptr(),
                         array + 1,
                         npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         kwnames
                     );
-                    for (size_t i = 1; i <= sig::size; ++i) {
+                    for (size_t i = 1; i <= source::size; ++i) {
                         Py_XDECREF(array[i]);
                     }
                 }
 
             // otherwise, we have to heap-allocate the array with a variable size
-            } else if constexpr (sig::has_args && !sig::has_kwargs) {
-                auto var_args = get_arg<sig::args_index>(std::forward<Args>(args)...);
-                size_t nargs = sig::size - 1 + var_args.size();
+            } else if constexpr (source::has_args && !source::has_kwargs) {
+                auto var_args = get_arg<source::args_index>(std::forward<Source>(args)...);
+                size_t nargs = source::size - 1 + var_args.size();
                 PyObject** array = new PyObject*[nargs + 1];
                 array[0] = nullptr;
                 PyObject* kwnames;
-                if constexpr (sig::has_kw) {
-                    kwnames = PyTuple_New(sig::kw_count);
+                if constexpr (source::has_kw) {
+                    kwnames = PyTuple_New(source::kw_count);
                 } else {
                     kwnames = nullptr;
                 }
                 (
-                    Arguments<Args...>::template python<Is>(
+                    Arguments<Source...>::template to_python<
+                        Is,
+                        typename source::template type<Is>
+                    >(
                         kwnames,
                         array,
-                        std::forward<Args>(args)...
+                        std::forward<Source>(args)...
                     ),
                     ...
                 );
-                Py_ssize_t npos = sig::size - 1 - sig::kw_count + var_args.size();
+                Py_ssize_t npos = source::size - 1 - source::kw_count + var_args.size();
                 result = PyObject_Vectorcall(
                     func.ptr(),
                     array + 1,
                     npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                     nullptr
                 );
-                for (size_t i = 1; i <= sig::size; ++i) {
+                for (size_t i = 1; i <= source::size; ++i) {
                     Py_XDECREF(array[i]);
                 }
                 delete[] array;
 
-            } else if constexpr (!sig::has_args && sig::has_kwargs) {
-                auto var_kwargs = get_arg<sig::kwargs_index>(std::forward<Args>(args)...);
-                size_t nargs = sig::size - 1 + var_kwargs.size();
+            } else if constexpr (!source::has_args && source::has_kwargs) {
+                auto var_kwargs = get_arg<source::kwargs_index>(std::forward<Source>(args)...);
+                size_t nargs = source::size - 1 + var_kwargs.size();
                 PyObject** array = new PyObject*[nargs + 1];
                 array[0] = nullptr;
-                PyObject* kwnames = PyTuple_New(sig::kw_count + var_kwargs.size());
+                PyObject* kwnames = PyTuple_New(source::kw_count + var_kwargs.size());
                 (
-                    Arguments<Args...>::template python<Is>(
+                    Arguments<Source...>::template to_python<
+                        Is,
+                        typename source::template type<Is>
+                    >(
                         kwnames,
                         array,
-                        std::forward<Args>(args)...
+                        std::forward<Source>(args)...
                     ),
                     ...
                 );
-                Py_ssize_t npos = sig::size - 1 - sig::kw_count;
+                Py_ssize_t npos = source::size - 1 - source::kw_count;
                 result = PyObject_Vectorcall(
                     func.ptr(),
                     array + 1,
                     npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                     kwnames
                 );
-                for (size_t i = 1; i <= sig::size; ++i) {
+                for (size_t i = 1; i <= source::size; ++i) {
                     Py_XDECREF(array[i]);
                 }
                 delete[] array;
 
             } else {
-                auto var_args = get_arg<sig::args_index>(std::forward<Args>(args)...);
-                auto var_kwargs = get_arg<sig::kwargs_index>(std::forward<Args>(args)...);
-                size_t nargs = sig::size - 2 + var_args.size() + var_kwargs.size();
+                auto var_args = get_arg<source::args_index>(std::forward<Source>(args)...);
+                auto var_kwargs = get_arg<source::kwargs_index>(std::forward<Source>(args)...);
+                size_t nargs = source::size - 2 + var_args.size() + var_kwargs.size();
                 PyObject** array = new PyObject*[nargs + 1];
                 array[0] = nullptr;
-                PyObject* kwnames = PyTuple_New(sig::kw_count + var_kwargs.size());
+                PyObject* kwnames = PyTuple_New(source::kw_count + var_kwargs.size());
                 (
-                    Arguments<Args...>::template python<Is>(
+                    Arguments<Source...>::template to_python<
+                        Is,
+                        typename source::template type<Is>
+                    >(
                         kwnames,
                         array,
-                        std::forward<Args>(args)...
+                        std::forward<Source>(args)...
                     ),
                     ...
                 );
-                size_t npos = sig::size - 2 - sig::kw_count + var_args.size();
+                size_t npos = source::size - 2 - source::kw_count + var_args.size();
                 result = PyObject_Vectorcall(
                     func.ptr(),
                     array + 1,
                     npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                     kwnames
                 );
-                for (size_t i = 1; i <= sig::size; ++i) {
+                for (size_t i = 1; i <= source::size; ++i) {
                     Py_XDECREF(array[i]);
                 }
                 delete[] array;
@@ -3308,51 +3055,51 @@ public:
             }
             return reinterpret_steal<Object>(result);
         }(
-            std::make_index_sequence<sizeof...(Args)>{},
+            std::make_index_sequence<sizeof...(Source)>{},
             func,
-            std::forward<Args>(args)...
+            std::forward<Source>(args)...
         );
     }
 
     /* Call an external C++ function that matches the target signature using the
     given defaults and Python-style arguments. */
-    template <typename Func, typename... Args>
-        requires (std::is_invocable_r_v<Return, Func, Target...> && invocable<Args...>)
-    static Return invoke_cpp(const Defaults& defaults, Func&& func, Args&&... args) {
+    template <typename Func, typename... Source>
+        requires (std::is_invocable_r_v<Return, Func, Target...> && invocable<Source...>)
+    static Return invoke_cpp(const Defaults& defaults, Func&& func, Source&&... args) {
         return []<size_t... Is>(
             std::index_sequence<Is...>,
             const Defaults& defaults,
             Func&& func,
-            Args&&... args
+            Source&&... args
         ) {
-            using sig = Signature<Args...>;
-            if constexpr (!sig::has_args && !sig::has_kwargs) {
+            using source = Signature<Source...>;
+            if constexpr (!source::has_args && !source::has_kwargs) {
                 return func(
-                    Arguments<Args...>::template cpp<Is, typename target::template type<Is>>(
+                    Arguments<Source...>::template cpp<Is, typename target::template type<Is>>(
                         defaults,
-                        std::forward<Args>(args)...
+                        std::forward<Source>(args)...
                     )...
                 );
 
-            } else if constexpr (sig::has_args && !sig::has_kwargs) {
-                auto var_args = get_arg<sig::args_index>(std::forward<Args>(args)...);
+            } else if constexpr (source::has_args && !source::has_kwargs) {
+                auto var_args = get_arg<source::args_index>(std::forward<Source>(args)...);
                 auto iter = var_args.begin();
                 auto end = var_args.end();
                 return func(
-                    Arguments<Args...>::template cpp<Is, typename target::template type<Is>>(
+                    Arguments<Source...>::template cpp<Is, typename target::template type<Is>>(
                         defaults,
                         var_args.size(),
                         iter,
                         end,
-                        std::forward<Args>(args)...
+                        std::forward<Source>(args)...
                     )...
                 );
                 if constexpr (!target::has_args) {
                     validate_args(iter, end);
                 }
 
-            } else if constexpr (!sig::has_args && sig::has_kwargs) {
-                auto var_kwargs = get_arg<sig::kwargs_index>(std::forward<Args>(args)...);
+            } else if constexpr (!source::has_args && source::has_kwargs) {
+                auto var_kwargs = get_arg<source::kwargs_index>(std::forward<Source>(args)...);
                 if constexpr (!target::has_kwargs) {
                     validate_kwargs(
                         std::make_index_sequence<target::size>{},
@@ -3360,32 +3107,32 @@ public:
                     );
                 }
                 return func(
-                    Arguments<Args...>::template cpp<Is, typename target::template type<Is>>(
+                    Arguments<Source...>::template cpp<Is, typename target::template type<Is>>(
                         defaults,
                         var_kwargs,
-                        std::forward<Args>(args)...
+                        std::forward<Source>(args)...
                     )...
                 );
 
             } else {
-                auto var_kwargs = get_arg<sig::kwargs_index>(std::forward<Args>(args)...);
+                auto var_kwargs = get_arg<source::kwargs_index>(std::forward<Source>(args)...);
                 if constexpr (!target::has_kwargs) {
                     validate_kwargs(
                         std::make_index_sequence<target::size>{},
                         var_kwargs
                     );
                 }
-                auto var_args = get_arg<sig::args_index>(std::forward<Args>(args)...);
+                auto var_args = get_arg<source::args_index>(std::forward<Source>(args)...);
                 auto iter = var_args.begin();
                 auto end = var_args.end();
                 return func(
-                    Arguments<Args...>::template cpp<Is, typename target::template type<Is>>(
+                    Arguments<Source...>::template cpp<Is, typename target::template type<Is>>(
                         defaults,
                         var_args.size(),
                         iter,
                         end,
                         var_kwargs,
-                        std::forward<Args>(args)...
+                        std::forward<Source>(args)...
                     )...
                 );
                 if constexpr (!target::has_args) {
@@ -3396,18 +3143,22 @@ public:
             std::make_index_sequence<target::size>{},
             defaults,
             std::forward<Func>(func),
-            std::forward<Args>(args)...
+            std::forward<Source>(args)...
         );
     }
 
-    /* Call the C++ function with the given arguments. */
+    /* Call the function with the given arguments. */
     template <typename... Source> requires (invocable<Source...>)
     Return operator()(Source&&... args) const {
-        return invoke_cpp(
-            contents->defaults,
-            contents->func,
-            std::forward<Source>(args)...
-        );
+        if (contents == nullptr) {
+            return invoke_py(m_ptr, std::forward<Source>(args)...);
+        } else {
+            return invoke_cpp(
+                contents->defaults,
+                contents->func,
+                std::forward<Source>(args)...
+            );
+        }
     }
 
     PyObject* ptr() const {

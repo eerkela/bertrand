@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <chrono>
 #include <complex>
 #include <deque>

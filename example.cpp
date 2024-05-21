@@ -167,8 +167,7 @@ void run() {
     constexpr auto y = py::arg_<"y">;
     // constexpr auto z = py::arg_<"z">;
 
-    py::Function_ func("subtract", lambda, y = 2, x = 1);
-    // py::Function_ func("subtract", lambda, 1, 2);
+    py::Function_ func("subtract", lambda, y = 2, x = 1);  // TODO: causes memory safety problems
 
     py::print(func());
 
@@ -978,8 +977,8 @@ py::Object hello() {
     py::Function_ example(
         "example",
         [](
-            py::Arg<"x", const py::Object&>::pos x,
-            py::Arg<"y", const py::Object&>::pos::opt y
+            py::Arg<"x", const py::Object&> x,
+            py::Arg<"y", const py::Object&>::opt y
         ) {
             return x.value() - y.value();
         },
