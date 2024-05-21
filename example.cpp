@@ -156,6 +156,13 @@ void run() {
 
     // TODO: this should be an example showcase
 
+    // TODO: the lifetime issue stems from the fact that this triggers implicit conversions,
+    // which yield temporaries when called from Python.  When I call the function from
+    // Python, I interpret the argument as a py::Object, and then I apply an implicit
+    // conversion to const int&, which creates a temporary.  In this case, I probably
+    // have to construct a tuple and then call it via std::apply to avoid lifetime
+    // issues.
+
     auto lambda = [](
         py::Arg<"x", const int&>::opt x,
         py::Arg<"y", const int&>::opt y
@@ -167,9 +174,9 @@ void run() {
     constexpr auto y = py::arg_<"y">;
     // constexpr auto z = py::arg_<"z">;
 
-    py::Function_ func("subtract", lambda, y = 2, x = 1);  // TODO: causes memory safety problems
+    py::Function_ func("subtract", lambda, y = 2, x = 1);
 
-    py::print(func());
+    py::print(func());  // TODO: not memory safe for some reason
 
     py::print(func(1));
     py::print(func(x = 1));
@@ -980,7 +987,7 @@ py::Object hello() {
             py::Arg<"x", const py::Object&> x,
             py::Arg<"y", const py::Object&>::opt y
         ) {
-            return x.value() - y.value();
+            return x.value - y.value;
         },
         py::arg_<"y"> = 2
     );

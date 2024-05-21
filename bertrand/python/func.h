@@ -733,18 +733,8 @@ argument to a py::Function. */
 template <StaticStr Name, typename T>
 class Arg : public impl::ArgTag {
 
-    template <typename>
-    friend class Function_;
-
     template <bool positional, bool keyword>
-    class Optional : public impl::ArgTag {
-
-        template <typename>
-        friend class Function_;
-
-        T m_value;
-
-    public:
+    struct Optional : public impl::ArgTag {
         using type = T;
         static constexpr StaticStr name = Name;
         static constexpr bool is_positional = positional;
@@ -752,33 +742,22 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = true;
         static constexpr bool is_variadic = false;
 
+        T value;
+
         template <std::convertible_to<T> V>
-        Optional(V&& value) : m_value(std::forward<V>(value)) {}
-        Optional(const Arg& other) : m_value(other.m_value) {}
-        Optional(Arg&& other) : m_value(std::move(other.m_value)) {}
+        Optional(V&& value) : value(std::forward<V>(value)) {}
+        Optional(const Arg& other) : value(other.value) {}
+        Optional(Arg&& other) : value(std::move(other.value)) {}
 
-        std::remove_reference_t<T>& value() & { return m_value; }
-        std::remove_reference_t<T>&& value() && { return std::move(m_value); }
-        const std::remove_const_t<std::remove_reference_t<T>>& value() const & {
-            return m_value;
-        }
-
-        operator std::remove_reference_t<T>&() & { return m_value; }
-        operator std::remove_reference_t<T>&&() && { return std::move(m_value); }
+        operator std::remove_reference_t<T>&() & { return value; }
+        operator std::remove_reference_t<T>&&() && { return std::move(value); }
         operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
-            return m_value;
+            return value;
         }
     };
 
     template <bool optional>
-    class Positional : public impl::ArgTag {
-
-        template <typename>
-        friend class Function_;
-
-        T m_value;
-
-    public:
+    struct Positional : public impl::ArgTag {
         using type = T;
         using opt = Optional<true, false>;
         static constexpr StaticStr name = Name;
@@ -787,33 +766,22 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = optional;
         static constexpr bool is_variadic = false;
 
+        T value;
+
         template <std::convertible_to<T> V>
-        Positional(V&& value) : m_value(std::forward<V>(value)) {}
-        Positional(const Arg& other) : m_value(other.m_value) {}
-        Positional(Arg&& other) : m_value(std::move(other.m_value)) {}
+        Positional(V&& value) : value(std::forward<V>(value)) {}
+        Positional(const Arg& other) : value(other.m_value) {}
+        Positional(Arg&& other) : value(std::move(other.m_value)) {}
 
-        std::remove_reference_t<T>& value() & { return m_value; }
-        std::remove_reference_t<T>&& value() && { return std::move(m_value); }
-        const std::remove_const_t<std::remove_reference_t<T>>& value() const & {
-            return m_value;
-        }
-
-        operator std::remove_reference_t<T>&() & { return m_value; }
-        operator std::remove_reference_t<T>&&() && { return std::move(m_value); }
+        operator std::remove_reference_t<T>&() & { return value; }
+        operator std::remove_reference_t<T>&&() && { return std::move(value); }
         operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
-            return m_value;
+            return value;
         }
     };
 
     template <bool optional>
-    class Keyword : public impl::ArgTag {
-
-        template <typename>
-        friend class Function_;
-
-        T m_value;
-
-    public:
+    struct Keyword : public impl::ArgTag {
         using type = T;
         using opt = Optional<false, true>;
         static constexpr StaticStr name = Name;
@@ -822,32 +790,21 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = optional;
         static constexpr bool is_variadic = false;
 
+        T value;
+
         template <std::convertible_to<T> V>
-        Keyword(V&& value) : m_value(std::forward<V>(value)) {}
-        Keyword(const Arg& other) : m_value(other.m_value) {}
-        Keyword(Arg&& other) : m_value(std::move(other.m_value)) {}
+        Keyword(V&& value) : value(std::forward<V>(value)) {}
+        Keyword(const Arg& other) : value(other.m_value) {}
+        Keyword(Arg&& other) : value(std::move(other.m_value)) {}
 
-        std::remove_reference_t<T>& value() & { return m_value; }
-        std::remove_reference_t<T>&& value() && { return std::move(m_value); }
-        const std::remove_const_t<std::remove_reference_t<T>>& value() const & {
-            return m_value;
-        }
-
-        operator std::remove_reference_t<T>&() & { return m_value; }
-        operator std::remove_reference_t<T>&&() && { return std::move(m_value); }
+        operator std::remove_reference_t<T>&() & { return value; }
+        operator std::remove_reference_t<T>&&() && { return std::move(value); }
         operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
-            return m_value;
+            return value;
         }
     };
 
-    class Args : public impl::ArgTag {
-
-        template <typename>
-        friend class Function_;
-
-        std::vector<T> m_value;
-
-    public:
+    struct Args : public impl::ArgTag {
         using type = T;
         static constexpr StaticStr name = Name;
         static constexpr bool is_positional = true;
@@ -855,51 +812,42 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = false;
         static constexpr bool is_variadic = true;
 
+        std::vector<T> value;
+
         Args() = default;
-        Args(const std::vector<T>& value) : m_value(value) {}
-        Args(std::vector<T>&& value) : m_value(std::move(value)) {}
+        Args(const std::vector<T>& value) : value(value) {}
+        Args(std::vector<T>&& value) : value(std::move(value)) {}
         template <std::convertible_to<T> V>
         Args(const std::vector<V>& value) {
-            m_value.reserve(value.size());
+            this->value.reserve(value.size());
             for (const auto& item : value) {
-                m_value.push_back(item);
+                this->value.push_back(item);
             }
         }
-        Args(const Args& other) : m_value(other.m_value) {}
-        Args(Args&& other) : m_value(std::move(other.m_value)) {}
+        Args(const Args& other) : value(other.value) {}
+        Args(Args&& other) : value(std::move(other.value)) {}
 
-        std::vector<T>& value() & { return m_value; }
-        std::vector<T>&& value() && { return std::move(m_value); }
-        const std::vector<T>& value() const & { return m_value; }
+        operator std::vector<T>&() & { return value; }
+        operator std::vector<T>&&() && { return std::move(value); }
+        operator const std::vector<T>&() const & { return value; }
 
-        operator std::vector<T>&() & { return m_value; }
-        operator std::vector<T>&&() && { return std::move(m_value); }
-        operator const std::vector<T>&() const & { return m_value; }
-
-        auto begin() const { return m_value.begin(); }
-        auto cbegin() const { return m_value.cbegin(); }
-        auto end() const { return m_value.end(); }
-        auto cend() const { return m_value.cend(); }
-        auto rbegin() const { return m_value.rbegin(); }
-        auto crbegin() const { return m_value.crbegin(); }
-        auto rend() const { return m_value.rend(); }
-        auto crend() const { return m_value.crend(); }
-        constexpr auto size() const { return m_value.size(); }
-        constexpr auto empty() const { return m_value.empty(); }
-        constexpr auto data() const { return m_value.data(); }
-        constexpr decltype(auto) front() const { return m_value.front(); }
-        constexpr decltype(auto) back() const { return m_value.back(); }
-        constexpr decltype(auto) operator[](size_t index) const { return m_value.at(index); } 
+        auto begin() const { return value.begin(); }
+        auto cbegin() const { return value.cbegin(); }
+        auto end() const { return value.end(); }
+        auto cend() const { return value.cend(); }
+        auto rbegin() const { return value.rbegin(); }
+        auto crbegin() const { return value.crbegin(); }
+        auto rend() const { return value.rend(); }
+        auto crend() const { return value.crend(); }
+        constexpr auto size() const { return value.size(); }
+        constexpr auto empty() const { return value.empty(); }
+        constexpr auto data() const { return value.data(); }
+        constexpr decltype(auto) front() const { return value.front(); }
+        constexpr decltype(auto) back() const { return value.back(); }
+        constexpr decltype(auto) operator[](size_t index) const { return value.at(index); } 
     };
 
-    class Kwargs : public impl::ArgTag {
-
-        template <typename>
-        friend class Function_;
-
-        std::unordered_map<std::string, T> m_value;
-
-    public:
+    struct Kwargs : public impl::ArgTag {
         using type = T;
         static constexpr StaticStr name = Name;
         static constexpr bool is_positional = false;
@@ -907,40 +855,36 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = false;
         static constexpr bool is_variadic = true;
 
+        std::unordered_map<std::string, T> value;
+
         Kwargs();
-        Kwargs(const std::unordered_map<std::string, T>& value) : m_value(m_value) {}
-        Kwargs(std::unordered_map<std::string, T>&& value) : m_value(std::move(m_value)) {}
+        Kwargs(const std::unordered_map<std::string, T>& value) : value(value) {}
+        Kwargs(std::unordered_map<std::string, T>&& value) : value(std::move(value)) {}
         template <std::convertible_to<T> V>
         Kwargs(const std::unordered_map<std::string, V>& value) {
-            m_value.reserve(value.size());
+            this->value.reserve(value.size());
             for (const auto& [k, v] : value) {
-                m_value.emplace(k, v);
+                this->value.emplace(k, v);
             }
         }
-        Kwargs(const Kwargs& other) : m_value(other.m_value) {}
-        Kwargs(Kwargs&& other) : m_value(std::move(other.m_value)) {}
+        Kwargs(const Kwargs& other) : value(other.value) {}
+        Kwargs(Kwargs&& other) : value(std::move(other.value)) {}
 
-        std::unordered_map<std::string, T>& value() & { return m_value; }
-        std::unordered_map<std::string, T>&& value() && { return std::move(m_value); }
-        const std::unordered_map<std::string, T>& value() const & { return m_value; }
+        operator std::unordered_map<std::string, T>&() & { return value; }
+        operator std::unordered_map<std::string, T>&&() && { return std::move(value); }
+        operator const std::unordered_map<std::string, T>&() const & { return value; }
 
-        operator std::unordered_map<std::string, T>&() & { return m_value; }
-        operator std::unordered_map<std::string, T>&&() && { return std::move(m_value); }
-        operator const std::unordered_map<std::string, T>&() const & { return m_value; }
-
-        auto begin() const { return m_value.begin(); }
-        auto cbegin() const { return m_value.cbegin(); }
-        auto end() const { return m_value.end(); }
-        auto cend() const { return m_value.cend(); }
-        constexpr auto size() const { return m_value.size(); }
-        constexpr bool empty() const { return m_value.empty(); }
-        constexpr bool contains(const std::string& key) const { return m_value.contains(key); }
-        constexpr auto count(const std::string& key) const { return m_value.count(key); }
-        decltype(auto) find(const std::string& key) const { return m_value.find(key); }
-        decltype(auto) operator[](const std::string& key) const { return m_value.at(key); }
+        auto begin() const { return value.begin(); }
+        auto cbegin() const { return value.cbegin(); }
+        auto end() const { return value.end(); }
+        auto cend() const { return value.cend(); }
+        constexpr auto size() const { return value.size(); }
+        constexpr bool empty() const { return value.empty(); }
+        constexpr bool contains(const std::string& key) const { return value.contains(key); }
+        constexpr auto count(const std::string& key) const { return value.count(key); }
+        decltype(auto) find(const std::string& key) const { return value.find(key); }
+        decltype(auto) operator[](const std::string& key) const { return value.at(key); }
     };
-
-    T m_value;
 
 public:
     static_assert(Name != "", "Argument name cannot be an empty string.");
@@ -957,21 +901,17 @@ public:
     static constexpr bool is_optional = false;
     static constexpr bool is_variadic = false;
 
+    T value;
+
     template <std::convertible_to<T> V>
-    Arg(V&& value) : m_value(std::forward<V>(value)) {}
-    Arg(const Arg& other) : m_value(other.m_value) {}
-    Arg(Arg&& other) : m_value(std::move(other.m_value)) {}
+    Arg(V&& value) : value(std::forward<V>(value)) {}
+    Arg(const Arg& other) : value(other.value) {}
+    Arg(Arg&& other) : value(std::move(other.value)) {}
 
-    std::remove_reference_t<T>& value() & { return m_value; }
-    std::remove_reference_t<T>&& value() && { return std::move(m_value); }
-    const std::remove_const_t<std::remove_reference_t<T>>& value() const & {
-        return m_value;
-    }
-
-    operator std::remove_reference_t<T>&() & { return m_value; }
-    operator std::remove_reference_t<T>&&() && { return std::move(m_value); }
+    operator std::remove_reference_t<T>&() & { return value; }
+    operator std::remove_reference_t<T>&&() && { return std::move(value); }
     operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
-        return m_value;
+        return value;
     }
 };
 
@@ -1086,7 +1026,7 @@ wrapper around it) with `py::Arg` tags.  For instance:
 Note that the annotations themselves are implicitly convertible to the underlying
 argument types, so they should be acceptable as inputs to most functions without any
 additional syntax.  If necessary, they can be explicitly dereferenced through the `*`
-and `->` operators, or by accessing their `.value()` member directly, which comprises
+and `->` operators, or by accessing their `.value` member directly, which comprises
 their entire interface.  Also note that for each argument marked as `::optional`, we
 must provide a default value within the function's constructor, which will be
 substituted whenever we call the function without specifying that argument.
@@ -1502,7 +1442,7 @@ protected:
                     using D = std::tuple_element<I, tuple>::type;
                     return get_arg<source::template index<D::name>>(
                         std::forward<Source>(values)...
-                    ).value();
+                    ).value;
                 }
             }
 
@@ -1770,11 +1710,11 @@ protected:
 
         #define NO_UNPACK \
             template <size_t I, typename T>
-        #define POS_UNPACK \
+        #define ARGS_UNPACK \
             template <size_t I, typename T, typename Iter, std::sentinel_for<Iter> End>
-        #define KW_UNPACK \
+        #define KWARGS_UNPACK \
             template <size_t I, typename T, typename Mapping>
-        #define POS_KW_UNPACK \
+        #define ARGS_KWARGS_UNPACK \
             template < \
                 size_t I, \
                 typename T, \
@@ -1784,7 +1724,7 @@ protected:
             >
 
         NO_UNPACK
-        static constexpr std::decay_t<T> cpp(
+        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
             const DefaultValues& defaults,
             Source&&... args
         ) {
@@ -1796,7 +1736,7 @@ protected:
         }
 
         NO_UNPACK requires (Inspect<T>::kw && !Inspect<T>::kw_only)
-        static constexpr std::decay_t<T> cpp(
+        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
             const DefaultValues& defaults,
             Source&&... args
         ) {
@@ -1811,7 +1751,7 @@ protected:
         }
 
         NO_UNPACK requires (Inspect<T>::kw_only)
-        static constexpr std::decay_t<T> cpp(
+        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
             const DefaultValues& defaults,
             Source&&... args
         ) {
@@ -1824,18 +1764,18 @@ protected:
         }
 
         NO_UNPACK requires (Inspect<T>::args)
-        static constexpr std::decay_t<T> cpp(
+        static constexpr auto cpp(
             const DefaultValues& defaults,
             Source&&... args
         ) {
-            using Vec = std::vector<typename Inspect<T>::type>;
-            Vec vec;
+            using Pack = std::vector<typename Inspect<T>::type>;
+            Pack vec;
             if constexpr (I < source::kw_index) {
                 constexpr size_t diff = source::kw_index - I;
                 vec.reserve(diff);
                 []<size_t... Js>(
                     std::index_sequence<Js...>,
-                    Vec& vec,
+                    Pack& vec,
                     Source&&... args
                 ) {
                     (vec.push_back(get_arg<I + Js>(std::forward<Source>(args)...)), ...);
@@ -1849,7 +1789,7 @@ protected:
         }
 
         NO_UNPACK requires (Inspect<T>::kwargs)
-        static constexpr std::decay_t<T> cpp(
+        static constexpr auto cpp(
             const DefaultValues& defaults,
             Source&&... args
         ) {
@@ -1869,8 +1809,8 @@ protected:
             return pack;
         }
 
-        POS_UNPACK
-        static constexpr std::decay_t<T> cpp(
+        ARGS_UNPACK
+        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
@@ -1896,8 +1836,8 @@ protected:
             }
         }
 
-        POS_UNPACK requires (Inspect<T>::kw && !Inspect<T>::kw_only)
-        static constexpr std::decay_t<T> cpp(
+        ARGS_UNPACK requires (Inspect<T>::kw && !Inspect<T>::kw_only)
+        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
@@ -1926,8 +1866,8 @@ protected:
             }
         }
 
-        POS_UNPACK requires (Inspect<T>::kw_only)
-        static constexpr std::decay_t<T> cpp(
+        ARGS_UNPACK requires (Inspect<T>::kw_only)
+        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
@@ -1937,22 +1877,22 @@ protected:
             return cpp<I, T>(defaults, std::forward<Source>(args)...);  // no unpack
         }
 
-        POS_UNPACK requires (Inspect<T>::args)
-        static constexpr std::decay_t<T> cpp(
+        ARGS_UNPACK requires (Inspect<T>::args)
+        static constexpr auto cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
             const End& end,
             Source&&... args
         ) {
-            using Vec = std::vector<typename Inspect<T>::type>;
-            Vec vec;
+            using Pack = std::vector<typename Inspect<T>::type>;
+            Pack vec;
             if constexpr (I < source::args_index) {
                 constexpr size_t diff = source::args_index - I;
                 vec.reserve(diff + size);
                 []<size_t... Js>(
                     std::index_sequence<Js...>,
-                    Vec& vec,
+                    Pack& vec,
                     Source&&... args
                 ) {
                     (vec.push_back(get_arg<I + Js>(std::forward<Source>(args)...)), ...);
@@ -1966,8 +1906,8 @@ protected:
             return vec;
         }
 
-        POS_UNPACK requires (Inspect<T>::kwargs)
-        static constexpr std::decay_t<T> cpp(
+        ARGS_UNPACK requires (Inspect<T>::kwargs)
+        static constexpr auto cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
@@ -1977,8 +1917,8 @@ protected:
             return cpp<I, T>(defaults, std::forward<Source>(args)...);  // no unpack
         }
 
-        KW_UNPACK
-        static constexpr std::decay_t<T> cpp(
+        KWARGS_UNPACK
+        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
             const DefaultValues& defaults,
             const Mapping& map,
             Source&&... args
@@ -1986,8 +1926,8 @@ protected:
             return cpp<I, T>(defaults, std::forward<Source>(args)...);  // no unpack
         }
 
-        KW_UNPACK requires (Inspect<T>::kw && !Inspect<T>::kw_only)
-        static constexpr std::decay_t<T> cpp(
+        KWARGS_UNPACK requires (Inspect<T>::kw && !Inspect<T>::kw_only)
+        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
             const DefaultValues& defaults,
             const Mapping& map,
             Source&&... args
@@ -2027,8 +1967,8 @@ protected:
             }
         }
 
-        KW_UNPACK requires (Inspect<T>::kw_only)
-        static constexpr std::decay_t<T> cpp(
+        KWARGS_UNPACK requires (Inspect<T>::kw_only)
+        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
             const DefaultValues& defaults,
             const Mapping& map,
             Source&&... args
@@ -2060,8 +2000,8 @@ protected:
             }
         }
 
-        KW_UNPACK requires (Inspect<T>::args)
-        static constexpr std::decay_t<T> cpp(
+        KWARGS_UNPACK requires (Inspect<T>::args)
+        static constexpr auto cpp(
             const DefaultValues& defaults,
             const Mapping& map,
             Source&&... args
@@ -2069,8 +2009,8 @@ protected:
             return cpp<I, T>(defaults, std::forward<Source>(args)...);  // no unpack
         }
 
-        KW_UNPACK requires (Inspect<T>::kwargs)
-        static constexpr std::decay_t<T> cpp(
+        KWARGS_UNPACK requires (Inspect<T>::kwargs)
+        static constexpr auto cpp(
             const DefaultValues& defaults,
             const Mapping& map,
             Source&&... args
@@ -2097,8 +2037,8 @@ protected:
             return pack;
         }
 
-        POS_KW_UNPACK
-        static constexpr std::decay_t<T> cpp(
+        ARGS_KWARGS_UNPACK
+        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
@@ -2115,8 +2055,8 @@ protected:
             );  // positional unpack
         }
 
-        POS_KW_UNPACK requires (Inspect<T>::kw && !Inspect<T>::kw_only)
-        static constexpr std::decay_t<T> cpp(
+        ARGS_KWARGS_UNPACK requires (Inspect<T>::kw && !Inspect<T>::kw_only)
+        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
@@ -2160,8 +2100,8 @@ protected:
             }
         }
 
-        POS_KW_UNPACK requires (Inspect<T>::kw_only)
-        static constexpr std::decay_t<T> cpp(
+        ARGS_KWARGS_UNPACK requires (Inspect<T>::kw_only)
+        static constexpr std::decay_t<typename Inspect<T>::type> cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
@@ -2176,8 +2116,8 @@ protected:
             );  // keyword unpack
         }
 
-        POS_KW_UNPACK requires (Inspect<T>::args)
-        static constexpr std::decay_t<T> cpp(
+        ARGS_KWARGS_UNPACK requires (Inspect<T>::args)
+        static constexpr auto cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
@@ -2194,8 +2134,8 @@ protected:
             );  // positional unpack
         }
 
-        POS_KW_UNPACK requires (Inspect<T>::kwargs)
-        static constexpr std::decay_t<T> cpp(
+        ARGS_KWARGS_UNPACK requires (Inspect<T>::kwargs)
+        static constexpr auto cpp(
             const DefaultValues& defaults,
             size_t size,
             Iter& iter,
@@ -2211,9 +2151,9 @@ protected:
         }
 
         #undef NO_UNPACK
-        #undef POS_UNPACK
-        #undef KW_UNPACK
-        #undef POS_KW_UNPACK
+        #undef ARGS_UNPACK
+        #undef KWARGS_UNPACK
+        #undef ARGS_KWARGS_UNPACK
 
         /////////////////////////////
         ////    C++ -> Python    ////
@@ -2325,7 +2265,7 @@ protected:
         /////////////////////////////
 
         template <size_t I, typename T>
-        static std::decay_t<T> from_python(
+        static std::decay_t<typename Inspect<T>::type> from_python(
             const DefaultValues& defaults,
             PyObject* const* array,
             size_t nargs,
@@ -2335,7 +2275,7 @@ protected:
                 return reinterpret_borrow<Object>(array[I]);
             }
             if constexpr (Inspect<T>::opt) {
-                return std::decay_t<T>{defaults.template get<I>()};
+                return defaults.template get<I>();
             } else {
                 throw TypeError(
                     "missing required positional-only argument at "
@@ -2345,7 +2285,7 @@ protected:
         }
 
         template <size_t I, typename T> requires (Inspect<T>::kw)
-        static std::decay_t<T> from_python(
+        static std::decay_t<typename Inspect<T>::type> from_python(
             const DefaultValues& defaults,
             PyObject* const* array,
             size_t nargs,
@@ -2369,7 +2309,7 @@ protected:
                 }
             }
             if constexpr (Inspect<T>::opt) {
-                return std::decay_t<T>{defaults.template get<I>()};
+                return defaults.template get<I>();
             } else {
                 throw TypeError(
                     "missing required argument '" + std::string(T::name) + "' at index " +
@@ -2379,7 +2319,7 @@ protected:
         }
 
         template <size_t I, typename T> requires (Inspect<T>::kw_only)
-        static std::decay_t<T> from_python(
+        static std::decay_t<typename Inspect<T>::type> from_python(
             const DefaultValues& defaults,
             PyObject* const* array,
             size_t nargs,
@@ -2401,16 +2341,17 @@ protected:
                 }
             }
             if constexpr (Inspect<T>::opt) {
-                return std::decay_t<T>{defaults.template get<I>()};
+                return defaults.template get<I>();
             } else {
                 throw TypeError(
-                    "missing required keyword-only argument '" + T::name + "'"
+                    "missing required keyword-only argument '" +
+                    std::string(T::name) + "'"
                 );
             }
         }
 
         template <size_t I, typename T> requires (Inspect<T>::args)
-        static std::decay_t<T> from_python(
+        static auto from_python(
             const DefaultValues& defaults,
             PyObject* const* array,
             size_t nargs,
@@ -2424,7 +2365,7 @@ protected:
         }
 
         template <size_t I, typename T> requires (Inspect<T>::kwargs)
-        static std::decay_t<T> from_python(
+        static auto from_python(
             const DefaultValues& defaults,
             PyObject* const* array,
             size_t nargs,
@@ -2459,10 +2400,10 @@ protected:
     static void validate_args(Iter& iter, const End& end) {
         if (iter != end) {
             std::string message =
-                "too many arguments in positional parameter pack: ['" + *iter;
-            while (iter != end) {
+                "too many arguments in positional parameter pack: ['" + repr(*iter);
+            while (++iter != end) {
                 message += "', '";
-                message += repr(*(iter++));
+                message += repr(*iter);
             }
             message += "']";
             throw TypeError(message);
@@ -2484,10 +2425,10 @@ protected:
         if (!extra.empty()) {
             auto iter = extra.begin();
             auto end = extra.end();
-            std::string message = "unexpected keyword arguments: ['" + *iter;
+            std::string message = "unexpected keyword arguments: ['" + repr(*iter);
             while (++iter != end) {
                 message += "', '";
-                message += *iter;
+                message += repr(*iter);
             }
             message += "']";
             throw TypeError(message);
@@ -2909,7 +2850,7 @@ public:
                         result = PyObject_CallOneArg(
                             func.ptr(),
                             as_object(
-                                get_arg<0>(std::forward<Source>(args)...).value()
+                                get_arg<0>(std::forward<Source>(args)...).value
                             ).ptr()
                         );
                     } else {
@@ -3213,26 +3154,6 @@ public:
 
     // TODO: Perhaps `py::DynamicFunction` is a separate class after all, and only
     // represents a PyFunctionObject.
-
-    // TODO: ::borrow/steal(name, handle, defaults...) replaces reinterpret_borrow/steal for
-    // a function type, which is disabled due to special handling for default arguments.
-    // This will borrow/steal the function object, and then consult Def to generate
-    // a lambda that invokes it using an optimized calling convention.
-
-    // TODO: what would be really nice is if I could infer the function name and
-    // default values from the PyObject* itself, but that would preclude the ability to
-    // wrap PyCFunction pointers, which don't have any facility to inspect default
-    // values or the function name.  The only way to solve this would be to modify the
-    // PyCFunction_Type itself or subclass it to add support for these features only
-    // within the context of this class.  That would be a pretty big undertaking, but
-    // it would make a decent PEP.
-
-    // -> This also means I have to handle all of my optional argument logic just the
-    // same as in C++ when I generate the 2-way Python bindings.  The PyCFunction
-    // has to apply these defaults itself before invoking the C++ function.  Similarly,
-    // the std::function has to insert them before invoking the Python function, in
-    // case the defaults are different between the `py::Function` object and its
-    // underlying Python function.
 
     // TODO: What if DynamicFunc was implemented such that adding or removing an
     // argument at the C++ level yielded a new `py::Function` object with the updated
