@@ -1,19 +1,15 @@
+#include <string>
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
 
-#ifndef BERTRAND_PYTHON_FUNC_H
-#define BERTRAND_PYTHON_FUNC_H
+#ifndef BERTRAND_PYTHON_COMMON_FUNC_H
+#define BERTRAND_PYTHON_COMMON_FUNC_H
 
-#include <fstream>
-
-#include "common.h"
-#include "dict.h"
-#include "str.h"
-#include "tuple.h"
-#include "list.h"
-#include "type.h"
-
+#include "declarations.h"
+#include "concepts.h"
+#include "exceptions.h"
+#include "object.h"
 
 #if defined(__GNUC__) || defined(__clang__)
 #include <cxxabi.h>
@@ -29,692 +25,6 @@ namespace bertrand {
 namespace py {
 
 
-////////////////////
-////    CODE    ////
-////////////////////
-
-
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_name">                                : Returns<Str> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_qualname">                            : Returns<Str> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_argcount">                            : Returns<Int> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_posonlyargcount">                     : Returns<Int> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_kwonlyargcount">                      : Returns<Int> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_nlocals">                             : Returns<Int> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_varnames">                            : Returns<Tuple<Str>> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_cellvars">                            : Returns<Tuple<Str>> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_freevars">                            : Returns<Tuple<Str>> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_code">                                : Returns<Bytes> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_consts">                              : Returns<Tuple<Object>> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_names">                               : Returns<Tuple<Str>> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_filename">                            : Returns<Str> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_firstlineno">                         : Returns<Int> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_stacksize">                           : Returns<Int> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_flags">                               : Returns<Int> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_positions">                           : Returns<Function> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_lines">                               : Returns<Function> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "replace">                                : Returns<Function> {};
-
-
-/* A new subclass of pybind11::object that represents a compiled Python code object,
-enabling seamless embedding of Python as a scripting language within C++.
-
-This class is extremely powerful, and is best explained by example:
-
-    // in source.py
-    import numpy as np
-    print(np.arange(10))
-
-    // in main.cpp
-    static const py::Code script("source.py");
-    script();  // prints [0 1 2 3 4 5 6 7 8 9]
-
-.. note::
-
-    Note that the script in this example is stored in a separate file, which can
-    contain arbitrary Python source code.  The file is read and compiled into an
-    interactive code object with static storage duration, which is cached for the
-    duration of the program.
-
-This creates an embedded Python script that can be executed like a normal function.
-Here, the script is stateless, and can be executed without context.  Most of the time,
-this won't be the case, and data will need to be passed into the script to populate its
-namespace.  For instance:
-
-    static const py::Code script = R"(
-        print("Hello, " + name + "!")  # name is not defined in this context
-    )"_python;
-
-.. note::
-
-    Note the user-defined `_python` literal used to create the script.  This is
-    equivalent to calling the `Code` constructor on a separate file, but allows the
-    script to be written directly within the C++ source code.  The same effect can be
-    achieved via the `Code::compile()` helper method if the `py::literals` namespace is
-    not available. 
-
-If we try to execute this script without a context, we'll get a ``NameError`` just
-like normal Python:
-
-    script();  // NameError: name 'name' is not defined
-
-We can solve this by building a context dictionary and passing it into the script as
-its global namespace.
-
-    script({{"name", "World"}});  // prints Hello, World!
-
-This uses the ordinary py::Dict constructors, which can take arbitrary C++ objects and
-pass them seamlessly to Python.  If we want to do the opposite and extract data from
-the script back to C++, then we can use its return value, which is another dictionary
-containing the context after execution.  For instance:
-
-    py::Dict context = R"(
-        x = 1
-        y = 2
-        z = 3
-    )"_python();
-
-    py::print(context);  // prints {"x": 1, "y": 2, "z": 3}
-
-Combining these features allows us to create a two-way data pipeline between C++ and
-Python:
-
-    py::Int z = R"(
-        def func(x, y):
-            return x + y
-
-        z = func(a, b)
-    )"_python({{"a", 1}, {"b", 2}})["z"];
-
-    py::print(z);  // prints 3
-
-In this example, data originates in C++, passes through python for processing, and then
-returns smoothly to C++ with automatic error propagation, reference counting, and type
-conversions at every step.
-
-In the previous example, the input dictionary exists only for the duration of the
-script's execution, and is discarded immediately afterwards.  However, it is also
-possible to pass a mutable reference to an external dictionary, which will be updated
-in-place as the script executes.  This allows multiple scripts to be chained using a
-shared context, without ever leaving the Python interpreter.  For instance:
-
-    static const py::Code script1 = R"(
-        x = 1
-        y = 2
-    )"_python;
-
-    static const py::Code script2 = R"(
-        z = x + y
-        del x, y
-    )"_python;
-
-    py::Dict context;
-    script1(context);
-    script2(context);
-    py::print(context);  // prints {"z": 3}
-
-Users can, of course, inspect or modify the context between scripts, either to extract
-results or pass new data into the next script in the chain.  This makes it possible to
-create arbitrarily complex, mixed-language workflows with minimal fuss.
-
-    py::Dict context = R"(
-        spam = 0
-        eggs = 1
-    )"_python();
-
-    context["ham"] = std::vector<int>{1, 1, 2, 3, 5, 8, 13, 21, 34, 55};
-
-    std::vector<int> fibonacci = R"(
-        result = []
-        for x in ham:
-            spam, eggs = (spam + eggs, spam)
-            assert(x == spam)
-            result.append(eggs)
-    )"_python(context)["result"];
-
-    py::print(fibonacci);  // prints [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
-
-This means that Python can be easily included as an inline scripting language in any
-C++ application, with minimal overhead and full compatibility in both directions.  Each
-script is evaluated just like an ordinary Python file, and there are no restrictions on
-what can be done inside them.  This includes importing modules, defining classes and
-functions to be exported back to C++, interacting with the file system, third-party
-libraries, client code, and more.  Similarly, it is executed just like normal Python
-bytecode, and should not suffer any significant performance penalties beyond copying
-data into or out of the context.  This is especially true for static code objects,
-which are compiled once and then cached for repeated use.
-
-    static const py::Code script = R"(
-        print(x)
-    )"_python;
-
-    script({{"x", "hello"}});
-    script({{"x", "from"}});
-    script({{"x", "the"}});
-    script({{"x", "other"}});
-    script({{"x", "side"}});
-*/
-class Code : public Object {
-    using Base = Object;
-
-    inline PyCodeObject* self() const {
-        return reinterpret_cast<PyCodeObject*>(this->ptr());
-    }
-
-    template <typename T>
-    static PyObject* build(const T& text) {
-        std::string line;
-        std::string parsed;
-        std::istringstream stream(text);
-        size_t min_indent = std::numeric_limits<size_t>::max();
-
-        // find minimum indentation
-        while (std::getline(stream, line)) {
-            if (line.empty()) {
-                continue;
-            }
-            size_t indent = line.find_first_not_of(" \t");
-            if (indent != std::string::npos) {
-                min_indent = std::min(min_indent, indent);
-            }
-        }
-
-        // dedent if necessary
-        if (min_indent != std::numeric_limits<size_t>::max()) {
-            std::string temp;
-            std::istringstream stream2(text);
-            while (std::getline(stream2, line)) {
-                if (line.empty() || line.find_first_not_of(" \t") == std::string::npos) {
-                    temp += '\n';
-                } else {
-                    temp += line.substr(min_indent) + '\n';
-                }
-            }
-            parsed = temp;
-        } else {
-            parsed = text;
-        }
-
-        PyObject* result = Py_CompileString(
-            parsed.c_str(),
-            "<embedded Python script>",
-            Py_file_input
-        );
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
-    static PyObject* load(const char* path) {
-        std::ifstream file(path);
-        if (!file.is_open()) {
-            throw FileNotFoundError(std::string("'") + path + "'");
-        }
-        std::istreambuf_iterator<char> begin(file), end;
-        PyObject* result = Py_CompileString(
-            std::string(begin, end).c_str(),
-            path,
-            Py_file_input
-        );
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
-public:
-    static const Type type;
-
-    template <typename T>
-    static consteval bool check() {
-        return std::derived_from<T, Code>;
-    }
-
-    template <typename T>
-    static constexpr bool check(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return check<T>();
-        } else if constexpr (check<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::python_like<T>) {
-            return obj.ptr() != nullptr && PyCode_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    Code(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Code(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (check<T>())
-    Code(T&& other) : Base(std::forward<T>(other)) {}
-
-    template <typename Policy>
-    Code(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Code>(accessor).release(), stolen_t{})
-    {}
-
-    /* Compile a Python source file into an interactive code object. */
-    explicit Code(const char* path) : Base(load(path), stolen_t{}) {}
-
-    /* Compile a Python source file into an interactive code object. */
-    explicit Code(const std::string& path) : Code(path.c_str()) {}
-
-    /* Compile a Python source file into an interactive code object. */
-    explicit Code(const std::string_view& path) : Code(path.data()) {}
-
-    /* Parse and compile a source string into a Python code object. */
-    static Code compile(const char* source) {
-        return reinterpret_steal<Code>(build(source));
-    }
-
-    /* Parse and compile a source string into a Python code object. */
-    static Code compile(const std::string& source) {
-        return reinterpret_steal<Code>(build(source));
-    }
-
-    /* Parse and compile a source string into a Python code object. */
-    static Code compile(const std::string_view& path) {
-        return compile(std::string{path.data(), path.size()});
-    }
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
-
-    /* Execute the code object without context. */
-    BERTRAND_NOINLINE Dict<Str, Object> operator()() const {
-        py::Dict<Str, Object> context;
-        PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
-        if (result == nullptr) {
-            Exception::from_python(1);
-        }
-        Py_DECREF(result);  // always None
-        return context;
-    }
-
-    /* Execute the code object with the given context. */
-    BERTRAND_NOINLINE Dict<Str, Object>& operator()(Dict<Str, Object>& context) const {
-        PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
-        if (result == nullptr) {
-            Exception::from_python(1);
-        }
-        Py_DECREF(result);  // always None
-        return context;
-    }
-
-    /* Execute the code object with the given context. */
-    BERTRAND_NOINLINE Dict<Str, Object> operator()(Dict<Str, Object>&& context) const {
-        PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
-        if (result == nullptr) {
-            Exception::from_python(1);
-        }
-        Py_DECREF(result);  // always None
-        return std::move(context);
-    }
-
-    /////////////////////
-    ////    SLOTS    ////
-    /////////////////////
-
-    /* Get the name of the file from which the code was compiled. */
-    inline Str filename() const {
-        return reinterpret_borrow<Str>(self()->co_filename);
-    }
-
-    /* Get the function's base name. */
-    inline Str name() const {
-        return reinterpret_borrow<Str>(self()->co_name);
-    }
-
-    /* Get the function's qualified name. */
-    inline Str qualname() const {
-        return reinterpret_borrow<Str>(self()->co_qualname);
-    }
-
-    /* Get the first line number of the function. */
-    inline Py_ssize_t line_number() const noexcept {
-        return self()->co_firstlineno;
-    }
-
-    /* Get the total number of positional arguments for the function, including
-    positional-only arguments and those with default values (but not variable
-    or keyword-only arguments). */
-    inline Py_ssize_t argcount() const noexcept {
-        return self()->co_argcount;
-    }
-
-    /* Get the number of positional-only arguments for the function, including
-    those with default values.  Does not include variable positional or keyword
-    arguments. */
-    inline Py_ssize_t posonlyargcount() const noexcept {
-        return self()->co_posonlyargcount;
-    }
-
-    /* Get the number of keyword-only arguments for the function, including those
-    with default values.  Does not include positional-only or variable
-    positional/keyword arguments. */
-    inline Py_ssize_t kwonlyargcount() const noexcept {
-        return self()->co_kwonlyargcount;
-    }
-
-    /* Get the number of local variables used by the function (including all
-    parameters). */
-    inline Py_ssize_t nlocals() const noexcept {
-        return self()->co_nlocals;
-    }
-
-    /* Get a tuple containing the names of the local variables in the function,
-    starting with parameter names. */
-    inline Tuple<Str> varnames() const {
-        return attr<"co_varnames">();
-    }
-
-    /* Get a tuple containing the names of local variables that are referenced by
-    nested functions within this function (i.e. those that are stored in a
-    PyCell). */
-    inline Tuple<Str> cellvars() const {
-        return attr<"co_cellvars">();
-    }
-
-    /* Get a tuple containing the names of free variables in the function (i.e.
-    those that are not stored in a PyCell). */
-    inline Tuple<Str> freevars() const {
-        return attr<"co_freevars">();
-    }
-
-    /* Get the required stack space for the code object. */
-    inline Py_ssize_t stacksize() const noexcept {
-        return self()->co_stacksize;
-    }
-
-    /* Get the bytecode buffer representing the sequence of instructions in the
-    function. */
-    inline Bytes bytecode() const;  // defined in func.h
-
-    /* Get a tuple containing the literals used by the bytecode in the function. */
-    inline Tuple<Object> consts() const {
-        return reinterpret_borrow<Tuple<Object>>(self()->co_consts);
-    }
-
-    /* Get a tuple containing the names used by the bytecode in the function. */
-    inline Tuple<Str> names() const {
-        return reinterpret_borrow<Tuple<Str>>(self()->co_names);
-    }
-
-    /* Get an integer encoding flags for the Python interpreter. */
-    inline int flags() const noexcept {
-        return self()->co_flags;
-    }
-
-};
-
-
-/////////////////////
-////    FRAME    ////
-/////////////////////
-
-
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_back">                                 : Returns<Frame> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_code">                                 : Returns<Code> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_locals">                               : Returns<Dict<Str, Object>> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_globals">                              : Returns<Dict<Str, Object>> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_builtins">                             : Returns<Dict<Str, Object>> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_lasti">                                : Returns<Int> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_trace">                                : Returns<Function> {};
-template <std::derived_from<Frame> T>
-struct __setattr__<T, "f_trace", Function>                      : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __delattr__<T, "f_trace">                                : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_trace_lines">                          : Returns<Bool> {};
-template <std::derived_from<Frame> T>
-struct __setattr__<T, "f_trace_lines", Bool>                    : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_trace_opcodes">                        : Returns<Bool> {};
-template <std::derived_from<Frame> T>
-struct __setattr__<T, "f_trace_opcodes", Bool>                  : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_lineno">                               : Returns<Bool> {};
-template <std::derived_from<Frame> T>
-struct __setattr__<T, "f_lineno", Int>                          : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "clear">                                  : Returns<Function> {};
-
-
-/* Represents a statically-typed Python frame object in C++.  These are the same frames
-returned by the `inspect` module and listed in exception tracebacks.  They can be used
-to run Python code in an interactive loop via the embedded code object. */
-class Frame : public Object {
-    using Base = Object;
-
-    inline PyFrameObject* self() const {
-        return reinterpret_cast<PyFrameObject*>(this->ptr());
-    }
-
-public:
-    static const Type type;
-
-    template <typename T>
-    static consteval bool check() {
-        return std::derived_from<T, Frame>;
-    }
-
-    template <typename T>
-    static constexpr bool check(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return check<T>();
-        } else if constexpr (check<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyFrame_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    Frame(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Frame(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (check<T>())
-    Frame(T&& other) : Base(std::forward<T>(other)) {}
-
-    template <typename Policy>
-    Frame(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Frame>(accessor).release(), stolen_t{})
-    {}
-
-    /* Default constructor.  Initializes to the current execution frame. */
-    Frame() : Base(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            throw RuntimeError("no frame is currently executing");
-        }
-    }
-
-    /* Construct an empty frame from a function name, file name, and line number.  This
-    is primarily used to represent C++ contexts in Python exception tracebacks, etc. */
-    Frame(
-        const char* funcname,
-        const char* filename,
-        int lineno,
-        PyThreadState* thread_state = nullptr
-    ) : Base(
-        reinterpret_cast<PyObject*>(impl::StackFrame(
-            funcname,
-            filename,
-            lineno,
-            false,
-            thread_state
-        ).to_python()),
-        borrowed_t{}
-    ) {}
-
-    /* Construct an empty frame from a cpptrace::stacktrace_frame object. */
-    Frame(
-        const cpptrace::stacktrace_frame& frame,
-        PyThreadState* thread_state = nullptr
-    ) : Base(
-        reinterpret_cast<PyObject*>(impl::StackFrame(
-            frame,
-            thread_state
-        ).to_python()),
-        borrowed_t{}
-    ) {}
-
-    /* Skip backward a number of frames on construction. */
-    explicit Frame(size_t skip) :
-        Base(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            throw RuntimeError("no frame is currently executing");
-        }
-        for (size_t i = 0; i < skip; ++i) {
-            m_ptr = reinterpret_cast<PyObject*>(PyFrame_GetBack(self()));
-            if (m_ptr == nullptr) {
-                throw IndexError("frame index out of range");
-            }
-        }
-    }
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
-
-    /* Get the next outer frame from this one. */
-    inline Frame back() const {
-        PyFrameObject* result = PyFrame_GetBack(self());
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return reinterpret_steal<Frame>(reinterpret_cast<PyObject*>(result));
-    }
-
-    /* Get the code object associated with this frame. */
-    inline Code code() const {
-        return reinterpret_steal<Code>(
-            reinterpret_cast<PyObject*>(PyFrame_GetCode(self()))  // never null
-        );
-    }
-
-    /* Get the line number that the frame is currently executing. */
-    inline int line_number() const noexcept {
-        return PyFrame_GetLineNumber(self());
-    }
-
-    /* Execute the code object stored within the frame using its current context.  This
-    is the main entry point for the Python interpreter, and is used behind the scenes
-    whenever a program is run. */
-    inline Object operator()() const {
-        PyObject* result = PyEval_EvalFrame(self());
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return reinterpret_steal<Object>(result);
-    }
-
-    #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
-
-        /* Get the frame's builtin namespace. */
-        inline Dict<Str, Object> builtins() const {
-            return reinterpret_steal<Dict<Str, Object>>(
-                PyFrame_GetBuiltins(self())
-            );
-        }
-
-        /* Get the frame's globals namespace. */
-        inline Dict<Str, Object> globals() const {
-            PyObject* result = PyFrame_GetGlobals(self());
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Dict<Str, Object>>(result);
-        }
-
-        /* Get the frame's locals namespace. */
-        inline Dict<Str, Object> locals() const {
-            PyObject* result = PyFrame_GetLocals(self());
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Dict<Str, Object>>(result);
-        }
-
-        /* Get the generator, coroutine, or async generator that owns this frame, or
-        nullopt if this frame is not owned by a generator. */
-        inline std::optional<Object> generator() const {
-            PyObject* result = PyFrame_GetGenerator(self());
-            if (result == nullptr) {
-                return std::nullopt;
-            } else {
-                return std::make_optional(reinterpret_steal<Object>(result));
-            }
-        }
-
-        /* Get the "precise instruction" of the frame object, which is an index into
-        the bytecode of the last instruction that was executed by the frame's code
-        object. */
-        inline int last_instruction() const noexcept {
-            return PyFrame_GetLasti(self());
-        }
-
-    #endif
-
-    #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
-
-        /* Get a named variable from the frame's context.  Can raise if the variable is
-        not present in the frame. */
-        inline Object get(const Str& name) const {
-            PyObject* result = PyFrame_GetVar(self(), name.ptr());
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Object>(result);
-        }
-
-    #endif
-
-};
-
-
-////////////////////////////////////
-////    ARGUMENT ANNOTATIONS    ////
-////////////////////////////////////
-
-
 // TODO: descriptors might also allow for multiple dispatch if I manage it correctly.
 // -> The descriptor would store an internal map of types to Python/C++ functions, and
 // could be appended to from either side.  This would replace pybind11's overloading
@@ -722,10 +32,92 @@ public:
 // is called, it would test each signature in order, and call the first one that
 // fully matches
 
+// TODO: This should be a separate class, which would basically be an overload set
+// for py::Function instances, which would work at both the Python and C++ levels.
+// Then, the descriptors would just store one of these natively, which would allow
+// me to attach new implementations to the same descriptor via function overloading.
+// I can also expose this to Python as a separate type, which would enable C++-style
+// overloading in Python as well, possibly using annotations to specify the types.
+// -> That's hard in current Python, but will be possible in a unified manner in
+// Python 3.13, which allows deferred computation of type annotations.
 
-namespace impl {
-    struct ArgTag {};
-}
+// TODO: this would have to use type erasure to store the functions, which could make
+// things somewhat challenging.  I wouldn't be able to template on the function
+// signatures, and would have to store them as dynamic objects, and then use
+// topological sorting to find the best match.  This is a lot of work, but would be
+// an awesome feature to port back to Python, and would allow me to work in other
+// features from DynamicFunc at the same time.  The composite would also have an
+// attach() method, and would essentially implement the composite pattern.
+
+// TODO: the best way to do this would be to allow both patterns to coexist, and have
+// attach() work with both.  If You attach a py::Function to an object, it will
+// avoid any overloading and call the function as fast as possible.  If you attach
+// a py::OverloadSet, it will search the overloads topographically and call the best
+// match.  This probably yields a set of descriptor classes like so:
+
+// py::Method<py::Function<...>> -> calls the function directly
+// py::Method<py::OverloadSet> -> calls the best match from the overload set
+// py::ClassMethod<py::Function<...>>
+// py::ClassMethod<py::OverloadSet>
+// py::StaticMethod<py::Function<...>>
+// py::StaticMethod<py::OverloadSet>
+// py::Property<Return>  -> has a fixed signature for all 3 methods, which cannot be overloaded
+
+// Then, in Python:
+
+// @bertrand.function
+// def foo(a, b):  # base implementation
+//      raise NotImplementedError()
+
+// Would create a py::OverloadSet object, which could be overloaded and attached like
+// any other function.  Eventually, it would even be able to infer overloads from
+// annotations:
+
+// @foo.overload
+// def foo(a: int, b: int) -> int:
+//      return a + b
+
+// For simplicity and backwards compatiblity, the appropriate types could also be
+// specified in the overload decorator itself:
+
+// @foo.overload(a = int, b = int)
+// def foo(a, b):
+//      return a + b
+
+// This is more achievable in the short term, and correctly handling annotations
+// will come later, once Python 3.13 is released and I figure out how to resolve
+// annotations dynamically.
+
+
+// -> Use a Trie to store the overloads, and then search it using a depth-first search
+// to backtrack.  Each node in the trie will store a list of types from most to least
+// specific, as determined by either a check<> or issubclass() call (Maybe these can
+// be unified as check_type<>?).  Each node will need the following:
+
+// 1.   An ordered map of types to the next node in the trie, which is sorted in
+//      topological order.
+// 2.   An optional default value for this argument.  If we've hit the end of the
+//      argument list and the current node does not have a terminal function, then
+//      we search the above map from left to right and recur for each type that has
+//      a default value.
+// 3.   An unordered map of keywords to the next node in the trie, which is used when
+//      positional arguments have been exhausted.  If no keyword is found, children
+//      will be tried sequentially according to their default values before
+//      backtracking.
+// 4.   A terminal function to call if this is the last argument, which represents the
+//      end of a search.
+
+// The functions that are inserted into an overload set cannot have *args, **kwargs
+// packs, and if no match can be found, the default implementation will be called,
+// which can have an arbitrary signature and will most likely raise an error.
+
+// -> Alternatively, the decorated function is analyzed just like every other one, and
+// if it uses generic types, then it will serve as a catch-all fallback.  It (and only
+// it) is allowed to have *args, **kwargs, and will be called if no other match is found.
+
+// Maybe this makes DynamicFunc obsolete, since the primary use of that was to
+// facilitate @dispatch?  Maybe the ability to modify defaults is built into
+// py::Function, and extra arguments are handled by the dispatch mechanism.
 
 
 /* A compile-time argument annotation that represents a bound positional or keyword
@@ -966,6 +358,22 @@ namespace impl {
 }
 
 
+template <std::derived_from<impl::FunctionTag> T>
+struct __getattr__<T, "__globals__">                            : Returns<Dict<Str, Object>> {};
+template <std::derived_from<impl::FunctionTag> T>
+struct __getattr__<T, "__closure__">                            : Returns<Tuple<Object>> {};
+template <std::derived_from<impl::FunctionTag> T>
+struct __getattr__<T, "__defaults__">                           : Returns<Tuple<Object>> {};
+template <std::derived_from<impl::FunctionTag> T>
+struct __getattr__<T, "__code__">                               : Returns<Code> {};
+template <std::derived_from<impl::FunctionTag> T>
+struct __getattr__<T, "__annotations__">                        : Returns<Dict<Str, Object>> {};
+template <std::derived_from<impl::FunctionTag> T>
+struct __getattr__<T, "__kwdefaults__">                         : Returns<Dict<Str, Object>> {};
+template <std::derived_from<impl::FunctionTag> T>
+struct __getattr__<T, "__func__">                               : Returns<Function> {};  // TODO: template this on the current signature
+
+
 /* A universal function wrapper that can represent either a Python function exposed to
 C++, or a C++ function exposed to Python with equivalent semantics.
 
@@ -1106,12 +514,14 @@ with it special restrictions, including the following:
         function is called.  Since it is impossible to know the size of the container
         at compile time, this is the only way to enforce this constraint.
 */
-template <typename F = Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)>  // TODO: const references?
+template <typename F = Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)>
 class Function_ : public Function_<typename impl::GetSignature<F>::type> {};
 
 
 template <typename Return, typename... Target>
-class Function_<Return(Target...)> {
+class Function_<Return(Target...)> : public Object, public impl::FunctionTag {
+    using Base = Object;
+
 protected:
 
     /* Index into a parameter pack using template recursion. */
@@ -1130,8 +540,7 @@ protected:
     }
 
     template <typename T>
-    class Inspect {
-    public:
+    struct Inspect {
         using type                          = T;
         static constexpr StaticStr name     = "";
         static constexpr bool opt           = false;
@@ -1143,9 +552,8 @@ protected:
     };
 
     template <typename T> requires (std::derived_from<std::decay_t<T>, impl::ArgTag>)
-    class Inspect<T> {
+    struct Inspect<T> {
         using U = std::decay_t<T>;
-    public:
         using type                          = U::type;
         static constexpr StaticStr name     = U::name;
         static constexpr bool opt           = U::is_optional;
@@ -2764,15 +2172,117 @@ protected:
     };
 
     std::shared_ptr<Capsule> contents;
-    PyObject* m_ptr;
+
+    PyObject* unwrap_method() const {
+        PyObject* result = this->ptr();
+        if (PyMethod_Check(result)) {
+            result = PyMethod_GET_FUNCTION(result);
+        }
+        return result;
+    }
 
 public:
+
+    // TODO: if default specialization is given, check<> should be fully generic, right?
+    // check<T>() should check impl::is_callable_any<T>;
+
+    template <typename T>
+    static consteval bool check() {
+        return std::is_invocable_r_v<Return, T, Target...>;  // TODO: ensure this is correct
+    }
+
+    template <typename T>
+    static constexpr bool check(const T& obj) {
+        if (impl::cpp_like<T>) {
+            return check<T>();
+        } else if constexpr (check<T>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && (
+                PyFunction_Check(obj.ptr()) ||
+                PyMethod_Check(obj.ptr()) ||
+                PyCFunction_Check(obj.ptr())
+            );
+        } else {
+            return false;
+        }
+    }
+
+    /* Type of the special tuple that holds default values for this function. */
     using Defaults = DefaultValues;
 
     /* Template constraint that evaluates to true if this function can be called with
     the templated argument types. */
     template <typename... Source>
     static constexpr bool invocable = Arguments<Source...>::enable;
+
+    /* The total number of arguments that the function accepts, not including variadic
+    positional or keyword arguments. */
+    static constexpr size_t argcount =
+        target::size - target::has_args - target::has_kwargs;
+
+    /* The total number of optional arguments that the function accepts, not including
+    variadic positional or keyword arguments. */
+    static constexpr size_t opt_argcount = target::opt_count;
+
+    /* The number of positional-only arguments that the function accepts, not including
+    variadic positional arguments. */
+    static constexpr size_t posonly_argcount =
+        target::kw_index - target::has_args - (!target::has_kw && target::has_kwargs);
+
+    /* The number of optional positional-only arguments that the function accepts, not
+    including variadic positional arguments. */
+    // static constexpr size_t opt_posonly_argcount = ???
+
+    /* The number of keyword-only arguments that the function accepts, not including
+    variadic keyword arguments. */
+    static constexpr size_t kwonly_argcount =
+        target::size - target::kw_index - (target::has_kw && target::has_kwargs);
+
+    /* The number of optional keyword-only arguments that the function accepts, not
+    including variadic keyword arguments. */
+    // static constexpr size_t opt_kwonly_argcount = target::kw_opt_count;
+
+    /* Indicates whether the function accepts variadic positional arguments. */
+    static constexpr bool has_varargs = target::has_args;
+
+    /* Indicates whether the function accepts variadic keyword arguments. */
+    static constexpr bool has_varkwargs = target::has_kwargs;
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    Function_(Handle h, const borrowed_t& t) :
+        Base(h, t), contents(Capsule::from_python(h.ptr()))
+    {}
+
+    Function_(Handle h, const stolen_t& t) :
+        Base(h, t), contents(Capsule::from_python(h.ptr()))
+    {}
+
+    template <impl::pybind11_like T> requires (check<T>())
+    Function_(T&& other) : Base(std::forward<T>(other)) {
+        contents = Capsule::from_python(m_ptr);
+    }
+
+    template <typename Policy>
+    Function_(const pybind11::detail::accessor<Policy>& accessor) : Base(accessor) {
+        contents = Capsule::from_python(m_ptr);
+    }
+
+    ~Function_() noexcept {
+        // NOTE: if the function is stored with static duration, then the PyCapsule's
+        // deleter will not be called during interpreter shutdown, which leaves a
+        // permanent reference to the C++ Capsule.  In this case, we need to manually
+        // release the reference so that we avoid memory leaks.
+        if (!Py_IsInitialized() && PyCFunction_Check(m_ptr)) {
+            PyObject* self = PyCFunction_GET_SELF(m_ptr);
+            if (PyCapsule_IsValid(self, Capsule::capsule_name)) {
+                Capsule::deleter(self);
+            }
+        }
+    }
 
     /* Construct a py::Function from a valid C++ function with the templated signature.
     Use CTAD to deduce the signature if not explicitly provided.  If the signature
@@ -2783,27 +2293,25 @@ public:
             Defaults::template enable<Values...>
         )
     Function_(std::string name, Func&& func, Values&&... defaults) :
+        Base(nullptr, stolen_t{}),
         contents(new Capsule{
             std::move(name),
             std::function(std::forward<Func>(func)),
             Defaults(std::forward<Values>(defaults)...)
-        }),
-        m_ptr(Capsule::to_python(contents))
-    {}
+        })
+    {
+        m_ptr = Capsule::to_python(contents);
+    }
 
     /* Copy constructor. */
-    Function_(const Function_& other) : contents(other.contents), m_ptr(other.m_ptr) {
-        Py_XINCREF(m_ptr);
-    }
+    Function_(const Function_& other) : Base(other), contents(other.contents) {}
 
     /* Move constructor. */
-    Function_(Function_&& other) : contents(std::move(other.contents)), m_ptr(other.m_ptr) {
-        other.m_ptr = nullptr;
-    }
+    Function_(Function_&& other) : Base(std::move(other.contents)) {}
 
-    ~Function_() {
-        Py_XDECREF(m_ptr);
-    }
+    /////////////////////////
+    ////    INTERFACE    ////
+    /////////////////////////
 
     /* Call an external Python function that matches the target signature using
     Python-style arguments. */
@@ -3058,7 +2566,7 @@ public:
     template <typename... Source> requires (invocable<Source...>)
     Return operator()(Source&&... args) const {
         if (contents == nullptr) {
-            return invoke_py(m_ptr, std::forward<Source>(args)...);
+            return invoke_py(this->ptr(), std::forward<Source>(args)...);
         } else {
             return invoke_cpp(
                 contents->defaults,
@@ -3068,259 +2576,52 @@ public:
         }
     }
 
-    PyObject* ptr() const {
-        return m_ptr;
-    }
-
-    // TODO: if only it were this simple.  Because I'm using a PyCapsule to ensure the
-    // lifecycle of the function object, the only way to get everything to work
-    // correctly is to write a wrapper class that forwards the `self` argument to a
-    // nested py::Function as the first argument.  That class would also need to be
-    // exposed to Python, and would have to work the same way.  It would probably
-    // also need to be a descriptor, so that it can be correctly attached to the
-    // class as an instance method.  This ends up looking a lot like my current
-    // @attachable decorator, but lower level and with more boilerplate.  I would also
-    // only be able to expose the (*args, **kwargs) version, since templates can't be
-    // transmitted up to Python.
-
-    // enum class Descr {
-    //     METHOD,
-    //     CLASSMETHOD,
-    //     STATICMETHOD,
-    //     PROPERTY
-    // };
-
-    // TODO: rather than using an enum, just make separate C++ types and template
-    // attach accordingly.
-
-    // function.attach<py::Method>(type);
-    // function.attach<py::Method>(type, "foo");
-
-    // /* Attach a descriptor with the same name as this function to the type, which
-    // forwards to this function when accessed. */
-    // void attach(Type& type, Descr policy = Descr::METHOD) {
-    //     PyObject* descriptor = PyDescr_NewMethod(type.ptr(), contents->method_def);
-    //     if (descriptor == nullptr) {
-    //         Exception::from_python();
-    //     }
-    //     int rc = PyObject_SetAttrString(type.ptr(), contents->name.data(), descriptor);
-    //     Py_DECREF(descriptor);
-    //     if (rc) {
-    //         Exception::from_python();
-    //     }
-    // };
-
-    // /* Attach a descriptor with a custom name to the type, which forwards to this
-    // function when accessed. */
-    // void attach(Type& type, std::string name, Descr policy = Descr::METHOD) {
-    //     // TODO: same as above.
-    // };
-
-    // TODO: PyCFunctions do carry a __name__ attribute, so we can at least use that.
-
-    // TODO: Perhaps `py::DynamicFunction` is a separate class after all, and only
-    // represents a PyFunctionObject.
-
-    // TODO: What if DynamicFunc was implemented such that adding or removing an
-    // argument at the C++ level yielded a new `py::Function` object with the updated
-    // signature?  This would enable me to enforce the argument validation at compile
-    // time, and register new arguments with equivalent semantics.
-
-    // TODO: syntax would be something along the lines of:
-
-    // py::Function updated = func.arg(x = []{}, y = []{}, ...))
-
-    // -> I would probably need to allocate a new Capsule for each call, since the
-    // underlying std::function<> would need to be updated to reflect the new signature.
-    // Otherwise, the argument lists wouldn't match.  That might be able to just
-    // delegate to the existing Capsule (which would necessitate another shared_ptr
-    // reference), which would allow for kwargs-based forwarding, just like Python.
-
-    // -> This would come with the extra overhead of creating a new Python function
-    // every time a function's signature is changed, since it might reference the old
-    // function when it is called from Python.
-
-    // -> It's probably best to make this is a subclass that just stores a reference
-    // to an existing Capsule* and then generates new wrappers that splice in values
-    // dynamically from a map.  That way I don't alter the original function at all.
-    // Then, these custom DynamicFuncs could be passed around just like other functions
-    // and converting them to a py::Function will recover the original function.  That
-    // also makes the implementation look closer to how it currently works on the
-    // Python side.
-
-};
-
-
-template <typename F, typename... D>
-Function_(std::string, F, D...) -> Function_<
-    typename impl::GetSignature<std::decay_t<F>>::type
->;
-
-
-template <typename R, typename... T>
-inline const char* Function_<R(T...)>::Capsule::capsule_id = typeid(Function_).name();
-
-
-/* Compile-time factory for `UnboundArgument` tags. */
-template <StaticStr name>
-static constexpr impl::UnboundArg<name> arg_ {};
-
-
-////////////////////////
-////    FUNCTION    ////
-////////////////////////
-
-
-template <typename... Args>
-struct __call__<Function, Args...>                              : Returns<Object> {};
-template <std::derived_from<Function> T>
-struct __getattr__<T, "__globals__">                            : Returns<Dict<Str, Object>> {};
-template <std::derived_from<Function> T>
-struct __getattr__<T, "__closure__">                            : Returns<Tuple<Object>> {};
-template <std::derived_from<Function> T>
-struct __getattr__<T, "__defaults__">                           : Returns<Tuple<Object>> {};
-template <std::derived_from<Function> T>
-struct __getattr__<T, "__code__">                               : Returns<Code> {};
-template <std::derived_from<Function> T>
-struct __getattr__<T, "__annotations__">                        : Returns<Dict<Str, Object>> {};
-template <std::derived_from<Function> T>
-struct __getattr__<T, "__kwdefaults__">                         : Returns<Dict<Str, Object>> {};
-template <std::derived_from<Function> T>
-struct __getattr__<T, "__func__">                               : Returns<Function> {};
-
-
-/* Represents a statically-typed Python function in C++.  Note that this can either be
-a direct Python function or a C++ function wrapped to look like a Python function to
-calling code.  In the latter case, it will appear to Python as a built-in function, for
-which no code object will be compiled. */
-class Function : public Object {
-    using Base = Object;
-
-    inline PyObject* self() const {
-        PyObject* result = this->ptr();
-        if (PyMethod_Check(result)) {
-            result = PyMethod_GET_FUNCTION(result);
+    /* Get the name of the wrapped function. */
+    std::string name() const {
+        if (contents != nullptr) {
+            return contents->name;
         }
-        return result;
-    }
 
-public:
-    static const Type type;
-
-    template <typename T>
-    static consteval bool check() {
-        return impl::is_callable_any<T>;
-    }
-
-    template <typename T>
-    static constexpr bool check(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return check<T>();
-        } else if constexpr (check<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && (
-                PyFunction_Check(obj.ptr()) ||
-                PyCFunction_Check(obj.ptr()) ||
-                PyMethod_Check(obj.ptr())
-            );
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    Function(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Function(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (check<T>())
-    Function(T&& other) : Base(std::forward<T>(other)) {}
-
-    template <typename Policy>
-    Function(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Function>(accessor).release(), stolen_t{})
-    {}
-
-    /* Implicitly convert a C++ function or callable object into a py::Function. */
-    template <impl::cpp_like T> requires (check<T>())
-    Function(T&& func) :
-        Base(pybind11::cpp_function(std::forward<T>(func)).release(), stolen_t{})
-    {}
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
-
-    /* Get the module in which this function was defined. */
-    inline Module module_() const {
-        PyObject* result = PyFunction_GetModule(self());
-        if (result == nullptr) {
-            throw TypeError("function has no module");
-        }
-        return reinterpret_borrow<Module>(result);
-    }
-
-    /* Get the code object that is executed when this function is called. */
-    inline Code code() const {
-        if (PyCFunction_Check(this->ptr())) {
-            throw RuntimeError("C++ functions do not have code objects");
-        }
-        PyObject* result = PyFunction_GetCode(self());
-        if (result == nullptr) {
-            throw RuntimeError("function does not have a code object");
-        }
-        return reinterpret_borrow<Code>(result);
-    }
-
-    /* Get the globals dictionary associated with the function object. */
-    inline Dict<Str, Object> globals() const {
-        PyObject* result = PyFunction_GetGlobals(self());
+        PyObject* result = PyObject_GetAttrString(this->ptr(), "__name__");
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_borrow<Dict<Str, Object>>(result);
+        Py_ssize_t length;
+        const char* data = PyUnicode_AsUTF8AndSize(result, &length);
+        Py_DECREF(result);
+        if (data == nullptr) {
+            Exception::from_python();
+        }
+        return std::string(data, length);
     }
 
-    /* Get the name of the file from which the code was compiled. */
-    inline std::string filename() const {
-        return code().filename();
+    /* Get the function's fully qualified (dotted) name. */
+    std::string qualname() const {
+        PyObject* result = PyObject_GetAttrString(this->ptr(), "__qualname__");
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        Py_ssize_t length;
+        const char* data = PyUnicode_AsUTF8AndSize(result, &length);
+        Py_DECREF(result);
+        if (data == nullptr) {
+            Exception::from_python();
+        }
+        return std::string(data, length);
     }
 
-    /* Get the first line number of the function. */
-    inline size_t line_number() const {
-        return code().line_number();
-    }
+    // TODO: when I construct a capsule, I can potentially use the stacktrace library
+    // to get the filename and line number of the function definition.
 
-    /* Get the function's base name. */
-    inline std::string name() const {
-        return code().name();
-    }
+    /* Get the name of the file in which the function was defined, or nullopt if it
+    was defined from C/C++. */
+    std::optional<std::string> filename() const;
 
-    /* Get the function's qualified name. */
-    inline std::string qualname() const {
-        return code().qualname();
-    }
+    /* Get the line number where the function was defined, or nullopt if it was
+    defined from C/C++. */
+    std::optional<size_t> lineno() const;
 
-    /* Get the total number of positional or keyword arguments for the function,
-    including positional-only parameters and excluding keyword-only parameters. */
-    inline size_t argcount() const {
-        return code().argcount();
-    }
 
-    /* Get the number of positional-only arguments for the function.  Does not include
-    variable positional or keyword arguments. */
-    inline size_t posonlyargcount() const {
-        return code().posonlyargcount();
-    }
-
-    /* Get the number of keyword-only arguments for the function.  Does not include
-    positional-only or variable positional/keyword arguments. */
-    inline size_t kwonlyargcount() const {
-        return code().kwonlyargcount();
-    }
 
     // /* Get a read-only dictionary mapping argument names to their default values. */
     // inline MappingProxy<Dict<Str, Object>> defaults() const {
@@ -3420,14 +2721,14 @@ public:
 
     // }
 
-    /* Get a read-only dictionary holding type annotations for the function. */
-    inline MappingProxy<Dict<Str, Object>> annotations() const {
-        PyObject* result = PyFunction_GetAnnotations(self());
-        if (result == nullptr) {
-            return MappingProxy(Dict<Str, Object>{});
-        }
-        return reinterpret_borrow<MappingProxy<Dict<Str, Object>>>(result);
-    }
+    // /* Get a read-only dictionary holding type annotations for the function. */
+    // inline MappingProxy<Dict<Str, Object>> annotations() const {
+    //     PyObject* result = PyFunction_GetAnnotations(self());
+    //     if (result == nullptr) {
+    //         return MappingProxy(Dict<Str, Object>{});
+    //     }
+    //     return reinterpret_borrow<MappingProxy<Dict<Str, Object>>>(result);
+    // }
 
     // /* Set the type annotations for the function.  If nullopt is provided, then the
     // current annotations will be cleared.  Otherwise, the values in the dictionary will
@@ -3479,320 +2780,149 @@ public:
     //     }
     // }
 
+    /////////////////////////////////////
+    ////    PyFunctionObject* API    ////
+    /////////////////////////////////////
+
+    /* NOTE: these methods rely on properties of a PyFunctionObject* which are not
+     * available for built-in function types, or functions exposed from C/C++.  They
+     * will throw a TypeError if used on such objects.
+     */
+
+    /* Get the module in which this function was defined, or nullopt if it is not
+    associated with any module. */
+    std::optional<Module> module_() const;
+
+    /* Get the Python code object that backs this function, or nullopt if the function
+    was not defined from Python. */
+    std::optional<Code> code() const;
+
+    /* Get the globals dictionary from the function object, or nullopt if it could not
+    be introspected. */
+    std::optional<Dict<Str, Object>> globals() const;
+
+    /* Get a read-only mapping of argument names to their default values. */
+    MappingProxy<Dict<Str, Object>> defaults() const;
+
+    /* Set the default value for one or more arguments. */
+    template <typename... Values> requires (sizeof...(Values) > 0)  // and all are valid
+    void defaults(Values&&... values);
+
+    /* Get a read-only mapping of argument names to their type annotations. */
+    MappingProxy<Dict<Str, Object>> annotations() const;
+
+    /* Set the type annotation for one or more arguments. */
+    template <typename... Annotations> requires (sizeof...(Annotations) > 0)  // and all are valid
+    void annotations(Annotations&&... annotations);
+
     /* Get the closure associated with the function.  This is a Tuple of cell objects
-    containing data captured by the function. */
-    inline Tuple<Object> closure() const {
-        PyObject* result = PyFunction_GetClosure(self());
-        if (result == nullptr) {
-            return {};
-        }
-        return reinterpret_borrow<Tuple<Object>>(result);
-    }
+    encapsulating data to be used by the function body. */
+    std::optional<Tuple<Object>> closure() const;
 
     /* Set the closure associated with the function.  If nullopt is given, then the
     closure will be deleted. */
-    inline void closure(std::optional<Tuple<Object>> closure) {
-        PyObject* item = closure ? closure.value().ptr() : Py_None;
-        if (PyFunction_SetClosure(self(), item)) {
-            Exception::from_python();
-        }
-    }
+    void closure(std::optional<Tuple<Object>> closure);
+
+
+
+
+
+    // TODO: if only it were this simple.  Because I'm using a PyCapsule to ensure the
+    // lifecycle of the function object, the only way to get everything to work
+    // correctly is to write a wrapper class that forwards the `self` argument to a
+    // nested py::Function as the first argument.  That class would also need to be
+    // exposed to Python, and would have to work the same way.  It would probably
+    // also need to be a descriptor, so that it can be correctly attached to the
+    // class as an instance method.  This ends up looking a lot like my current
+    // @attachable decorator, but lower level and with more boilerplate.  I would also
+    // only be able to expose the (*args, **kwargs) version, since templates can't be
+    // transmitted up to Python.
+
+    // enum class Descr {
+    //     METHOD,
+    //     CLASSMETHOD,
+    //     STATICMETHOD,
+    //     PROPERTY
+    // };
+
+    // TODO: rather than using an enum, just make separate C++ types and template
+    // attach accordingly.
+
+    // function.attach<py::Method>(type);
+    // function.attach<py::Method>(type, "foo");
+
+    // /* Attach a descriptor with the same name as this function to the type, which
+    // forwards to this function when accessed. */
+    // void attach(Type& type, Descr policy = Descr::METHOD) {
+    //     PyObject* descriptor = PyDescr_NewMethod(type.ptr(), contents->method_def);
+    //     if (descriptor == nullptr) {
+    //         Exception::from_python();
+    //     }
+    //     int rc = PyObject_SetAttrString(type.ptr(), contents->name.data(), descriptor);
+    //     Py_DECREF(descriptor);
+    //     if (rc) {
+    //         Exception::from_python();
+    //     }
+    // };
+
+    // /* Attach a descriptor with a custom name to the type, which forwards to this
+    // function when accessed. */
+    // void attach(Type& type, std::string name, Descr policy = Descr::METHOD) {
+    //     // TODO: same as above.
+    // };
+
+    // TODO: PyCFunctions do carry a __name__ attribute, so we can at least use that.
+
+    // TODO: Perhaps `py::DynamicFunction` is a separate class after all, and only
+    // represents a PyFunctionObject.
+
+    // TODO: What if DynamicFunc was implemented such that adding or removing an
+    // argument at the C++ level yielded a new `py::Function` object with the updated
+    // signature?  This would enable me to enforce the argument validation at compile
+    // time, and register new arguments with equivalent semantics.
+
+    // TODO: syntax would be something along the lines of:
+
+    // py::Function updated = func.arg(x = []{}, y = []{}, ...))
+
+    // -> I would probably need to allocate a new Capsule for each call, since the
+    // underlying std::function<> would need to be updated to reflect the new signature.
+    // Otherwise, the argument lists wouldn't match.  That might be able to just
+    // delegate to the existing Capsule (which would necessitate another shared_ptr
+    // reference), which would allow for kwargs-based forwarding, just like Python.
+
+    // -> This would come with the extra overhead of creating a new Python function
+    // every time a function's signature is changed, since it might reference the old
+    // function when it is called from Python.
+
+    // -> It's probably best to make this is a subclass that just stores a reference
+    // to an existing Capsule* and then generates new wrappers that splice in values
+    // dynamically from a map.  That way I don't alter the original function at all.
+    // Then, these custom DynamicFuncs could be passed around just like other functions
+    // and converting them to a py::Function will recover the original function.  That
+    // also makes the implementation look closer to how it currently works on the
+    // Python side.
 
 };
 
 
-///////////////////////////
-////    CLASSMETHOD    ////
-///////////////////////////
+template <typename F, typename... D>
+Function_(std::string, F, D...) -> Function_<
+    typename impl::GetSignature<std::decay_t<F>>::type
+>;
 
 
-template <std::derived_from<ClassMethod> T>
-struct __getattr__<T, "__func__">                               : Returns<Function> {};
-template <std::derived_from<ClassMethod> T>
-struct __getattr__<T, "__wrapped__">                            : Returns<Function> {};
+template <typename R, typename... T>
+inline const char* Function_<R(T...)>::Capsule::capsule_id = typeid(Function_).name();
 
 
-/* Represents a statically-typed Python `classmethod` object in C++.  Note that this
-is a pure descriptor class, and is not callable by itself.  It behaves similarly to the
-@classmethod decorator, and can be attached to py::Type objects through normal
-attribute assignment. */
-class ClassMethod : public Object {
-    using Base = Object;
-
-public:
-    static const Type type;
-
-    template <typename T>
-    static consteval bool check() {
-        return std::derived_from<T, ClassMethod>;
-    }
-
-    template <typename T>
-    static constexpr bool check(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return check<T>();
-
-        } else if constexpr (check<T>()) {
-            return obj.ptr() != nullptr;
-
-        } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
-                return false;
-            }
-            int result = PyObject_IsInstance(
-                obj.ptr(),
-                (PyObject*) &PyClassMethodDescr_Type
-            );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-
-        } else {
-            return false;
-        }
-    }
-
-    ClassMethod(Handle h, const borrowed_t& t) : Base(h, t) {}
-    ClassMethod(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (check<T>())
-    ClassMethod(T&& other) : Base(std::forward<T>(other)) {}
-
-    template <typename Policy>
-    ClassMethod(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<ClassMethod>(accessor).release(), stolen_t{})
-    {}
-
-    /* Wrap an existing Python function as a classmethod descriptor. */
-    ClassMethod(Function func) : Base(PyClassMethod_New(func.ptr()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Get the underlying function. */
-    inline Function function() const {
-        return reinterpret_steal<Function>(Object(attr<"__func__">()).release());
-    }
-
-};
-
-
-////////////////////////////
-////    STATICMETHOD    ////
-////////////////////////////
-
-
-template <std::derived_from<StaticMethod> T>
-struct __getattr__<T, "__func__">                               : Returns<Function> {};
-template <std::derived_from<StaticMethod> T>
-struct __getattr__<T, "__wrapped__">                            : Returns<Function> {};
-
-
-/* Represents a statically-typed Python `staticmethod` object in C++.  Note that this
-is a pure descriptor class, and is not callable by itself.  It behaves similarly to the
-@staticmethod decorator, and can be attached to py::Type objects through normal
-attribute assignment. */
-class StaticMethod : public Object {
-    using Base = Object;
-
-public:
-    static const Type type;
-
-    template <typename T>
-    static consteval bool check() {
-        return std::derived_from<T, StaticMethod>;
-    }
-
-    template <typename T>
-    static constexpr bool check(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return check<T>();
-
-        } else if constexpr (check<T>()) {
-            return obj.ptr() != nullptr;
-
-        } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
-                return false;
-            }
-            int result = PyObject_IsInstance(
-                obj.ptr(),
-                (PyObject*) &PyStaticMethod_Type
-            );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-
-        } else {
-            return false;
-        }
-    }
-
-    StaticMethod(Handle h, const borrowed_t& t) : Base(h, t) {}
-    StaticMethod(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (check<T>())
-    StaticMethod(T&& other) : Base(std::forward<T>(other)) {}
-
-    template <typename Policy>
-    StaticMethod(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<StaticMethod>(accessor).release(), stolen_t{})
-    {}
-
-    /* Wrap an existing Python function as a staticmethod descriptor. */
-    StaticMethod(Function func) : Base(PyStaticMethod_New(func.ptr()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Get the underlying function. */
-    inline Function function() const {
-        return reinterpret_steal<Function>(Object(attr<"__func__">()).release());
-    }
-
-};
-
-
-////////////////////////
-////    PROPERTY    ////
-////////////////////////
-
-
-namespace impl {
-    static const Type PyProperty = reinterpret_borrow<Type>(
-        reinterpret_cast<PyObject*>(&PyProperty_Type)
-    );
-}
-
-
-template <std::derived_from<Property> T>
-struct __getattr__<T, "fget">                                   : Returns<Function> {};
-template <std::derived_from<Property> T>
-struct __getattr__<T, "fset">                                   : Returns<Function> {};
-template <std::derived_from<Property> T>
-struct __getattr__<T, "fdel">                                   : Returns<Function> {};
-template <std::derived_from<Property> T>
-struct __getattr__<T, "getter">                                 : Returns<Function> {};
-template <std::derived_from<Property> T>
-struct __getattr__<T, "setter">                                 : Returns<Function> {};
-template <std::derived_from<Property> T>
-struct __getattr__<T, "deleter">                                : Returns<Function> {};
-
-
-/* Represents a statically-typed Python `property` object in C++.  Note that this is a
-pure descriptor class, and is not callable by itself.  It behaves similarly to the
-@property decorator, and can be attached to py::Type objects through normal attribute
-assignment. */
-class Property : public Object {
-    using Base = Object;
-
-public:
-    static const Type type;
-
-    template <typename T>
-    static consteval bool check() {
-        return std::derived_from<T, Property>;
-    }
-
-    template <typename T>
-    static constexpr bool check(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return check<T>();
-
-        } else if constexpr (check<T>()) {
-            return obj.ptr() != nullptr;
-
-        } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
-                return false;
-            }
-            int result = PyObject_IsInstance(
-                obj.ptr(),
-                impl::PyProperty.ptr());
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-
-        } else {
-            return false;
-        }
-    }
-
-    Property(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Property(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (check<T>())
-    Property(T&& other) : Base(std::forward<T>(other)) {}
-
-    template <typename Policy>
-    Property(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Property>(accessor).release(), stolen_t{})
-    {}
-
-    /* Wrap an existing Python function as a getter in a property descriptor. */
-    Property(const Function& getter) :
-        Base(impl::PyProperty(getter).release(), stolen_t{})
-    {}
-
-    /* Wrap existing Python functions as getter and setter in a property descriptor. */
-    Property(const Function& getter, const Function& setter) :
-        Base(impl::PyProperty(getter, setter).release(), stolen_t{})
-    {}
-
-    /* Wrap existing Python functions as getter, setter, and deleter in a property
-    descriptor. */
-    Property(const Function& getter, const Function& setter, const Function& deleter) :
-        Base(impl::PyProperty(getter, setter, deleter).release(), stolen_t{})
-    {}
-
-    /* Get the function being used as a getter. */
-    inline Function fget() const {
-        return reinterpret_steal<Function>(Object(attr<"fget">()).release());
-    }
-
-    /* Get the function being used as a setter. */
-    inline Function fset() const {
-        return reinterpret_steal<Function>(Object(attr<"fset">()).release());
-    }
-
-    /* Get the function being used as a deleter. */
-    inline Function fdel() const {
-        return reinterpret_steal<Function>(Object(attr<"fdel">()).release());
-    }
-
-};
+/* Compile-time factory for `UnboundArgument` tags. */
+template <StaticStr name>
+static constexpr impl::UnboundArg<name> arg_ {};
 
 
 }  // namespace py
 }  // namespace bertrand
 
 
-namespace pybind11 {
-namespace detail {
-
-template <bertrand::py::impl::is_callable_any T>
-struct type_caster<T> {
-    PYBIND11_TYPE_CASTER(T, _("callable"));
-
-    /* Convert a Python object into a C++ callable. */
-    inline bool load(handle src, bool convert) {
-        return false;
-    }
-
-    /* Convert a C++ callable into a Python object. */
-    inline static handle cast(const T& src, return_value_policy policy, handle parent) {
-        return bertrand::py::Function(src).release();
-    }
-
-};
-
-}  // namespace detail
-}  // namespace pybind11
-
-
-#endif  // BERTRAND_PYTHON_FUNC_H
+#endif // BERTRAND_PYTHON_COMMON_FUNC_H

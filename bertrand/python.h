@@ -16,7 +16,7 @@
 #include "python/dict.h"
 #include "python/str.h"
 #include "python/bytes.h"
-#include "python/func.h"
+#include "python/code.h"
 // #include "python/datetime.h"
 #include "python/math.h"
 #include "python/type.h"
@@ -27,6 +27,9 @@
 // TODO: the only remaining language feature left to emulate are:
 // - context managers (RAII)  - use py::enter() to enter a context (which produces an RAII guard), and py::exit() or destructor to exit
 // - decorators (?)
+
+// -> model context managers using auto guard = py::enter(object);
+
 
 
 // TODO: after upgrading to gcc-14, these are now supported:
@@ -154,6 +157,7 @@ namespace literals {
 object associated with instances of that class. */
 inline const Type Type::type {};
 inline const Type Object::type = reinterpret_borrow<Type>((PyObject*) &PyBaseObject_Type);
+inline const Type impl::FunctionTag::type = reinterpret_borrow<Type>((PyObject*) &PyFunction_Type);
 inline const Type NoneType::type = reinterpret_borrow<Type>((PyObject*) Py_TYPE(Py_None));
 inline const Type NotImplementedType::type = reinterpret_borrow<Type>((PyObject*) Py_TYPE(Py_NotImplemented));
 inline const Type EllipsisType::type = reinterpret_borrow<Type>((PyObject*) &PyEllipsis_Type);
@@ -178,7 +182,6 @@ inline const Type Bytes::type = reinterpret_borrow<Type>((PyObject*) &PyBytes_Ty
 inline const Type ByteArray::type = reinterpret_borrow<Type>((PyObject*) &PyByteArray_Type);
 inline const Type Code::type = reinterpret_borrow<Type>((PyObject*) &PyCode_Type);
 inline const Type Frame::type = reinterpret_borrow<Type>((PyObject*) &PyFrame_Type);
-inline const Type Function::type = reinterpret_borrow<Type>((PyObject*) &PyFunction_Type);
 inline const Type ClassMethod::type = reinterpret_borrow<Type>((PyObject*) &PyClassMethodDescr_Type);
 inline const Type StaticMethod::type = reinterpret_borrow<Type>((PyObject*) &PyStaticMethod_Type);
 inline const Type Property::type = reinterpret_borrow<Type>((PyObject*) &PyProperty_Type);
@@ -219,9 +222,6 @@ inline const Type Property::type = reinterpret_borrow<Type>((PyObject*) &PyPrope
 // }();
 
 
-inline const Object impl::MappingProxyTag::placeholder = Object::type();
-
-
 ////////////////////////////////////
 ////    FORWARD DECLARATIONS    ////
 ////////////////////////////////////
@@ -246,6 +246,113 @@ inline Module Module::def_submodule(const char* name, const char* doc) {
         return result;
     } catch (...) {
         Exception::from_pybind11();
+    }
+}
+
+
+template <typename Return, typename... Target>
+std::optional<std::string> Function_<Return(Target...)>::filename() const {
+    std::optional<Code> code = this->code();
+    if (code.has_value()) {
+        return code->filename();
+    }
+    return std::nullopt;
+}
+
+
+template <typename Return, typename... Target>
+std::optional<size_t> Function_<Return(Target...)>::lineno() const {
+    std::optional<Code> code = this->code();
+    if (code.has_value()) {
+        return code->line_number();
+    }
+    return std::nullopt;
+}
+
+
+template <typename Return, typename... Target>
+std::optional<Module> Function_<Return(Target...)>::module_() const {
+    PyObject* result = PyFunction_GetModule(unwrap_method());
+    if (result == nullptr) {
+        if (PyErr_Occurred()) {
+            PyErr_Clear();
+        }
+        return std::nullopt;
+    }
+    return reinterpret_borrow<Module>(result);
+}
+
+
+template <typename Return, typename... Target>
+std::optional<Code> Function_<Return(Target...)>::code() const {
+    PyObject* result = PyFunction_GetCode(unwrap_method());
+    if (result == nullptr) {
+        if (PyErr_Occurred()) {
+            PyErr_Clear();
+        }
+        return std::nullopt;
+    }
+    return reinterpret_borrow<Code>(result);
+}
+
+
+template <typename Return, typename... Target>
+std::optional<Dict<Str, Object>> Function_<Return(Target...)>::globals() const {
+    PyObject* result = PyFunction_GetGlobals(unwrap_method());
+    if (result == nullptr) {
+        if (PyErr_Occurred()) {
+            PyErr_Clear();
+        }
+        return std::nullopt;
+    }
+    return reinterpret_borrow<Dict<Str, Object>>(result);
+}
+
+
+// template <typename Return, typename... Target>
+// MappingProxy<Dict<Str, Object>> Function_<Return(Target...)>::defaults() const {
+
+// }
+
+
+// template <typename Return, typename... Target>
+// template <typename... Values> requires (sizeof...(Values) > 0)  // TODO: complete this
+// void Function_<Return(Target...)>::defaults(Values&&... values) {
+
+// }
+
+
+// template <typename Return, typename... Target>
+// MappingProxy<Dict<Str, Object>> Function_<Return(Target...)>::annotations() const {
+
+// }
+
+
+// template <typename Return, typename... Target>
+// template <typename... Annotations> requires (sizeof...(Annotations) > 0)  // TODO: complete this
+// void Function_<Return(Target...)>::annotations(Annotations&&... values) {
+
+// }
+
+
+template <typename Return, typename... Target>
+std::optional<Tuple<Object>> Function_<Return(Target...)>::closure() const {
+    PyObject* result = PyFunction_GetClosure(unwrap_method());
+    if (result == nullptr) {
+        if (PyErr_Occurred()) {
+            PyErr_Clear();
+        }
+        return std::nullopt;
+    }
+    return reinterpret_borrow<Tuple<Object>>(result);
+}
+
+
+template <typename Return, typename... Target>
+void Function_<Return(Target...)>::closure(std::optional<Tuple<Object>> closure) {
+    PyObject* item = closure.has_value() ? closure->ptr() : Py_None;
+    if (PyFunction_SetClosure(unwrap_method(), item)) {
+        Exception::from_python();
     }
 }
 

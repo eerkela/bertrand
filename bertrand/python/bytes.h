@@ -13,7 +13,7 @@
 #include "set.h"
 #include "dict.h"
 
-#include "func.h"
+#include "code.h"  // TODO: unnecessary, delete
 
 
 namespace bertrand {

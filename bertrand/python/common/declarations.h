@@ -158,7 +158,7 @@ class Type;
 class Super;
 class Code;
 class Frame;
-class Function;  // TODO: template on return and arguments, with dynamic as CTAD default?
+class Function;
 class ClassMethod;  // TODO: template on function type
 class StaticMethod;  // TODO: template on function type
 class Property;  // NOTE: no need to template because getters/setters/deleters have consistent signatures
@@ -173,38 +173,17 @@ namespace impl {
 
     struct InitializerTag {};
     struct ProxyTag {};
-
-    struct TupleTag {
-        static const Type type;
-    };
-    struct ListTag {
-        static const Type type;
-    };
-    struct SetTag {
-        static const Type type;
-    };
-    struct FrozenSetTag {
-        static const Type type;
-    };
-    struct KeyTag {
-        static const Type type;
-    };
-    struct ValueTag {
-        static const Type type;
-    };
-    struct ItemTag {
-        static const Type type;
-    };
-    struct DictTag {
-        static const Type type;
-    };
-    struct MappingProxyTag {
-    protected:
-        static const Object placeholder;  // TODO: is this necessary?
-
-    public:
-        static const Type type;
-    };
+    struct ArgTag {};
+    struct FunctionTag { static const Type type; };
+    struct TupleTag { static const Type type; };
+    struct ListTag { static const Type type; };
+    struct SetTag { static const Type type; };
+    struct FrozenSetTag { static const Type type; };
+    struct KeyTag { static const Type type; };
+    struct ValueTag { static const Type type; };
+    struct ItemTag { static const Type type; };
+    struct DictTag { static const Type type; };
+    struct MappingProxyTag { static const Type type; };
 
     // TODO: remove SliceInitializer or make it into a std::variant?
     struct SliceInitializer;

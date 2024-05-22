@@ -975,29 +975,22 @@ void run() {
 
 
 
-py::Object hello() {
-    // py::Function_ func("hello", [] {
-    //     return std::string("hello, world!\n");
-    // });
-    // return py::reinterpret_borrow<py::Object>(func.ptr());
 
-    py::Function_ example(
-        "example",
-        [](
-            py::Arg<"x", const int&>::opt x,
-            py::Arg<"y", const int&>::opt y
-        ) {
-            return x.value - y.value;
-        },
-        1,
-        py::arg_<"y"> = 2
-    );
-    return py::reinterpret_borrow<py::Object>(example.ptr());
-}
+static const py::Function_ func(
+    "example",
+    [](
+        py::Arg<"x", const int&>::opt x,
+        py::Arg<"y", const int&>::opt y
+    ) {
+        return x.value - y.value;
+    },
+    py::arg_<"x"> = 1,
+    py::arg_<"y"> = 2
+);
 
 
 PYBIND11_MODULE(example, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring
-    m.def("hello", &hello, "pass a python function from C++ to Python");
+    m.attr("func") = func;
     m.def("run", &run, "A test function to demonstrate pybind11");
 }

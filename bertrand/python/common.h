@@ -13,6 +13,10 @@
 #include "common/object.h"
 #include "common/proxies.h"
 #include "common/iterators.h"
+#include "common/func.h"
+
+
+// TODO: separate module into its own module.h file, along with py::import<>.
 
 
 namespace bertrand {
@@ -689,40 +693,6 @@ Module import() {
         Exception::from_python();
     }
     return reinterpret_steal<Module>(obj);
-}
-
-
-/* Equivalent to Python `print(args...)`. */
-template <typename... Args>
-void print(Args&&... args) {
-    try {
-        pybind11::print(std::forward<Args>(args)...);
-    } catch (...) {
-        Exception::from_pybind11();
-    }
-}
-
-
-/* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
-represent C++ types using std::to_string or the stream insertion operator (<<).  If all
-else fails, falls back to typeid(obj).name(). */
-template <typename T>
-std::string repr(const T& obj) {
-    if constexpr (impl::has_stream_insertion<T>) {
-        std::ostringstream stream;
-        stream << obj;
-        return stream.str();
-
-    } else if constexpr (impl::has_to_string<T>) {
-        return std::to_string(obj);
-
-    } else {
-        try {
-            return pybind11::repr(obj).template cast<std::string>();
-        } catch (...) {
-            return typeid(obj).name();
-        }
-    }
 }
 
 

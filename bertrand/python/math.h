@@ -11,7 +11,7 @@
 #include "common.h"
 #include "int.h"
 #include "float.h"
-#include "func.h"
+#include "code.h"  // TODO: delete?
 
 
 // TODO: allow for complex/Decimal operands?
