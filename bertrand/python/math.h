@@ -1108,13 +1108,18 @@ public:
 
     class HalfEven : public Base<HalfEven> {
 
-        static Function get_round() {
+        static auto get_round() {
             PyObject* builtins = PyEval_GetBuiltins();
             PyObject* round = PyDict_GetItemString(builtins, "round");
             if (round == nullptr) {
                 Exception::from_python();
             }
-            return reinterpret_steal<Function>(round);
+            return reinterpret_steal<Function<
+                Object(
+                    Arg<"number", const Object&>,
+                    typename Arg<"ndigits", const Object&>::opt
+                )
+            >>(round);
         }
 
     public:
@@ -1239,7 +1244,7 @@ public:
 /* Divide the left and right operands according to the specified rounding rule. */
 template <typename L, typename R, typename Mode = Round::Floor>
     requires (impl::div_mode<L, R, Mode>)
-inline auto div(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
+auto div(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
         return div(lhs.value(), rhs);
     } else if constexpr (impl::proxy_like<R>) {
@@ -1253,7 +1258,7 @@ inline auto div(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
 /* Divide the left and right operands according to the specified rounding rule. */
 template <typename L, typename R, typename Mode = Round::Floor>
     requires (impl::mod_mode<L, R, Mode>)
-inline auto mod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
+auto mod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
         return mod(lhs.value(), rhs);
     } else if constexpr (impl::proxy_like<R>) {
@@ -1267,7 +1272,7 @@ inline auto mod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
 /* Divide the left and right operands according to the specified rounding rule. */
 template <typename L, typename R, typename Mode = Round::Floor>
     requires (impl::divmod_mode<L, R, Mode>)
-inline auto divmod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
+auto divmod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
         return divmod(lhs.value(), rhs);
     } else if constexpr (impl::proxy_like<R>) {
@@ -1283,7 +1288,7 @@ rule.  Positive digits count to the right of the decimal point, while negative v
 count to the left. */
 template <typename O, typename Mode = Round::HalfEven>
     requires (impl::round_mode<O, Mode>)
-inline auto round(const O& obj, int digits = 0, const Mode& mode = Round::HALF_EVEN) {
+auto round(const O& obj, int digits = 0, const Mode& mode = Round::HALF_EVEN) {
     if constexpr (impl::proxy_like<O>) {
         return round(obj.value(), digits, mode);
     } else {

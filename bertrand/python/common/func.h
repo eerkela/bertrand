@@ -1,4 +1,3 @@
-#include <string>
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include <bertrand/python.h> instead."
 #endif
@@ -7,8 +6,7 @@
 #define BERTRAND_PYTHON_COMMON_FUNC_H
 
 #include "declarations.h"
-#include "concepts.h"
-#include "exceptions.h"
+#include "except.h"
 #include "object.h"
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -120,206 +118,7 @@ namespace py {
 // py::Function, and extra arguments are handled by the dispatch mechanism.
 
 
-/* A compile-time argument annotation that represents a bound positional or keyword
-argument to a py::Function. */
-template <StaticStr Name, typename T>
-class Arg : public impl::ArgTag {
-
-    template <bool positional, bool keyword>
-    struct Optional : public impl::ArgTag {
-        using type = T;
-        static constexpr StaticStr name = Name;
-        static constexpr bool is_positional = positional;
-        static constexpr bool is_keyword = keyword;
-        static constexpr bool is_optional = true;
-        static constexpr bool is_variadic = false;
-
-        T value;
-
-        template <std::convertible_to<T> V>
-        Optional(V&& value) : value(std::forward<V>(value)) {}
-        Optional(const Arg& other) : value(other.value) {}
-        Optional(Arg&& other) : value(std::move(other.value)) {}
-
-        operator std::remove_reference_t<T>&() & { return value; }
-        operator std::remove_reference_t<T>&&() && { return std::move(value); }
-        operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
-            return value;
-        }
-    };
-
-    template <bool optional>
-    struct Positional : public impl::ArgTag {
-        using type = T;
-        using opt = Optional<true, false>;
-        static constexpr StaticStr name = Name;
-        static constexpr bool is_positional = true;
-        static constexpr bool is_keyword = false;
-        static constexpr bool is_optional = optional;
-        static constexpr bool is_variadic = false;
-
-        T value;
-
-        template <std::convertible_to<T> V>
-        Positional(V&& value) : value(std::forward<V>(value)) {}
-        Positional(const Arg& other) : value(other.m_value) {}
-        Positional(Arg&& other) : value(std::move(other.m_value)) {}
-
-        operator std::remove_reference_t<T>&() & { return value; }
-        operator std::remove_reference_t<T>&&() && { return std::move(value); }
-        operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
-            return value;
-        }
-    };
-
-    template <bool optional>
-    struct Keyword : public impl::ArgTag {
-        using type = T;
-        using opt = Optional<false, true>;
-        static constexpr StaticStr name = Name;
-        static constexpr bool is_positional = false;
-        static constexpr bool is_keyword = true;
-        static constexpr bool is_optional = optional;
-        static constexpr bool is_variadic = false;
-
-        T value;
-
-        template <std::convertible_to<T> V>
-        Keyword(V&& value) : value(std::forward<V>(value)) {}
-        Keyword(const Arg& other) : value(other.m_value) {}
-        Keyword(Arg&& other) : value(std::move(other.m_value)) {}
-
-        operator std::remove_reference_t<T>&() & { return value; }
-        operator std::remove_reference_t<T>&&() && { return std::move(value); }
-        operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
-            return value;
-        }
-    };
-
-    struct Args : public impl::ArgTag {
-        using type = T;
-        static constexpr StaticStr name = Name;
-        static constexpr bool is_positional = true;
-        static constexpr bool is_keyword = false;
-        static constexpr bool is_optional = false;
-        static constexpr bool is_variadic = true;
-
-        std::vector<T> value;
-
-        Args() = default;
-        Args(const std::vector<T>& value) : value(value) {}
-        Args(std::vector<T>&& value) : value(std::move(value)) {}
-        template <std::convertible_to<T> V>
-        Args(const std::vector<V>& value) {
-            this->value.reserve(value.size());
-            for (const auto& item : value) {
-                this->value.push_back(item);
-            }
-        }
-        Args(const Args& other) : value(other.value) {}
-        Args(Args&& other) : value(std::move(other.value)) {}
-
-        operator std::vector<T>&() & { return value; }
-        operator std::vector<T>&&() && { return std::move(value); }
-        operator const std::vector<T>&() const & { return value; }
-
-        auto begin() const { return value.begin(); }
-        auto cbegin() const { return value.cbegin(); }
-        auto end() const { return value.end(); }
-        auto cend() const { return value.cend(); }
-        auto rbegin() const { return value.rbegin(); }
-        auto crbegin() const { return value.crbegin(); }
-        auto rend() const { return value.rend(); }
-        auto crend() const { return value.crend(); }
-        constexpr auto size() const { return value.size(); }
-        constexpr auto empty() const { return value.empty(); }
-        constexpr auto data() const { return value.data(); }
-        constexpr decltype(auto) front() const { return value.front(); }
-        constexpr decltype(auto) back() const { return value.back(); }
-        constexpr decltype(auto) operator[](size_t index) const { return value.at(index); } 
-    };
-
-    struct Kwargs : public impl::ArgTag {
-        using type = T;
-        static constexpr StaticStr name = Name;
-        static constexpr bool is_positional = false;
-        static constexpr bool is_keyword = true;
-        static constexpr bool is_optional = false;
-        static constexpr bool is_variadic = true;
-
-        std::unordered_map<std::string, T> value;
-
-        Kwargs();
-        Kwargs(const std::unordered_map<std::string, T>& value) : value(value) {}
-        Kwargs(std::unordered_map<std::string, T>&& value) : value(std::move(value)) {}
-        template <std::convertible_to<T> V>
-        Kwargs(const std::unordered_map<std::string, V>& value) {
-            this->value.reserve(value.size());
-            for (const auto& [k, v] : value) {
-                this->value.emplace(k, v);
-            }
-        }
-        Kwargs(const Kwargs& other) : value(other.value) {}
-        Kwargs(Kwargs&& other) : value(std::move(other.value)) {}
-
-        operator std::unordered_map<std::string, T>&() & { return value; }
-        operator std::unordered_map<std::string, T>&&() && { return std::move(value); }
-        operator const std::unordered_map<std::string, T>&() const & { return value; }
-
-        auto begin() const { return value.begin(); }
-        auto cbegin() const { return value.cbegin(); }
-        auto end() const { return value.end(); }
-        auto cend() const { return value.cend(); }
-        constexpr auto size() const { return value.size(); }
-        constexpr bool empty() const { return value.empty(); }
-        constexpr bool contains(const std::string& key) const { return value.contains(key); }
-        constexpr auto count(const std::string& key) const { return value.count(key); }
-        decltype(auto) find(const std::string& key) const { return value.find(key); }
-        decltype(auto) operator[](const std::string& key) const { return value.at(key); }
-    };
-
-public:
-    static_assert(Name != "", "Argument name cannot be an empty string.");
-
-    using type = T;
-    using pos = Positional<false>;
-    using kw = Keyword<false>;
-    using opt = Optional<true, true>;
-    using args = Args;
-    using kwargs = Kwargs;
-    static constexpr StaticStr name = Name;
-    static constexpr bool is_positional = true;
-    static constexpr bool is_keyword = true;
-    static constexpr bool is_optional = false;
-    static constexpr bool is_variadic = false;
-
-    T value;
-
-    template <std::convertible_to<T> V>
-    Arg(V&& value) : value(std::forward<V>(value)) {}
-    Arg(const Arg& other) : value(other.value) {}
-    Arg(Arg&& other) : value(std::move(other.value)) {}
-
-    operator std::remove_reference_t<T>&() & { return value; }
-    operator std::remove_reference_t<T>&&() && { return std::move(value); }
-    operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
-        return value;
-    }
-};
-
-
 namespace impl {
-
-    /* A compile-time tag that allows for the familiar `py::arg<"name"> = value`
-    syntax.  The `py::arg<"name">` part resolves to an instance of this class, and the
-    argument becomes bound when the `=` operator is applied to it. */
-    template <StaticStr name>
-    struct UnboundArg {
-        template <typename T>
-        constexpr Arg<name, T> operator=(T&& value) const {
-            return {std::forward<T>(value)};
-        }
-    };
 
     /* Introspect the proper signature for a py::Function instance from a generic
     function pointer, reference, or object, such as a lambda. */
@@ -356,22 +155,6 @@ namespace impl {
     };
 
 }
-
-
-template <std::derived_from<impl::FunctionTag> T>
-struct __getattr__<T, "__globals__">                            : Returns<Dict<Str, Object>> {};
-template <std::derived_from<impl::FunctionTag> T>
-struct __getattr__<T, "__closure__">                            : Returns<Tuple<Object>> {};
-template <std::derived_from<impl::FunctionTag> T>
-struct __getattr__<T, "__defaults__">                           : Returns<Tuple<Object>> {};
-template <std::derived_from<impl::FunctionTag> T>
-struct __getattr__<T, "__code__">                               : Returns<Code> {};
-template <std::derived_from<impl::FunctionTag> T>
-struct __getattr__<T, "__annotations__">                        : Returns<Dict<Str, Object>> {};
-template <std::derived_from<impl::FunctionTag> T>
-struct __getattr__<T, "__kwdefaults__">                         : Returns<Dict<Str, Object>> {};
-template <std::derived_from<impl::FunctionTag> T>
-struct __getattr__<T, "__func__">                               : Returns<Function> {};  // TODO: template this on the current signature
 
 
 /* A universal function wrapper that can represent either a Python function exposed to
@@ -515,11 +298,11 @@ with it special restrictions, including the following:
         at compile time, this is the only way to enforce this constraint.
 */
 template <typename F = Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)>
-class Function_ : public Function_<typename impl::GetSignature<F>::type> {};
+class Function : public Function<typename impl::GetSignature<F>::type> {};
 
 
 template <typename Return, typename... Target>
-class Function_<Return(Target...)> : public Object, public impl::FunctionTag {
+class Function<Return(Target...)> : public Object, public impl::FunctionTag {
     using Base = Object;
 
 protected:
@@ -1718,14 +1501,11 @@ protected:
         template <size_t J> requires (Inspect<S<J>>::kw)
         static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             try {
-                PyObject* name = PyUnicode_FromStringAndSize(
-                    Inspect<S<J>>::name,
-                    Inspect<S<J>>::name.size()
+                PyTuple_SET_ITEM(
+                    kwnames,
+                    J - source::kw_index,
+                    Py_NewRef(impl::TemplateString<Inspect<S<J>>::name>::ptr)
                 );
-                if (name == nullptr) {
-                    Exception::from_python();
-                }
-                PyTuple_SET_ITEM(kwnames, J - source::kw_index, name);
                 array[J + 1] = as_object(
                     get_arg<J>(std::forward<Source>(args)...)
                 ).release().ptr();
@@ -2253,25 +2033,25 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    Function_(Handle h, const borrowed_t& t) :
+    Function(Handle h, const borrowed_t& t) :
         Base(h, t), contents(Capsule::from_python(h.ptr()))
     {}
 
-    Function_(Handle h, const stolen_t& t) :
+    Function(Handle h, const stolen_t& t) :
         Base(h, t), contents(Capsule::from_python(h.ptr()))
     {}
 
     template <impl::pybind11_like T> requires (check<T>())
-    Function_(T&& other) : Base(std::forward<T>(other)) {
+    Function(T&& other) : Base(std::forward<T>(other)) {
         contents = Capsule::from_python(m_ptr);
     }
 
     template <typename Policy>
-    Function_(const pybind11::detail::accessor<Policy>& accessor) : Base(accessor) {
+    Function(const pybind11::detail::accessor<Policy>& accessor) : Base(accessor) {
         contents = Capsule::from_python(m_ptr);
     }
 
-    ~Function_() noexcept {
+    ~Function() noexcept {
         // NOTE: if the function is stored with static duration, then the PyCapsule's
         // deleter will not be called during interpreter shutdown, which leaves a
         // permanent reference to the C++ Capsule.  In this case, we need to manually
@@ -2292,7 +2072,7 @@ public:
             std::is_invocable_r_v<Return, Func, Target...> &&
             Defaults::template enable<Values...>
         )
-    Function_(std::string name, Func&& func, Values&&... defaults) :
+    Function(std::string name, Func&& func, Values&&... defaults) :
         Base(nullptr, stolen_t{}),
         contents(new Capsule{
             std::move(name),
@@ -2304,10 +2084,10 @@ public:
     }
 
     /* Copy constructor. */
-    Function_(const Function_& other) : Base(other), contents(other.contents) {}
+    Function(const Function& other) : Base(other), contents(other.contents) {}
 
     /* Move constructor. */
-    Function_(Function_&& other) : Base(std::move(other.contents)) {}
+    Function(Function&& other) : Base(std::move(other.contents)) {}
 
     /////////////////////////
     ////    INTERFACE    ////
@@ -2624,7 +2404,7 @@ public:
 
 
     // /* Get a read-only dictionary mapping argument names to their default values. */
-    // inline MappingProxy<Dict<Str, Object>> defaults() const {
+    // MappingProxy<Dict<Str, Object>> defaults() const {
     //     Code code = this->code();
 
     //     // check for positional defaults
@@ -2665,7 +2445,7 @@ public:
 
     // /* Set the default value for one or more arguments.  If nullopt is provided,
     // then all defaults will be cleared. */
-    // inline void defaults(Dict&& dict) {
+    // void defaults(Dict&& dict) {
     //     Code code = this->code();
 
     //     // TODO: clean this up.  The logic should go as follows:
@@ -2722,7 +2502,7 @@ public:
     // }
 
     // /* Get a read-only dictionary holding type annotations for the function. */
-    // inline MappingProxy<Dict<Str, Object>> annotations() const {
+    // MappingProxy<Dict<Str, Object>> annotations() const {
     //     PyObject* result = PyFunction_GetAnnotations(self());
     //     if (result == nullptr) {
     //         return MappingProxy(Dict<Str, Object>{});
@@ -2733,7 +2513,7 @@ public:
     // /* Set the type annotations for the function.  If nullopt is provided, then the
     // current annotations will be cleared.  Otherwise, the values in the dictionary will
     // be used to update the current values in-place. */
-    // inline void annotations(std::optional<Dict> annotations) {
+    // void annotations(std::optional<Dict> annotations) {
     //     if (!annotations.has_value()) {  // clear all annotations
     //         if (PyFunction_SetAnnotations(self(), Py_None)) {
     //             Exception::from_python();
@@ -2907,18 +2687,58 @@ public:
 
 
 template <typename F, typename... D>
-Function_(std::string, F, D...) -> Function_<
+Function(std::string, F, D...) -> Function<
     typename impl::GetSignature<std::decay_t<F>>::type
 >;
 
 
 template <typename R, typename... T>
-inline const char* Function_<R(T...)>::Capsule::capsule_id = typeid(Function_).name();
+inline const char* Function<R(T...)>::Capsule::capsule_id = typeid(Function).name();
 
 
-/* Compile-time factory for `UnboundArgument` tags. */
-template <StaticStr name>
-static constexpr impl::UnboundArg<name> arg_ {};
+template <std::derived_from<impl::FunctionTag> T>
+struct __getattr__<T, "__globals__">                            : Returns<Dict<Str, Object>> {};
+template <std::derived_from<impl::FunctionTag> T>
+struct __getattr__<T, "__closure__">                            : Returns<Tuple<Object>> {};
+template <std::derived_from<impl::FunctionTag> T>
+struct __getattr__<T, "__defaults__">                           : Returns<Tuple<Object>> {};
+template <std::derived_from<impl::FunctionTag> T>
+struct __getattr__<T, "__code__">                               : Returns<Code> {};
+template <std::derived_from<impl::FunctionTag> T>
+struct __getattr__<T, "__annotations__">                        : Returns<Dict<Str, Object>> {};
+template <std::derived_from<impl::FunctionTag> T>
+struct __getattr__<T, "__kwdefaults__">                         : Returns<Dict<Str, Object>> {};
+template <std::derived_from<impl::FunctionTag> T>
+struct __getattr__<T, "__func__">                               : Returns<Function<>> {};  // TODO: template this on the current signature
+
+
+namespace impl {
+
+    /* A convenience function that calls a named method of a Python object using
+    C++-style arguments.  Avoids the overhead of creating a temporary Function object. */
+    template <StaticStr name, typename Self, typename... Args>
+        requires (
+            __getattr__<std::decay_t<Self>, name>::enable &&
+            std::derived_from<typename __getattr__<std::decay_t<Self>, name>::Return, FunctionTag> &&
+            __getattr__<std::decay_t<Self>, name>::Return::template invocable<Args...>
+        )
+    inline decltype(auto) call_method(Self&& self, Args&&... args) {
+        using Func = __getattr__<std::decay_t<Self>, name>::Return;
+        PyObject* meth = PyObject_GetAttr(self.ptr(), TemplateString<name>::ptr);
+        if (meth == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            decltype(auto) result = Func(meth)(std::forward<Args>(args)...);
+            Py_DECREF(meth);
+            return result;
+        } catch (...) {
+            Py_DECREF(meth);
+            throw;
+        }
+    }
+
+}
 
 
 }  // namespace py

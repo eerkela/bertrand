@@ -19,8 +19,6 @@ struct __neg__<Float>                                           : Returns<Float>
 template <>
 struct __abs__<Float>                                           : Returns<Float> {};
 template <>
-struct __invert__<Float>                                        : Returns<Float> {};
-template <>
 struct __increment__<Float>                                     : Returns<Float> {};
 template <>
 struct __decrement__<Float>                                     : Returns<Float> {};
@@ -235,20 +233,23 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
+    // TODO: these can be ordinary static members rather than functions, which would
+    // yield higher performance.
+
     /* Get the zero singleton. */
-    inline static const Float& zero() {
+    static const Float& zero() {
         static const Float val = 0.0;
         return val;
     }
 
     /* Get the half singleton. */
-    inline static const Float& half() {
+    static const Float& half() {
         static const Float val = 0.5;
         return val;
     }
 
     /* Get the one singleton. */
-    inline static const Float& one() {
+    static const Float& one() {
         static const Float val = 1.0;
         return val;
     }

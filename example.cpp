@@ -174,7 +174,7 @@ void run() {
     constexpr auto y = py::arg_<"y">;
     // constexpr auto z = py::arg_<"z">;
 
-    py::Function_ func("subtract", lambda, y = 2, x = 1);
+    py::Function func("subtract", lambda, y = 2, x = 1);
 
     py::print(func());  // TODO: not memory safe for some reason
 
@@ -199,7 +199,7 @@ void run() {
 
     // constexpr auto x = py::arg_<"x">;
 
-    // py::Function_ func("test", lambda, x = "hello");
+    // py::Function func("test", lambda, x = "hello");
 
     // py::print(func());
     // py::print(func("abc"));
@@ -207,7 +207,7 @@ void run() {
 
 
 
-    // py::Function_ variadic(
+    // py::Function variadic(
     //     "variadic_positional",
     //     [](
     //         std::string x,
@@ -976,7 +976,7 @@ void run() {
 
 
 
-static const py::Function_ func(
+static const py::Function func(
     "example",
     [](
         py::Arg<"x", const int&>::opt x,

@@ -58,7 +58,9 @@ namespace impl {
 template <std::derived_from<impl::KeyTag> Self>
 struct __getattr__<Self, "mapping">                             : Returns<MappingProxy<typename Self::mapping_type>> {};
 template <std::derived_from<impl::KeyTag> Self>
-struct __getattr__<Self, "isdisjoint">                          : Returns<Function> {};
+struct __getattr__<Self, "isdisjoint">                          : Returns<Function<
+    Bool(typename Arg<"other", const Object&>::pos)
+>> {};
 template <std::derived_from<impl::KeyTag> Self>
 struct __len__<Self>                                            : Returns<size_t> {};
 template <std::derived_from<impl::KeyTag> Self>
@@ -262,21 +264,21 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `dict.keys().mapping`. */
-    inline MappingProxy<mapping_type> mapping() const;
+    MappingProxy<mapping_type> mapping() const;
 
     /* Equivalent to Python `dict.keys().isdisjoint(other)`. */
     template <impl::is_iterable T>
         requires (std::convertible_to<impl::dereference_type<T>, key_type>)
-    inline bool isdisjoint(const T& other) const;
+    bool isdisjoint(const T& other) const;
 
     /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
-    inline bool isdisjoint(const std::initializer_list<key_type>& other) const;
+    bool isdisjoint(const std::initializer_list<key_type>& other) const;
 
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
 
-    inline friend Set<key_type> operator|(
+    friend Set<key_type> operator|(
         const KeyView& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -287,7 +289,7 @@ public:
         return reinterpret_steal<Set<key_type>>(result);
     }
 
-    inline friend Set<key_type> operator&(
+    friend Set<key_type> operator&(
         const KeyView& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -298,7 +300,7 @@ public:
         return reinterpret_steal<Set<key_type>>(result);
     }
 
-    inline friend Set<key_type> operator-(
+    friend Set<key_type> operator-(
         const KeyView& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -309,7 +311,7 @@ public:
         return reinterpret_steal<Set<key_type>>(result);
     }
 
-    inline friend Set<key_type> operator^(
+    friend Set<key_type> operator^(
         const KeyView& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -448,7 +450,7 @@ public:
     ///////////////////////////////
 
     /* Equivalent to Python `dict.values().mapping`. */
-    inline MappingProxy<mapping_type> mapping() const;
+    MappingProxy<mapping_type> mapping() const;
 
 };
 
@@ -587,7 +589,7 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `dict.items().mapping`. */
-    inline MappingProxy<mapping_type> mapping() const;
+    MappingProxy<mapping_type> mapping() const;
 
 };
 
@@ -598,27 +600,64 @@ public:
 
 
 template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "fromkeys">                        : Returns<Function> {};
+struct __getattr__<Self, "fromkeys">                        : Returns<Function<
+    Self(
+        typename Arg<"keys", const Object&>::pos,
+        typename Arg<"value", const Object&>::pos::opt
+    )
+>> {};
 template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "copy">                            : Returns<Function> {};
+struct __getattr__<Self, "copy">                            : Returns<Function<
+    Self()
+>> {};
 template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "clear">                           : Returns<Function> {};
+struct __getattr__<Self, "clear">                           : Returns<Function<
+    void()
+>> {};
 template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "get">                             : Returns<Function> {};
+struct __getattr__<Self, "get">                             : Returns<Function<
+    typename Self::value_type(
+        typename Arg<"key", const Object&>::pos,
+        typename Arg<"default", const Object&>::pos::opt
+    )
+>> {};
 template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "pop">                             : Returns<Function> {};
+struct __getattr__<Self, "pop">                             : Returns<Function<
+    typename Self::value_type(
+        typename Arg<"key", const Object&>::pos,
+        typename Arg<"default", const Object&>::pos::opt
+    )
+>> {};
 template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "popitem">                         : Returns<Function> {};
+struct __getattr__<Self, "popitem">                         : Returns<Function<
+    Tuple<Object>()  // TODO: return a struct with defined key and value types instead
+>> {};
 template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "setdefault">                      : Returns<Function> {};
+struct __getattr__<Self, "setdefault">                      : Returns<Function<
+    typename Self::value_type(
+        typename Arg<"key", const Object&>::pos,
+        typename Arg<"default", const Object&>::pos::opt
+    )
+>> {};
 template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "update">                          : Returns<Function> {};
+struct __getattr__<Self, "update">                          : Returns<Function<
+    void(
+        typename Arg<"other", const Object&>::pos,
+        typename Arg<"kwargs", const Object&>::kwargs
+    )
+>> {};
 template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "keys">                            : Returns<Function> {};
+struct __getattr__<Self, "keys">                            : Returns<Function<
+    KeyView<Self>()
+>> {};
 template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "values">                          : Returns<Function> {};
+struct __getattr__<Self, "values">                          : Returns<Function<
+    ValueView<Self>()
+>> {};
 template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "items">                           : Returns<Function> {};
+struct __getattr__<Self, "items">                           : Returns<Function<
+    ItemView<Self>()
+>> {};
 template <std::derived_from<impl::DictTag> Self>
 struct __len__<Self>                                        : Returns<size_t> {};
 template <std::derived_from<impl::DictTag> Self>
@@ -970,12 +1009,12 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `dict.clear()`. */
-    inline void clear() { 
+    void clear() { 
         PyDict_Clear(this->ptr());
     }
 
     /* Equivalent to Python `dict.copy()`. */
-    inline Dict copy() const {
+    Dict copy() const {
         PyObject* result = PyDict_Copy(this->ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -986,7 +1025,7 @@ public:
     /* Equivalent to Python `dict.fromkeys(keys, value)`. */
     template <impl::is_iterable T>
         requires (std::convertible_to<impl::dereference_type<T>, key_type>)
-    inline static Dict fromkeys(const T& keys, const value_type& value) {
+    static Dict fromkeys(const T& keys, const value_type& value) {
         PyObject* result = PyDict_New();
         if (result == nullptr) {
             Exception::from_python();
@@ -1009,7 +1048,7 @@ public:
     }
 
     /* Equivalent to Python `dict.fromkeys(<braced initializer list>, value)`. */
-    inline Dict fromkeys(
+    Dict fromkeys(
         const std::initializer_list<key_type>& keys,
         const value_type& value
     ) {
@@ -1035,7 +1074,7 @@ public:
     }
 
     /* Equivalent to Python `dict.get(key)`.  Returns nullopt if the key is not found. */
-    inline std::optional<value_type> get(const key_type& key) const {
+    std::optional<value_type> get(const key_type& key) const {
         PyObject* result = PyDict_GetItemWithError(this->ptr(), key.ptr());
         if (result == nullptr) {
             if (PyErr_Occurred()) {
@@ -1047,7 +1086,7 @@ public:
     }
 
     /* Equivalent to Python `dict.get(key, default_value)`. */
-    inline value_type get(const key_type& key, const value_type& default_value) const {
+    value_type get(const key_type& key, const value_type& default_value) const {
         PyObject* result = PyDict_GetItemWithError(this->ptr(), key.ptr());
         if (result == nullptr) {
             if (PyErr_Occurred()) {
@@ -1059,7 +1098,7 @@ public:
     }
 
     /* Equivalent to Python `dict.pop(key)`.  Returns nullopt if the key is not found. */
-    inline std::optional<value_type> pop(const key_type& key) {
+    std::optional<value_type> pop(const key_type& key) {
         PyObject* result = PyDict_GetItemWithError(this->ptr(), key.ptr());
         if (result == nullptr) {
             if (PyErr_Occurred()) {
@@ -1074,7 +1113,7 @@ public:
     }
 
     /* Equivalent to Python `dict.pop(key, default_value)`. */
-    inline value_type pop(const key_type& key, const value_type& default_value) {
+    value_type pop(const key_type& key, const value_type& default_value) {
         PyObject* result = PyDict_GetItemWithError(this->ptr(), key.ptr());
         if (result == nullptr) {
             if (PyErr_Occurred()) {
@@ -1089,10 +1128,10 @@ public:
     }
 
     /* Equivalent to Python `dict.popitem()`. */
-    inline value_type popitem();
+    value_type popitem();
 
     /* Equivalent to Python `dict.setdefault(key, default_value)`. */
-    inline value_type setdefault(const key_type& key, const value_type& default_value) {
+    value_type setdefault(const key_type& key, const value_type& default_value) {
         PyObject* result = PyDict_SetDefault(
             this->ptr(),
             key.ptr(),
@@ -1107,7 +1146,7 @@ public:
 
 
     /* Equivalent to Python `dict.update(items)`. */
-    inline void update(const Dict& items) {
+    void update(const Dict& items) {
         if (PyDict_Merge(this->ptr(), items.ptr(), 1)) {
             Exception::from_python();
         }
@@ -1120,7 +1159,7 @@ public:
 
     /* Equivalent to Python `dict.update(items)`. */
     template <impl::is_iterable T>
-    inline void update(const T& items) {
+    void update(const T& items) {
         if constexpr (impl::python_like<T>) {
             if (PyDict_MergeFromSeq2(
                 this->ptr(),
@@ -1143,9 +1182,7 @@ public:
     }
 
     /* Equivalent to Python `dict.update(<braced initializer list>)`. */
-    inline void update(
-        const std::initializer_list<std::pair<key_type, value_type>>& items
-    ) {
+    void update(const std::initializer_list<std::pair<key_type, value_type>>& items) {
         for (const auto& [k, v] : items) {
             if (PyDict_SetItem(this->ptr(), k.ptr(), v.ptr())) {
                 Exception::from_python();
@@ -1155,7 +1192,7 @@ public:
 
     /* Equivalent to Python `dict.update(items)`, but does not overwrite existing
     keys. */
-    inline void merge(const Dict& items) {
+    void merge(const Dict& items) {
         if (PyDict_Merge(this->ptr(), items.ptr(), 0)) {
             Exception::from_python();
         }
@@ -1164,7 +1201,7 @@ public:
     /* Equivalent to Python `dict.update(items)`, but does not overwrite existing
     keys. */
     template <impl::is_iterable T>
-    inline void merge(const T& items) {
+    void merge(const T& items) {
         if (PyDict_MergeFromSeq2(this->ptr(), List(items).ptr(), 0)) {
             Exception::from_python();
         }
@@ -1175,19 +1212,19 @@ public:
     /////////////////////
 
     /* Equivalent to Python `dict.keys()`. */
-    inline KeyView<Dict> keys() const;
+    KeyView<Dict> keys() const;
 
     /* Equivalent to Python `dict.values()`. */
-    inline ValueView<Dict> values() const;
+    ValueView<Dict> values() const;
 
     /* Equivalent to Python `dict.items()`. */
-    inline ItemView<Dict> items() const;
+    ItemView<Dict> items() const;
 
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
 
-    inline friend Dict operator|(
+    friend Dict operator|(
         const Dict& self,
         const std::initializer_list<std::pair<key_type, value_type>>& other
     ) {
@@ -1196,7 +1233,7 @@ public:
         return result;
     }
 
-    inline friend Dict& operator|=(
+    friend Dict& operator|=(
         Dict& self,
         const std::initializer_list<std::pair<key_type, value_type>>& other
     ) {
@@ -1233,15 +1270,28 @@ struct __cast__<Self, T> {
 
 
 template <std::derived_from<impl::MappingProxyTag> Self>
-struct __getattr__<Self, "copy">                                : Returns<Function> {};
+struct __getattr__<Self, "copy">                                : Returns<Function<
+    typename Self::mapping_type()
+>> {};
 template <std::derived_from<impl::MappingProxyTag> Self>
-struct __getattr__<Self, "get">                                 : Returns<Function> {};
+struct __getattr__<Self, "get">                                 : Returns<Function<
+    typename Self::value_type(
+        typename Arg<"key", const Object&>::pos,
+        typename Arg<"default", const Object&>::pos::opt
+    )
+>> {};
 template <std::derived_from<impl::MappingProxyTag> Self>
-struct __getattr__<Self, "keys">                                : Returns<Function> {};
+struct __getattr__<Self, "keys">                                : Returns<Function<
+    KeyView<typename Self::mapping_type>()
+>> {};
 template <std::derived_from<impl::MappingProxyTag> Self>
-struct __getattr__<Self, "values">                              : Returns<Function> {};
+struct __getattr__<Self, "values">                              : Returns<Function<
+    ValueView<typename Self::mapping_type>()
+>> {};
 template <std::derived_from<impl::MappingProxyTag> Self>
-struct __getattr__<Self, "items">                               : Returns<Function> {};
+struct __getattr__<Self, "items">                               : Returns<Function<
+    ItemView<typename Self::mapping_type>()
+>> {};
 template <std::derived_from<impl::MappingProxyTag> Self>
 struct __len__<Self>                                            : Returns<size_t> {};
 template <std::derived_from<impl::MappingProxyTag> Self>
@@ -1361,7 +1411,7 @@ class MappingProxy : public Object, public impl::MappingProxyTag {
         "py::MappingProxy mapping type must be derived from py::Object."
     );
 
-    inline Map unwrap() const {
+    Map unwrap() const {
         PyObject* dict = reinterpret_cast<PyObject*>(
             reinterpret_cast<impl::mappingproxyobject*>(m_ptr)->mapping
         );
@@ -1445,32 +1495,32 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `mappingproxy.copy()`. */
-    inline auto copy() const {
+    auto copy() const {
         return unwrap().copy();
     }
 
     /* Equivalent to Python `mappingproxy.get(key)`. */
-    inline auto get(const key_type& key) const {
+    auto get(const key_type& key) const {
         return unwrap().get(key);
     }
 
     /* Equivalent to Python `mappingproxy.get(key, default)`. */
-    inline auto get(const key_type& key, const value_type& default_value) const {
+    auto get(const key_type& key, const value_type& default_value) const {
         return unwrap().get(key, default_value);
     }
 
     /* Equivalent to Python `mappingproxy.keys()`. */
-    inline auto keys() const {
+    auto keys() const {
         return unwrap().keys();
     }
 
     /* Equivalent to Python `mappingproxy.values()`. */
-    inline auto values() const {
+    auto values() const {
         return unwrap().values();
     }
 
     /* Equivalent to Python `mappingproxy.items()`. */
-    inline auto items() const {
+    auto items() const {
         return unwrap().items();
     }
 
@@ -1478,7 +1528,7 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    inline friend mapping_type operator|(
+    friend mapping_type operator|(
         const MappingProxy& self,
         const std::initializer_list<std::pair<key_type, value_type>>& other
     ) {
@@ -1489,19 +1539,19 @@ public:
 
 
 template <typename Map>
-inline MappingProxy<Map> KeyView<Map>::mapping() const {
+MappingProxy<Map> KeyView<Map>::mapping() const {
     return attr<"mapping">();
 }
 
 
 template <typename Map>
-inline MappingProxy<Map> ValueView<Map>::mapping() const {
+MappingProxy<Map> ValueView<Map>::mapping() const {
     return attr<"mapping">();
 }
 
 
 template <typename Map>
-inline MappingProxy<Map> ItemView<Map>::mapping() const {
+MappingProxy<Map> ItemView<Map>::mapping() const {
     return attr<"mapping">();
 }
 

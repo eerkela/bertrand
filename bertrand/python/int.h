@@ -338,7 +338,7 @@ class Int : public Object {
     /* Helper function allows explicit conversion from any C++ type that implements an
     implicit or explicit conversion to an integer. */
     template <typename T>
-    inline static auto trigger_explicit_conversions(const T& value) {
+    static auto trigger_explicit_conversions(const T& value) {
         if constexpr (impl::explicitly_convertible_to<T, uint64_t>) {
             return static_cast<uint64_t>(value);
         } else if constexpr (impl::explicitly_convertible_to<T, unsigned long long>) {

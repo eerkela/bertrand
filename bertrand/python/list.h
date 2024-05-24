@@ -23,27 +23,59 @@ namespace py {
 
 
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "append">                              : Returns<Function> {};
+struct __getattr__<Self, "append">                              : Returns<Function<
+    void(typename Arg<"value", const typename Self::value_type&>::pos)
+>> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "extend">                              : Returns<Function> {};
+struct __getattr__<Self, "extend">                              : Returns<Function<
+    void(typename Arg<"iterable", const Object&>::pos)
+>> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "insert">                              : Returns<Function> {};
+struct __getattr__<Self, "insert">                              : Returns<Function<
+    void(
+        typename Arg<"index", const Int&>::pos,
+        typename Arg<"value", const typename Self::value_type&>::pos
+    )
+>> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "copy">                                : Returns<Function> {};
+struct __getattr__<Self, "copy">                                : Returns<Function<
+    Self()
+>> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "count">                               : Returns<Function> {};
+struct __getattr__<Self, "count">                               : Returns<Function<
+    Int(typename Arg<"value", const typename Self::value_type&>::pos)
+>> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "index">                               : Returns<Function> {};
+struct __getattr__<Self, "index">                               : Returns<Function<
+    Int(
+        typename Arg<"value", const typename Self::value_type&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "clear">                               : Returns<Function> {};
+struct __getattr__<Self, "clear">                               : Returns<Function<
+    void()
+>> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "remove">                              : Returns<Function> {};
+struct __getattr__<Self, "remove">                              : Returns<Function<
+    void(typename Arg<"value", const typename Self::value_type&>::pos)
+>> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "pop">                                 : Returns<Function> {};
+struct __getattr__<Self, "pop">                                 : Returns<Function<
+    typename Self::value_type(typename Arg<"index", const Int&>::pos::opt)
+>> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "reverse">                             : Returns<Function> {};
+struct __getattr__<Self, "reverse">                             : Returns<Function<
+    void()
+>> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "sort">                                : Returns<Function> {};
+struct __getattr__<Self, "sort">                                : Returns<Function<
+    void(
+        typename Arg<"key", const Function<Bool(const typename Self::value_type&)>&>::kw::opt,
+        typename Arg<"reverse", const Bool&>::kw::opt
+    )
+>> {};
 template <std::derived_from<impl::ListTag> Self>
 struct __len__<Self>                                            : Returns<size_t> {};
 template <std::derived_from<impl::ListTag> Self>
@@ -217,9 +249,9 @@ namespace ops {
 
 
 template <typename T>
-List(const std::initializer_list<T>&) -> List<as_object_t<T>>;
+List(const std::initializer_list<T>&) -> List<impl::as_object_t<T>>;
 template <impl::is_iterable T>
-List(T) -> List<as_object_t<impl::dereference_type<T>>>;
+List(T) -> List<impl::as_object_t<impl::dereference_type<T>>>;
 template <typename T, typename... Args>
     requires (!impl::is_iterable<T> && !impl::str_like<T>)
 List(T, Args...) -> List<Object>;
@@ -548,24 +580,24 @@ public:
     /////////////////////////
 
     /* Get the underlying PyObject* array. */
-    inline PyObject** DATA() const noexcept {
+    PyObject** DATA() const noexcept {
         return PySequence_Fast_ITEMS(this->ptr());
     }
 
     /* Directly access an item without bounds checking or constructing a proxy. */
-    inline value_type GET_ITEM(Py_ssize_t index) const {
+    value_type GET_ITEM(Py_ssize_t index) const {
         return reinterpret_borrow<value_type>(PyList_GET_ITEM(this->ptr(), index));
     }
 
     /* Directly set an item without bounds checking or constructing a proxy.  */
-    inline void SET_ITEM(Py_ssize_t index, PyObject* value) {
+    void SET_ITEM(Py_ssize_t index, PyObject* value) {
         PyObject* prev = PyList_GET_ITEM(this->ptr(), index);
         PyList_SET_ITEM(this->ptr(), index, value);
         Py_XDECREF(prev);
     }
 
     /* Equivalent to Python `list.append(value)`. */
-    inline void append(const value_type& value) {
+    void append(const value_type& value) {
         if (PyList_Append(this->ptr(), value.ptr())) {
             Exception::from_python();
         }
@@ -574,25 +606,25 @@ public:
     /* Equivalent to Python `list.extend(items)`. */
     template <impl::is_iterable T>
         requires (std::convertible_to<impl::dereference_type<T>, value_type>)
-    inline void extend(const T& items);
+    void extend(const T& items);
 
     /* Equivalent to Python `list.extend(items)`, where items are given as a braced
     initializer list. */
-    inline void extend(const std::initializer_list<value_type>& items) {
+    void extend(const std::initializer_list<value_type>& items) {
         for (const value_type& item : items) {
             append(item);
         }
     }
 
     /* Equivalent to Python `list.insert(index, value)`. */
-    inline void insert(Py_ssize_t index, const value_type& value) {
+    void insert(Py_ssize_t index, const value_type& value) {
         if (PyList_Insert(this->ptr(), index, value.ptr())) {
             Exception::from_python();
         }
     }
 
     /* Equivalent to Python `list.copy()`. */
-    inline List copy() const {
+    List copy() const {
         PyObject* result = PyList_GetSlice(this->ptr(), 0, PyList_GET_SIZE(this->ptr()));
         if (result == nullptr) {
             Exception::from_python();
@@ -602,7 +634,7 @@ public:
 
     /* Equivalent to Python `list.count(value)`, but also takes optional start/stop
     indices similar to `list.index()`. */
-    inline Py_ssize_t count(
+    Py_ssize_t count(
         const value_type& value,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -628,7 +660,7 @@ public:
     }
 
     /* Equivalent to Python `list.index(value[, start[, stop]])`. */
-    inline Py_ssize_t index(
+    Py_ssize_t index(
         const value_type& value,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -654,60 +686,62 @@ public:
     }
 
     /* Equivalent to Python `list.clear()`. */
-    inline void clear() {
+    void clear() {
         if (PyList_SetSlice(this->ptr(), 0, PyList_GET_SIZE(this->ptr()), nullptr)) {
             Exception::from_python();
         }
     }
 
     /* Equivalent to Python `list.remove(value)`. */
-    inline void remove(const value_type& value);
+    void remove(const value_type& value);
 
     /* Equivalent to Python `list.pop([index])`. */
-    inline value_type pop(Py_ssize_t index = -1);
+    value_type pop(Py_ssize_t index = -1);
 
     /* Equivalent to Python `list.reverse()`. */
-    inline void reverse() {
+    void reverse() {
         if (PyList_Reverse(this->ptr())) {
             Exception::from_python();
         }
     }
 
+    // TODO: can potentially unify sort() overloads using optional keyword arguments?
+
     /* Equivalent to Python `list.sort()`. */
-    inline void sort() {
+    void sort() {
         if (PyList_Sort(this->ptr())) {
             Exception::from_python();
         }
     }
 
     /* Equivalent to Python `list.sort(reverse=reverse)`. */
-    inline void sort(const Bool& reverse);
+    void sort(const Bool& reverse);
 
     /* Equivalent to Python `list.sort(key=key[, reverse=reverse])`.  The key function
     can be given as any C++ function-like object, but users should note that pybind11
     has a hard time parsing generic arguments, so templates and the `auto` keyword
     should be avoided. */
-    inline void sort(const Function& key, const Bool& reverse = false);
+    void sort(const Function<const value_type&>& key, const Bool& reverse = false);
 
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
 
-    inline friend List operator+(
+    friend List operator+(
         const List& self,
         const std::initializer_list<value_type>& items
     ) {
         return self.concat(items);
     }
 
-    inline friend List operator+(
+    friend List operator+(
         const std::initializer_list<value_type>& items,
         const List& self
     ) {
         return self.concat(items);
     }
 
-    inline friend List& operator+=(
+    friend List& operator+=(
         List& self,
         const std::initializer_list<value_type>& items
     ) {
@@ -717,7 +751,7 @@ public:
 
 protected:
 
-    inline List concat(const std::initializer_list<value_type>& items) const {
+    List concat(const std::initializer_list<value_type>& items) const {
         Py_ssize_t length = PyList_GET_SIZE(this->ptr());
         PyObject* result = PyList_New(length + items.size());
         if (result == nullptr) {

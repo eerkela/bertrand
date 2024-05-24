@@ -22,6 +22,9 @@ namespace py {
 
 namespace impl {
 
+    // TODO: delete this base class and just reimplement them in the Bytes classes for
+    // consistency
+
     struct IBytesTag {};
 
     template <typename Derived>
@@ -34,23 +37,19 @@ namespace impl {
     public:
         using Base::Base;
 
-        /* Equivalent to Python `bytes.capitalize()`. */
-        inline Derived capitalize() const {
-            return reinterpret_steal<Derived>(attr<"capitalize">()().release());
+        Derived capitalize() const {
+            return impl::call_method<"capitalize">(self());
         }
 
-        /* Equivalent to Python `bytes.center(width)`. */
-        inline Derived center(size_t width) const {
-            return reinterpret_steal<Derived>(attr<"center">()(width).release());
+        Derived center(const Int& width) const {
+            return impl::call_method<"center">(self(), width);
         }
 
-        /* Equivalent to Python `bytes.center(width, fillbyte)`. */
-        inline Derived center(size_t width, const Derived& fillbyte) const {
+        Derived center(size_t width, const Derived& fillbyte) const {
             return reinterpret_steal<Derived>(attr<"center">()(width, fillbyte).release());
         }
 
-        /* Equivalent to Python `bytes.count(sub[, start[, end]])`. */
-        inline Py_ssize_t count(
+        Py_ssize_t count(
             const Derived& value,
             Py_ssize_t start = 0,
             Py_ssize_t stop = -1
@@ -75,16 +74,14 @@ namespace impl {
             }
         }
 
-        /* Equivalent to Python `bytes.decode([encoding[, errors]])`. */
-        inline Str decode(
+        Str decode(
             const Str& encoding = "utf-8",
             const Str& errors = "strict"
         ) const {
             return reinterpret_steal<Str>(attr<"decode">()(encoding, errors).release());
         }
 
-        /* Equivalent to Python `bytes.endswith(suffix[, start[, end]])`. */
-        inline bool endswith(
+        bool endswith(
             const Derived& suffix,
             Py_ssize_t start = 0,
             Py_ssize_t end = -1
@@ -92,13 +89,11 @@ namespace impl {
             return static_cast<bool>(attr<"endswith">()(suffix, start, end));
         }
 
-        /* Equivalent to Python `bytes.expandtabs(tabsize=8)`. */
-        inline Derived expandtabs(size_t tabsize = 8) const {
+        Derived expandtabs(size_t tabsize = 8) const {
             return reinterpret_steal<Derived>(attr<"expandtabs">()(tabsize).release());
         }
 
-        /* Equivalent to Python `bytes.find(sub[, start[, end]])`. */
-        inline Py_ssize_t find(
+        Py_ssize_t find(
             const Derived& sub,
             Py_ssize_t start = 0,
             Py_ssize_t end = -1
@@ -106,18 +101,15 @@ namespace impl {
             return static_cast<size_t>(attr<"find">()(sub, start, end));
         }
 
-        /* Equivalent to Python `bytes.hex()`. */
-        inline Str hex() const {
+        Str hex() const {
             return reinterpret_steal<Str>(attr<"hex">()().release());
         }
 
-        /* Equivalent to Python `bytes.hex(sep[, bytes_per_sep])`. */
-        inline Str hex(const Derived& sep, Py_ssize_t bytes_per_sep = 1) const {
+        Str hex(const Derived& sep, Py_ssize_t bytes_per_sep = 1) const {
             return reinterpret_steal<Str>(attr<"hex">()(sep, bytes_per_sep).release());
         }
 
-        /* Equivalent to Python `bytes.index(sub[, start[, end]])`. */
-        inline Py_ssize_t index(
+        Py_ssize_t index(
             const Derived& value,
             Py_ssize_t start = 0,
             Py_ssize_t stop = -1
@@ -142,74 +134,80 @@ namespace impl {
             }
         }
 
-        /* Equivalent to Python `bytes.isalnum()`. */
-        inline bool isalnum() const {
+        bool isalnum() const {
             return static_cast<bool>(attr<"isalnum">()());
         }
 
-        /* Equivalent to Python `bytes.isalpha()`. */
-        inline bool isalpha() const {
+        bool isalpha() const {
             return static_cast<bool>(attr<"isalpha">()());
         }
 
-        /* Equivalent to Python `bytes.isascii()`. */
-        inline bool isascii() const {
+        bool isascii() const {
             return static_cast<bool>(attr<"isascii">()());
         }
 
-        /* Equivalent to Python `bytes.isdigit()`. */
-        inline bool isdigit() const {
+        bool isdigit() const {
             return static_cast<bool>(attr<"isdigit">()());
         }
 
-        /* Equivalent to Python `bytes.islower()`. */
-        inline bool islower() const {
+        bool islower() const {
             return static_cast<bool>(attr<"islower">()());
         }
 
-        /* Equivalent to Python `bytes.isspace()`. */
-        inline bool isspace() const {
+        bool isspace() const {
             return static_cast<bool>(attr<"isspace">()());
         }
 
-        /* Equivalent to Python `bytes.istitle()`. */
-        inline bool istitle() const {
+        bool istitle() const {
             return static_cast<bool>(attr<"istitle">()());
         }
 
-        /* Equivalent to Python `bytes.isupper()`. */
-        inline bool isupper() const {
+        bool isupper() const {
             return static_cast<bool>(attr<"isupper">()());
         }
 
-        /* Equivalent to Python (static) `bytes.maketrans(x)`. */
-        inline static Dict<> maketrans(const Derived& from, const Derived& to);
+        Derived join(const Object& iterable) const {
+            return reinterpret_steal<Derived>(attr<"join">()(iterable).release());
+        }
 
-        /* Equivalent to Python `bytes.partition(sep)`. */
-        inline Tuple<Derived> partition(const Derived& sep) const {
+        Derived ljust(size_t width) const {
+            return reinterpret_steal<Derived>(attr<"ljust">()(width).release());
+        }
+
+        Derived ljust(size_t width, const Derived& fillbyte) const {
+            return reinterpret_steal<Derived>(attr<"ljust">()(width, fillbyte).release());
+        }
+
+        Derived lstrip() const {
+            return reinterpret_steal<Derived>(attr<"lstrip">()().release());
+        }
+
+        Derived lstrip(const Derived& chars) const {
+            return reinterpret_steal<Derived>(attr<"lstrip">()(chars).release());
+        }
+
+        static Dict<> maketrans(const Derived& from, const Derived& to);
+
+        Tuple<Derived> partition(const Derived& sep) const {
             return reinterpret_steal<Tuple<Derived>>(attr<"partition">()(sep).release());
         }
 
-        /* Equivalent to Python `bytes.removeprefix(prefix)`. */
-        inline Derived removeprefix(const Derived& prefix) const {
+        Derived removeprefix(const Derived& prefix) const {
             return reinterpret_steal<Derived>(attr<"removeprefix">()(prefix).release());
         }
 
-        /* Equivalent to Python `bytes.removesuffix(suffix)`. */
-        inline Derived removesuffix(const Derived& suffix) const {
+        Derived removesuffix(const Derived& suffix) const {
             return reinterpret_steal<Derived>(attr<"removesuffix">()(suffix).release());
         }
 
-        /* Equivalent to Python `bytes.replace(old, new[, count])`. */
-        inline Derived replace(
+        Derived replace(
             const Derived& sub,
             const Derived& repl
         ) const {
             return reinterpret_steal<Derived>(attr<"replace">()(sub, repl).release());
         }
 
-        /* Equivalent to Python `bytes.replace(old, new[, count])`. */
-        inline Derived replace(
+        Derived replace(
             const Derived& sub,
             const Derived& repl,
             Py_ssize_t maxcount
@@ -219,8 +217,7 @@ namespace impl {
             );
         }
 
-        /* Equivalent to Python `bytes.rfind(sub[, start[, end]])`. */
-        inline Py_ssize_t rfind(
+        Py_ssize_t rfind(
             const Derived& sub,
             Py_ssize_t start = 0,
             Py_ssize_t end = -1
@@ -228,8 +225,7 @@ namespace impl {
             return static_cast<size_t>(attr<"rfind">()(sub, start, end));
         }
 
-        /* Equivalent to Python `bytes.rindex(sub[, start[, end]])`. */
-        inline Py_ssize_t rindex(
+        Py_ssize_t rindex(
             const Derived& sub,
             Py_ssize_t start = 0,
             Py_ssize_t end = -1
@@ -237,64 +233,53 @@ namespace impl {
             return static_cast<size_t>(attr<"rindex">()(sub, start, end));
         }
 
-        /* Equivalent to Python `bytes.rjust(width)`. */
-        inline Derived rjust(size_t width) const {
+        Derived rjust(size_t width) const {
             return reinterpret_steal<Derived>(attr<"rjust">()(width).release());
         }
 
-        /* Equivalent to Python `bytes.rjust(width, fillbyte)`. */
-        inline Derived rjust(size_t width, const Derived& fillbyte) const {
+        Derived rjust(size_t width, const Derived& fillbyte) const {
             return reinterpret_steal<Derived>(attr<"rjust">()(width, fillbyte).release());
         }
 
-        /* Equivalent to Python `bytes.rpartition(sep)`. */
-        inline Tuple<Derived> rpartition(const Derived& sep) const {
+        Tuple<Derived> rpartition(const Derived& sep) const {
             return reinterpret_steal<Tuple<Derived>>(attr<"rpartition">()(sep).release());
         }
 
-        /* Equivalent to Python `bytes.rsplit()`. */
-        inline List<Derived> rsplit() const {
+        List<Derived> rsplit() const {
             return reinterpret_steal<List<Derived>>(attr<"rsplit">()().release());
         }
 
-        /* Equivalent to Python `bytes.rsplit(sep, maxsplit=-1)`. */
-        inline List<Derived> rsplit(
+        List<Derived> rsplit(
             const Derived& sep,
             Py_ssize_t maxsplit = -1
         ) const {
             return reinterpret_steal<List<Derived>>(attr<"rsplit">()(sep, maxsplit).release());
         }
 
-        /* Equivalent to Python `bytes.rstrip()`. */
-        inline Derived rstrip() const {
+        Derived rstrip() const {
             return reinterpret_steal<Derived>(attr<"rstrip">()().release());
         }
 
-        /* Equivalent to Python `bytes.rstrip(chars)`. */
-        inline Derived rstrip(const Derived& chars) const {
+        Derived rstrip(const Derived& chars) const {
             return reinterpret_steal<Derived>(attr<"rstrip">()(chars).release());
         }
 
-        /* Equivalent to Python `bytes.split()`. */
-        inline List<Derived> split() const {
+        List<Derived> split() const {
             return reinterpret_steal<List<Derived>>(attr<"split">()().release());
         }
 
-        /* Equivalent to Python `bytes.split(sep, maxsplit=-1)`. */
-        inline List<Derived> split(
+        List<Derived> split(
             const Derived& sep,
             Py_ssize_t maxsplit = -1
         ) const {
             return reinterpret_steal<List<Derived>>(attr<"split">()(sep, maxsplit).release());
         }
 
-        /* Equivalent to Python `bytes.splitlines()`. */
-        inline List<Derived> splitlines(bool keepends = false) const {
+        List<Derived> splitlines(bool keepends = false) const {
             return reinterpret_steal<List<Derived>>(attr<"splitlines">()(keepends).release());
         }
 
-        /* Equivalent to Python `bytes.startswith(prefix[, start[, stop]])`. */
-        inline bool startswith(
+        bool startswith(
             const Derived& prefix,
             Py_ssize_t start = 0,
             Py_ssize_t stop = -1
@@ -302,38 +287,31 @@ namespace impl {
             return static_cast<bool>(attr<"startswith">()(prefix, start, stop));
         }
 
-        /* Equivalent to Python `bytes.strip()`. */
-        inline Derived strip() const {
+        Derived strip() const {
             return reinterpret_steal<Derived>(attr<"strip">()().release());
         }
 
-        /* Equivalent to Python `bytes.strip(chars)`. */
-        inline Derived strip(const Derived& chars) const {
+        Derived strip(const Derived& chars) const {
             return reinterpret_steal<Derived>(attr<"strip">()(chars).release());
         }
 
-        /* Equivalent to Python `bytes.swapcase()`. */
-        inline Derived swapcase() const {
+        Derived swapcase() const {
             return reinterpret_steal<Derived>(attr<"swapcase">()().release());
         }
 
-        /* Equivalent to Python `bytes.title()`. */
-        inline Derived title() const {
+        Derived title() const {
             return reinterpret_steal<Derived>(attr<"title">()().release());
         }
 
-        /* Equivalent to Python `bytes.translate(table)`. */
-        inline Derived translate(const Dict<>& table, const Derived& del = "") const {
+        Derived translate(const Dict<>& table, const Derived& del = "") const {
             return reinterpret_steal<Derived>(attr<"translate">()(table, del).release());
         }
 
-        /* Equivalent to Python `bytes.upper()`. */
-        inline Derived upper() const {
+        Derived upper() const {
             return reinterpret_steal<Derived>(attr<"upper">()().release());
         }
 
-        /* Equivalent to Python `bytes.zfill(width)`. */
-        inline Derived zfill(size_t width) const {
+        Derived zfill(size_t width) const {
             return reinterpret_steal<Derived>(attr<"zfill">()(width).release());
         }
 
@@ -341,81 +319,6 @@ namespace impl {
 
 }
 
-
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "capitalize">                             : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "center">                                 : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "count">                                  : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "decode">                                 : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "endswith">                               : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "expandtabs">                             : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "find">                                   : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "hex">                                    : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "index">                                  : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "isalnum">                                : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "isalpha">                                : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "isascii">                                : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "isdigit">                                : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "islower">                                : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "isspace">                                : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "istitle">                                : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "isupper">                                : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "maketrans">                              : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "partition">                              : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "removeprefix">                           : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "removesuffix">                           : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "replace">                                : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "rfind">                                  : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "rindex">                                 : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "rjust">                                  : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "rpartition">                             : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "rsplit">                                 : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "rstrip">                                 : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "split">                                  : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "splitlines">                             : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "startswith">                             : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "strip">                                  : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "swapcase">                               : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "title">                                  : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "translate">                              : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "upper">                                  : Returns<Function> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getattr__<T, "zfill">                                  : Returns<Function> {};
 
 template <std::derived_from<impl::IBytesTag> T>
 struct __len__<T>                                               : Returns<size_t> {};
@@ -469,6 +372,231 @@ template <std::derived_from<impl::IBytesTag> L>
 struct __imul__<L, Object>                                      : Returns<L&> {};
 template <std::derived_from<impl::IBytesTag> L, impl::int_like R>
 struct __imul__<L, R>                                           : Returns<L&> {};
+
+
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "capitalize">                             : Returns<Function<
+    T()
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "center">                                 : Returns<Function<
+    T(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillchar", const T&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "count">                                  : Returns<Function<
+    Int(
+        typename Arg<"sub", const T&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "decode">                                 : Returns<Function<
+    Str(
+        typename Arg<"encoding", const Str&>::opt,
+        typename Arg<"errors", const Str&>::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "endswith">                               : Returns<Function<
+    Bool(
+        typename Arg<"suffix", const T&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "expandtabs">                             : Returns<Function<
+    T(typename Arg<"tabsize", const Int&>::opt)
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "find">                                   : Returns<Function<
+    Int(
+        typename Arg<"sub", const T&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "hex">                                    : Returns<Function<
+    Str(
+        typename Arg<"sep", const T&>::opt,
+        typename Arg<"bytes_per_sep", const Int&>::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "index">                                  : Returns<Function<
+    Int(
+        typename Arg<"value", const T&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "isalnum">                                : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "isalpha">                                : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "isascii">                                : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "isdigit">                                : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "islower">                                : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "isspace">                                : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "istitle">                                : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "isupper">                                : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "join">                                   : Returns<Function<
+    T(typename Arg<"iterable", const Object&>::pos)
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "ljust">                                  : Returns<Function<
+    T(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillbyte", const T&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "lower">                                  : Returns<Function<
+    T()
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "lstrip">                                 : Returns<Function<
+    T(typename Arg<"chars", const T&>::opt)
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "maketrans">                              : Returns<Function<
+    Dict<T, T>(
+        typename Arg<"from", const T&>::pos,
+        typename Arg<"to", const T&>::pos
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "partition">                              : Returns<Function<
+    Tuple<T>(typename Arg<"sep", const T&>::pos)
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "removeprefix">                           : Returns<Function<
+    T(typename Arg<"prefix", const T&>::pos)
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "removesuffix">                           : Returns<Function<
+    T(typename Arg<"suffix", const T&>::pos)
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "replace">                                : Returns<Function<
+    T(
+        typename Arg<"old", const T&>::pos,
+        typename Arg<"new", const T&>::pos,
+        typename Arg<"count", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "rfind">                                  : Returns<Function<
+    Int(
+        typename Arg<"sub", const T&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "rindex">                                 : Returns<Function<
+    Int(
+        typename Arg<"sub", const T&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "rjust">                                  : Returns<Function<
+    T(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillbyte", const T&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "rpartition">                             : Returns<Function<
+    Tuple<T>(typename Arg<"sep", const T&>::pos)
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "rsplit">                                 : Returns<Function<
+    List<T>(
+        typename Arg<"sep", const T&>::opt,
+        typename Arg<"maxsplit", const Int&>::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "rstrip">                                 : Returns<Function<
+    T(typename Arg<"chars", const T&>::opt)
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "split">                                  : Returns<Function<
+    List<T>(
+        typename Arg<"sep", const T&>::opt,
+        typename Arg<"maxsplit", const Int&>::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "splitlines">                             : Returns<Function<
+    List<T>(typename Arg<"keepends", const Bool&>::opt)
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "startswith">                             : Returns<Function<
+    Bool(
+        typename Arg<"prefix", const T&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "strip">                                  : Returns<Function<
+    T(typename Arg<"chars", const T&>::opt)
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "swapcase">                               : Returns<Function<
+    T()
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "title">                                  : Returns<Function<
+    T()
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "translate">                              : Returns<Function<
+    T(
+        typename Arg<"table", const Dict<T, T>&>::pos,
+        typename Arg<"delete", const T&>::opt
+    )
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "upper">                                  : Returns<Function<
+    T()
+>> {};
+template <std::derived_from<impl::IBytesTag> T>
+struct __getattr__<T, "zfill">                                  : Returns<Function<
+    T(typename Arg<"width", const Int&>::pos)
+>> {};
 
 
 /////////////////////
@@ -563,18 +691,18 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python (static) `bytes.fromhex(string)`. */
-    inline static Bytes fromhex(const Str& string);
+    static Bytes fromhex(const Str& string);
 
     /* Access the internal buffer of the bytes object.  Note that this implicitly
     includes an extra null byte at the end of the buffer, regardless of any nulls that
     were already present.  The data should not be modified unless the bytes object was
     just created via `py::Bytes(size)`, and it should never be deallocated. */
-    inline char* data() const {
+    char* data() const {
         return PyBytes_AS_STRING(this->ptr());
     }
 
     /* Copy the contents of the buffer into a new py::Bytes object. */
-    inline Bytes copy() const {
+    Bytes copy() const {
         return reinterpret_steal<Bytes>(PyBytes_FromStringAndSize(
             PyBytes_AS_STRING(this->ptr()),
             PyBytes_GET_SIZE(this->ptr())
@@ -727,16 +855,16 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python (static) `bytes.fromhex(string)`. */
-    inline static ByteArray fromhex(const Str& string);
+    static ByteArray fromhex(const Str& string);
 
     /* Access the internal buffer of the bytearray object.  The data can be modified
     in-place, but should never be deallocated. */
-    inline char* data() const {
+    char* data() const {
         return PyByteArray_AS_STRING(this->ptr());
     }
 
     /* Copy the contents of the buffer into a new py::ByteArray object. */
-    inline ByteArray copy() const {
+    ByteArray copy() const {
         return reinterpret_steal<ByteArray>(PyByteArray_FromStringAndSize(
             PyByteArray_AS_STRING(this->ptr()),
             PyByteArray_GET_SIZE(this->ptr())

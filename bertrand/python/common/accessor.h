@@ -6,8 +6,7 @@
 #define BERTRAND_PYTHON_COMMON_PROXIES_H
 
 #include "declarations.h"
-#include "concepts.h"
-#include "exceptions.h"
+#include "except.h"
 #include "operators.h"
 #include "object.h"
 
@@ -142,11 +141,11 @@ public:
     ////    DEREFERENCE    ////
     ///////////////////////////
 
-    inline bool has_value() const {
+    bool has_value() const {
         return initialized;
     }
 
-    inline Wrapped& value() {
+    Wrapped& value() {
         if (!initialized) {
             throw ValueError(
                 "attempt to dereference an uninitialized accessor.  Either the "
@@ -156,7 +155,7 @@ public:
         return reinterpret_cast<Wrapped&>(buffer);
     }
 
-    inline const Wrapped& value() const {
+    const Wrapped& value() const {
         if (!initialized) {
             throw ValueError(
                 "attempt to dereference an uninitialized accessor.  Either the "
@@ -170,28 +169,28 @@ public:
     ////    FORWARDING INTERFACE    ////
     ////////////////////////////////////
 
-    inline auto operator*() {
+    auto operator*() {
         return *get_value();
     }
 
     // all attributes of wrapped type are forwarded using the arrow operator.  Just
     // replace all instances of `.` with `->`
-    inline Wrapped* operator->() {
+    Wrapped* operator->() {
         return &get_value();
     };
 
-    inline const Wrapped* operator->() const {
+    const Wrapped* operator->() const {
         return &get_value();
     };
 
     // TODO: make sure that converting proxy to wrapped object does not create a copy.
     // -> This matters when modifying kwonly defaults in func.h
 
-    inline operator Wrapped&() {
+    operator Wrapped&() {
         return get_value();
     }
 
-    inline operator const Wrapped&() const {
+    operator const Wrapped&() const {
         return get_value();
     }
 
@@ -224,30 +223,12 @@ public:
     auto operator[](const std::initializer_list<impl::SliceInitializer>& slice) const;
 
     template <typename T>
-    inline auto contains(const T& key) const { return get_value().contains(key); }
-    inline auto size() const { return get_value().size(); }
-    inline auto begin() const { return get_value().begin(); }
-    inline auto end() const { return get_value().end(); }
-    inline auto rbegin() const { return get_value().rbegin(); }
-    inline auto rend() const { return get_value().rend(); }
-
-};
-
-
-/* Base class that stores a static Python string for use during Attr lookups.
-Separating this into its own class ensures that only one string is allocated per
-attribute name, even if that attribute name is repeated across multiple classes. */
-template <StaticStr name>
-class AttrBase {
-protected:
-
-    inline static PyObject* key() {
-        static PyObject* result = PyUnicode_FromStringAndSize(
-            name.buffer,
-            name.size()
-        );
-        return result;  // NOTE: string will be garbage collected at shutdown
-    }
+    auto contains(const T& key) const { return get_value().contains(key); }
+    auto size() const { return get_value().size(); }
+    auto begin() const { return get_value().begin(); }
+    auto end() const { return get_value().end(); }
+    auto rbegin() const { return get_value().rbegin(); }
+    auto rend() const { return get_value().rend(); }
 
 };
 
@@ -259,10 +240,7 @@ and __delattr__ control structs.  If no specialization of these control structs
 exist for a given attribute name, then attempting to access it will result in a
 compile-time error. */
 template <typename Obj, StaticStr name> requires (__getattr__<Obj, name>::enable)
-class Attr :
-    public Proxy<typename __getattr__<Obj, name>::Return, Attr<Obj, name>>,
-    public AttrBase<name>
-{
+class Attr : public Proxy<typename __getattr__<Obj, name>::Return, Attr<Obj, name>> {
 public:
     using Wrapped = typename __getattr__<Obj, name>::Return;
     static_assert(
@@ -283,7 +261,7 @@ private:
                 "accessor was moved from or not properly constructed to begin with."
             );
         }
-        PyObject* result = PyObject_GetAttr(obj.ptr(), this->key());
+        PyObject* result = PyObject_GetAttr(obj.ptr(), TemplateString<name>::ptr);
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -321,14 +299,14 @@ public:
         *      py::Int i = reinterpret_steal<py::Int>(obj.attr<"some_int">().release());
         */
 
-    inline Wrapped& value() {
+    Wrapped& value() {
         if (!Base::initialized) {
             get_attr();
         }
         return reinterpret_cast<Wrapped&>(Base::buffer);
     }
 
-    inline const Wrapped& value() const {
+    const Wrapped& value() const {
         if (!Base::initialized) {
             get_attr();
         }
@@ -364,13 +342,13 @@ public:
             // descriptor objects
 
             // manually trigger the descriptor protocol for py::Function objects
-            if constexpr (std::derived_from<std::decay_t<T>, Function>) {
+            if constexpr (std::derived_from<std::decay_t<T>, impl::FunctionTag>) {
                 if constexpr (std::derived_from<Obj, Type>) {
                     PyObject* descr = PyInstanceMethod_New(value_ptr);
                     if (descr == nullptr) {
                         Exception::from_python();
                     }
-                    if (PyObject_SetAttr(obj.ptr(), this->key(), descr) < 0) {
+                    if (PyObject_SetAttr(obj.ptr(), TemplateString<name>::ptr, descr)) {
                         Py_DECREF(descr);
                         Exception::from_python();
                     }
@@ -382,7 +360,7 @@ public:
                     if (descr == nullptr) {
                         Exception::from_python();
                     }
-                    if (PyObject_SetAttr(obj.ptr(), this->key(), descr) < 0) {
+                    if (PyObject_SetAttr(obj.ptr(), TemplateString<name>::ptr, descr)) {
                         Py_DECREF(descr);
                         Exception::from_python();
                     }
@@ -391,7 +369,7 @@ public:
 
             // otherwise, just set the attribute normally
             } else {
-                if (PyObject_SetAttr(obj.ptr(), this->key(), value_ptr) < 0) {
+                if (PyObject_SetAttr(obj.ptr(), TemplateString<name>::ptr, value_ptr)) {
                     Exception::from_python();
                 }
             }
@@ -416,7 +394,7 @@ public:
             "specialization of __delattr__ for these types and ensure the Return "
             "type is set to void."
         );
-        if (PyObject_DelAttr(obj.ptr(), this->key()) < 0) {
+        if (PyObject_DelAttr(obj.ptr(), TemplateString<name>::ptr)) {
             Exception::from_python();
         }
         if (Base::initialized) {
@@ -440,7 +418,7 @@ struct ItemPolicy {
     ItemPolicy(const ItemPolicy& other) : obj(other.obj), key(other.key) {}
     ItemPolicy(ItemPolicy&& other) : obj(other.obj), key(std::move(other.key)) {}
 
-    inline PyObject* get() const {
+    PyObject* get() const {
         PyObject* result = PyObject_GetItem(obj.ptr(), key.ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -448,14 +426,14 @@ struct ItemPolicy {
         return result;
     }
 
-    inline void set(PyObject* value) {
+    void set(PyObject* value) {
         int result = PyObject_SetItem(obj.ptr(), key.ptr(), value);
         if (result < 0) {
             Exception::from_python();
         }
     }
 
-    inline void del() {
+    void del() {
         int result = PyObject_DelItem(obj.ptr(), key.ptr());
         if (result < 0) {
             Exception::from_python();
@@ -506,7 +484,7 @@ struct ItemPolicy<Obj, Key> {
     ItemPolicy(const ItemPolicy& other) : obj(other.obj), key(other.key) {}
     ItemPolicy(ItemPolicy&& other) : obj(other.obj), key(other.key) {}
 
-    inline Py_ssize_t normalize(Py_ssize_t index) const {
+    Py_ssize_t normalize(Py_ssize_t index) const {
         Py_ssize_t size = PyList_GET_SIZE(obj.ptr());
         Py_ssize_t result = index + size * (index < 0);
         if (result < 0 || result >= size) {
@@ -515,7 +493,7 @@ struct ItemPolicy<Obj, Key> {
         return result;
     }
 
-    inline PyObject* get() const {
+    PyObject* get() const {
         PyObject* result = PyList_GET_ITEM(obj.ptr(), normalize(key));
         if (result == nullptr) {
             throw ValueError(
@@ -526,14 +504,14 @@ struct ItemPolicy<Obj, Key> {
         return Py_NewRef(result);
     }
 
-    inline void set(PyObject* value) {
+    void set(PyObject* value) {
         Py_ssize_t normalized = normalize(key);
         PyObject* previous = PyList_GET_ITEM(obj.ptr(), normalized);
         PyList_SET_ITEM(obj.ptr(), normalized, Py_NewRef(value));
         Py_XDECREF(previous);
     }
 
-    inline void del() {
+    void del() {
         PyObject* index_obj = PyLong_FromSsize_t(normalize(key));
         if (PyObject_DelItem(obj.ptr(), index_obj) < 0) {
             Exception::from_python();
@@ -590,7 +568,7 @@ public:
         *      py::Int item = list[{1, 3}];  // compile error, List is not convertible to Int
         */
 
-    inline Wrapped& value() {
+    Wrapped& value() {
         if (!Base::initialized) {
             new (Base::buffer) Wrapped(reinterpret_steal<Wrapped>(policy.get()));
             Base::initialized = true;
@@ -598,7 +576,7 @@ public:
         return reinterpret_cast<Wrapped&>(Base::buffer);
     }
 
-    inline const Wrapped& value() const {
+    const Wrapped& value() const {
         if (!Base::initialized) {
             new (Base::buffer) Wrapped(reinterpret_steal<Wrapped>(policy.get()));
             Base::initialized = true;

@@ -21,101 +21,254 @@ namespace py {
 
 
 template <std::derived_from<Str> T>
-struct __getattr__<T, "capitalize">                             : Returns<Function> {};
+struct __getattr__<T, "capitalize">                             : Returns<Function<
+    T()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "casefold">                               : Returns<Function> {};
+struct __getattr__<T, "casefold">                               : Returns<Function<
+    T()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "center">                                 : Returns<Function> {};
+struct __getattr__<T, "center">                                 : Returns<Function<
+    T(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillchar", const Str&>::pos::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "copy">                                   : Returns<Function> {};
+struct __getattr__<T, "copy">                                   : Returns<Function<
+    T()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "count">                                  : Returns<Function> {};
+struct __getattr__<T, "count">                                  : Returns<Function<
+    Int(
+        typename Arg<"sub", const Str&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "encode">                                 : Returns<Function> {};
+struct __getattr__<T, "encode">                                 : Returns<Function<
+    Bytes(
+        typename Arg<"encoding", const Str&>::opt,
+        typename Arg<"errors", const Str&>::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "endswith">                               : Returns<Function> {};
+struct __getattr__<T, "endswith">                               : Returns<Function<
+    Bool(
+        typename Arg<"suffix", const Str&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "expandtabs">                             : Returns<Function> {};
+struct __getattr__<T, "expandtabs">                             : Returns<Function<
+    T(typename Arg<"tabsize", const Int&>::opt)
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "find">                                   : Returns<Function> {};
+struct __getattr__<T, "find">                                   : Returns<Function<
+    Int(
+        typename Arg<"sub", const Str&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "format">                                 : Returns<Function> {};
+struct __getattr__<T, "format">                                 : Returns<Function<
+    T(
+        typename Arg<"args", const Object&>::args,
+        typename Arg<"kwargs", const Object&>::kwargs
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "format_map">                             : Returns<Function> {};
+struct __getattr__<T, "format_map">                             : Returns<Function<
+    T(typename Arg<"mapping", const Object&>::pos)
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "index">                                  : Returns<Function> {};
+struct __getattr__<T, "index">                                  : Returns<Function<
+    Int(
+        typename Arg<"sub", const Str&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "isalnum">                                : Returns<Function> {};
+struct __getattr__<T, "isalnum">                                : Returns<Function<
+    Bool()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "isalpha">                                : Returns<Function> {};
+struct __getattr__<T, "isalpha">                                : Returns<Function<
+    Bool()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "isascii">                                : Returns<Function> {};
+struct __getattr__<T, "isascii">                                : Returns<Function<
+    Bool()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "isdecimal">                              : Returns<Function> {};
+struct __getattr__<T, "isdecimal">                              : Returns<Function<
+    Bool()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "isdigit">                                : Returns<Function> {};
+struct __getattr__<T, "isdigit">                                : Returns<Function<
+    Bool()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "isidentifier">                           : Returns<Function> {};
+struct __getattr__<T, "isidentifier">                           : Returns<Function<
+    Bool()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "islower">                                : Returns<Function> {};
+struct __getattr__<T, "islower">                                : Returns<Function<
+    Bool()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "isnumeric">                              : Returns<Function> {};
+struct __getattr__<T, "isnumeric">                              : Returns<Function<
+    Bool()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "isprintable">                            : Returns<Function> {};
+struct __getattr__<T, "isprintable">                            : Returns<Function<
+    Bool()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "isspace">                                : Returns<Function> {};
+struct __getattr__<T, "isspace">                                : Returns<Function<
+    Bool()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "istitle">                                : Returns<Function> {};
+struct __getattr__<T, "istitle">                                : Returns<Function<
+    Bool()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "isupper">                                : Returns<Function> {};
+struct __getattr__<T, "isupper">                                : Returns<Function<
+    Bool()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "join">                                   : Returns<Function> {};
+struct __getattr__<T, "join">                                   : Returns<Function<
+    T(typename Arg<"iterable", const Object&>::pos)
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "ljust">                                  : Returns<Function> {};
+struct __getattr__<T, "ljust">                                  : Returns<Function<
+    T(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillchar", const Str&>::pos::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "lower">                                  : Returns<Function> {};
+struct __getattr__<T, "lower">                                  : Returns<Function<
+    T()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "lstrip">                                 : Returns<Function> {};
+struct __getattr__<T, "lstrip">                                 : Returns<Function<
+    T(typename Arg<"chars", const Str&>::opt)
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "maketrans">                              : Returns<Function> {};
+struct __getattr__<T, "maketrans">                              : Returns<Function<
+    Dict<T, T>(
+        typename Arg<"x", const Object&>::pos,
+        typename Arg<"y", const Object&>::pos::opt,
+        typename Arg<"z", const Object&>::pos::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "partition">                              : Returns<Function> {};
+struct __getattr__<T, "partition">                              : Returns<Function<
+    Tuple<T>(typename Arg<"sep", const Str&>::pos)
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "removeprefix">                           : Returns<Function> {};
+struct __getattr__<T, "removeprefix">                           : Returns<Function<
+    T(typename Arg<"prefix", const Str&>::pos)
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "removesuffix">                           : Returns<Function> {};
+struct __getattr__<T, "removesuffix">                           : Returns<Function<
+    T(typename Arg<"suffix", const Str&>::pos)
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "replace">                                : Returns<Function> {};
+struct __getattr__<T, "replace">                                : Returns<Function<
+    T(
+        typename Arg<"old", const Str&>::pos,
+        typename Arg<"new", const Str&>::pos,
+        typename Arg<"count", const Int&>::pos::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "rfind">                                  : Returns<Function> {};
+struct __getattr__<T, "rfind">                                  : Returns<Function<
+    Int(
+        typename Arg<"sub", const Str&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "rindex">                                 : Returns<Function> {};
+struct __getattr__<T, "rindex">                                 : Returns<Function<
+    Int(
+        typename Arg<"sub", const Str&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "rjust">                                  : Returns<Function> {};
+struct __getattr__<T, "rjust">                                  : Returns<Function<
+    T(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillchar", const Str&>::pos::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "rpartition">                             : Returns<Function> {};
+struct __getattr__<T, "rpartition">                             : Returns<Function<
+    Tuple<T>(typename Arg<"sep", const Str&>::pos)
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "rsplit">                                 : Returns<Function> {};
+struct __getattr__<T, "rsplit">                                 : Returns<Function<
+    List<T>(
+        typename Arg<"sep", const Str&>::opt,
+        typename Arg<"maxsplit", const Int&>::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "rstrip">                                 : Returns<Function> {};
+struct __getattr__<T, "rstrip">                                 : Returns<Function<
+    T(typename Arg<"chars", const Str&>::opt)
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "split">                                  : Returns<Function> {};
+struct __getattr__<T, "split">                                  : Returns<Function<
+    List<T>(
+        typename Arg<"sep", const Str&>::opt,
+        typename Arg<"maxsplit", const Int&>::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "splitlines">                             : Returns<Function> {};
+struct __getattr__<T, "splitlines">                             : Returns<Function<
+    List<T>(typename Arg<"keepends", const Bool&>::opt)
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "startswith">                             : Returns<Function> {};
+struct __getattr__<T, "startswith">                             : Returns<Function<
+    Bool(
+        typename Arg<"prefix", const Str&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "strip">                                  : Returns<Function> {};
+struct __getattr__<T, "strip">                                  : Returns<Function<
+    T(typename Arg<"chars", const Str&>::opt)
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "swapcase">                               : Returns<Function> {};
+struct __getattr__<T, "swapcase">                               : Returns<Function<
+    T()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "title">                                  : Returns<Function> {};
+struct __getattr__<T, "title">                                  : Returns<Function<
+    T()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "translate">                              : Returns<Function> {};
+struct __getattr__<T, "translate">                              : Returns<Function<
+    T(typename Arg<"table", const Dict<Str, Str>&>::pos)
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "upper">                                  : Returns<Function> {};
+struct __getattr__<T, "upper">                                  : Returns<Function<
+    T()
+>> {};
 template <std::derived_from<Str> T>
-struct __getattr__<T, "zfill">                                  : Returns<Function> {};
+struct __getattr__<T, "zfill">                                  : Returns<Function<
+    T(typename Arg<"width", const Int&>::pos)
+>> {};
 
 template <std::derived_from<Str> T>
 struct __len__<T>                                               : Returns<size_t> {};
@@ -353,19 +506,19 @@ public:
     /////////////////////////////
 
     /* Get the underlying unicode buffer. */
-    inline void* data() const noexcept {
+    void* data() const noexcept {
         return PyUnicode_DATA(this->ptr());
     }
 
     /* Get the kind of the string, indicating the size of the unicode points stored
     within. */
-    inline int kind() const noexcept {
+    int kind() const noexcept {
         return PyUnicode_KIND(this->ptr());
     }
 
     /* Get the maximum code point that is suitable for creating another string based
     on this string. */
-    inline Py_UCS4 max_char() const noexcept {
+    Py_UCS4 max_char() const noexcept {
         return PyUnicode_MAX_CHAR_VALUE(this->ptr());
     }
 
@@ -387,14 +540,14 @@ public:
     }
 
     /* Fill the string with a given character, given as a raw Python unicode point. */
-    inline void fill(Py_UCS4 ch) {
+    void fill(Py_UCS4 ch) {
         if (PyUnicode_Fill(this->ptr(), 0, size(), ch) == -1) {
             Exception::from_python();
         }
     }
 
     /* Return a substring from this string. */
-    inline Str substring(Py_ssize_t start = 0, Py_ssize_t end = -1) const {
+    Str substring(Py_ssize_t start = 0, Py_ssize_t end = -1) const {
         PyObject* result = PyUnicode_Substring(this->ptr(), start, end);
         if (result == nullptr) {
             Exception::from_python();
@@ -407,19 +560,19 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `str.capitalize()`. */
-    inline Str capitalize() const;
+    Str capitalize() const;
 
     /* Equivalent to Python `str.casefold()`. */
-    inline Str casefold() const;
+    Str casefold() const;
 
     /* Equivalent to Python `str.center(width)`. */
-    inline Str center(const Int& width) const;
+    Str center(const Int& width) const;
 
     /* Equivalent to Python `str.center(width, fillchar)`. */
-    inline Str center(const Int& width, const Str& fillchar) const;
+    Str center(const Int& width, const Str& fillchar) const;
 
     /* Equivalent to Python `str.copy()`. */
-    inline Str copy() const {
+    Str copy() const {
         PyObject* result = PyUnicode_New(size(), max_char());
         if (result == nullptr) {
             Exception::from_python();
@@ -438,7 +591,7 @@ public:
     }
 
     /* Count the number of occurrences of a substring within the string. */
-    inline size_t count(
+    size_t count(
         const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -456,13 +609,13 @@ public:
     }
 
     /* Equivalent to Python `str.encode(encoding)`. */
-    inline Bytes encode(
+    Bytes encode(
         const Str& encoding = "utf-8",
         const Str& errors = "strict"
     ) const;  // defined in bytes.h
 
     /* Equivalent to Python `str.endswith(suffix[, start[, end]])`. */
-    inline bool endswith(
+    bool endswith(
         const Str& suffix,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -481,10 +634,10 @@ public:
     }
 
     /* Equivalent to Python `str.expandtabs()`. */
-    inline Str expandtabs(const Int& tabsize = 8) const;
+    Str expandtabs(const Int& tabsize = 8) const;
 
     /* Equivalent to Python `str.find(sub[, start[, stop]])`. */
-    inline Py_ssize_t find(
+    Py_ssize_t find(
         const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -500,7 +653,7 @@ public:
 
     /* Equivalent to Python `str.find(sub[, start[, stop]])`, except that the substring
     is given as a single Python unicode character. */
-    inline Py_ssize_t find(
+    Py_ssize_t find(
         Py_UCS4 ch,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -510,14 +663,14 @@ public:
 
     /* Equivalent to Python `str.format(*args, **kwargs)`. */
     template <typename... Args>
-    inline Str format(Args&&... args) const;
+    Str format(Args&&... args) const;
 
     /* Equivalent to Python `str.format_map(mapping)`. */
     template <impl::dict_like T>
-    inline Str format_map(const T& mapping) const;
+    Str format_map(const T& mapping) const;
 
     /* Equivalent to Python `str.index(sub[, start[, end]])`. */
-    inline Py_ssize_t index(
+    Py_ssize_t index(
         const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -537,7 +690,7 @@ public:
 
     /* Equivalent to Python `str.index(sub[, start[, end]])`, except that the substring
     is given as a single Python unicode character. */
-    inline Py_ssize_t index(
+    Py_ssize_t index(
         Py_UCS4 ch,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -556,44 +709,44 @@ public:
     }
 
     /* Equivalent to Python `str.isalnum()`. */
-    inline bool isalnum() const;
+    bool isalnum() const;
 
     /* Equivalent to Python `str.isalpha()`. */
-    inline bool isalpha() const;
+    bool isalpha() const;
 
     /* Equivalent to Python `str.isascii()`. */
-    inline bool isascii() const;
+    bool isascii() const;
 
     /* Equivalent to Python `str.isdecimal()`. */
-    inline bool isdecimal() const;
+    bool isdecimal() const;
 
     /* Equivalent to Python `str.isdigit()`. */
-    inline bool isdigit() const;
+    bool isdigit() const;
 
     /* Equivalent to Python `str.isidentifier()`. */
-    inline bool isidentifier() const;
+    bool isidentifier() const;
 
     /* Equivalent to Python `str.islower()`. */
-    inline bool islower() const;
+    bool islower() const;
 
     /* Equivalent to Python `str.isnumeric()`. */
-    inline bool isnumeric() const;
+    bool isnumeric() const;
 
     /* Equivalent to Python `str.isprintable()`. */
-    inline bool isprintable() const;
+    bool isprintable() const;
 
     /* Equivalent to Python `str.isspace()`. */
-    inline bool isspace() const;
+    bool isspace() const;
 
     /* Equivalent to Python `str.istitle()`. */
-    inline bool istitle() const;
+    bool istitle() const;
 
     /* Equivalent to Python `str.isupper()`. */
-    inline bool isupper() const;
+    bool isupper() const;
 
     /* Equivalent of Python `str.join(iterable)`. */
     template <impl::is_iterable T>
-    inline Str join(const T& iterable) const {
+    Str join(const T& iterable) const {
         PyObject* result = PyUnicode_Join(
             this->ptr(),
             Object(iterable).ptr()
@@ -606,45 +759,45 @@ public:
 
     /* Equivalent of Python `str.join(iterable)`, where iterable is given as a
     braced initializer list. */
-    inline Str join(const std::initializer_list<Str>& iterable) const {
+    Str join(const std::initializer_list<Str>& iterable) const {
         return join(py::List(iterable));
     }
 
     /* Equivalent to Python `str.ljust(width)`. */
-    inline Str ljust(const Int& width) const;
+    Str ljust(const Int& width) const;
 
     /* Equivalent to Python `str.ljust(width, fillchar)`. */
-    inline Str ljust(const Int& width, const Str& fillchar) const;
+    Str ljust(const Int& width, const Str& fillchar) const;
 
     /* Equivalent to Python `str.lower()`. */
-    inline Str lower() const;
+    Str lower() const;
 
     /* Equivalent to Python `str.lstrip()`. */
-    inline Str lstrip() const;
+    Str lstrip() const;
 
     /* Equivalent to Python `str.lstrip(chars)`. */
-    inline Str lstrip(const Str& chars) const;
+    Str lstrip(const Str& chars) const;
 
     /* Equivalent to Python (static) `str.maketrans(x)`. */
-    inline static Dict<> maketrans(const Object& x);
+    static Dict<> maketrans(const Object& x);
 
     /* Equivalent to Python (static) `str.maketrans(x, y)`. */
-    inline static Dict<> maketrans(const Object& x, const Object& y);
+    static Dict<> maketrans(const Object& x, const Object& y);
 
     /* Equivalent to Python (static) `str.maketrans(x, y, z)`. */
-    inline static Dict<> maketrans(const Object& x, const Object& y, const Object& z);
+    static Dict<> maketrans(const Object& x, const Object& y, const Object& z);
 
     /* Equivalent to Python `str.partition(sep)`. */
-    inline Tuple<Str> partition(const Str& sep) const;
+    Tuple<Str> partition(const Str& sep) const;
 
     /* Equivalent to Python `str.removeprefix(prefix)`. */
-    inline Str removeprefix(const Str& prefix) const;
+    Str removeprefix(const Str& prefix) const;
 
     /* Equivalent to Python `str.removesuffix(suffix)`. */
-    inline Str removesuffix(const Str& suffix) const;
+    Str removesuffix(const Str& suffix) const;
 
     /* Equivalent to Python `str.replace(old, new, count)`. */
-    inline Str replace(const Str& sub, const Str& repl, Py_ssize_t maxcount = -1) const {
+    Str replace(const Str& sub, const Str& repl, Py_ssize_t maxcount = -1) const {
         PyObject* result = PyUnicode_Replace(
             this->ptr(),
             sub.ptr(),
@@ -658,7 +811,7 @@ public:
     }
 
     /* Equivalent to Python `str.rfind(sub[, start[, stop]])`. */
-    inline Py_ssize_t rfind(
+    Py_ssize_t rfind(
         const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -674,7 +827,7 @@ public:
 
     /* Equivalent to Python `str.rfind(sub[, start[, stop]])`, except that the
     substring is given as a single Python unicode character. */
-    inline Py_ssize_t rfind(
+    Py_ssize_t rfind(
         Py_UCS4 ch,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -683,7 +836,7 @@ public:
     }
 
     /* Equivalent to Python `str.rindex(sub[, start[, stop]])`. */
-    inline Py_ssize_t rindex(
+    Py_ssize_t rindex(
         const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -703,7 +856,7 @@ public:
 
     /* Equivalent to Python `str.rindex(sub[, start[, stop]])`, except that the
     substring is given as a single Python unicode character. */
-    inline Py_ssize_t rindex(
+    Py_ssize_t rindex(
         Py_UCS4 ch,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -722,28 +875,28 @@ public:
     }
 
     /* Equivalent to Python `str.rjust(width)`. */
-    inline Str rjust(const Int& width) const;
+    Str rjust(const Int& width) const;
 
     /* Equivalent to Python `str.rjust(width, fillchar)`. */
-    inline Str rjust(const Int& width, const Str& fillchar) const;
+    Str rjust(const Int& width, const Str& fillchar) const;
 
     /* Equivalent to Python `str.rpartition(sep)`. */
-    inline Tuple<Str> rpartition(const Str& sep) const;
+    Tuple<Str> rpartition(const Str& sep) const;
 
     /* Equivalent to Python `str.rsplit()`. */
-    inline List<Str> rsplit() const;
+    List<Str> rsplit() const;
 
     /* Equivalent to Python `str.rsplit(sep[, maxsplit])`. */
-    inline List<Str> rsplit(const Str& sep, const Int& maxsplit = -1) const;
+    List<Str> rsplit(const Str& sep, const Int& maxsplit = -1) const;
 
     /* Equivalent to Python `str.rstrip()`. */
-    inline Str rstrip() const;
+    Str rstrip() const;
 
     /* Equivalent to Python `str.rstrip(chars)`. */
-    inline Str rstrip(const Str& chars) const;
+    Str rstrip(const Str& chars) const;
 
     /* Equivalent to Python `str.split()`. */
-    inline List<Str> split() const {
+    List<Str> split() const {
         PyObject* result = PyUnicode_Split(this->ptr(), nullptr, -1);
         if (result == nullptr) {
             Exception::from_python();
@@ -752,7 +905,7 @@ public:
     }
 
     /* Equivalent to Python `str.split(sep[, maxsplit])`. */
-    inline List<Str> split(const Str& sep, Py_ssize_t maxsplit = -1) const {
+    List<Str> split(const Str& sep, Py_ssize_t maxsplit = -1) const {
         PyObject* result = PyUnicode_Split(this->ptr(), sep.ptr(), maxsplit);
         if (result == nullptr) {
             Exception::from_python();
@@ -761,7 +914,7 @@ public:
     }
 
     /* Equivalent to Python `str.splitlines([keepends])`. */
-    inline List<Str> splitlines(bool keepends = false) const {
+    List<Str> splitlines(bool keepends = false) const {
         PyObject* result = PyUnicode_Splitlines(this->ptr(), keepends);
         if (result == nullptr) {
             Exception::from_python();
@@ -770,7 +923,7 @@ public:
     }
 
     /* Equivalent to Python `str.startswith(prefix[, start[, end]])`. */
-    inline bool startswith(
+    bool startswith(
         const Str& prefix,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -789,25 +942,37 @@ public:
     }
 
     /* Equivalent to Python `str.strip()`. */
-    inline Str strip() const;
+    Str strip() const;
 
     /* Equivalent to Python `str.strip(chars)`. */
-    inline Str strip(const Str& chars) const;
+    Str strip(const Str& chars) const;
 
     /* Equivalent to Python `str.swapcase()`. */
-    inline Str swapcase() const;
+    Str swapcase() const;
 
     /* Equivalent to Python `str.title()`. */
-    inline Str title() const;
+    Str title() const;
+
+    // TODO: in order for this to work, I would need to define a helper that lists
+    // the correct function signature
+
+    // TODO: what if I define all of the API functions using an annotated signature,
+    // and then use Function<decltype(func)> for the __attr__ specializations and
+    // the dotted methods listed here.  That would provide a single source of truth
+    // for all the methods and their signatures, though.  It might also be possible
+    // to automate it in the future, since that pattern will be by far the most common
+    // when defining extension types outside of the CPython API.
 
     /* Equivalent to Python `str.translate(table)`. */
-    inline Str translate(const Object& table) const;
+    template <typename... Args>
+        requires (__getattr__<Str, "translate">::Return::invocable<Args...>)
+    auto translate(Args&&... args) const;
 
     /* Equivalent to Python `str.upper()`. */
-    inline Str upper() const;
+    Str upper() const;
 
     /* Equivalent to Python `str.zfill(width)`. */
-    inline Str zfill(const Int& width) const;
+    Str zfill(const Int& width) const;
 
 };
 

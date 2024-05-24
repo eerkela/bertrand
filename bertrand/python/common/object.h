@@ -6,29 +6,12 @@
 #define BERTRAND_PYTHON_COMMON_OBJECT_H
 
 #include "declarations.h"
-#include "concepts.h"
-#include "exceptions.h"
+#include "except.h"
 #include "operators.h"
 
 
 namespace bertrand {
 namespace py {
-
-
-namespace impl {
-
-    template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
-    class Item;
-    template <typename Obj, StaticStr name> requires (__getattr__<Obj, name>::enable)
-    class Attr;
-    template <typename Policy>
-    class Iterator;
-    template <typename Policy>
-    class ReverseIterator;
-    template <typename Deref>
-    class GenericIter;
-
-}
 
 
 /* A revised Python object interface that allows implicit conversions to subtypes
@@ -194,7 +177,7 @@ public:
 
     /* Contextually convert an Object into a boolean value for use in if/else 
     statements, with the same semantics as in Python. */
-    inline explicit operator bool() const {
+    explicit operator bool() const {
         int result = PyObject_IsTrue(m_ptr);
         if (result == -1) {
             Exception::from_python();
@@ -203,7 +186,7 @@ public:
     }
 
     /* Explicitly cast to a string representation.  Equivalent to Python `str(obj)`. */
-    inline explicit operator std::string() const {
+    explicit operator std::string() const {
         PyObject* str = PyObject_Str(m_ptr);
         if (str == nullptr) {
             Exception::from_python();
@@ -220,24 +203,24 @@ public:
     }
 
     /* Return the underlying PyObject* pointer. */
-    [[nodiscard]] inline PyObject* ptr() const {
+    [[nodiscard]] PyObject* ptr() const {
         return m_ptr;
     }
 
     /* Relinquish ownership over the object and return it as a raw handle. */
-    [[nodiscard]] inline Handle release() {
+    [[nodiscard]] Handle release() {
         PyObject* temp = m_ptr;
         m_ptr = nullptr;
         return Handle(temp);
     }
 
     /* Check for exact pointer identity. */
-    [[nodiscard]] inline bool is(const Handle& other) const {
+    [[nodiscard]] bool is(const Handle& other) const {
         return m_ptr == other.ptr();
     }
 
     /* Check for exact pointer identity. */
-    [[nodiscard]] inline bool is(const Object& other) const {
+    [[nodiscard]] bool is(const Object& other) const {
         return m_ptr == other.ptr();
     }
 

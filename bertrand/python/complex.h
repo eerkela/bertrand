@@ -13,7 +13,9 @@ namespace py {
 
 
 template <std::derived_from<Complex> T>
-struct __getattr__<T, "conjugate">                              : Returns<Function> {};
+struct __getattr__<T, "conjugate">                              : Returns<Function<
+    Complex()
+>> {};
 template <std::derived_from<Complex> T>
 struct __getattr__<T, "real">                                   : Returns<Float> {};
 template <std::derived_from<Complex> T>
@@ -25,8 +27,6 @@ template <std::derived_from<Complex> T>
 struct __neg__<T>                                               : Returns<Complex> {};
 template <std::derived_from<Complex> T>
 struct __abs__<T>                                               : Returns<Complex> {};
-template <std::derived_from<Complex> T>
-struct __invert__<T>                                            : Returns<Complex> {};
 template <std::derived_from<Complex> T>
 struct __increment__<T>                                         : Returns<Complex> {};
 template <std::derived_from<Complex> T>
@@ -213,17 +213,17 @@ public:
     ////////////////////////////////
 
     /* Get the real part of the Complex number. */
-    inline double real() const noexcept {
+    double real() const noexcept {
         return PyComplex_RealAsDouble(this->ptr());
     }
 
     /* Get the imaginary part of the Complex number. */
-    inline double imag() const noexcept {
+    double imag() const noexcept {
         return PyComplex_ImagAsDouble(this->ptr());
     }
 
     /* Get the magnitude of the Complex number. */
-    inline Complex conjugate() const {
+    Complex conjugate() const {
         Py_complex complex = PyComplex_AsCComplex(this->ptr());
         if (complex.real == -1.0 && PyErr_Occurred()) {
             Exception::from_python();
@@ -279,7 +279,7 @@ struct type_caster<bertrand::py::Complex> {
     }
 
     /* Convert a py::Complex value into a Python object. */
-    inline static handle cast(
+    static handle cast(
         const bertrand::py::Complex& src,
         return_value_policy /* policy */,
         handle /* parent */
@@ -319,7 +319,7 @@ pybind11 implementation.  This is a bit of a hack, but it works. */
         }                                                                               \
                                                                                         \
         /* Convert a std::complex<T> value into a Python object. */                     \
-        inline static handle cast(                                                      \
+        static handle cast(                                                             \
             const std::complex<T>& src,                                                 \
             return_value_policy /* policy */,                                           \
             handle /* parent */                                                         \

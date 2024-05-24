@@ -21,21 +21,37 @@ namespace py {
 
 
 template <std::derived_from<impl::FrozenSetTag> Self>
-struct __getattr__<Self, "copy">                                : Returns<Function> {};
+struct __getattr__<Self, "copy">                                : Returns<Function<
+    Self()
+>> {};
 template <std::derived_from<impl::FrozenSetTag> Self>
-struct __getattr__<Self, "isdisjoint">                          : Returns<Function> {};
+struct __getattr__<Self, "isdisjoint">                          : Returns<Function<
+    Bool(typename Arg<"other", const Self&>::pos)
+>> {};
 template <std::derived_from<impl::FrozenSetTag> Self>
-struct __getattr__<Self, "issubset">                            : Returns<Function> {};
+struct __getattr__<Self, "issubset">                            : Returns<Function<
+    Bool(typename Arg<"other", const Self&>::pos)
+>> {};
 template <std::derived_from<impl::FrozenSetTag> Self>
-struct __getattr__<Self, "issuperset">                          : Returns<Function> {};
+struct __getattr__<Self, "issuperset">                          : Returns<Function<
+    Bool(typename Arg<"other", const Self&>::pos)
+>> {};
 template <std::derived_from<impl::FrozenSetTag> Self>
-struct __getattr__<Self, "union">                               : Returns<Function> {};
+struct __getattr__<Self, "union">                               : Returns<Function<
+    Self(typename Arg<"others", const Object&>::args)
+>> {};
 template <std::derived_from<impl::FrozenSetTag> Self>
-struct __getattr__<Self, "intersection">                        : Returns<Function> {};
+struct __getattr__<Self, "intersection">                        : Returns<Function<
+    Self(typename Arg<"others", const Object&>::args)
+>> {};
 template <std::derived_from<impl::FrozenSetTag> Self>
-struct __getattr__<Self, "difference">                          : Returns<Function> {};
+struct __getattr__<Self, "difference">                          : Returns<Function<
+    Self(typename Arg<"others", const Object&>::args)
+>> {};
 template <std::derived_from<impl::FrozenSetTag> Self>
-struct __getattr__<Self, "symmetric_difference">                : Returns<Function> {};
+struct __getattr__<Self, "symmetric_difference">                : Returns<Function<
+    Self(typename Arg<"other", const Object&>::pos)
+>> {};
 template <std::derived_from<impl::FrozenSetTag> Self>
 struct __len__<Self>                                            : Returns<size_t> {};
 template <std::derived_from<impl::FrozenSetTag> Self>
@@ -153,9 +169,9 @@ namespace ops {
 
 
 template <typename T>
-FrozenSet(const std::initializer_list<T>&) -> FrozenSet<as_object_t<T>>;
+FrozenSet(const std::initializer_list<T>&) -> FrozenSet<impl::as_object_t<T>>;
 template <impl::is_iterable T>
-FrozenSet(T) -> FrozenSet<as_object_t<impl::dereference_type<T>>>;
+FrozenSet(T) -> FrozenSet<impl::as_object_t<impl::dereference_type<T>>>;
 template <typename T, typename... Args>
     requires (!impl::is_iterable<T> && !impl::str_like<T>)
 FrozenSet(T, Args...) -> FrozenSet<Object>;
@@ -447,7 +463,7 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `set.copy()`. */
-    inline FrozenSet copy() const {
+    FrozenSet copy() const {
         PyObject* result = PyFrozenSet_New(this->ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -462,7 +478,7 @@ public:
 
     /* Equivalent to Python `set.isdisjoint(other)`, where other is given as a
     braced initializer list. */
-    inline bool isdisjoint(const std::initializer_list<key_type>& other) const {
+    bool isdisjoint(const std::initializer_list<key_type>& other) const {
         for (const key_type& item : other) {
             if (contains(item)) {
                 return false;
@@ -474,20 +490,20 @@ public:
     /* Equivalent to Python `set.issubset(other)`. */
     template <impl::is_iterable T>
         requires (std::convertible_to<impl::dereference_type<T>, key_type>)
-    inline bool issubset(const T& other) const;
+    bool issubset(const T& other) const;
 
     /* Equivalent to Python `set.issubset(other)`, where other is given as a
     braced initializer list. */
-    inline bool issubset(const std::initializer_list<key_type>& other) const;
+    bool issubset(const std::initializer_list<key_type>& other) const;
 
     /* Equivalent to Python `set.issuperset(other)`. */
     template <impl::is_iterable T>
         requires (std::convertible_to<impl::dereference_type<T>, key_type>)
-    inline bool issuperset(const T& other) const;
+    bool issuperset(const T& other) const;
 
     /* Equivalent to Python `set.issuperset(other)`, where other is given as a
     braced initializer list. */
-    inline bool issuperset(const std::initializer_list<key_type>& other) const {
+    bool issuperset(const std::initializer_list<key_type>& other) const {
         for (const key_type& item : other) {
             if (!contains(item)) {
                 return false;
@@ -499,11 +515,11 @@ public:
     /* Equivalent to Python `set.union(*others)`. */
     template <impl::is_iterable... Args>
         requires (std::convertible_to<impl::dereference_type<Args>, key_type> && ...)
-    inline FrozenSet union_(const Args&... others) const;
+    FrozenSet union_(const Args&... others) const;
 
     /* Equivalent to Python `set.union(other)`, where other is given as a braced
     initializer list. */
-    inline FrozenSet union_(const std::initializer_list<key_type>& other) const {
+    FrozenSet union_(const std::initializer_list<key_type>& other) const {
         PyObject* result = PyFrozenSet_New(this->ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -528,7 +544,7 @@ public:
 
     /* Equivalent to Python `set.intersection(other)`, where other is given as a
     braced initializer list. */
-    inline FrozenSet intersection(const std::initializer_list<key_type>& other) const {
+    FrozenSet intersection(const std::initializer_list<key_type>& other) const {
         PyObject* result = PyFrozenSet_New(nullptr);
         if (result == nullptr) {
             Exception::from_python();
@@ -555,7 +571,7 @@ public:
 
     /* Equivalent to Python `set.difference(other)`, where other is given as a
     braced initializer list. */
-    inline FrozenSet difference(const std::initializer_list<key_type>& other) const {
+    FrozenSet difference(const std::initializer_list<key_type>& other) const {
         PyObject* result = PyFrozenSet_New(this->ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -576,11 +592,11 @@ public:
     /* Equivalent to Python `set.symmetric_difference(other)`. */
     template <impl::is_iterable T>
         requires (std::convertible_to<impl::dereference_type<T>, key_type>)
-    inline FrozenSet symmetric_difference(const T& other) const;
+    FrozenSet symmetric_difference(const T& other) const;
 
     /* Equivalent to Python `set.symmetric_difference(other)`, where other is given
     as a braced initializer list. */
-    inline FrozenSet symmetric_difference(const std::initializer_list<key_type>& other) const {
+    FrozenSet symmetric_difference(const std::initializer_list<key_type>& other) const {
         PyObject* result = PyFrozenSet_New(nullptr);
         if (result == nullptr) {
             Exception::from_python();
@@ -608,14 +624,14 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    inline friend FrozenSet operator|(
+    friend FrozenSet operator|(
         const FrozenSet& self,
         const std::initializer_list<key_type>& other
     ) {
         return self.union_(other);
     }
 
-    inline friend FrozenSet& operator|=(
+    friend FrozenSet& operator|=(
         FrozenSet& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -623,14 +639,14 @@ public:
         return self;
     }
 
-    inline friend FrozenSet operator&(
+    friend FrozenSet operator&(
         const FrozenSet& self,
         const std::initializer_list<key_type>& other
     ) {
         return self.intersection(other);
     }
 
-    inline friend FrozenSet& operator&=(
+    friend FrozenSet& operator&=(
         FrozenSet& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -638,14 +654,14 @@ public:
         return self;
     }
 
-    inline friend FrozenSet operator-(
+    friend FrozenSet operator-(
         const FrozenSet& self,
         const std::initializer_list<key_type>& other
     ) {
         return self.difference(other);
     }
 
-    inline friend FrozenSet& operator-=(
+    friend FrozenSet& operator-=(
         FrozenSet& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -653,14 +669,14 @@ public:
         return self;
     }
 
-    inline friend FrozenSet operator^(
+    friend FrozenSet operator^(
         const FrozenSet& self,
         const std::initializer_list<key_type>& other
     ) {
         return self.symmetric_difference(other);
     }
 
-    inline friend FrozenSet& operator^=(
+    friend FrozenSet& operator^=(
         FrozenSet& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -690,39 +706,75 @@ struct __cast__<Self, T> : Returns<T> {
 
 
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "add">                                 : Returns<Function> {};
+struct __getattr__<Self, "add">                                 : Returns<Function<
+    void(typename Arg<"value", const typename Self::key_type&>::pos)
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "remove">                              : Returns<Function> {};
+struct __getattr__<Self, "remove">                              : Returns<Function<
+    void(typename Arg<"value", const typename Self::key_type&>::pos)
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "discard">                             : Returns<Function> {};
+struct __getattr__<Self, "discard">                             : Returns<Function<
+    void(typename Arg<"value", const typename Self::key_type&>::pos)
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "pop">                                 : Returns<Function> {};
+struct __getattr__<Self, "pop">                                 : Returns<Function<
+    typename Self::key_type()
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "clear">                               : Returns<Function> {};
+struct __getattr__<Self, "clear">                               : Returns<Function<
+    void()
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "copy">                                : Returns<Function> {};
+struct __getattr__<Self, "copy">                                : Returns<Function<
+    Self()
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "isdisjoint">                          : Returns<Function> {};
+struct __getattr__<Self, "isdisjoint">                          : Returns<Function<
+    Bool(typename Arg<"other", const Object&>::pos)
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "issubset">                            : Returns<Function> {};
+struct __getattr__<Self, "issubset">                            : Returns<Function<
+    Bool(typename Arg<"other", const Object&>::pos)
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "issuperset">                          : Returns<Function> {};
+struct __getattr__<Self, "issuperset">                          : Returns<Function<
+    Bool(typename Arg<"other", const Object&>::pos)
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "union">                               : Returns<Function> {};
+struct __getattr__<Self, "union">                               : Returns<Function<
+    Self(typename Arg<"others", const Object&>::args)
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "update">                              : Returns<Function> {};
+struct __getattr__<Self, "update">                              : Returns<Function<
+    Self(typename Arg<"others", const Object&>::args)
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "intersection">                        : Returns<Function> {};
+struct __getattr__<Self, "intersection">                        : Returns<Function<
+    Self(typename Arg<"others", const Object&>::args)
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "intersection_update">                 : Returns<Function> {};
+struct __getattr__<Self, "intersection_update">                 : Returns<Function<
+    Self(typename Arg<"others", const Object&>::args)
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "difference">                          : Returns<Function> {};
+struct __getattr__<Self, "difference">                          : Returns<Function<
+    Self(typename Arg<"others", const Object&>::args)
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "difference_update">                   : Returns<Function> {};
+struct __getattr__<Self, "difference_update">                   : Returns<Function<
+    Self(typename Arg<"others", const Object&>::args)
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "symmetric_difference">                : Returns<Function> {};
+struct __getattr__<Self, "symmetric_difference">                : Returns<Function<
+    Self(typename Arg<"other", const Object&>::pos)
+>> {};
 template <std::derived_from<impl::SetTag> Self>
-struct __getattr__<Self, "symmetric_difference_update">         : Returns<Function> {};
+struct __getattr__<Self, "symmetric_difference_update">         : Returns<Function<
+    Self(typename Arg<"other", const Object&>::pos)
+>> {};
+
+
 template <std::derived_from<impl::SetTag> Self>
 struct __len__<Self>                                            : Returns<size_t> {};
 template <std::derived_from<impl::SetTag> Self>
@@ -836,9 +888,9 @@ namespace ops {
 
 
 template <typename T>
-Set(const std::initializer_list<T>&) -> Set<as_object_t<T>>;
+Set(const std::initializer_list<T>&) -> Set<impl::as_object_t<T>>;
 template <impl::is_iterable T>
-Set(T) -> Set<as_object_t<impl::dereference_type<T>>>;
+Set(T) -> Set<impl::as_object_t<impl::dereference_type<T>>>;
 template <typename T, typename... Args>
     requires (!impl::is_iterable<T> && !impl::str_like<T>)
 Set(T, Args...) -> Set<Object>;
@@ -1127,14 +1179,14 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `set.add(key)`. */
-    inline void add(const key_type& key) {
+    void add(const key_type& key) {
         if (PySet_Add(this->ptr(), key.ptr())) {
             Exception::from_python();
         }
     }
 
     /* Equivalent to Python `set.remove(key)`. */
-    inline void remove(const key_type& key) {
+    void remove(const key_type& key) {
         int result = PySet_Discard(this->ptr(), key.ptr());
         if (result == -1) {
             Exception::from_python();
@@ -1144,14 +1196,14 @@ public:
     }
 
     /* Equivalent to Python `set.discard(key)`. */
-    inline void discard(const key_type& key) {
+    void discard(const key_type& key) {
         if (PySet_Discard(this->ptr(), key.ptr()) == -1) {
             Exception::from_python();
         }
     }
 
     /* Equivalent to Python `set.pop()`. */
-    inline key_type pop() {
+    key_type pop() {
         PyObject* result = PySet_Pop(this->ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -1160,14 +1212,14 @@ public:
     }
 
     /* Equivalent to Python `set.clear()`. */
-    inline void clear() {
+    void clear() {
         if (PySet_Clear(this->ptr())) {
             Exception::from_python();
         }
     }
 
     /* Equivalent to Python `set.copy()`. */
-    inline Set copy() const {
+    Set copy() const {
         PyObject* result = PySet_New(this->ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -1182,7 +1234,7 @@ public:
 
     /* Equivalent to Python `set.isdisjoint(other)`, where other is given as a
     braced initializer list. */
-    inline bool isdisjoint(const std::initializer_list<key_type>& other) const {
+    bool isdisjoint(const std::initializer_list<key_type>& other) const {
         for (const key_type& item : other) {
             if (contains(item)) {
                 return false;
@@ -1194,20 +1246,20 @@ public:
     /* Equivalent to Python `set.issubset(other)`. */
     template <impl::is_iterable T>
         requires (std::convertible_to<impl::dereference_type<T>, key_type>)
-    inline bool issubset(const T& other) const;
+    bool issubset(const T& other) const;
 
     /* Equivalent to Python `set.issubset(other)`, where other is given as a
     braced initializer list. */
-    inline bool issubset(const std::initializer_list<key_type>& other) const;
+    bool issubset(const std::initializer_list<key_type>& other) const;
 
     /* Equivalent to Python `set.issuperset(other)`. */
     template <impl::is_iterable T>
         requires (std::convertible_to<impl::dereference_type<T>, key_type>)
-    inline bool issuperset(const T& other) const;
+    bool issuperset(const T& other) const;
 
     /* Equivalent to Python `set.issuperset(other)`, where other is given as a
     braced initializer list. */
-    inline bool issuperset(const std::initializer_list<key_type>& other) const {
+    bool issuperset(const std::initializer_list<key_type>& other) const {
         for (const key_type& item : other) {
             if (!contains(item)) {
                 return false;
@@ -1219,11 +1271,11 @@ public:
     /* Equivalent to Python `set.union(*others)`. */
     template <impl::is_iterable... Args>
         requires (std::convertible_to<impl::dereference_type<Args>, key_type> && ...)
-    inline Set union_(const Args&... others) const;
+    Set union_(const Args&... others) const;
 
     /* Equivalent to Python `set.union(other)`, where other is given as a braced
     initializer list. */
-    inline Set union_(const std::initializer_list<key_type>& other) const {
+    Set union_(const std::initializer_list<key_type>& other) const {
         PyObject* result = PySet_New(this->ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -1244,10 +1296,10 @@ public:
     /* Equivalent to Python `set.update(*others)`. */
     template <impl::is_iterable... Args>
         requires (std::convertible_to<impl::dereference_type<Args>, key_type> && ...)
-    inline void update(const Args&... others);
+    void update(const Args&... others);
 
     /* Equivalent to Python `set.update(<braced initializer list>)`. */
-    inline void update(const std::initializer_list<key_type>& other) {
+    void update(const std::initializer_list<key_type>& other) {
         for (const key_type& item : other) {
             add(item);
         }
@@ -1260,7 +1312,7 @@ public:
 
     /* Equivalent to Python `set.intersection(other)`, where other is given as a
     braced initializer list. */
-    inline Set intersection(const std::initializer_list<key_type>& other) const {
+    Set intersection(const std::initializer_list<key_type>& other) const {
         PyObject* result = PySet_New(nullptr);
         if (result == nullptr) {
             Exception::from_python();
@@ -1283,7 +1335,7 @@ public:
     /* Equivalent to Python `set.intersection_update(*others)`. */
     template <impl::is_iterable... Args>
         requires (std::convertible_to<impl::dereference_type<Args>, key_type> && ...)
-    inline void intersection_update(const Args&... others);
+    void intersection_update(const Args&... others);
 
     /* Equivalent to Python `set.intersection_update(<braced initializer list>)`. */
     void intersection_update(const std::initializer_list<key_type>& other);
@@ -1295,7 +1347,7 @@ public:
 
     /* Equivalent to Python `set.difference(other)`, where other is given as a
     braced initializer list. */
-    inline Set difference(const std::initializer_list<key_type>& other) const {
+    Set difference(const std::initializer_list<key_type>& other) const {
         PyObject* result = PySet_New(this->ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -1316,10 +1368,10 @@ public:
     /* Equivalent to Python `set.difference_update(*others)`. */
     template <impl::is_iterable... Args>
         requires (std::convertible_to<impl::dereference_type<Args>, key_type> && ...)
-    inline void difference_update(const Args&... others);
+    void difference_update(const Args&... others);
 
     /* Equivalent to Python `set.difference_update(<braced initializer list>)`. */
-    inline void difference_update(const std::initializer_list<key_type>& other) {
+    void difference_update(const std::initializer_list<key_type>& other) {
         for (const key_type& item : other) {
             discard(item);
         }
@@ -1328,11 +1380,11 @@ public:
     /* Equivalent to Python `set.symmetric_difference(other)`. */
     template <impl::is_iterable T>
         requires (std::convertible_to<impl::dereference_type<T>, key_type>)
-    inline Set symmetric_difference(const T& other) const;
+    Set symmetric_difference(const T& other) const;
 
     /* Equivalent to Python `set.symmetric_difference(other)`, where other is given
     as a braced initializer list. */
-    inline Set symmetric_difference(const std::initializer_list<key_type>& other) const {
+    Set symmetric_difference(const std::initializer_list<key_type>& other) const {
         PyObject* result = PySet_New(nullptr);
         if (result == nullptr) {
             Exception::from_python();
@@ -1359,10 +1411,10 @@ public:
     /* Equivalent to Python `set.symmetric_difference_update(other)`. */
     template <impl::is_iterable T>
         requires (std::convertible_to<impl::dereference_type<T>, key_type>)
-    inline void symmetric_difference_update(const T& other);
+    void symmetric_difference_update(const T& other);
 
     /* Equivalent to Python `set.symmetric_difference_update(<braced initializer list>)`. */
-    inline void symmetric_difference_update(const std::initializer_list<key_type>& other) {
+    void symmetric_difference_update(const std::initializer_list<key_type>& other) {
         for (const key_type& item : other) {
             if (contains(item)) {
                 discard(item);
@@ -1376,14 +1428,14 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    inline friend Set operator|(
+    friend Set operator|(
         const Set& self,
         const std::initializer_list<key_type>& other
     ) {
         return self.union_(other);
     }
 
-    inline friend Set& operator|=(
+    friend Set& operator|=(
         Set& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -1391,14 +1443,14 @@ public:
         return self;
     }
 
-    inline friend Set operator&(
+    friend Set operator&(
         const Set& self,
         const std::initializer_list<key_type>& other
     ) {
         return self.intersection(other);
     }
 
-    inline friend Set& operator&=(
+    friend Set& operator&=(
         Set& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -1406,7 +1458,7 @@ public:
         return self;
     }
 
-    inline friend Set& operator-=(
+    friend Set& operator-=(
         Set& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -1414,14 +1466,14 @@ public:
         return self;
     }
 
-    inline friend Set operator-(
+    friend Set operator-(
         const Set& self,
         const std::initializer_list<key_type>& other
     ) {
         return self.difference(other);
     }
 
-    inline friend Set& operator^=(
+    friend Set& operator^=(
         Set& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -1429,7 +1481,7 @@ public:
         return self;
     }
 
-    inline friend Set operator^(
+    friend Set operator^(
         const Set& self,
         const std::initializer_list<key_type>& other
     ) {

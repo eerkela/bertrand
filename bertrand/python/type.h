@@ -113,7 +113,7 @@ public:
         /* Get the module that the type is defined in.  Can throw if called on a
         static type rather than a heap type (one that was created using
         PyType_FromModuleAndSpec() or higher). */
-        inline Module module_() const {
+        auto module_() const {
             PyObject* result = PyType_GetModule(self());
             if (result == nullptr) {
                 Exception::from_python();
@@ -126,177 +126,177 @@ public:
     #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
 
         /* Get the type's qualified name. */
-        inline Str qualname() const;
+        Str qualname() const;
 
     #endif
 
     /* Get type's tp_name slot. */
-    inline const char* name() const noexcept {
+    auto name() const noexcept {
         return self()->tp_name;
     }
 
     /* Get the type's tp_basicsize slot. */
-    inline Py_ssize_t basicsize() const noexcept {
+    auto basicsize() const noexcept {
         return self()->tp_basicsize;
     }
 
     /* Get the type's tp_itemsize slot. */
-    inline Py_ssize_t itemsize() const noexcept {
+    auto itemsize() const noexcept {
         return self()->tp_itemsize;
     }
 
     /* Get the type's tp_dealloc slot. */
-    inline destructor dealloc() const noexcept {
+    auto dealloc() const noexcept {
         return self()->tp_dealloc;
     }
 
-    /* Get the type's tp_vectorcall slot. */
-    inline Py_ssize_t tp_vectorcall_offset() const noexcept {
-        return self()->tp_vectorcall_offset;
-    }
-
     /* Get the type's tp_as_async slot. */
-    inline PyAsyncMethods* as_async() const noexcept {
+    auto as_async() const noexcept {
         return self()->tp_as_async;
     }
 
     /* Get the type's tp_repr slot. */
-    inline reprfunc repr() const noexcept {
+    auto repr() const noexcept {
         return self()->tp_repr;
     }
 
     /* Get the type's tp_as_number slot. */
-    inline PyNumberMethods* as_number() const noexcept {
+    auto as_number() const noexcept {
         return self()->tp_as_number;
     }
 
     /* Get the type's tp_as_sequence slot. */
-    inline PySequenceMethods* as_sequence() const noexcept {
+    auto as_sequence() const noexcept {
         return self()->tp_as_sequence;
     }
 
     /* Get the type's tp_as_mapping slot. */
-    inline PyMappingMethods* as_mapping() const noexcept {
+    auto as_mapping() const noexcept {
         return self()->tp_as_mapping;
     }
 
     /* Get the type's tp_hash slot. */
-    inline hashfunc hash() const noexcept {
+    auto hash() const noexcept {
         return self()->tp_hash;
     }
 
     /* Get the type's tp_call slot. */
-    inline ternaryfunc call() const noexcept {
+    auto call() const noexcept {
         return self()->tp_call;
     }
 
     /* Get the type's tp_str slot. */
-    inline reprfunc str() const noexcept {
+    auto str() const noexcept {
         return self()->tp_str;
     }
 
     /* Get the type's tp_getattro slot. */
-    inline getattrofunc getattro() const noexcept {
+    auto getattro() const noexcept {
         return self()->tp_getattro;
     }
 
     /* Get the type's tp_setattro slot. */
-    inline setattrofunc setattro() const noexcept {
+    auto setattro() const noexcept {
         return self()->tp_setattro;
     }
 
     /* Get the type's tp_as_buffer slot. */
-    inline PyBufferProcs* as_buffer() const noexcept {
+    auto as_buffer() const noexcept {
         return self()->tp_as_buffer;
     }
 
     /* Get the type's tp_flags slot. */
-    inline unsigned long flags() const noexcept {
+    auto flags() const noexcept {
         return self()->tp_flags;
     }
 
     /* Get the type's tp_doc slot. */
-    inline const char* doc() const noexcept {
+    auto doc() const noexcept {
         return self()->tp_doc;
     }
 
     /* Get the type's tp_traverse slot. */
-    inline traverseproc traverse() const noexcept {
+    auto traverse() const noexcept {
         return self()->tp_traverse;
     }
 
     /* Get the type's tp_clear slot. */
-    inline inquiry clear() const noexcept {
+    auto clear() const noexcept {
         return self()->tp_clear;
     }
 
     /* Get the type's tp_richcompare slot. */
-    inline richcmpfunc richcompare() const noexcept {
+    auto richcompare() const noexcept {
         return self()->tp_richcompare;
     }
 
     /* Get the type's tp_iter slot. */
-    inline getiterfunc iter() const noexcept {
+    auto iter() const noexcept {
         return self()->tp_iter;
     }
 
     /* Get the type's tp_iternext slot. */
-    inline iternextfunc iternext() const noexcept {
+    auto iternext() const noexcept {
         return self()->tp_iternext;
     }
 
     /* Get the type's tp_methods slot. */
-    inline PyMethodDef* methods() const noexcept {
+    auto methods() const noexcept {
         return self()->tp_methods;
     }
 
     /* Get the type's tp_members slot. */
-    inline PyMemberDef* members() const noexcept {
+    auto members() const noexcept {
         return self()->tp_members;
     }
 
     /* Get the type's tp_getset slot. */
-    inline PyGetSetDef* getset() const noexcept {
+    auto getset() const noexcept {
         return self()->tp_getset;
     }
 
     /* Get the type's tp_base slot. */
-    inline PyTypeObject* base() const noexcept {
-        return self()->tp_base;
+    auto base() const noexcept {
+        return reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(self()->tp_base));
     }
 
     /* Get the type's tp_dict slot. */
-    inline PyObject* dict() const noexcept {
-        return self()->tp_dict;
+    auto dict() const noexcept {
+        return reinterpret_borrow<Dict<Str, Object>>(self()->tp_dict);
     }
 
     /* Get the type's tp_descr_get slot. */
-    inline descrgetfunc descr_get() const noexcept {
+    auto descr_get() const noexcept {
         return self()->tp_descr_get;
     }
 
     /* Get the type's tp_descr_set slot. */
-    inline descrsetfunc descr_set() const noexcept {
+    auto descr_set() const noexcept {
         return self()->tp_descr_set;
     }
 
     /* Get the type's tp_bases slot. */
-    inline Tuple<Type> bases() const noexcept {
+    auto bases() const noexcept {
         return reinterpret_borrow<Tuple<Type>>(self()->tp_bases);
     }
 
     /* Get the type's tp_mro slot. */
-    inline Tuple<Type> mro() const noexcept {
+    auto mro() const noexcept {
         return reinterpret_borrow<Tuple<Type>>(self()->tp_mro);
     }
 
     /* Get the type's tp_finalize slot. */
-    inline destructor finalize() const noexcept {
+    auto finalize() const noexcept {
         return self()->tp_finalize;
     }
 
     /* Get the type's tp_vectorcall slot. */
-    inline Py_ssize_t vectorcall() const noexcept {
+    auto vectorcall() const noexcept {
+        return self()->tp_vectorcall;
+    }
+
+    /* Get the type's tp_vectorcall_offset slot. */
+    auto vectorcall_offset() const noexcept {
         return self()->tp_vectorcall_offset;
     }
 
@@ -304,7 +304,7 @@ public:
     be called after any manual modification to the attributes or this class or any of
     its bases at the C++ level, in order to synchronize them with the Python
     interpreter.  Most users will never need to use this in practice. */
-    inline void clear_cache() const noexcept {
+    void clear_cache() const noexcept {
         PyType_Modified(reinterpret_cast<PyTypeObject*>(this->ptr()));
     }
 

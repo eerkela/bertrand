@@ -6,8 +6,7 @@
 #define BERTRAND_PYTHON_COMMON_ITERATORS_H
 
 #include "declarations.h"
-#include "concepts.h"
-#include "exceptions.h"
+#include "except.h"
 #include "operators.h"
 #include "object.h"
 

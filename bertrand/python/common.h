@@ -7,12 +7,11 @@
 #define BERTRAND_PYTHON_COMMON_INCLUDED
 
 #include "common/declarations.h"
-#include "common/concepts.h"
-#include "common/exceptions.h"
+#include "common/except.h"
 #include "common/operators.h"
 #include "common/object.h"
-#include "common/proxies.h"
-#include "common/iterators.h"
+#include "common/accessor.h"
+#include "common/iter.h"
 #include "common/func.h"
 
 
@@ -281,7 +280,9 @@ namespace impl {
 
 
 template <std::derived_from<Slice> Self>
-struct __getattr__<Self, "indices">                             : Returns<Function> {};
+struct __getattr__<Self, "indices">                             : Returns<Function<
+    Tuple<Int>(Arg<"length", const Int&>)
+>> {};
 template <std::derived_from<Slice> Self>
 struct __getattr__<Self, "start">                               : Returns<Object> {};
 template <std::derived_from<Slice> Self>
@@ -415,18 +416,18 @@ public:
     ////////////////////////////////
 
     /* Get the start object of the slice.  Note that this might not be an integer. */
-    inline Object start() const {
-        return attr<"start">();
+    auto start() const {
+        return attr<"start">().value();
     }
 
     /* Get the stop object of the slice.  Note that this might not be an integer. */
-    inline Object stop() const {
-        return attr<"stop">();
+    auto stop() const {
+        return attr<"stop">().value();
     }
 
     /* Get the step object of the slice.  Note that this might not be an integer. */
-    inline Object step() const {
-        return attr<"step">();
+    auto step() const {
+        return attr<"step">().value();
     }
 
     /* Normalize the indices of this slice against a container of the given length.
@@ -442,7 +443,7 @@ public:
 
         auto [start, stop, step, length] = slice.indices(size);
     */
-    inline auto indices(size_t size) const {
+    auto indices(size_t size) const {
         struct Indices {
             Py_ssize_t start = 0;
             Py_ssize_t stop = 0;
@@ -579,10 +580,10 @@ public:
     }
 
     /* Equivalent to pybind11::module_::def_submodule(). */
-    inline Module def_submodule(const char* name, const char* doc = nullptr);
+    Module def_submodule(const char* name, const char* doc = nullptr);
 
     /* Reload the module or throw an error. */
-    inline void reload() {
+    void reload() {
         PyObject *obj = PyImport_ReloadModule(this->ptr());
         if (obj == nullptr) {
             Exception::from_python();
@@ -655,7 +656,7 @@ auto impl::ops::end<Return, Self>::operator()(const Self& self) {
 template <typename Return, typename Self>
 auto impl::ops::rbegin<Return, Self>::operator()(const Self& self) {
     return impl::Iterator<impl::GenericIter<Return>>(
-        self.template attr<"__reversed__">()()
+        impl::call_method<"__reversed__">(self)
     );
 }
 
@@ -683,12 +684,7 @@ auto impl::Proxy<Obj, Wrapped>::operator[](
 /* Equivalent to Python `import module`.  Only recognizes absolute imports. */
 template <StaticStr name>
 Module import() {
-    // NOTE: lookup string will be garbage collected during shutdown
-    static PyObject* lookup = PyUnicode_FromStringAndSize(
-        name.buffer,
-        name.size()
-    );
-    PyObject* obj = PyImport_Import(lookup);
+    PyObject* obj = PyImport_Import(impl::TemplateString<name>::ptr);
     if (obj == nullptr) {
         Exception::from_python();
     }

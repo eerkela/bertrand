@@ -6,8 +6,7 @@
 #define BERTRAND_PYTHON_COMMON_OPERATORS_H
 
 #include "declarations.h"
-#include "concepts.h"
-#include "exceptions.h"
+#include "except.h"
 
 
 namespace bertrand {
@@ -648,6 +647,10 @@ namespace impl {
 
     // TODO: setattr_helper has to account for Value type?
 
+    // TODO: I honestly don't know whether the _helper classes are actually helpful.
+    // They limit type safety to some extent, since I can't specifically type things
+    // like the __init__ or __new__ methods.
+
     template <StaticStr name>
     struct getattr_helper {
         static constexpr bool enable = false;
@@ -684,7 +687,9 @@ namespace impl {
     template <> struct getattr_helper<"__mro__">            : Returns<Tuple<Type>> {};
     template <> struct setattr_helper<"__mro__">            : Returns<void> {};
     template <> struct delattr_helper<"__mro__">            : Returns<void> {};
-    template <> struct getattr_helper<"__subclasses__">     : Returns<Function> {};
+    template <> struct getattr_helper<"__subclasses__">     : Returns<Function<
+        List<Type>()
+    >> {};
     template <> struct setattr_helper<"__subclasses__">     : Returns<void> {};
     template <> struct delattr_helper<"__subclasses__">     : Returns<void> {};
     template <> struct getattr_helper<"__doc__">            : Returns<Str> {};
@@ -693,40 +698,77 @@ namespace impl {
     template <> struct getattr_helper<"__module__">         : Returns<Str> {};
     template <> struct setattr_helper<"__module__">         : Returns<void> {};
     template <> struct delattr_helper<"__module__">         : Returns<void> {};
-    template <> struct getattr_helper<"__new__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__new__">            : Returns<Function<
+        Object(  // TODO: It would be better if this yielded the correct type
+            Arg<"cls", const Type&>,
+            Arg<"args", const Object&>::args,
+            Arg<"kwargs", const Object&>::kwargs
+        )
+    >> {};
     template <> struct setattr_helper<"__new__">            : Returns<void> {};
     template <> struct delattr_helper<"__new__">            : Returns<void> {};
-    template <> struct getattr_helper<"__init__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__init__">           : Returns<Function<
+        void(
+            Arg<"args", const Object&>::args,
+            Arg<"kwargs", const Object&>::kwargs
+        )
+    >> {};
     template <> struct setattr_helper<"__init__">           : Returns<void> {};
     template <> struct delattr_helper<"__init__">           : Returns<void> {};
-    template <> struct getattr_helper<"__del__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__del__">            : Returns<Function<
+        void()
+    >> {};
     template <> struct setattr_helper<"__del__">            : Returns<void> {};
     template <> struct delattr_helper<"__del__">            : Returns<void> {};
-    template <> struct getattr_helper<"__repr__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__repr__">           : Returns<Function<
+        Str()
+    >> {};
     template <> struct setattr_helper<"__repr__">           : Returns<void> {};
     template <> struct delattr_helper<"__repr__">           : Returns<void> {};
-    template <> struct getattr_helper<"__str__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__str__">            : Returns<Function<
+        Str()
+    >> {};
     template <> struct setattr_helper<"__str__">            : Returns<void> {};
     template <> struct delattr_helper<"__str__">            : Returns<void> {};
-    template <> struct getattr_helper<"__bytes__">          : Returns<Function> {};
+    template <> struct getattr_helper<"__bytes__">          : Returns<Function<
+        Bytes()
+    >> {};
     template <> struct setattr_helper<"__bytes__">          : Returns<void> {};
     template <> struct delattr_helper<"__bytes__">          : Returns<void> {};
-    template <> struct getattr_helper<"__format__">         : Returns<Function> {};
+    template <> struct getattr_helper<"__format__">         : Returns<Function<
+        Str(Arg<"format_spec", const Str&>)
+    >> {};
     template <> struct setattr_helper<"__format__">         : Returns<void> {};
     template <> struct delattr_helper<"__format__">         : Returns<void> {};
-    template <> struct getattr_helper<"__bool__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__bool__">           : Returns<Function<
+        bool()
+    >> {};
     template <> struct setattr_helper<"__bool__">           : Returns<void> {};
     template <> struct delattr_helper<"__bool__">           : Returns<void> {};
-    template <> struct getattr_helper<"__dir__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__dir__">            : Returns<Function<
+        List<Str>()
+    >> {};
     template <> struct setattr_helper<"__dir__">            : Returns<void> {};
     template <> struct delattr_helper<"__dir__">            : Returns<void> {};
-    template <> struct getattr_helper<"__get__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__get__">            : Returns<Function<
+        Object(  // TODO: check this
+            Arg<"instance", const Object&>,
+            Arg<"cls", const Type&>
+        )
+    >> {};
     template <> struct setattr_helper<"__get__">            : Returns<void> {};
     template <> struct delattr_helper<"__get__">            : Returns<void> {};
-    template <> struct getattr_helper<"__set__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__set__">            : Returns<Function<
+        void(  // TODO: check this
+            Arg<"instance", const Object&>,
+            Arg<"value", const Object&>
+        )
+    >> {};
     template <> struct setattr_helper<"__set__">            : Returns<void> {};
     template <> struct delattr_helper<"__set__">            : Returns<void> {};
-    template <> struct getattr_helper<"__delete__">         : Returns<Function> {};
+    template <> struct getattr_helper<"__delete__">         : Returns<Function<
+        void(Arg<"instance", const Object&>)  // TODO: check this
+    >> {};
     template <> struct setattr_helper<"__delete__">         : Returns<void> {};
     template <> struct delattr_helper<"__delete__">         : Returns<void> {};
     template <> struct getattr_helper<"__self__">           : Returns<Object> {};
@@ -741,61 +783,114 @@ namespace impl {
     template <> struct getattr_helper<"__slots__">          : Returns<Object> {};
     template <> struct setattr_helper<"__slots__">          : Returns<void> {};
     template <> struct delattr_helper<"__slots__">          : Returns<void> {};
-    template <> struct getattr_helper<"__init_subclass__">  : Returns<Function> {};
+    template <> struct getattr_helper<"__init_subclass__">  : Returns<Function<
+        void(
+            Arg<"args", const Object&>::args,
+            Arg<"kwargs", const Object&>::kwargs
+        )
+    >> {};
     template <> struct setattr_helper<"__init_subclass__">  : Returns<void> {};
     template <> struct delattr_helper<"__init_subclass__">  : Returns<void> {};
-    template <> struct getattr_helper<"__set_name__">       : Returns<Function> {};
+    template <> struct getattr_helper<"__set_name__">       : Returns<Function<
+        void(  // TODO: check this
+            Arg<"name", const Str&>,
+            Arg<"value", const Object&>
+        )
+    >> {};
     template <> struct setattr_helper<"__set_name__">       : Returns<void> {};
     template <> struct delattr_helper<"__set_name__">       : Returns<void> {};
-    template <> struct getattr_helper<"__instancecheck__">  : Returns<Function> {};
+    template <> struct getattr_helper<"__instancecheck__">  : Returns<Function<
+        bool(Arg<"instance", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__instancecheck__">  : Returns<void> {};
     template <> struct delattr_helper<"__instancecheck__">  : Returns<void> {};
-    template <> struct getattr_helper<"__subclasscheck__">  : Returns<Function> {};
+    template <> struct getattr_helper<"__subclasscheck__">  : Returns<Function<
+        bool(
+            Arg<"self", const Object&>,
+            Arg<"subclass", const Object&>
+        )
+    >> {};
     template <> struct setattr_helper<"__subclasscheck__">  : Returns<void> {};
     template <> struct delattr_helper<"__subclasscheck__">  : Returns<void> {};
-    template <> struct getattr_helper<"__class_getitem__">  : Returns<Function> {};
+    template <> struct getattr_helper<"__class_getitem__">  : Returns<Function<
+        Object(Arg<"item", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__class_getitem__">  : Returns<void> {};
     template <> struct delattr_helper<"__class_getitem__">  : Returns<void> {};
-    template <> struct getattr_helper<"__complex__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__complex__">        : Returns<Function<
+        Complex()
+    >> {};
     template <> struct setattr_helper<"__complex__">        : Returns<void> {};
     template <> struct delattr_helper<"__complex__">        : Returns<void> {};
-    template <> struct getattr_helper<"__int__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__int__">            : Returns<Function<
+        Int()
+    >> {};
     template <> struct setattr_helper<"__int__">            : Returns<void> {};
     template <> struct delattr_helper<"__int__">            : Returns<void> {};
-    template <> struct getattr_helper<"__float__">          : Returns<Function> {};
+    template <> struct getattr_helper<"__float__">          : Returns<Function<
+        Float()
+    >> {};
     template <> struct setattr_helper<"__float__">          : Returns<void> {};
     template <> struct delattr_helper<"__float__">          : Returns<void> {};
-    template <> struct getattr_helper<"__index__">          : Returns<Function> {};
+    template <> struct getattr_helper<"__index__">          : Returns<Function<
+        Int()
+    >> {};
     template <> struct setattr_helper<"__index__">          : Returns<void> {};
     template <> struct delattr_helper<"__index__">          : Returns<void> {};
-    template <> struct getattr_helper<"__enter__">          : Returns<Function> {};
+    template <> struct getattr_helper<"__enter__">          : Returns<Function<
+        Object()  // TODO: check this
+    >> {};
     template <> struct setattr_helper<"__enter__">          : Returns<void> {};
     template <> struct delattr_helper<"__enter__">          : Returns<void> {};
-    template <> struct getattr_helper<"__exit__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__exit__">           : Returns<Function<
+        void(  // TODO: check this
+            Arg<"exc_type", const Type&>,
+            Arg<"exc_value", const Object&>,
+            Arg<"traceback", const Object&>
+        )
+    >> {};
     template <> struct setattr_helper<"__exit__">           : Returns<void> {};
     template <> struct delattr_helper<"__exit__">           : Returns<void> {};
     template <> struct getattr_helper<"__match_args__">     : Returns<Tuple<Object>> {};
     template <> struct setattr_helper<"__match_args__">     : Returns<void> {};
     template <> struct delattr_helper<"__match_args__">     : Returns<void> {};
-    template <> struct getattr_helper<"__buffer__">         : Returns<Function> {};
+    template <> struct getattr_helper<"__buffer__">         : Returns<Function<
+        Buffer()  // TODO: check this.  Also, implement Buffer/MemoryView
+    >> {};
     template <> struct setattr_helper<"__buffer__">         : Returns<void> {};
     template <> struct delattr_helper<"__buffer__">         : Returns<void> {};
-    template <> struct getattr_helper<"__release_buffer__"> : Returns<Function> {};
+    template <> struct getattr_helper<"__release_buffer__"> : Returns<Function<
+        void()  // TODO: check this
+    >> {};
     template <> struct setattr_helper<"__release_buffer__"> : Returns<void> {};
     template <> struct delattr_helper<"__release_buffer__"> : Returns<void> {};
-    template <> struct getattr_helper<"__await__">          : Returns<Function> {};
+    template <> struct getattr_helper<"__await__">          : Returns<Function<
+        Object()  // TODO: check this
+    >> {};
     template <> struct setattr_helper<"__await__">          : Returns<void> {};
     template <> struct delattr_helper<"__await__">          : Returns<void> {};
-    template <> struct getattr_helper<"__aiter__">          : Returns<Function> {};
+    template <> struct getattr_helper<"__aiter__">          : Returns<Function<
+        Object()  // TODO: check this
+    >> {};
     template <> struct setattr_helper<"__aiter__">          : Returns<void> {};
     template <> struct delattr_helper<"__aiter__">          : Returns<void> {};
-    template <> struct getattr_helper<"__anext__">          : Returns<Function> {};
+    template <> struct getattr_helper<"__anext__">          : Returns<Function<
+        Object()  // TODO: check this
+    >> {};
     template <> struct setattr_helper<"__anext__">          : Returns<void> {};
     template <> struct delattr_helper<"__anext__">          : Returns<void> {};
-    template <> struct getattr_helper<"__aenter__">         : Returns<Function> {};
+    template <> struct getattr_helper<"__aenter__">         : Returns<Function<
+        Object()  // TODO: check this
+    >> {};
     template <> struct setattr_helper<"__aenter__">         : Returns<void> {};
     template <> struct delattr_helper<"__aenter__">         : Returns<void> {};
-    template <> struct getattr_helper<"__aexit__">          : Returns<Function> {};
+    template <> struct getattr_helper<"__aexit__">          : Returns<Function<
+        void(  // TODO: check this
+            Arg<"exc_type", const Type&>,
+            Arg<"exc_value", const Object&>,
+            Arg<"traceback", const Object&>
+        )
+    >> {};
     template <> struct setattr_helper<"__aexit__">          : Returns<void> {};
     template <> struct delattr_helper<"__aexit__">          : Returns<void> {};
 
@@ -832,13 +927,152 @@ namespace impl {
 }
 
 
+/////////////////////////
+////    AS OBJECT    ////
+/////////////////////////
+
+
+template <std::derived_from<Object> T>
+struct __as_object__<T> : Returns<T> {};
+
+template <typename R, typename... A>
+struct __as_object__<R(A...)> : Returns<Function<R(A...)>> {};
+template <typename R, typename... A>
+struct __as_object__<R(*)(A...)> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...)> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...) noexcept> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...) const> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...) const noexcept> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...) volatile> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...) volatile noexcept> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...) const volatile> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...) const volatile noexcept> : Returns<Function<R(A...)>> {};
+template <typename R, typename... A>
+struct __as_object__<std::function<R(A...)>> : Returns<Function<R(A...)>> {};
+// template <std::derived_from<pybind11::function> T>
+// struct __as_object__<T> : Returns<Function<Object(Args<Object>, Kwargs<Object>)>> {};
+
+template <>
+struct __as_object__<std::nullptr_t> : Returns<NoneType> {};
+template <>
+struct __as_object__<std::nullopt_t> : Returns<NoneType> {};
+template <std::derived_from<pybind11::none> T>
+struct __as_object__<T> : Returns<NoneType> {};
+
+template <std::derived_from<pybind11::ellipsis> T>
+struct __as_object__<T> : Returns<EllipsisType> {};
+
+template <std::derived_from<pybind11::slice> T>
+struct __as_object__<T> : Returns<Slice> {};
+
+template <std::derived_from<pybind11::module_> T>
+struct __as_object__<T> : Returns<Module> {};
+
+template <>
+struct __as_object__<bool> : Returns<Bool> {};
+template <std::derived_from<pybind11::bool_> T>
+struct __as_object__<T> : Returns<Bool> {};
+
+template <std::integral T> requires (!std::same_as<bool, T>)
+struct __as_object__<T> : Returns<Int> {};
+template <std::derived_from<pybind11::int_> T>
+struct __as_object__<T> : Returns<Int> {};
+
+template <std::floating_point T>
+struct __as_object__<T> : Returns<Float> {};
+template <std::derived_from<pybind11::float_> T>
+struct __as_object__<T> : Returns<Float> {};
+
+template <impl::complex_like T> requires (!std::derived_from<T, Object>)
+struct __as_object__<T> : Returns<Complex> {};
+
+template <>
+struct __as_object__<const char*> : Returns<Str> {};
+template <size_t N>
+struct __as_object__<const char(&)[N]> : Returns<Str> {};
+template <std::derived_from<std::string> T>
+struct __as_object__<T> : Returns<Str> {};
+template <std::derived_from<std::string_view> T>
+struct __as_object__<T> : Returns<Str> {};
+template <std::derived_from<pybind11::str> T>
+struct __as_object__<T> : Returns<Str> {};
+
+template <>
+struct __as_object__<void*> : Returns<Bytes> {};
+template <std::derived_from<pybind11::bytes> T>
+struct __as_object__<T> : Returns<Bytes> {};
+
+template <std::derived_from<pybind11::bytearray> T>
+struct __as_object__<T> : Returns<ByteArray> {};
+
+template <typename... Args>
+struct __as_object__<std::chrono::duration<Args...>> : Returns<Timedelta> {};
+
+// TODO: std::time_t?
+
+template <typename... Args>
+struct __as_object__<std::chrono::time_point<Args...>> : Returns<Datetime> {};
+
+template <typename First, typename Second>
+struct __as_object__<std::pair<First, Second>> : Returns<Tuple<Object>> {};  // TODO: should return Struct?
+template <typename... Args>
+struct __as_object__<std::tuple<Args...>> : Returns<Tuple<Object>> {};  // TODO: should return Struct?
+template <typename T, size_t N>
+struct __as_object__<std::array<T, N>> : Returns<Tuple<impl::as_object_t<T>>> {};
+template <std::derived_from<pybind11::tuple> T>
+struct __as_object__<T> : Returns<Tuple<Object>> {};
+
+template <typename T, typename... Args>
+struct __as_object__<std::vector<T, Args...>> : Returns<List<impl::as_object_t<T>>> {};
+template <typename T, typename... Args>
+struct __as_object__<std::deque<T, Args...>> : Returns<List<impl::as_object_t<T>>> {};
+template <typename T, typename... Args>
+struct __as_object__<std::list<T, Args...>> : Returns<List<impl::as_object_t<T>>> {};
+template <typename T, typename... Args>
+struct __as_object__<std::forward_list<T, Args...>> : Returns<List<impl::as_object_t<T>>> {};
+template <std::derived_from<pybind11::list> T>
+struct __as_object__<T> : Returns<List<Object>> {};
+
+template <typename T, typename... Args>
+struct __as_object__<std::unordered_set<T, Args...>> : Returns<Set<impl::as_object_t<T>>> {};
+template <typename T, typename... Args>
+struct __as_object__<std::set<T, Args...>> : Returns<Set<impl::as_object_t<T>>> {};
+template <std::derived_from<pybind11::set> T>
+struct __as_object__<T> : Returns<Set<Object>> {};
+
+template <std::derived_from<pybind11::frozenset> T>
+struct __as_object__<T> : Returns<FrozenSet<Object>> {};
+
+template <typename K, typename V, typename... Args>
+struct __as_object__<std::unordered_map<K, V, Args...>> : Returns<Dict<impl::as_object_t<K>, impl::as_object_t<V>>> {};
+template <typename K, typename V, typename... Args>
+struct __as_object__<std::map<K, V, Args...>> : Returns<Dict<impl::as_object_t<K>, impl::as_object_t<V>>> {};
+template <std::derived_from<pybind11::dict> T>
+struct __as_object__<T> : Returns<Dict<Object, Object>> {};
+
+template <std::derived_from<pybind11::type> T>
+struct __as_object__<T> : Returns<Type> {};
+
+
+/* Convert an arbitrary C++ value to an equivalent Python object if it isn't one
+already. */
+template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
+auto as_object(T&& value) -> __as_object__<std::remove_cvref_t<T>>::Return {
+    return std::forward<T>(value);
+}
+
+
 ////////////////////////////////////
 ////    IMPLICIT CONVERSIONS    ////
 ////////////////////////////////////
-
-
-template <typename Self, typename T>
-struct __cast__ { static constexpr bool enable = false; };
 
 
 /* Implicitly convert all objects to pybind11::handle. */
@@ -897,14 +1131,17 @@ struct __cast__<Self, T> : Returns<T> {
 
 
 namespace impl {
-    template <> struct getattr_helper<"__call__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__call__">           : Returns<Function<
+        Object(  // TODO: ideally, this would return the same type as the __call__ struct?
+            Arg<"args", const Object&>::args,
+            Arg<"kwargs", const Object&>::kwargs
+        )
+    >> {};
     template <> struct setattr_helper<"__call__">           : Returns<void> {};
     template <> struct delattr_helper<"__call__">           : Returns<void> {};
 }
 
 
-template <typename T, typename... Args>
-struct __call__ { static constexpr bool enable = false; };
 template <typename T, typename... Args> requires (impl::proxy_like<Args> || ...)
 struct __call__<T, Args...> : __call__<T, impl::unwrap_proxy<Args>...> {};
 template <impl::proxy_like T, typename... Args>
@@ -920,33 +1157,42 @@ struct __call__<T, Args...> : __call__<impl::unwrap_proxy<T>, impl::unwrap_proxy
 
 
 namespace impl {
-    template <> struct getattr_helper<"__getattr__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__getattr__">        : Returns<Function<
+        Object(Arg<"name", const Str&>)
+    >> {};
     template <> struct setattr_helper<"__getattr__">        : Returns<void> {};
     template <> struct delattr_helper<"__getattr__">        : Returns<void> {};
 
-    template <> struct getattr_helper<"__getattribute__">   : Returns<Function> {};
+    template <> struct getattr_helper<"__getattribute__">   : Returns<Function<
+        Object(Arg<"name", const Str&>)
+    >> {};
     template <> struct setattr_helper<"__getattribute__">   : Returns<void> {};
     template <> struct delattr_helper<"__getattribute__">   : Returns<void> {};
 
-    template <> struct getattr_helper<"__setattr__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__setattr__">        : Returns<Function<
+        void(
+            Arg<"name", const Str&>,
+            Arg<"value", const Object&>
+        )
+    >> {};
     template <> struct setattr_helper<"__setattr__">        : Returns<void> {};
     template <> struct delattr_helper<"__setattr__">        : Returns<void> {};
 
-    template <> struct getattr_helper<"__delattr__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__delattr__">        : Returns<Function<
+        void(Arg<"name", const Str&>)
+    >> {};
     template <> struct setattr_helper<"__delattr__">        : Returns<void> {};
     template <> struct delattr_helper<"__delattr__">        : Returns<void> {};
 }
 
 
-template <typename T, StaticStr name>
-struct __getattr__ { static constexpr bool enable = false; };
+
 template <std::derived_from<Object> T, StaticStr name> requires (impl::getattr_helper<name>::enable)
 struct __getattr__<T, name> : Returns<typename impl::getattr_helper<name>::Return> {};
 template <impl::proxy_like T, StaticStr name>
 struct __getattr__<T, name> : __getattr__<impl::unwrap_proxy<T>, name> {};
 
-template <typename T, StaticStr name, typename Value>
-struct __setattr__ { static constexpr bool enable = false; };
+
 template <std::derived_from<Object> T, StaticStr name, typename Value> requires (impl::setattr_helper<name>::enable)
 struct __setattr__<T, name, Value> : Returns<typename impl::setattr_helper<name>::Return> {};
 template <impl::proxy_like T, StaticStr name, impl::not_proxy_like Value>
@@ -956,8 +1202,7 @@ struct __setattr__<T, name, Value> : __setattr__<T, name, impl::unwrap_proxy<Val
 template <impl::proxy_like T, StaticStr name, impl::proxy_like Value>
 struct __setattr__<T, name, Value> : __setattr__<impl::unwrap_proxy<T>, name, impl::unwrap_proxy<Value>> {};
 
-template <typename T, StaticStr name>
-struct __delattr__ { static constexpr bool enable = false; };
+
 template <std::derived_from<Object> T, StaticStr name> requires (impl::delattr_helper<name>::enable)
 struct __delattr__<T, name> : Returns<typename impl::delattr_helper<name>::Return> {};
 template <impl::proxy_like T, StaticStr name>
@@ -970,26 +1215,36 @@ struct __delattr__<T, name> : __delattr__<impl::unwrap_proxy<T>, name> {};
 
 
 namespace impl {
-    template <> struct getattr_helper<"__getitem__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__getitem__">        : Returns<Function<
+        Object(Arg<"key", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__getitem__">        : Returns<void> {};
     template <> struct delattr_helper<"__getitem__">        : Returns<void> {};
 
-    template <> struct getattr_helper<"__setitem__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__setitem__">        : Returns<Function<
+        void(
+            Arg<"key", const Object&>,
+            Arg<"value", const Object&>
+        )
+    >> {};
     template <> struct setattr_helper<"__setitem__">        : Returns<void> {};
     template <> struct delattr_helper<"__setitem__">        : Returns<void> {};
 
-    template <> struct getattr_helper<"__delitem__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__delitem__">        : Returns<Function<
+        void(Arg<"key", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__delitem__">        : Returns<void> {};
     template <> struct delattr_helper<"__delitem__">        : Returns<void> {};
 
-    template <> struct getattr_helper<"__missing__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__missing__">        : Returns<Function<
+        Object(Arg<"key", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__missing__">        : Returns<void> {};
     template <> struct delattr_helper<"__missing__">        : Returns<void> {};
 }
 
 
-template <typename T, typename Key>
-struct __getitem__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like T, impl::not_proxy_like Key>
 struct __getitem__<T, Key> : __getitem__<impl::unwrap_proxy<T>, Key> {};
 template <impl::not_proxy_like T, impl::proxy_like Key>
@@ -997,8 +1252,7 @@ struct __getitem__<T, Key> : __getitem__<T, impl::unwrap_proxy<Key>> {};
 template <impl::proxy_like T, impl::proxy_like Key>
 struct __getitem__<T, Key> : __getitem__<impl::unwrap_proxy<T>, impl::unwrap_proxy<Key>> {};
 
-template <typename T, typename Key, typename Value>
-struct __setitem__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like T, impl::not_proxy_like Key, impl::not_proxy_like Value>
 struct __setitem__<T, Key, Value> : __setitem__<impl::unwrap_proxy<T>, Key, Value> {};
 template <impl::not_proxy_like T, impl::proxy_like Key, impl::not_proxy_like Value>
@@ -1014,8 +1268,7 @@ struct __setitem__<T, Key, Value> : __setitem__<T, impl::unwrap_proxy<Key>, Valu
 template <impl::proxy_like T, impl::proxy_like Key, impl::proxy_like Value>
 struct __setitem__<T, Key, Value> : __setitem__<impl::unwrap_proxy<T>, impl::unwrap_proxy<Key>, impl::unwrap_proxy<Value>> {};
 
-template <typename T, typename Key>
-struct __delitem__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like T, impl::not_proxy_like Key>
 struct __delitem__<T, Key> : __delitem__<impl::unwrap_proxy<T>, Key> {};
 template <impl::not_proxy_like T, impl::proxy_like Key>
@@ -1030,18 +1283,21 @@ struct __delitem__<T, Key> : __delitem__<impl::unwrap_proxy<T>, impl::unwrap_pro
 
 
 namespace impl {
-    template <> struct getattr_helper<"__len__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__len__">            : Returns<Function<
+        Int()
+    >> {};
     template <> struct setattr_helper<"__len__">            : Returns<void> {};
     template <> struct delattr_helper<"__len__">            : Returns<void> {};
 
-    template <> struct getattr_helper<"__length_hint__">    : Returns<Function> {};
+    template <> struct getattr_helper<"__length_hint__">    : Returns<Function<
+        Int()
+    >> {};
     template <> struct setattr_helper<"__length_hint__">    : Returns<void> {};
     template <> struct delattr_helper<"__length_hint__">    : Returns<void> {};
 }
 
 
-template <typename T>
-struct __len__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like T>
 struct __len__<T> : __len__<impl::unwrap_proxy<T>> {};
 
@@ -1052,27 +1308,31 @@ struct __len__<T> : __len__<impl::unwrap_proxy<T>> {};
 
 
 namespace impl {
-    template <> struct getattr_helper<"__iter__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__iter__">           : Returns<Function<
+        Object()
+    >> {};
     template <> struct setattr_helper<"__iter__">           : Returns<void> {};
     template <> struct delattr_helper<"__iter__">           : Returns<void> {};
 
-    template <> struct getattr_helper<"__next__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__next__">           : Returns<Function<
+        Object()
+    >> {};
     template <> struct setattr_helper<"__next__">           : Returns<void> {};
     template <> struct delattr_helper<"__next__">           : Returns<void> {};
 
-    template <> struct getattr_helper<"__reversed__">       : Returns<Function> {};
+    template <> struct getattr_helper<"__reversed__">       : Returns<Function<
+        Object()
+    >> {};
     template <> struct setattr_helper<"__reversed__">       : Returns<void> {};
     template <> struct delattr_helper<"__reversed__">       : Returns<void> {};
 }
 
 
-template <typename T>
-struct __iter__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like T>
 struct __iter__<T> : __iter__<impl::unwrap_proxy<T>> {};
 
-template <typename T>
-struct __reversed__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like T>
 struct __reversed__<T> : __reversed__<impl::unwrap_proxy<T>> {};
 
@@ -1083,14 +1343,15 @@ struct __reversed__<T> : __reversed__<impl::unwrap_proxy<T>> {};
 
 
 namespace impl {
-    template <> struct getattr_helper<"__contains__">       : Returns<Function> {};
+    template <> struct getattr_helper<"__contains__">       : Returns<Function<
+        Bool(Arg<"key", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__contains__">       : Returns<void> {};
     template <> struct delattr_helper<"__contains__">       : Returns<void> {};
 }
 
 
-template <typename T, typename Key>
-struct __contains__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like T, impl::not_proxy_like Key>
 struct __contains__<T, Key> : __contains__<impl::unwrap_proxy<T>, Key> {};
 template <impl::not_proxy_like T, impl::proxy_like Key>
@@ -1120,14 +1381,15 @@ auto operator*(const Self& self) {
 
 
 namespace impl {
-    template <> struct getattr_helper<"__hash__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__hash__">           : Returns<Function<
+        Int(Arg<"self", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__hash__">           : Returns<void> {};
     template <> struct delattr_helper<"__hash__">           : Returns<void> {};
 }
 
 
-template <typename T>
-struct __hash__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like T>
 struct __hash__<T> : __hash__<impl::unwrap_proxy<T>> {};
 
@@ -1138,14 +1400,15 @@ struct __hash__<T> : __hash__<impl::unwrap_proxy<T>> {};
 
 
 namespace impl {
-    template <> struct getattr_helper<"__abs__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__abs__">            : Returns<Function<
+        Object()
+    >> {};
     template <> struct setattr_helper<"__abs__">            : Returns<void> {};
     template <> struct delattr_helper<"__abs__">            : Returns<void> {};
 }
 
 
-template <typename T>
-struct __abs__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like T>
 struct __abs__<T> : __abs__<impl::unwrap_proxy<T>> {};
 
@@ -1183,14 +1446,15 @@ auto abs(const T& value) {
 
 
 namespace impl {
-    template <> struct getattr_helper<"__invert__">         : Returns<Function> {};
+    template <> struct getattr_helper<"__invert__">         : Returns<Function<
+        Object()
+    >> {};
     template <> struct setattr_helper<"__invert__">         : Returns<void> {};
     template <> struct delattr_helper<"__invert__">         : Returns<void> {};
 }
 
 
-template <typename T>
-struct __invert__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like T>
 struct __invert__<T> : __invert__<impl::unwrap_proxy<T>> {};
 
@@ -1222,14 +1486,15 @@ auto operator~(const T& self) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__pos__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__pos__">            : Returns<Function<
+        Object()
+    >> {};
     template <> struct setattr_helper<"__pos__">            : Returns<void> {};
     template <> struct delattr_helper<"__pos__">            : Returns<void> {};
 }
 
 
-template <typename T>
-struct __pos__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like T>
 struct __pos__<T> : __pos__<impl::unwrap_proxy<T>> {};
 
@@ -1261,14 +1526,15 @@ auto operator+(const T& self) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__neg__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__neg__">            : Returns<Function<
+        Object()
+    >> {};
     template <> struct setattr_helper<"__neg__">            : Returns<void> {};
     template <> struct delattr_helper<"__neg__">            : Returns<void> {};
 }
 
 
-template <typename T>
-struct __neg__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like T>
 struct __neg__<T> : __neg__<impl::unwrap_proxy<T>> {};
 
@@ -1299,8 +1565,7 @@ auto operator-(const T& self) = delete;
 /////////////////////////
 
 
-template <typename T>
-struct __increment__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like T>
 struct __increment__<T> : __increment__<impl::unwrap_proxy<T>> {};
 
@@ -1363,8 +1628,7 @@ T operator++(T& self, int) = delete;
 /////////////////////////
 
 
-template <typename T>
-struct __decrement__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like T>
 struct __decrement__<T> : __decrement__<impl::unwrap_proxy<T>> {};
 
@@ -1428,14 +1692,15 @@ T operator--(T& self, int) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__lt__">             : Returns<Function> {};
+    template <> struct getattr_helper<"__lt__">             : Returns<Function<
+        Bool(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__lt__">             : Returns<void> {};
     template <> struct delattr_helper<"__lt__">             : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __lt__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __lt__<L, R> : __lt__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -1474,14 +1739,15 @@ auto operator<(const L& lhs, const R& rhs) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__le__">             : Returns<Function> {};
+    template <> struct getattr_helper<"__le__">             : Returns<Function<
+        Bool(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__le__">             : Returns<void> {};
     template <> struct delattr_helper<"__le__">             : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __le__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __le__<L, R> : __le__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -1520,14 +1786,15 @@ auto operator<=(const L& lhs, const R& rhs) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__eq__">             : Returns<Function> {};
+    template <> struct getattr_helper<"__eq__">             : Returns<Function<
+        Bool(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__eq__">             : Returns<void> {};
     template <> struct delattr_helper<"__eq__">             : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __eq__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __eq__<L, R> : __eq__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -1566,14 +1833,15 @@ auto operator==(const L& lhs, const R& rhs) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__ne__">             : Returns<Function> {};
+    template <> struct getattr_helper<"__ne__">             : Returns<Function<
+        Bool(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__ne__">             : Returns<void> {};
     template <> struct delattr_helper<"__ne__">             : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __ne__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __ne__<L, R> : __ne__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -1612,14 +1880,15 @@ auto operator!=(const L& lhs, const R& rhs) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__ge__">             : Returns<Function> {};
+    template <> struct getattr_helper<"__ge__">             : Returns<Function<
+        Bool(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__ge__">             : Returns<void> {};
     template <> struct delattr_helper<"__ge__">             : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __ge__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __ge__<L, R> : __ge__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -1658,14 +1927,14 @@ auto operator>=(const L& lhs, const R& rhs) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__gt__">             : Returns<Function> {};
+    template <> struct getattr_helper<"__gt__">             : Returns<Function<
+        Bool(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__gt__">             : Returns<void> {};
     template <> struct delattr_helper<"__gt__">             : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __gt__ { static constexpr bool enable = false; };
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __gt__<L, R> : __gt__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -1704,22 +1973,27 @@ auto operator>(const L& lhs, const R& rhs) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__add__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__add__">            : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__add__">            : Returns<void> {};
     template <> struct delattr_helper<"__add__">            : Returns<void> {};
 
-    template <> struct getattr_helper<"__radd__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__radd__">           : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__radd__">           : Returns<void> {};
     template <> struct delattr_helper<"__radd__">           : Returns<void> {};
 
-    template <> struct getattr_helper<"__iadd__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__iadd__">           : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__iadd__">           : Returns<void> {};
     template <> struct delattr_helper<"__iadd__">           : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __add__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __add__<L, R> : __add__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -1750,8 +2024,7 @@ template <typename L, typename R>
 auto operator+(const L& lhs, const R& rhs) = delete;
 
 
-template <typename L, typename R>
-struct __iadd__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __iadd__<L, R> : __iadd__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -1792,22 +2065,27 @@ auto operator+=(const L& lhs, const R& rhs) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__sub__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__sub__">            : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__sub__">            : Returns<void> {};
     template <> struct delattr_helper<"__sub__">            : Returns<void> {};
 
-    template <> struct getattr_helper<"__rsub__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__rsub__">           : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__rsub__">           : Returns<void> {};
     template <> struct delattr_helper<"__rsub__">           : Returns<void> {};
 
-    template <> struct getattr_helper<"__isub__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__isub__">           : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__isub__">           : Returns<void> {};
     template <> struct delattr_helper<"__isub__">           : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __sub__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __sub__<L, R> : __sub__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -1838,8 +2116,7 @@ template <typename L, typename R>
 auto operator-(const L& lhs, const R& rhs) = delete;
 
 
-template <typename L, typename R>
-struct __isub__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __isub__<L, R> : __isub__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -1880,33 +2157,44 @@ auto operator-=(const L& lhs, const R& rhs) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__mul__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__mul__">            : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__mul__">            : Returns<void> {};
     template <> struct delattr_helper<"__mul__">            : Returns<void> {};
 
-    template <> struct getattr_helper<"__matmul__">         : Returns<Function> {};
+    template <> struct getattr_helper<"__matmul__">         : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__matmul__">         : Returns<void> {};
     template <> struct delattr_helper<"__matmul__">         : Returns<void> {};
 
-    template <> struct getattr_helper<"__rmul__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__rmul__">           : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__rmul__">           : Returns<void> {};
     template <> struct delattr_helper<"__rmul__">           : Returns<void> {};
 
-    template <> struct getattr_helper<"__rmatmul__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__rmatmul__">        : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__rmatmul__">        : Returns<void> {};
     template <> struct delattr_helper<"__rmatmul__">        : Returns<void> {};
 
-    template <> struct getattr_helper<"__imul__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__imul__">           : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__imul__">           : Returns<void> {};
     template <> struct delattr_helper<"__imul__">           : Returns<void> {};
 
-    template <> struct getattr_helper<"__imatmul__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__imatmul__">        : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__imatmul__">        : Returns<void> {};
     template <> struct delattr_helper<"__imatmul__">        : Returns<void> {};
 }
 
-template <typename L, typename R>
-struct __mul__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __mul__<L, R> : __mul__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -1937,8 +2225,7 @@ template <typename L, typename R>
 auto operator*(const L& lhs, const R& rhs) = delete;
 
 
-template <typename L, typename R>
-struct __imul__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __imul__<L, R> : __imul__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -1979,34 +2266,45 @@ auto operator*=(const L& lhs, const R& rhs) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__truediv__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__truediv__">        : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__truediv__">        : Returns<void> {};
     template <> struct delattr_helper<"__truediv__">        : Returns<void> {};
 
-    template <> struct getattr_helper<"__floordiv__">       : Returns<Function> {};
+    template <> struct getattr_helper<"__floordiv__">       : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__floordiv__">       : Returns<void> {};
     template <> struct delattr_helper<"__floordiv__">       : Returns<void> {};
 
-    template <> struct getattr_helper<"__rtruediv__">       : Returns<Function> {};
+    template <> struct getattr_helper<"__rtruediv__">       : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__rtruediv__">       : Returns<void> {};
     template <> struct delattr_helper<"__rtruediv__">       : Returns<void> {};
 
-    template <> struct getattr_helper<"__rfloordiv__">      : Returns<Function> {};
+    template <> struct getattr_helper<"__rfloordiv__">      : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__rfloordiv__">      : Returns<void> {};
     template <> struct delattr_helper<"__rfloordiv__">      : Returns<void> {};
 
-    template <> struct getattr_helper<"__itruediv__">       : Returns<Function> {};
+    template <> struct getattr_helper<"__itruediv__">       : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__itruediv__">       : Returns<void> {};
     template <> struct delattr_helper<"__itruediv__">       : Returns<void> {};
 
-    template <> struct getattr_helper<"__ifloordiv__">      : Returns<Function> {};
+    template <> struct getattr_helper<"__ifloordiv__">      : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__ifloordiv__">      : Returns<void> {};
     template <> struct delattr_helper<"__ifloordiv__">      : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __truediv__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __truediv__<L, R> : __truediv__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -2037,8 +2335,7 @@ template <typename L, typename R>
 auto operator/(const L& lhs, const R& rhs) = delete;
 
 
-template <typename L, typename R>
-struct __itruediv__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __itruediv__<L, R> : __itruediv__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -2073,8 +2370,7 @@ template <std::derived_from<Object> L, typename R> requires (!__itruediv__<L, R>
 auto operator/=(const L& lhs, const R& rhs) = delete;
 
 
-template <typename L, typename R>
-struct __floordiv__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __floordiv__<L, R> : __floordiv__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -2089,34 +2385,39 @@ struct __floordiv__<L, R> : __floordiv__<impl::unwrap_proxy<L>, impl::unwrap_pro
 
 
 namespace impl {
-    template <> struct getattr_helper<"__mod__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__mod__">            : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__mod__">            : Returns<void> {};
     template <> struct delattr_helper<"__mod__">            : Returns<void> {};
 
-    template <> struct getattr_helper<"__divmod__">         : Returns<Function> {};
+    template <> struct getattr_helper<"__divmod__">         : Returns<Function<
+        Tuple<Object>(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__divmod__">         : Returns<void> {};
     template <> struct delattr_helper<"__divmod__">         : Returns<void> {};
 
-    template <> struct getattr_helper<"__rmod__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__rmod__">           : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__rmod__">           : Returns<void> {};
     template <> struct delattr_helper<"__rmod__">           : Returns<void> {};
 
-    template <> struct getattr_helper<"__rdivmod__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__rdivmod__">        : Returns<Function<
+        Tuple<Object>(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__rdivmod__">        : Returns<void> {};
     template <> struct delattr_helper<"__rdivmod__">        : Returns<void> {};
 
-    template <> struct getattr_helper<"__imod__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__imod__">           : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__imod__">           : Returns<void> {};
     template <> struct delattr_helper<"__imod__">           : Returns<void> {};
-
-    template <> struct getattr_helper<"__idivmod__">        : Returns<Function> {};
-    template <> struct setattr_helper<"__idivmod__">        : Returns<void> {};
-    template <> struct delattr_helper<"__idivmod__">        : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __mod__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __mod__<L, R> : __mod__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -2147,8 +2448,7 @@ template <typename L, typename R>
 auto operator%(const L& lhs, const R& rhs) = delete;
 
 
-template <typename L, typename R>
-struct __imod__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __imod__<L, R> : __imod__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -2189,19 +2489,27 @@ auto operator%=(const L& lhs, const R& rhs) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__round__">          : Returns<Function> {};
+    template <> struct getattr_helper<"__round__">          : Returns<Function<
+        Object(Arg<"ndigits", const Int&>::opt)
+    >> {};
     template <> struct setattr_helper<"__round__">          : Returns<void> {};
     template <> struct delattr_helper<"__round__">          : Returns<void> {};
 
-    template <> struct getattr_helper<"__trunc__">          : Returns<Function> {};
+    template <> struct getattr_helper<"__trunc__">          : Returns<Function<
+        Object()
+    >> {};
     template <> struct setattr_helper<"__trunc__">          : Returns<void> {};
     template <> struct delattr_helper<"__trunc__">          : Returns<void> {};
 
-    template <> struct getattr_helper<"__floor__">          : Returns<Function> {};
+    template <> struct getattr_helper<"__floor__">          : Returns<Function<
+        Object()
+    >> {};
     template <> struct setattr_helper<"__floor__">          : Returns<void> {};
     template <> struct delattr_helper<"__floor__">          : Returns<void> {};
 
-    template <> struct getattr_helper<"__ceil__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__ceil__">           : Returns<Function<
+        Object()
+    >> {};
     template <> struct setattr_helper<"__ceil__">           : Returns<void> {};
     template <> struct delattr_helper<"__ceil__">           : Returns<void> {};
 }
@@ -2213,22 +2521,33 @@ namespace impl {
 
 
 namespace impl {
-    template <> struct getattr_helper<"__pow__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__pow__">            : Returns<Function<
+        Object(
+            Arg<"exp", const Object&>,
+            Arg<"mod", const Object&>::opt
+        )
+    >> {};
     template <> struct setattr_helper<"__pow__">            : Returns<void> {};
     template <> struct delattr_helper<"__pow__">            : Returns<void> {};
 
-    template <> struct getattr_helper<"__rpow__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__rpow__">           : Returns<Function<
+        Object(Arg<"base", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__rpow__">           : Returns<void> {};
     template <> struct delattr_helper<"__rpow__">           : Returns<void> {};
 
-    template <> struct getattr_helper<"__ipow__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__ipow__">           : Returns<Function<
+        Object(
+            Arg<"exp", const Object&>,
+            Arg<"mod", const Object&>::opt
+        )
+    >> {};
     template <> struct setattr_helper<"__ipow__">           : Returns<void> {};
     template <> struct delattr_helper<"__ipow__">           : Returns<void> {};
 }
 
 
-template <typename base, typename exponent>
-struct __pow__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like base, impl::not_proxy_like exponent>
 struct __pow__<base, exponent> : __pow__<impl::unwrap_proxy<base>, exponent> {};
 template <impl::not_proxy_like base, impl::proxy_like exponent>
@@ -2328,22 +2647,27 @@ auto pow(const Base& base, const Exp& exp, const Mod& mod) {
 
 
 namespace impl {
-    template <> struct getattr_helper<"__lshift__">         : Returns<Function> {};
+    template <> struct getattr_helper<"__lshift__">         : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__lshift__">         : Returns<void> {};
     template <> struct delattr_helper<"__lshift__">         : Returns<void> {};
 
-    template <> struct getattr_helper<"__rlshift__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__rlshift__">        : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__rlshift__">        : Returns<void> {};
     template <> struct delattr_helper<"__rlshift__">        : Returns<void> {};
 
-    template <> struct getattr_helper<"__ilshift__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__ilshift__">        : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__ilshift__">        : Returns<void> {};
     template <> struct delattr_helper<"__ilshift__">        : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __lshift__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __lshift__<L, R> : __lshift__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -2402,8 +2726,7 @@ template <typename L, typename R>
 auto operator<<(const L& lhs, const R& rhs) = delete;
 
 
-template <typename L, typename R>
-struct __ilshift__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __ilshift__<L, R> : __ilshift__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -2444,22 +2767,27 @@ auto operator<<=(const L& lhs, const R& rhs) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__rshift__">         : Returns<Function> {};
+    template <> struct getattr_helper<"__rshift__">         : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__rshift__">         : Returns<void> {};
     template <> struct delattr_helper<"__rshift__">         : Returns<void> {};
 
-    template <> struct getattr_helper<"__rrshift__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__rrshift__">        : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__rrshift__">        : Returns<void> {};
     template <> struct delattr_helper<"__rrshift__">        : Returns<void> {};
 
-    template <> struct getattr_helper<"__irshift__">        : Returns<Function> {};
+    template <> struct getattr_helper<"__irshift__">        : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__irshift__">        : Returns<void> {};
     template <> struct delattr_helper<"__irshift__">        : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __rshift__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __rshift__<L, R> : __rshift__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -2490,8 +2818,7 @@ template <typename L, typename R>
 auto operator>>(const L& lhs, const R& rhs) = delete;
 
 
-template <typename L, typename R>
-struct __irshift__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __irshift__<L, R> : __irshift__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -2532,22 +2859,27 @@ auto operator>>=(const L& lhs, const R& rhs) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__and__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__and__">            : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__and__">            : Returns<void> {};
     template <> struct delattr_helper<"__and__">            : Returns<void> {};
 
-    template <> struct getattr_helper<"__rand__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__rand__">           : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__rand__">           : Returns<void> {};
     template <> struct delattr_helper<"__rand__">           : Returns<void> {};
 
-    template <> struct getattr_helper<"__iand__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__iand__">           : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__iand__">           : Returns<void> {};
     template <> struct delattr_helper<"__iand__">           : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __and__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __and__<L, R> : __and__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -2578,8 +2910,7 @@ template <typename L, typename R>
 auto operator&(const L& lhs, const R& rhs) = delete;
 
 
-template <typename L, typename R>
-struct __iand__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __iand__<L, R> : __iand__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -2620,22 +2951,27 @@ auto operator&=(const L& lhs, const R& rhs) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__or__">             : Returns<Function> {};
+    template <> struct getattr_helper<"__or__">             : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__or__">             : Returns<void> {};
     template <> struct delattr_helper<"__or__">             : Returns<void> {};
 
-    template <> struct getattr_helper<"__ror__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__ror__">            : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__ror__">            : Returns<void> {};
     template <> struct delattr_helper<"__ror__">            : Returns<void> {};
 
-    template <> struct getattr_helper<"__ior__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__ior__">            : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__ior__">            : Returns<void> {};
     template <> struct delattr_helper<"__ior__">            : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __or__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __or__<L, R> : __or__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -2678,8 +3014,7 @@ template <typename L, typename R>
 auto operator|(const L& lhs, const R& rhs) = delete;
 
 
-template <typename L, typename R>
-struct __ior__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __ior__<L, R> : __ior__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -2720,22 +3055,27 @@ auto operator|=(const L& lhs, const R& rhs) = delete;
 
 
 namespace impl {
-    template <> struct getattr_helper<"__xor__">            : Returns<Function> {};
+    template <> struct getattr_helper<"__xor__">            : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__xor__">            : Returns<void> {};
     template <> struct delattr_helper<"__xor__">            : Returns<void> {};
 
-    template <> struct getattr_helper<"__rxor__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__rxor__">           : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__rxor__">           : Returns<void> {};
     template <> struct delattr_helper<"__rxor__">           : Returns<void> {};
 
-    template <> struct getattr_helper<"__ixor__">           : Returns<Function> {};
+    template <> struct getattr_helper<"__ixor__">           : Returns<Function<
+        Object(Arg<"other", const Object&>)
+    >> {};
     template <> struct setattr_helper<"__ixor__">           : Returns<void> {};
     template <> struct delattr_helper<"__ixor__">           : Returns<void> {};
 }
 
 
-template <typename L, typename R>
-struct __xor__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __xor__<L, R> : __xor__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>
@@ -2766,8 +3106,7 @@ template <typename L, typename R>
 auto operator^(const L& lhs, const R& rhs) = delete;
 
 
-template <typename L, typename R>
-struct __ixor__ { static constexpr bool enable = false; };
+
 template <impl::proxy_like L, impl::not_proxy_like R>
 struct __ixor__<L, R> : __ixor__<impl::unwrap_proxy<L>, R> {};
 template <impl::not_proxy_like L, impl::proxy_like R>

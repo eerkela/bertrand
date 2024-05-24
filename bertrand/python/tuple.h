@@ -26,9 +26,17 @@ namespace py {
 
 
 template <std::derived_from<impl::TupleTag> Self>
-struct __getattr__<Self, "count">                               : Returns<Function> {};
+struct __getattr__<Self, "count">                               : Returns<Function<
+    Int(typename Arg<"value", const Object&>::pos)
+>> {};
 template <std::derived_from<impl::TupleTag> Self>
-struct __getattr__<Self, "index">                               : Returns<Function> {};
+struct __getattr__<Self, "index">                               : Returns<Function<
+    Int(
+        typename Arg<"value", const Object&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
 template <std::derived_from<impl::TupleTag> Self>
 struct __len__<Self>                                            : Returns<size_t> {};
 template <std::derived_from<impl::TupleTag> Self>
@@ -181,9 +189,9 @@ namespace ops {
 
 
 template <typename T>
-Tuple(const std::initializer_list<T>&) -> Tuple<as_object_t<T>>;
+Tuple(const std::initializer_list<T>&) -> Tuple<impl::as_object_t<T>>;
 template <impl::is_iterable T>
-Tuple(T) -> Tuple<as_object_t<impl::dereference_type<T>>>;
+Tuple(T) -> Tuple<impl::as_object_t<impl::dereference_type<T>>>;
 template <typename T, typename... Args>
     requires (!impl::is_iterable<T> && !impl::str_like<T>)
 Tuple(T, Args...) -> Tuple<Object>;
@@ -560,17 +568,17 @@ public:
     /////////////////////////
 
     /* Get the underlying PyObject* array. */
-    inline PyObject** DATA() const noexcept {
+    PyObject** DATA() const noexcept {
         return PySequence_Fast_ITEMS(this->ptr());
     }
 
     /* Directly access an item without bounds checking or constructing a proxy. */
-    inline value_type GET_ITEM(Py_ssize_t index) const {
+    value_type GET_ITEM(Py_ssize_t index) const {
         return reinterpret_borrow<value_type>(PyTuple_GET_ITEM(this->ptr(), index));
     }
 
     /* Directly set an item without bounds checking or constructing a proxy. */
-    inline void SET_ITEM(Py_ssize_t index, const value_type& value) {
+    void SET_ITEM(Py_ssize_t index, const value_type& value) {
         PyObject* prev = PyTuple_GET_ITEM(this->ptr(), index);
         PyTuple_SET_ITEM(this->ptr(), index, Py_XNewRef(value.ptr()));
         Py_XDECREF(prev);
@@ -578,7 +586,7 @@ public:
 
     /* Equivalent to Python `tuple.count(value)`, but also takes optional start/stop
     indices similar to `tuple.index()`. */
-    inline size_t count(
+    size_t count(
         const value_type& value,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -604,7 +612,7 @@ public:
     }
 
     /* Equivalent to Python `tuple.index(value[, start[, stop]])`. */
-    inline size_t index(
+    size_t index(
         const value_type& value,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -633,21 +641,21 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    inline friend Tuple operator+(
+    friend Tuple operator+(
         const Tuple& self,
         const std::initializer_list<value_type>& items
     ) {
         return self.concat(items);
     }
 
-    inline friend Tuple operator+(
+    friend Tuple operator+(
         const std::initializer_list<value_type>& items,
         const Tuple& self
     ) {
         return self.concat(items);
     }
 
-    inline friend Tuple& operator+=(
+    friend Tuple& operator+=(
         Tuple& self,
         const std::initializer_list<value_type>& items
     ) {
@@ -657,7 +665,7 @@ public:
 
 protected:
 
-    inline Tuple concat(const std::initializer_list<value_type>& items) const {
+    Tuple concat(const std::initializer_list<value_type>& items) const {
         Py_ssize_t length = PyTuple_GET_SIZE(this->ptr());
         PyObject* result = PyTuple_New(length + items.size());
         if (result == nullptr) {

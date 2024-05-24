@@ -158,6 +158,9 @@ object associated with instances of that class. */
 inline const Type Type::type {};
 inline const Type Object::type = reinterpret_borrow<Type>((PyObject*) &PyBaseObject_Type);
 inline const Type impl::FunctionTag::type = reinterpret_borrow<Type>((PyObject*) &PyFunction_Type);
+// inline const Type ClassMethod::type = reinterpret_borrow<Type>((PyObject*) &PyClassMethodDescr_Type);
+// inline const Type StaticMethod::type = reinterpret_borrow<Type>((PyObject*) &PyStaticMethod_Type);
+// inline const Type Property::type = reinterpret_borrow<Type>((PyObject*) &PyProperty_Type);
 inline const Type NoneType::type = reinterpret_borrow<Type>((PyObject*) Py_TYPE(Py_None));
 inline const Type NotImplementedType::type = reinterpret_borrow<Type>((PyObject*) Py_TYPE(Py_NotImplemented));
 inline const Type EllipsisType::type = reinterpret_borrow<Type>((PyObject*) &PyEllipsis_Type);
@@ -182,9 +185,6 @@ inline const Type Bytes::type = reinterpret_borrow<Type>((PyObject*) &PyBytes_Ty
 inline const Type ByteArray::type = reinterpret_borrow<Type>((PyObject*) &PyByteArray_Type);
 inline const Type Code::type = reinterpret_borrow<Type>((PyObject*) &PyCode_Type);
 inline const Type Frame::type = reinterpret_borrow<Type>((PyObject*) &PyFrame_Type);
-inline const Type ClassMethod::type = reinterpret_borrow<Type>((PyObject*) &PyClassMethodDescr_Type);
-inline const Type StaticMethod::type = reinterpret_borrow<Type>((PyObject*) &PyStaticMethod_Type);
-inline const Type Property::type = reinterpret_borrow<Type>((PyObject*) &PyProperty_Type);
 // inline const Type Timedelta::type = [] {
 //     if (impl::DATETIME_IMPORTED) {
 //         return reinterpret_borrow<Type>(impl::PyDelta_Type->ptr());
@@ -227,7 +227,7 @@ inline const Type Property::type = reinterpret_borrow<Type>((PyObject*) &PyPrope
 ////////////////////////////////////
 
 
-inline Module Module::def_submodule(const char* name, const char* doc) {
+Module Module::def_submodule(const char* name, const char* doc) {
     const char* this_name = PyModule_GetName(m_ptr);
     if (this_name == nullptr) {
         Exception::from_python();
@@ -251,7 +251,7 @@ inline Module Module::def_submodule(const char* name, const char* doc) {
 
 
 template <typename Return, typename... Target>
-std::optional<std::string> Function_<Return(Target...)>::filename() const {
+std::optional<std::string> Function<Return(Target...)>::filename() const {
     std::optional<Code> code = this->code();
     if (code.has_value()) {
         return code->filename();
@@ -261,7 +261,7 @@ std::optional<std::string> Function_<Return(Target...)>::filename() const {
 
 
 template <typename Return, typename... Target>
-std::optional<size_t> Function_<Return(Target...)>::lineno() const {
+std::optional<size_t> Function<Return(Target...)>::lineno() const {
     std::optional<Code> code = this->code();
     if (code.has_value()) {
         return code->line_number();
@@ -271,7 +271,7 @@ std::optional<size_t> Function_<Return(Target...)>::lineno() const {
 
 
 template <typename Return, typename... Target>
-std::optional<Module> Function_<Return(Target...)>::module_() const {
+std::optional<Module> Function<Return(Target...)>::module_() const {
     PyObject* result = PyFunction_GetModule(unwrap_method());
     if (result == nullptr) {
         if (PyErr_Occurred()) {
@@ -284,7 +284,7 @@ std::optional<Module> Function_<Return(Target...)>::module_() const {
 
 
 template <typename Return, typename... Target>
-std::optional<Code> Function_<Return(Target...)>::code() const {
+std::optional<Code> Function<Return(Target...)>::code() const {
     PyObject* result = PyFunction_GetCode(unwrap_method());
     if (result == nullptr) {
         if (PyErr_Occurred()) {
@@ -297,7 +297,7 @@ std::optional<Code> Function_<Return(Target...)>::code() const {
 
 
 template <typename Return, typename... Target>
-std::optional<Dict<Str, Object>> Function_<Return(Target...)>::globals() const {
+std::optional<Dict<Str, Object>> Function<Return(Target...)>::globals() const {
     PyObject* result = PyFunction_GetGlobals(unwrap_method());
     if (result == nullptr) {
         if (PyErr_Occurred()) {
@@ -310,33 +310,33 @@ std::optional<Dict<Str, Object>> Function_<Return(Target...)>::globals() const {
 
 
 // template <typename Return, typename... Target>
-// MappingProxy<Dict<Str, Object>> Function_<Return(Target...)>::defaults() const {
+// MappingProxy<Dict<Str, Object>> Function<Return(Target...)>::defaults() const {
 
 // }
 
 
 // template <typename Return, typename... Target>
 // template <typename... Values> requires (sizeof...(Values) > 0)  // TODO: complete this
-// void Function_<Return(Target...)>::defaults(Values&&... values) {
+// void Function<Return(Target...)>::defaults(Values&&... values) {
 
 // }
 
 
 // template <typename Return, typename... Target>
-// MappingProxy<Dict<Str, Object>> Function_<Return(Target...)>::annotations() const {
+// MappingProxy<Dict<Str, Object>> Function<Return(Target...)>::annotations() const {
 
 // }
 
 
 // template <typename Return, typename... Target>
 // template <typename... Annotations> requires (sizeof...(Annotations) > 0)  // TODO: complete this
-// void Function_<Return(Target...)>::annotations(Annotations&&... values) {
+// void Function<Return(Target...)>::annotations(Annotations&&... values) {
 
 // }
 
 
 template <typename Return, typename... Target>
-std::optional<Tuple<Object>> Function_<Return(Target...)>::closure() const {
+std::optional<Tuple<Object>> Function<Return(Target...)>::closure() const {
     PyObject* result = PyFunction_GetClosure(unwrap_method());
     if (result == nullptr) {
         if (PyErr_Occurred()) {
@@ -349,7 +349,7 @@ std::optional<Tuple<Object>> Function_<Return(Target...)>::closure() const {
 
 
 template <typename Return, typename... Target>
-void Function_<Return(Target...)>::closure(std::optional<Tuple<Object>> closure) {
+void Function<Return(Target...)>::closure(std::optional<Tuple<Object>> closure) {
     PyObject* item = closure.has_value() ? closure->ptr() : Py_None;
     if (PyFunction_SetClosure(unwrap_method(), item)) {
         Exception::from_python();
@@ -358,7 +358,7 @@ void Function_<Return(Target...)>::closure(std::optional<Tuple<Object>> closure)
 
 
 template <impl::python_like T> requires (impl::str_like<T>)
-inline Int::Int(const T& str, int base) :
+Int::Int(const T& str, int base) :
     Base(PyLong_FromUnicodeObject(str.ptr(), base), stolen_t{})
 {
     if (m_ptr == nullptr) {
@@ -367,7 +367,7 @@ inline Int::Int(const T& str, int base) :
 }
 
 
-inline Float::Float(const Str& str) :
+Float::Float(const Str& str) :
     Base(PyFloat_FromString(str.ptr()), stolen_t{})
 {
     if (m_ptr == nullptr) {
@@ -376,7 +376,7 @@ inline Float::Float(const Str& str) :
 }
 
 
-inline Type::Type(
+Type::Type(
     const Str& name,
     const Tuple<Type>& bases,
     const Dict<Str, Object>& dict
@@ -398,7 +398,7 @@ inline Type::Type(
 #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
 
     /* Get the type's qualified name. */
-    inline Str Type::qualname() const {
+    Str Type::qualname() const {
         PyObject* result = PyType_GetQualName(self());
         if (result == nullptr) {
             Exception::from_python();
@@ -412,7 +412,7 @@ inline Type::Type(
 template <typename Val>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Val>)
-inline void List<Val>::extend(const T& items) {
+void List<Val>::extend(const T& items) {
     if constexpr (impl::python_like<T>) {
         attr<"extend">()(items);
     } else {
@@ -424,25 +424,25 @@ inline void List<Val>::extend(const T& items) {
 
 
 template <typename Val>
-inline void List<Val>::remove(const Val& value) {
+void List<Val>::remove(const Val& value) {
     attr<"remove">()(value);
 }
 
 
 template <typename Val>
-inline Val List<Val>::pop(Py_ssize_t index) {
+Val List<Val>::pop(Py_ssize_t index) {
     return reinterpet_steal<Val>(attr<"pop">()(index).release());
 }
 
 
 template <typename Val>
-inline void List<Val>::sort(const Bool& reverse) {
+void List<Val>::sort(const Bool& reverse) {
     attr<"sort">()(py::arg("reverse") = reverse);
 }
 
 
 template <typename Val>
-inline void List<Val>::sort(const Function& key, const Bool& reverse) {
+void List<Val>::sort(const Function<const Val&>& key, const Bool& reverse) {
     attr<"sort">()(py::arg("key") = key, py::arg("reverse") = reverse);
 }
 
@@ -450,7 +450,7 @@ inline void List<Val>::sort(const Function& key, const Bool& reverse) {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-inline bool FrozenSet<Key>::isdisjoint(const T& other) const {
+bool FrozenSet<Key>::isdisjoint(const T& other) const {
     if constexpr (impl::python_like<T>) {
         return static_cast<bool>(attr<"isdisjoint">()(other));
     } else {
@@ -467,7 +467,7 @@ inline bool FrozenSet<Key>::isdisjoint(const T& other) const {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-inline bool Set<Key>::isdisjoint(const T& other) const {
+bool Set<Key>::isdisjoint(const T& other) const {
     if constexpr (impl::python_like<T>) {
         return static_cast<bool>(attr<"isdisjoint">()(other));
     } else {
@@ -484,7 +484,7 @@ inline bool Set<Key>::isdisjoint(const T& other) const {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-inline bool FrozenSet<Key>::issuperset(const T& other) const {
+bool FrozenSet<Key>::issuperset(const T& other) const {
     if constexpr (impl::python_like<T>) {
         return static_cast<bool>(attr<"issuperset">()(other));
     } else {
@@ -501,7 +501,7 @@ inline bool FrozenSet<Key>::issuperset(const T& other) const {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-inline bool Set<Key>::issuperset(const T& other) const {
+bool Set<Key>::issuperset(const T& other) const {
     if constexpr (impl::python_like<T>) {
         return static_cast<bool>(attr<"issuperset">()(other));
     } else {
@@ -518,7 +518,7 @@ inline bool Set<Key>::issuperset(const T& other) const {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-inline bool FrozenSet<Key>::issubset(const T& other) const {
+bool FrozenSet<Key>::issubset(const T& other) const {
     return static_cast<bool>(attr<"issubset">()(other));
 }
 
@@ -526,19 +526,19 @@ inline bool FrozenSet<Key>::issubset(const T& other) const {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-inline bool Set<Key>::issubset(const T& other) const {
+bool Set<Key>::issubset(const T& other) const {
     return static_cast<bool>(attr<"issubset">()(other));
 }
 
 
 template <typename Key>
-inline bool FrozenSet<Key>::issubset(const std::initializer_list<Key>& other) const {
+bool FrozenSet<Key>::issubset(const std::initializer_list<Key>& other) const {
     return static_cast<bool>(attr<"issubset">()(FrozenSet(other)));
 }
 
 
 template <typename Key>
-inline bool Set<Key>::issubset(const std::initializer_list<Key>& other) const {
+bool Set<Key>::issubset(const std::initializer_list<Key>& other) const {
     return static_cast<bool>(attr<"issubset">()(Set(other)));
 }
 
@@ -546,7 +546,7 @@ inline bool Set<Key>::issubset(const std::initializer_list<Key>& other) const {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-inline FrozenSet<Key> FrozenSet<Key>::union_(const Args&... others) const {
+FrozenSet<Key> FrozenSet<Key>::union_(const Args&... others) const {
     return reinterpret_steal<FrozenSet<Key>>(
         attr<"union">()(std::forward<Args>(others)...).release()
     );
@@ -556,7 +556,7 @@ inline FrozenSet<Key> FrozenSet<Key>::union_(const Args&... others) const {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-inline Set<Key> Set<Key>::union_(const Args&... others) const {
+Set<Key> Set<Key>::union_(const Args&... others) const {
     return reinterpet_steal<Set<Key>>(
         attr<"union">()(std::forward<Args>(others)...).release()
     );
@@ -566,7 +566,7 @@ inline Set<Key> Set<Key>::union_(const Args&... others) const {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-inline FrozenSet<Key> FrozenSet<Key>::intersection(const Args&... others) const {
+FrozenSet<Key> FrozenSet<Key>::intersection(const Args&... others) const {
     return reinterpret_steal<FrozenSet<Key>>(
         attr<"intersection">()(std::forward<Args>(others)...).release()
     );
@@ -576,7 +576,7 @@ inline FrozenSet<Key> FrozenSet<Key>::intersection(const Args&... others) const 
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-inline Set<Key> Set<Key>::intersection(const Args&... others) const {
+Set<Key> Set<Key>::intersection(const Args&... others) const {
     return reinterpet_steal<Set<Key>>(
         attr<"intersection">()(std::forward<Args>(others)...).release()
     );
@@ -586,7 +586,7 @@ inline Set<Key> Set<Key>::intersection(const Args&... others) const {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-inline FrozenSet<Key> FrozenSet<Key>::difference(const Args&... others) const {
+FrozenSet<Key> FrozenSet<Key>::difference(const Args&... others) const {
     return reinterpret_steal<FrozenSet<Key>>(
         attr<"difference">()(std::forward<Args>(others)...).release()
     );
@@ -596,7 +596,7 @@ inline FrozenSet<Key> FrozenSet<Key>::difference(const Args&... others) const {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-inline Set<Key> Set<Key>::difference(const Args&... others) const {
+Set<Key> Set<Key>::difference(const Args&... others) const {
     return reinterpet_steal<Set<Key>>(
         attr<"difference">()(std::forward<Args>(others)...).release()
     );
@@ -606,7 +606,7 @@ inline Set<Key> Set<Key>::difference(const Args&... others) const {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-inline FrozenSet<Key> FrozenSet<Key>::symmetric_difference(const T& other) const {
+FrozenSet<Key> FrozenSet<Key>::symmetric_difference(const T& other) const {
     return reinterpret_steal<FrozenSet<Key>>(
         attr<"symmetric_difference">()(other).release()
     );
@@ -616,7 +616,7 @@ inline FrozenSet<Key> FrozenSet<Key>::symmetric_difference(const T& other) const
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-inline Set<Key> Set<Key>::symmetric_difference(const T& other) const {
+Set<Key> Set<Key>::symmetric_difference(const T& other) const {
     return reinterpret_steal<Set<Key>>(
         attr<"symmetric_difference">()(other).release()
     );
@@ -626,7 +626,7 @@ inline Set<Key> Set<Key>::symmetric_difference(const T& other) const {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-inline void Set<Key>::update(const Args&... others) {
+void Set<Key>::update(const Args&... others) {
     attr<"update">()(std::forward<Args>(others)...);
 }
 
@@ -634,13 +634,13 @@ inline void Set<Key>::update(const Args&... others) {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-inline void Set<Key>::intersection_update(const Args&... others) {
+void Set<Key>::intersection_update(const Args&... others) {
     attr<"intersection_update">()(std::forward<Args>(others)...);
 }
 
 
 template <typename Key>
-inline void Set<Key>::intersection_update(const std::initializer_list<Key>& other) {
+void Set<Key>::intersection_update(const std::initializer_list<Key>& other) {
     attr<"intersection_update">()(Set(other));
 }
 
@@ -648,7 +648,7 @@ inline void Set<Key>::intersection_update(const std::initializer_list<Key>& othe
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-inline void Set<Key>::difference_update(const Args&... others) {
+void Set<Key>::difference_update(const Args&... others) {
     attr<"difference_update">()(std::forward<Args>(others)...);
 }
 
@@ -656,7 +656,7 @@ inline void Set<Key>::difference_update(const Args&... others) {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-inline void Set<Key>::symmetric_difference_update(const T& other) {
+void Set<Key>::symmetric_difference_update(const T& other) {
     attr<"symmetric_difference_update">()(other);
 }
 
@@ -665,7 +665,7 @@ inline void Set<Key>::symmetric_difference_update(const T& other) {
 
 
 template <typename Map>
-inline KeyView<Map>::KeyView(const Map& dict) :
+KeyView<Map>::KeyView(const Map& dict) :
     Base(dict.template attr<"keys">()().release(), stolen_t{})
 {}
 
@@ -673,87 +673,85 @@ inline KeyView<Map>::KeyView(const Map& dict) :
 template <typename Map>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, typename Map::key_type>)
-inline bool KeyView<Map>::isdisjoint(const T& other) const {
+bool KeyView<Map>::isdisjoint(const T& other) const {
     return static_cast<bool>(attr<"isdisjoint">()(other));
 }
 
 
 template <typename Map>
-inline bool KeyView<Map>::isdisjoint(
-    const std::initializer_list<typename Map::key_type>& other
-) const {
+bool KeyView<Map>::isdisjoint(const std::initializer_list<typename Map::key_type>& other) const {
     return static_cast<bool>(attr<"isdisjoint">()(Set<typename Map::key_type>(other)));
 }
 
 
 template <typename Key, typename Value>
-inline KeyView<Dict<Key, Value>> Dict<Key, Value>::keys() const {
+KeyView<Dict<Key, Value>> Dict<Key, Value>::keys() const {
     return KeyView(*this);
 }
 
 
 template <typename Map>
-inline ValueView<Map>::ValueView(const Map& dict) :
+ValueView<Map>::ValueView(const Map& dict) :
     Base(dict.template attr<"values">()().release(), stolen_t{})
 {}
 
 
 template <typename Key, typename Value>
-inline ValueView<Dict<Key, Value>> Dict<Key, Value>::values() const {
+ValueView<Dict<Key, Value>> Dict<Key, Value>::values() const {
     return ValueView(*this);
 }
 
 
 template <typename Map>
-inline ItemView<Map>::ItemView(const Map& dict) :
+ItemView<Map>::ItemView(const Map& dict) :
     Base(dict.template attr<"items">()().release(), stolen_t{})
 {}
 
 
 template <typename Key, typename Value>
-inline ItemView<Dict<Key, Value>> Dict<Key, Value>::items() const {
+ItemView<Dict<Key, Value>> Dict<Key, Value>::items() const {
     return ItemView(*this);
 }
 
 
 template <typename Key, typename Value>
-inline Value Dict<Key, Value>::popitem() {
+Value Dict<Key, Value>::popitem() {
     return reinterpret_steal<Value>(attr<"popitem">()().release());
 }
 
 
-inline Str Str::capitalize() const {
+Str Str::capitalize() const {
     return reinterpret_steal<Str>(attr<"capitalize">()().release());
 }
 
 
-inline Str Str::casefold() const {
+Str Str::casefold() const {
     return reinterpret_steal<Str>(attr<"casefold">()().release());
 }
 
 
-inline Str Str::center(const Int& width) const {
+Str Str::center(const Int& width) const {
     return reinterpret_steal<Str>(attr<"center">()(width).release());
 }
 
 
-inline Str Str::center(const Int& width, const Str& fillchar) const {
+Str Str::center(const Int& width, const Str& fillchar) const {
     return reinterpret_steal<Str>(attr<"center">()(width, fillchar).release());
 }
 
 
-inline Bytes Str::encode(const Str& encoding, const Str& errors) const {
+Bytes Str::encode(const Str& encoding, const Str& errors) const {
     return reinterpret_steal<Bytes>(attr<"encode">()(encoding, errors).release());
 }
 
 
-inline Str Str::expandtabs(const Int& tabsize) const {
+Str Str::expandtabs(const Int& tabsize) const {
     return reinterpret_steal<Str>(attr<"expandtabs">()(tabsize).release());
 }
 
 
 template <typename... Args>
-inline Str Str::format(Args&&... args) const {
+Str Str::format(Args&&... args) const {
     return reinterpret_steal<Str>(
         attr<"format">()(std::forward<Args>(args)...).release()
     );
@@ -761,203 +759,205 @@ inline Str Str::format(Args&&... args) const {
 
 
 template <impl::dict_like T>
-inline Str Str::format_map(const T& mapping) const {
+Str Str::format_map(const T& mapping) const {
     return reinterpret_steal<Str>(attr<"format_map">()(mapping).release());
 }
 
 
-inline bool Str::isalnum() const {
+bool Str::isalnum() const {
     return static_cast<bool>(attr<"isalnum">()());
 }
 
 
-inline bool Str::isalpha() const {
+bool Str::isalpha() const {
     return static_cast<bool>(attr<"isalpha">()());
 }
 
 
-inline bool Str::isascii() const {
+bool Str::isascii() const {
     return static_cast<bool>(attr<"isascii">()());
 }
 
 
-inline bool Str::isdecimal() const {
+bool Str::isdecimal() const {
     return static_cast<bool>(attr<"isdecimal">()());
 }
 
 
-inline bool Str::isdigit() const {
+bool Str::isdigit() const {
     return static_cast<bool>(attr<"isdigit">()());
 }
 
 
-inline bool Str::isidentifier() const {
+bool Str::isidentifier() const {
     return static_cast<bool>(attr<"isidentifier">()());
 }
 
 
-inline bool Str::islower() const {
+bool Str::islower() const {
     return static_cast<bool>(attr<"islower">()());
 }
 
 
-inline bool Str::isnumeric() const {
+bool Str::isnumeric() const {
     return static_cast<bool>(attr<"isnumeric">()());
 }
 
 
-inline bool Str::isprintable() const {
+bool Str::isprintable() const {
     return static_cast<bool>(attr<"isprintable">()());
 }
 
 
-inline bool Str::isspace() const {
+bool Str::isspace() const {
     return static_cast<bool>(attr<"isspace">()());
 }
 
 
-inline bool Str::istitle() const {
+bool Str::istitle() const {
     return static_cast<bool>(attr<"istitle">()());
 }
 
 
-inline bool Str::isupper() const {
+bool Str::isupper() const {
     return static_cast<bool>(attr<"isupper">()());
 }
 
 
-inline Str Str::ljust(const Int& width) const {
+Str Str::ljust(const Int& width) const {
     return reinterpret_steal<Str>(attr<"ljust">()(width).release());
 }
 
 
-inline Str Str::ljust(const Int& width, const Str& fillchar) const {
+Str Str::ljust(const Int& width, const Str& fillchar) const {
     return reinterpret_steal<Str>(attr<"ljust">()(width, fillchar).release());
 }
 
 
-inline Str Str::lower() const {
+Str Str::lower() const {
     return reinterpret_steal<Str>(attr<"lower">()().release());
 }
 
 
-inline Str Str::lstrip() const {
+Str Str::lstrip() const {
     return reinterpret_steal<Str>(attr<"lstrip">()().release());
 }
 
 
-inline Str Str::lstrip(const Str& chars) const {
+Str Str::lstrip(const Str& chars) const {
     return reinterpret_steal<Str>(attr<"lstrip">()(chars).release());
 }
 
 
-inline Dict<> Str::maketrans(const Object& x) {
+Dict<> Str::maketrans(const Object& x) {
     return reinterpret_steal<Dict<>>(
         type.template attr<"maketrans">()(x).release()
     );
 }
 
 
-inline Dict<> Str::maketrans(const Object& x, const Object& y) {
+Dict<> Str::maketrans(const Object& x, const Object& y) {
     return reinterpret_steal<Dict<>>(
         type.template attr<"maketrans">()(x, y).release()
     );
 }
 
 
-inline Dict<> Str::maketrans(const Object& x, const Object& y, const Object& z) {
+Dict<> Str::maketrans(const Object& x, const Object& y, const Object& z) {
     return reinterpret_steal<Dict<>>(
         type.template attr<"maketrans">()(x, y, z).release()
     );
 }
 
 
-inline Tuple<Str> Str::partition(const Str& sep) const {
+Tuple<Str> Str::partition(const Str& sep) const {
     return reinterpret_steal<Tuple<Str>>(attr<"partition">()(sep).release());
 }
 
 
-inline Str Str::removeprefix(const Str& prefix) const {
+Str Str::removeprefix(const Str& prefix) const {
     return reinterpret_steal<Str>(attr<"removeprefix">()(prefix).release());
 }
 
 
-inline Str Str::removesuffix(const Str& suffix) const {
+Str Str::removesuffix(const Str& suffix) const {
     return reinterpret_steal<Str>(attr<"removesuffix">()(suffix).release());
 }
 
 
-inline Str Str::rjust(const Int& width) const {
+Str Str::rjust(const Int& width) const {
     return reinterpret_steal<Str>(attr<"rjust">()(width).release());
 }
 
 
-inline Str Str::rjust(const Int& width, const Str& fillchar) const {
+Str Str::rjust(const Int& width, const Str& fillchar) const {
     return reinterpret_steal<Str>(attr<"rjust">()(width, fillchar).release());
 }
 
 
-inline Tuple<Str> Str::rpartition(const Str& sep) const {
+Tuple<Str> Str::rpartition(const Str& sep) const {
     return reinterpret_steal<Tuple<Str>>(attr<"rpartition">()(sep).release());
 }
 
 
-inline List<Str> Str::rsplit() const {
+List<Str> Str::rsplit() const {
     return reinterpret_steal<List<Str>>(attr<"rsplit">()().release());
 }
 
 
-inline List<Str> Str::rsplit(const Str& sep, const Int& maxsplit) const {
+List<Str> Str::rsplit(const Str& sep, const Int& maxsplit) const {
     return reinterpret_steal<List<Str>>(attr<"rsplit">()(sep, maxsplit).release());
 }
 
 
-inline Str Str::rstrip() const {
+Str Str::rstrip() const {
     return reinterpret_steal<Str>(attr<"rstrip">()().release());
 }
 
 
-inline Str Str::rstrip(const Str& chars) const {
+Str Str::rstrip(const Str& chars) const {
     return reinterpret_steal<Str>(attr<"rstrip">()(chars).release());
 }
 
 
-inline Str Str::strip() const {
+Str Str::strip() const {
     return reinterpret_steal<Str>(attr<"strip">()().release());
 }
 
 
-inline Str Str::strip(const Str& chars) const {
+Str Str::strip(const Str& chars) const {
     return reinterpret_steal<Str>(attr<"strip">()(chars).release());
 }
 
 
-inline Str Str::swapcase() const {
+Str Str::swapcase() const {
     return reinterpret_steal<Str>(attr<"swapcase">()().release());
 }
 
 
-inline Str Str::title() const {
+Str Str::title() const {
     return reinterpret_steal<Str>(attr<"title">()().release());
 }
 
 
-inline Str Str::translate(const Object& table) const {
-    return reinterpret_steal<Str>(attr<"translate">()(table).release());
+template <typename... Args>
+    requires (__getattr__<Str, "translate">::Return::invocable<Args...>)
+auto Str::translate(Args&&... args) const {
+    return impl::call_method<"translate">(*this, std::forward<Args>(args)...);
 }
 
 
-inline Str Str::upper() const {
+Str Str::upper() const {
     return reinterpret_steal<Str>(attr<"upper">()().release());
 }
 
 
-inline Str Str::zfill(const Int& width) const {
+Str Str::zfill(const Int& width) const {
     return reinterpret_steal<Str>(attr<"zfill">()(width).release());
 }
 
 
-inline Bytes Bytes::fromhex(const Str& string) {
+Bytes Bytes::fromhex(const Str& string) {
     return reinterpret_steal<Bytes>(
         type.template attr<"fromhex">()(string).release()
     );
@@ -965,21 +965,21 @@ inline Bytes Bytes::fromhex(const Str& string) {
 
 
 template <typename Derived>
-inline Dict<> impl::IBytes<Derived>::maketrans(const Derived& from, const Derived& to) {
+Dict<> impl::IBytes<Derived>::maketrans(const Derived& from, const Derived& to) {
     return reinterpret_steal<Dict>(
         type.template attr<"maketrans">()(from, to).release()
     );
 }
 
 
-inline ByteArray ByteArray::fromhex(const Str& string) {
+ByteArray ByteArray::fromhex(const Str& string) {
     return reinterpret_steal<ByteArray>(
         type.template attr<"fromhex">()(string).release()
     );
 }
 
 
-inline Bytes Code::bytecode() const {
+Bytes Code::bytecode() const {
     return attr<"co_code">();
 }
 
@@ -1094,7 +1094,7 @@ namespace impl {
 
         /* Implicitly convert the tag to a constexpr bool. */
         template <typename T = Func> requires (cpp_like<T>)
-        inline constexpr operator bool() const {
+        constexpr operator bool() const {
             return std::is_invocable_v<Func, Args...>;
         }
 
@@ -1185,13 +1185,13 @@ namespace impl {
 
         /* Implicitly convert the tag to a constexpr bool. */
         template <typename T = Func> requires (cpp_like<T>)
-        inline constexpr operator bool() const {
+        constexpr operator bool() const {
             return is_callable_any<Func>;
         }
 
         /* Implicitly convert the tag to a runtime bool. */
         template <typename T = Func> requires (python_like<T>)
-        inline operator bool() const {
+        operator bool() const {
             return PyCallable_Check(this->func.ptr());
         }
 
