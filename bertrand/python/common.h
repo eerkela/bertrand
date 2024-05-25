@@ -469,6 +469,39 @@ public:
     ////    PYBIND11 INTERFACE    ////
     //////////////////////////////////
 
+    // TODO: this can bind a py::Function instead of a pybind11::cpp_function
+    // -> All of the relevant information can be inferred directly from the function
+    // signature using inline annotations.  The docstring can be given immediately after
+    // the function name, like so:
+
+    //  m.def(
+    //      "add",
+    //      R"(
+    //          Adds two numbers.
+    //          
+    //          Parameters
+    //          ----------
+    //          a : int
+    //              The first number.
+    //          b : int
+    //              The second number.
+    //
+    //          Returns
+    //          -------
+    //          int
+    //              The sum of the two numbers.
+    //      )",
+    //      [](py::Arg<"a", int> a, py::Arg<"b", int>::opt b) {
+    //          return a.value + b.value;
+    //      },
+    //      py::arg_<"b"> = 2
+    //  );
+
+    // TODO: there may be no need to have a special case for overloading, either.  This
+    // would just be handled automatically by the modular descriptor objects.  If the
+    // same method is defined multiple times, the first conflict would convert the
+    // descriptor into an overload set, and subsequent conflicts would add to that set.
+
     /* Equivalent to pybind11::module_::def(). */
     template <typename Func, typename... Extra>
     Module& def(const char* name_, Func&& f, const Extra&... extra) {
@@ -540,10 +573,22 @@ Module import() {
 /* A replacement for PYBIND11_MODULE that reinterprets the resulting module as a
 py::Module object. */
 #define BERTRAND_MODULE(name, variable) \
-    PYBIND11_MODULE(name, BERTRAND_CONCAT_PAIR(variable, __LINE__)) \
-    auto variable = bertrand::py::reinterpret_steal<bertrand::py::Module>( \
-        BERTRAND_CONCAT_PAIR(variable, __LINE__).release() \
-    );
+    static ::pybind11::module_::module_def PYBIND11_CONCAT(pybind11_module_def_, name)            \
+        PYBIND11_MAYBE_UNUSED;                                                                    \
+    PYBIND11_MAYBE_UNUSED                                                                         \
+    static void PYBIND11_CONCAT(pybind11_init_, name)(::bertrand::py::Module&);                   \
+    PYBIND11_PLUGIN_IMPL(name) {                                                                  \
+        PYBIND11_CHECK_PYTHON_VERSION                                                             \
+        PYBIND11_ENSURE_INTERNALS_READY                                                           \
+        ::bertrand::py::Module m = ::pybind11::module_::create_extension_module(                  \
+            PYBIND11_TOSTRING(name), nullptr, &PYBIND11_CONCAT(pybind11_module_def_, name));      \
+        try {                                                                                     \
+            PYBIND11_CONCAT(pybind11_init_, name)(m);                                             \
+            return m.ptr();                                                                       \
+        }                                                                                         \
+        PYBIND11_CATCH_INIT_EXCEPTIONS                                                            \
+    }                                                                                             \
+    void PYBIND11_CONCAT(pybind11_init_, name)(::bertrand::py::Module& variable)
 
 
 ////////////////////////////////////

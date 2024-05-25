@@ -279,26 +279,26 @@ public:
     Attr(Attr&& other) : Base(std::move(other)), obj(std::move(other.obj)) {}
 
     /* pybind11's attribute accessors only perform the lookup when the accessor is
-        * converted to a value, which we hook to provide string type safety.  In this
-        * case, the accessor is treated like a generic object, and will forward all
-        * conversions to py::Object.  This allows us to write code like this:
-        *
-        *      py::Object obj = ...;
-        *      py::Int i = obj.attr<"some_int">();  // runtime type check
-        *
-        * But not like this:
-        *
-        *      py::Str s = obj.attr<"some_int">();  // runtime error, some_int is not a string
-        *
-        * Unfortunately, it is not possible to promote these errors to compile time,
-        * since Python attributes are inherently dynamic and can't be known in
-        * advance.  This is the best we can do without creating a custom type and
-        * strictly enforcing attribute types at the C++ level.  If this cannot be
-        * done, then the only way to avoid extra runtime overhead is to use
-        * reinterpret_steal to bypass the type check, which can be dangerous.
-        *
-        *      py::Int i = reinterpret_steal<py::Int>(obj.attr<"some_int">().release());
-        */
+     * converted to a value, which we hook to provide string type safety.  In this
+     * case, the accessor is treated like a generic object, and will forward all
+     * conversions to py::Object.  This allows us to write code like this:
+     *
+     *      py::Object obj = ...;
+     *      py::Int i = obj.attr<"some_int">();  // runtime type check
+     *
+     * But not like this:
+     *
+     *      py::Str s = obj.attr<"some_int">();  // runtime error, some_int is not a string
+     *
+     * Unfortunately, it is not possible to promote these errors to compile time,
+     * since Python attributes are inherently dynamic and can't be known in
+     * advance.  This is the best we can do without creating a custom type and
+     * strictly enforcing attribute types at the C++ level.  If this cannot be
+     * done, then the only way to avoid extra runtime overhead is to use
+     * reinterpret_steal to bypass the type check, which can be dangerous.
+     *
+     *      py::Int i = reinterpret_steal<py::Int>(obj.attr<"some_int">().release());
+     */
 
     Wrapped& value() {
         if (!Base::initialized) {
@@ -315,13 +315,13 @@ public:
     }
 
     /* Similarly, assigning to a pybind11 wrapper corresponds to a Python
-        * __setattr__ call.  Due to the same restrictions as above, we can't enforce
-        * strict typing here, but we can at least make the syntax more consistent and
-        * intuitive in mixed Python/C++ code.
-        *
-        *      py::Object obj = ...;
-        *      obj.attr<"some_int">() = 5;  // valid: translates to Python.
-        */
+     * __setattr__ call.  Due to the same restrictions as above, we can't enforce
+     * strict typing here, but we can at least make the syntax more consistent and
+     * intuitive in mixed Python/C++ code.
+     *
+     *      py::Object obj = ...;
+     *      obj.attr<"some_int">() = 5;  // valid: translates to Python.
+     */
 
     template <typename T> requires (__setattr__<Obj, name, std::remove_cvref_t<T>>::enable)
     Attr& operator=(T&& value) {
@@ -338,53 +338,20 @@ public:
             new (Base::buffer) Wrapped(std::forward<T>(value));
             Base::initialized = true;
             PyObject* value_ptr = reinterpret_cast<Wrapped&>(Base::buffer).ptr();
-
-            // TODO: revisit this with the updated py::Function wrapper and
-            // descriptor objects
-
-            // manually trigger the descriptor protocol for py::Function objects
-            if constexpr (std::derived_from<std::decay_t<T>, impl::FunctionTag>) {
-                if constexpr (std::derived_from<Obj, Type>) {
-                    PyObject* descr = PyInstanceMethod_New(value_ptr);
-                    if (descr == nullptr) {
-                        Exception::from_python();
-                    }
-                    if (PyObject_SetAttr(obj.ptr(), TemplateString<name>::ptr, descr)) {
-                        Py_DECREF(descr);
-                        Exception::from_python();
-                    }
-                    Py_DECREF(descr);
-
-                // if assigning to an object, convert to PyMethod
-                } else {
-                    PyObject* descr = PyMethod_New(value_ptr, obj.ptr());
-                    if (descr == nullptr) {
-                        Exception::from_python();
-                    }
-                    if (PyObject_SetAttr(obj.ptr(), TemplateString<name>::ptr, descr)) {
-                        Py_DECREF(descr);
-                        Exception::from_python();
-                    }
-                    Py_DECREF(descr);
-                }
-
-            // otherwise, just set the attribute normally
-            } else {
-                if (PyObject_SetAttr(obj.ptr(), TemplateString<name>::ptr, value_ptr)) {
-                    Exception::from_python();
-                }
+            if (PyObject_SetAttr(obj.ptr(), TemplateString<name>::ptr, value_ptr)) {
+                Exception::from_python();
             }
         }
         return *this;
     }
 
     /* C++'s delete operator does not directly correspond to Python's `del`
-        * statement, so we can't piggyback off it here.  Instead, we offer a separate
-        * `.del()` method that behaves the same way.
-        *
-        *      py::Object obj = ...;
-        *      obj.attr<"some_int">().del();  // Equivalent to Python `del obj.some_int`
-        */
+     * statement, so we can't piggyback off it here.  Instead, we offer a separate
+     * `.del()` method that behaves the same way.
+     *
+     *      py::Object obj = ...;
+     *      obj.attr<"some_int">().del();  // Equivalent to Python `del obj.some_int`
+     */
 
     template <typename T = Obj> requires (__delattr__<T, name>::enable) 
     void del() {
@@ -550,24 +517,24 @@ public:
     Item(Item&& other) : Base(std::move(other)), policy(std::move(other.policy)) {}
 
     /* pybind11's item accessors only perform the lookup when the accessor is
-        * converted to a value, which we can hook to provide strong type safety.  In
-        * this case, the accessor is only convertible to the return type specified by
-        * __getitem__, and forwards all other conversions to that type specifically.
-        * This allows us to write code like this:
-        *
-        *      template <>
-        *      struct impl::__getitem__<List, Slice> : impl::Returns<List> {};
-        *
-        *      py::List list = {1, 2, 3, 4};
-        *      py::List slice = list[{1, 3}];
-        *
-        *      void foo(const std::vector<int>& vec) {}
-        *      foo(list[{1, 3}]);  // List is implicitly convertible to vector
-        *
-        * But not like this:
-        *
-        *      py::Int item = list[{1, 3}];  // compile error, List is not convertible to Int
-        */
+     * converted to a value, which we can hook to provide strong type safety.  In
+     * this case, the accessor is only convertible to the return type specified by
+     * __getitem__, and forwards all other conversions to that type specifically.
+     * This allows us to write code like this:
+     *
+     *      template <>
+     *      struct impl::__getitem__<List, Slice> : impl::Returns<List> {};
+     *
+     *      py::List list = {1, 2, 3, 4};
+     *      py::List slice = list[{1, 3}];
+     *
+     *      void foo(const std::vector<int>& vec) {}
+     *      foo(list[{1, 3}]);  // List is implicitly convertible to vector
+     *
+     * But not like this:
+     *
+     *      py::Int item = list[{1, 3}];  // compile error, List is not convertible to Int
+     */
 
     Wrapped& value() {
         if (!Base::initialized) {
@@ -586,22 +553,22 @@ public:
     }
 
     /* Similarly, assigning to a pybind11 wrapper corresponds to a Python
-        * __setitem__ call, and we can carry strong type safety here as well.  By
-        * specializing __setitem__ for the accessor's key type, we can constrain the
-        * types that can be assigned to the container, allowing us to enforce
-        * compile-time type safety.  We can thus write code like this:
-        *
-        *      template <impl::list_like Value>
-        *      struct impl::__setitem__<List, Slice, Value> : impl::Returns<void> {};
-        *
-        *      py::List list = {1, 2, 3, 4};
-        *      list[{1, 3}] = py::List{5, 6};
-        *      list[{1, 3}] = std::vector<int>{7, 8};
-        *
-        * But not like this:
-        *
-        *      list[{1, 3}] = 5;  // compile error, int is not list-like
-        */
+     * __setitem__ call, and we can carry strong type safety here as well.  By
+     * specializing __setitem__ for the accessor's key type, we can constrain the
+     * types that can be assigned to the container, allowing us to enforce
+     * compile-time type safety.  We can thus write code like this:
+     *
+     *      template <impl::list_like Value>
+     *      struct impl::__setitem__<List, Slice, Value> : impl::Returns<void> {};
+     *
+     *      py::List list = {1, 2, 3, 4};
+     *      list[{1, 3}] = py::List{5, 6};
+     *      list[{1, 3}] = std::vector<int>{7, 8};
+     *
+     * But not like this:
+     *
+     *      list[{1, 3}] = 5;  // compile error, int is not list-like
+     */
 
     template <typename T> requires (__setitem__<Obj, Key, std::remove_cvref_t<T>>::enable)
     Item& operator=(T&& value) {
@@ -623,23 +590,23 @@ public:
     }
 
     /* C++'s delete operator does not directly correspond to Python's `del`
-        * statement, so we can't piggyback off it here.  Instead, we offer a separate
-        * `.del()` method that behaves the same way and is only enabled if the
-        * __delitem__ struct is specialized for the accessor's key type.
-        *
-        *      template <impl::int_like T>
-        *      struct impl::__delitem__<List, T> : impl::Returns<void> {};
-        *      template <>
-        *      struct impl::__delitem__<List, Slice> : impl::Returns<void> {};
-        *
-        *      py::List list = {1, 2, 3, 4};
-        *      list1[0].del();  // valid, single items can be deleted
-        *      list[{0, 2}].del();  // valid, slices can be deleted
-        *
-        * If __delitem__ is not specialized for a given key type, the `.del()` method
-        * will result in a compile error, giving full control over the types that can
-        * be deleted from the container.
-        */
+     * statement, so we can't piggyback off it here.  Instead, we offer a separate
+     * `.del()` method that behaves the same way and is only enabled if the
+     * __delitem__ struct is specialized for the accessor's key type.
+     *
+     *      template <impl::int_like T>
+     *      struct impl::__delitem__<List, T> : impl::Returns<void> {};
+     *      template <>
+     *      struct impl::__delitem__<List, Slice> : impl::Returns<void> {};
+     *
+     *      py::List list = {1, 2, 3, 4};
+     *      list1[0].del();  // valid, single items can be deleted
+     *      list[{0, 2}].del();  // valid, slices can be deleted
+     *
+     * If __delitem__ is not specialized for a given key type, the `.del()` method
+     * will result in a compile error, giving full control over the types that can
+     * be deleted from the container.
+     */
 
     template <typename T = Obj> requires (__delitem__<T, Key>::enable)
     void del() {

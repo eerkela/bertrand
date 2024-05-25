@@ -510,18 +510,6 @@ public:
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    /* Equivalent to Python `str.capitalize()`. */
-    Str capitalize() const;
-
-    /* Equivalent to Python `str.casefold()`. */
-    Str casefold() const;
-
-    /* Equivalent to Python `str.center(width)`. */
-    Str center(const Int& width) const;
-
-    /* Equivalent to Python `str.center(width, fillchar)`. */
-    Str center(const Int& width, const Str& fillchar) const;
-
     /* Equivalent to Python `str.copy()`. */
     Str copy() const {
         PyObject* result = PyUnicode_New(size(), max_char());
@@ -559,12 +547,6 @@ public:
         return static_cast<size_t>(result);
     }
 
-    /* Equivalent to Python `str.encode(encoding)`. */
-    Bytes encode(
-        const Str& encoding = "utf-8",
-        const Str& errors = "strict"
-    ) const;  // defined in bytes.h
-
     /* Equivalent to Python `str.endswith(suffix[, start[, end]])`. */
     bool endswith(
         const Str& suffix,
@@ -583,9 +565,6 @@ public:
         }
         return result;
     }
-
-    /* Equivalent to Python `str.expandtabs()`. */
-    Str expandtabs(const Int& tabsize = 8) const;
 
     /* Equivalent to Python `str.find(sub[, start[, stop]])`. */
     Py_ssize_t find(
@@ -611,14 +590,6 @@ public:
     ) const {
         return PyUnicode_FindChar(this->ptr(), ch, start, stop, 1);
     }
-
-    /* Equivalent to Python `str.format(*args, **kwargs)`. */
-    template <typename... Args>
-    Str format(Args&&... args) const;
-
-    /* Equivalent to Python `str.format_map(mapping)`. */
-    template <impl::dict_like T>
-    Str format_map(const T& mapping) const;
 
     /* Equivalent to Python `str.index(sub[, start[, end]])`. */
     Py_ssize_t index(
@@ -659,42 +630,6 @@ public:
         return result;
     }
 
-    /* Equivalent to Python `str.isalnum()`. */
-    bool isalnum() const;
-
-    /* Equivalent to Python `str.isalpha()`. */
-    bool isalpha() const;
-
-    /* Equivalent to Python `str.isascii()`. */
-    bool isascii() const;
-
-    /* Equivalent to Python `str.isdecimal()`. */
-    bool isdecimal() const;
-
-    /* Equivalent to Python `str.isdigit()`. */
-    bool isdigit() const;
-
-    /* Equivalent to Python `str.isidentifier()`. */
-    bool isidentifier() const;
-
-    /* Equivalent to Python `str.islower()`. */
-    bool islower() const;
-
-    /* Equivalent to Python `str.isnumeric()`. */
-    bool isnumeric() const;
-
-    /* Equivalent to Python `str.isprintable()`. */
-    bool isprintable() const;
-
-    /* Equivalent to Python `str.isspace()`. */
-    bool isspace() const;
-
-    /* Equivalent to Python `str.istitle()`. */
-    bool istitle() const;
-
-    /* Equivalent to Python `str.isupper()`. */
-    bool isupper() const;
-
     /* Equivalent of Python `str.join(iterable)`. */
     template <impl::is_iterable T>
     Str join(const T& iterable) const {
@@ -713,39 +648,6 @@ public:
     Str join(const std::initializer_list<Str>& iterable) const {
         return join(py::List(iterable));
     }
-
-    /* Equivalent to Python `str.ljust(width)`. */
-    Str ljust(const Int& width) const;
-
-    /* Equivalent to Python `str.ljust(width, fillchar)`. */
-    Str ljust(const Int& width, const Str& fillchar) const;
-
-    /* Equivalent to Python `str.lower()`. */
-    Str lower() const;
-
-    /* Equivalent to Python `str.lstrip()`. */
-    Str lstrip() const;
-
-    /* Equivalent to Python `str.lstrip(chars)`. */
-    Str lstrip(const Str& chars) const;
-
-    /* Equivalent to Python (static) `str.maketrans(x)`. */
-    static Dict<> maketrans(const Object& x);
-
-    /* Equivalent to Python (static) `str.maketrans(x, y)`. */
-    static Dict<> maketrans(const Object& x, const Object& y);
-
-    /* Equivalent to Python (static) `str.maketrans(x, y, z)`. */
-    static Dict<> maketrans(const Object& x, const Object& y, const Object& z);
-
-    /* Equivalent to Python `str.partition(sep)`. */
-    Tuple<Str> partition(const Str& sep) const;
-
-    /* Equivalent to Python `str.removeprefix(prefix)`. */
-    Str removeprefix(const Str& prefix) const;
-
-    /* Equivalent to Python `str.removesuffix(suffix)`. */
-    Str removesuffix(const Str& suffix) const;
 
     /* Equivalent to Python `str.replace(old, new, count)`. */
     Str replace(const Str& sub, const Str& repl, Py_ssize_t maxcount = -1) const {
@@ -825,27 +727,6 @@ public:
         return result;
     }
 
-    /* Equivalent to Python `str.rjust(width)`. */
-    Str rjust(const Int& width) const;
-
-    /* Equivalent to Python `str.rjust(width, fillchar)`. */
-    Str rjust(const Int& width, const Str& fillchar) const;
-
-    /* Equivalent to Python `str.rpartition(sep)`. */
-    Tuple<Str> rpartition(const Str& sep) const;
-
-    /* Equivalent to Python `str.rsplit()`. */
-    List<Str> rsplit() const;
-
-    /* Equivalent to Python `str.rsplit(sep[, maxsplit])`. */
-    List<Str> rsplit(const Str& sep, const Int& maxsplit = -1) const;
-
-    /* Equivalent to Python `str.rstrip()`. */
-    Str rstrip() const;
-
-    /* Equivalent to Python `str.rstrip(chars)`. */
-    Str rstrip(const Str& chars) const;
-
     /* Equivalent to Python `str.split()`. */
     List<Str> split() const {
         PyObject* result = PyUnicode_Split(this->ptr(), nullptr, -1);
@@ -892,38 +773,42 @@ public:
         return result;
     }
 
-    /* Equivalent to Python `str.strip()`. */
-    Str strip() const;
-
-    /* Equivalent to Python `str.strip(chars)`. */
-    Str strip(const Str& chars) const;
-
-    /* Equivalent to Python `str.swapcase()`. */
-    Str swapcase() const;
-
-    /* Equivalent to Python `str.title()`. */
-    Str title() const;
-
-    // TODO: in order for this to work, I would need to define a helper that lists
-    // the correct function signature
-
-    // TODO: what if I define all of the API functions using an annotated signature,
-    // and then use Function<decltype(func)> for the __attr__ specializations and
-    // the dotted methods listed here.  That would provide a single source of truth
-    // for all the methods and their signatures, though.  It might also be possible
-    // to automate it in the future, since that pattern will be by far the most common
-    // when defining extension types outside of the CPython API.
-
-    /* Equivalent to Python `str.translate(table)`. */
-    template <typename... Args>
-        requires (__getattr__<Str, "translate">::Return::invocable<Args...>)
-    auto translate(Args&&... args) const;
-
-    /* Equivalent to Python `str.upper()`. */
-    Str upper() const;
-
-    /* Equivalent to Python `str.zfill(width)`. */
-    Str zfill(const Int& width) const;
+    BERTRAND_METHOD(capitalize)
+    BERTRAND_METHOD(casefold)
+    BERTRAND_METHOD(center)
+    BERTRAND_METHOD(encode)
+    BERTRAND_METHOD(expandtabs)
+    BERTRAND_METHOD(format)
+    BERTRAND_METHOD(format_map)
+    BERTRAND_METHOD(isalnum)
+    BERTRAND_METHOD(isalpha)
+    BERTRAND_METHOD(isascii)
+    BERTRAND_METHOD(isdecimal)
+    BERTRAND_METHOD(isdigit)
+    BERTRAND_METHOD(isidentifier)
+    BERTRAND_METHOD(islower)
+    BERTRAND_METHOD(isnumeric)
+    BERTRAND_METHOD(isprintable)
+    BERTRAND_METHOD(isspace)
+    BERTRAND_METHOD(istitle)
+    BERTRAND_METHOD(isupper)
+    BERTRAND_METHOD(ljust)
+    BERTRAND_METHOD(lower)
+    BERTRAND_METHOD(lstrip)
+    BERTRAND_STATIC_METHOD(Str, maketrans)
+    BERTRAND_METHOD(partition)
+    BERTRAND_METHOD(removeprefix)
+    BERTRAND_METHOD(removesuffix)
+    BERTRAND_METHOD(rjust)
+    BERTRAND_METHOD(rpartition)
+    BERTRAND_METHOD(rsplit)
+    BERTRAND_METHOD(rstrip)
+    BERTRAND_METHOD(strip)
+    BERTRAND_METHOD(swapcase)
+    BERTRAND_METHOD(title)
+    BERTRAND_METHOD(translate)
+    BERTRAND_METHOD(upper)
+    BERTRAND_METHOD(zfill)
 
 };
 

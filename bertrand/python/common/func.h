@@ -2768,29 +2768,82 @@ inline const char* Function<R(T...)>::Capsule::capsule_id = typeid(Function).nam
 
 namespace impl {
 
+    /* A concept meant to be used in conjunction with impl::call_method or
+    impl::call_static which enstures that the arguments given at the call site match
+    the definition found in __getattr__. */
+    template <typename Self, StaticStr Name, typename... Args>
+    concept invocable =
+        __getattr__<std::decay_t<Self>, Name>::enable &&
+        std::derived_from<typename __getattr__<std::decay_t<Self>, Name>::Return, FunctionTag> &&
+        __getattr__<std::decay_t<Self>, Name>::Return::template invocable<Args...>;
+
     /* A convenience function that calls a named method of a Python object using
     C++-style arguments.  Avoids the overhead of creating a temporary Function object. */
     template <StaticStr name, typename Self, typename... Args>
-        requires (
-            __getattr__<std::decay_t<Self>, name>::enable &&
-            std::derived_from<typename __getattr__<std::decay_t<Self>, name>::Return, FunctionTag> &&
-            __getattr__<std::decay_t<Self>, name>::Return::template invocable<Args...>
-        )
+        requires (invocable<std::decay_t<Self>, name, Args...>)
     inline decltype(auto) call_method(Self&& self, Args&&... args) {
         using Func = __getattr__<std::decay_t<Self>, name>::Return;
-        PyObject* meth = PyObject_GetAttr(self.ptr(), TemplateString<name>::ptr);
-        if (meth == nullptr) {
+        auto meth = reinterpret_steal<pybind11::object>(
+            PyObject_GetAttr(self.ptr(), TemplateString<name>::ptr)
+        );
+        if (meth.ptr() == nullptr) {
             Exception::from_python();
         }
         try {
-            decltype(auto) result = Func(meth)(std::forward<Args>(args)...);
-            Py_DECREF(meth);
-            return result;
+            return Func::template invoke_py<typename Func::ReturnValue>(
+                meth,
+                std::forward<Args>(args)...
+            );
         } catch (...) {
-            Py_DECREF(meth);
             throw;
         }
     }
+
+    /* A convenience function that calls a named method of a Python type object using
+    C++-style arguments.  Avoids the overhead of creating a temporary Function object. */
+    template <typename Self, StaticStr name, typename... Args>
+        requires (invocable<std::decay_t<Self>, name, Args...>)
+    inline decltype(auto) call_static(Args&&... args) {
+        using Func = __getattr__<std::decay_t<Self>, name>::Return;
+        auto meth = reinterpret_steal<pybind11::object>(
+            PyObject_GetAttr(Self::type.ptr(), TemplateString<name>::ptr)
+        );
+        if (meth.ptr() == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            return Func::template invoke_py<typename Func::ReturnValue>(
+                meth,
+                std::forward<Args>(args)...
+            );
+        } catch (...) {
+            throw;
+        }
+    }
+
+    /* A convenience macro to correctly forward an instance method of a Python object
+    using its __getattr__ function definition to specify return types and argument
+    conventions. */
+    #define BERTRAND_METHOD(name) \
+        template <typename Self, typename... Args> \
+            requires (impl::invocable<Self, BERTRAND_STRINGIFY(name), Args...>) \
+        decltype(auto) name(this Self&& self, Args&&... args) { \
+            return impl::call_method<BERTRAND_STRINGIFY(name)>( \
+                std::forward<Self>(self), std::forward<Args>(args)... \
+            ); \
+        }
+
+    /* A convenience macro for correctly forwarding a class or static method of a
+    Python object using its __getattr__ function definition to specify return types
+    and argument conventions. */
+    #define BERTRAND_STATIC_METHOD(type, name) \
+        template <typename... Args> \
+            requires (impl::invocable<type, BERTRAND_STRINGIFY(name), Args...>) \
+        decltype(auto) name(Args&&... args) { \
+            return impl::call_static<type, BERTRAND_STRINGIFY(name)>( \
+                std::forward<Args>(args)... \
+            ); \
+        }
 
 }
 

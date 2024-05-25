@@ -972,10 +972,6 @@ void run() {
 
 
 
-
-
-
-
 static const py::Function func(
     "example",
     [](
@@ -989,9 +985,8 @@ static const py::Function func(
 );
 
 
-// BERTRAND_MODULE(example, m) {
-PYBIND11_MODULE(example, m) {
-    m.doc() = "pybind11 example plugin"; // optional module docstring
-    m.attr("func") = func;
+BERTRAND_MODULE(example, m) {
+    m.attr<"__doc__">() = "bertrand example plugin";
+    m.attr<"func">() = func;
     m.def("run", &run, "A test function to demonstrate pybind11");
 }
