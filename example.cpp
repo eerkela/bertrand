@@ -989,6 +989,7 @@ static const py::Function func(
 );
 
 
+// BERTRAND_MODULE(example, m) {
 PYBIND11_MODULE(example, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring
     m.attr("func") = func;

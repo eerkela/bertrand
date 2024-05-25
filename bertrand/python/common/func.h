@@ -7,6 +7,7 @@
 
 #include "declarations.h"
 #include "except.h"
+#include "ops.h"
 #include "object.h"
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -1988,6 +1989,11 @@ public:
         }
     }
 
+    // TODO: add metadata related to the function signature, including both annotated
+    // and unannotated versions?
+
+    using ReturnType = Return;
+
     /* Type of the special tuple that holds default values for this function. */
     using Defaults = DefaultValues;
 
@@ -2094,9 +2100,17 @@ public:
     /////////////////////////
 
     /* Call an external Python function that matches the target signature using
-    Python-style arguments. */
-    template <typename... Source> requires (invocable<Source...>)
+    Python-style arguments.  The optional `R` template parameter specifies a specific
+    Python type to interpret the result of the CPython call.  It will always be
+    implicitly converted to the function's final return type.  Setting it equal to the
+    return type will avoid any extra overhead from dynamic type checks/implicit
+    conversions. */
+    template <typename R = Object, typename... Source> requires (invocable<Source...>)
     static Return invoke_py(Handle func, Source&&... args) {
+        static_assert(
+            std::derived_from<R, Object>,
+            "Interim return type must be a subclass of Object"
+        );
         return []<size_t... Is>(
             std::index_sequence<Is...>,
             const Handle& func,
@@ -2248,7 +2262,11 @@ public:
             if (result == nullptr) {
                 Exception::from_python();
             }
-            return reinterpret_steal<Object>(result);
+            if constexpr (std::is_void_v<Return>) {
+                Py_DECREF(result);
+            } else {
+                return reinterpret_steal<R>(result);
+            }
         }(
             std::make_index_sequence<sizeof...(Source)>{},
             func,
@@ -2269,28 +2287,53 @@ public:
         ) {
             using source = Signature<Source...>;
             if constexpr (!source::has_args && !source::has_kwargs) {
-                return func(
-                    Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        std::forward<Source>(args)...
-                    )...
-                );
+                if constexpr (std::is_void_v<Return>) {
+                    func(
+                        Arguments<Source...>::template cpp<Is>(
+                            defaults,
+                            std::forward<Source>(args)...
+                        )...
+                    );
+                } else {
+                    return func(
+                        Arguments<Source...>::template cpp<Is>(
+                            defaults,
+                            std::forward<Source>(args)...
+                        )...
+                    );
+                }
 
             } else if constexpr (source::has_args && !source::has_kwargs) {
                 auto var_args = get_arg<source::args_index>(std::forward<Source>(args)...);
                 auto iter = var_args.begin();
                 auto end = var_args.end();
-                return func(
-                    Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_args.size(),
-                        iter,
-                        end,
-                        std::forward<Source>(args)...
-                    )...
-                );
-                if constexpr (!target::has_args) {
-                    validate_args(iter, end);
+                if constexpr (std::is_void_v<Return>) {
+                    func(
+                        Arguments<Source...>::template cpp<Is>(
+                            defaults,
+                            var_args.size(),
+                            iter,
+                            end,
+                            std::forward<Source>(args)...
+                        )...
+                    );
+                    if constexpr (!target::has_args) {
+                        validate_args(iter, end);
+                    }
+                } else {
+                    decltype(auto) result = func(
+                        Arguments<Source...>::template cpp<Is>(
+                            defaults,
+                            var_args.size(),
+                            iter,
+                            end,
+                            std::forward<Source>(args)...
+                        )...
+                    );
+                    if constexpr (!target::has_args) {
+                        validate_args(iter, end);
+                    }
+                    return result;
                 }
 
             } else if constexpr (!source::has_args && source::has_kwargs) {
@@ -2301,13 +2344,23 @@ public:
                         var_kwargs
                     );
                 }
-                return func(
-                    Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_kwargs,
-                        std::forward<Source>(args)...
-                    )...
-                );
+                if constexpr (std::is_void_v<Return>) {
+                    func(
+                        Arguments<Source...>::template cpp<Is>(
+                            defaults,
+                            var_kwargs,
+                            std::forward<Source>(args)...
+                        )...
+                    );
+                } else {
+                    return func(
+                        Arguments<Source...>::template cpp<Is>(
+                            defaults,
+                            var_kwargs,
+                            std::forward<Source>(args)...
+                        )...
+                    );
+                }
 
             } else {
                 auto var_kwargs = get_arg<source::kwargs_index>(std::forward<Source>(args)...);
@@ -2320,18 +2373,35 @@ public:
                 auto var_args = get_arg<source::args_index>(std::forward<Source>(args)...);
                 auto iter = var_args.begin();
                 auto end = var_args.end();
-                return func(
-                    Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_args.size(),
-                        iter,
-                        end,
-                        var_kwargs,
-                        std::forward<Source>(args)...
-                    )...
-                );
-                if constexpr (!target::has_args) {
-                    validate_args(iter, end);
+                if constexpr (std::is_void_v<Return>) {
+                    func(
+                        Arguments<Source...>::template cpp<Is>(
+                            defaults,
+                            var_args.size(),
+                            iter,
+                            end,
+                            var_kwargs,
+                            std::forward<Source>(args)...
+                        )...
+                    );
+                    if constexpr (!target::has_args) {
+                        validate_args(iter, end);
+                    }
+                } else {
+                    decltype(auto) result = func(
+                        Arguments<Source...>::template cpp<Is>(
+                            defaults,
+                            var_args.size(),
+                            iter,
+                            end,
+                            var_kwargs,
+                            std::forward<Source>(args)...
+                        )...
+                    );
+                    if constexpr (!target::has_args) {
+                        validate_args(iter, end);
+                    }
+                    return result;
                 }
             }
         }(
@@ -2694,22 +2764,6 @@ Function(std::string, F, D...) -> Function<
 
 template <typename R, typename... T>
 inline const char* Function<R(T...)>::Capsule::capsule_id = typeid(Function).name();
-
-
-template <std::derived_from<impl::FunctionTag> T>
-struct __getattr__<T, "__globals__">                            : Returns<Dict<Str, Object>> {};
-template <std::derived_from<impl::FunctionTag> T>
-struct __getattr__<T, "__closure__">                            : Returns<Tuple<Object>> {};
-template <std::derived_from<impl::FunctionTag> T>
-struct __getattr__<T, "__defaults__">                           : Returns<Tuple<Object>> {};
-template <std::derived_from<impl::FunctionTag> T>
-struct __getattr__<T, "__code__">                               : Returns<Code> {};
-template <std::derived_from<impl::FunctionTag> T>
-struct __getattr__<T, "__annotations__">                        : Returns<Dict<Str, Object>> {};
-template <std::derived_from<impl::FunctionTag> T>
-struct __getattr__<T, "__kwdefaults__">                         : Returns<Dict<Str, Object>> {};
-template <std::derived_from<impl::FunctionTag> T>
-struct __getattr__<T, "__func__">                               : Returns<Function<>> {};  // TODO: template this on the current signature
 
 
 namespace impl {

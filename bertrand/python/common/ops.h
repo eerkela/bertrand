@@ -2,8 +2,8 @@
 #error "This file should not be included directly.  Please include <bertrand/common.h> instead."
 #endif
 
-#ifndef BERTRAND_PYTHON_COMMON_OPERATORS_H
-#define BERTRAND_PYTHON_COMMON_OPERATORS_H
+#ifndef BERTRAND_PYTHON_COMMON_OPS_H
+#define BERTRAND_PYTHON_COMMON_OPS_H
 
 #include "declarations.h"
 #include "except.h"
@@ -13,256 +13,16 @@ namespace bertrand {
 namespace py {
 
 
-namespace impl {
+namespace ops {
 
-    namespace ops {
+    static const pybind11::int_ one = 1;
 
-        static const pybind11::int_ one = 1;
-
-        namespace sequence {
-
-            template <typename Return, typename L, typename R>
-            struct add {
-                static Return operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                    PyObject* result = PySequence_Concat(lhs.ptr(), rhs.ptr());
-                    if (result == nullptr) {
-                        Exception::from_python();
-                    }
-                    return reinterpret_steal<Return>(result);
-                }
-            };
-
-            template <typename Return, typename L, typename R>
-            struct iadd {
-                static void operator()(as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                    PyObject* result = PySequence_InPlaceConcat(
-                        lhs.ptr(),
-                        rhs.ptr()
-                    );
-                    if (result == nullptr) {
-                        Exception::from_python();
-                    } else if (result == lhs.ptr()) {
-                        Py_DECREF(result);
-                    } else {
-                        lhs = reinterpret_steal<L>(result);
-                    }
-                }
-            };
-
-            template <typename Return, typename L, typename R>
-            struct mul {
-                static Return operator()(const L& lhs, const R& rhs);
-            };
-
-            template <typename Return, typename L, typename R>
-            struct imul {
-                static void operator()(L& lhs, Py_ssize_t rhs) {
-                    PyObject* result = PySequence_InPlaceRepeat(lhs.ptr(), rhs);
-                    if (result == nullptr) {
-                        Exception::from_python();
-                    } else if (result == lhs.ptr()) {
-                        Py_DECREF(result);
-                    } else {
-                        lhs = reinterpret_steal<L>(result);
-                    }
-                }
-            };
-
-        }
-
-        template <typename Return, typename Self, typename... Args>
-        struct call {
-            static Return operator()(const Self& self, Args&&... args) {
-                try {
-                    if constexpr (std::is_void_v<Return>) {
-                        Handle(self.ptr())(std::forward<Args>(args)...);
-                    } else {
-                        return reinterpret_steal<Return>(
-                            Handle(self.ptr())(std::forward<Args>(args)...).release()
-                        );
-                    }
-                } catch (...) {
-                    Exception::from_pybind11();
-                }
-            }
-        };
-
-        template <typename Return, typename Self, typename Key>
-        struct getitem {
-            static auto operator()(const Self& self, auto&& key);
-        };
-
-        template <typename Return, typename Self, typename Key>
-        struct contains {
-            static bool operator()(const Self& self, const as_object_t<Key>& key) {
-                int result = PySequence_Contains(self.ptr(), key.ptr());
-                if (result == -1) {
-                    Exception::from_python();
-                }
-                return result;
-            }
-        };
-
-        template <typename Return, typename Self>
-        struct len {
-            static size_t operator()(const Self& self) {
-                Py_ssize_t size = PyObject_Size(self.ptr());
-                if (size < 0) {
-                    Exception::from_python();
-                }
-                return size;
-            }
-        };
-
-        template <typename Return, typename Self>
-        struct begin {
-            static auto operator()(const Self& self);
-        };
-
-        template <typename Return, typename Self>
-        struct end {
-            static auto operator()(const Self& self);
-        };
-
-        template <typename Return, typename Self>
-        struct rbegin {
-            static auto operator()(const Self& self);
-        };
-    
-        template <typename Return, typename Self>
-        struct rend {
-            static auto operator()(const Self& self);
-        };
-
-        template <typename Self>
-        struct dereference {
-            static auto operator()(const Self& self) {
-                try {
-                    return *Handle(self.ptr());
-                } catch (...) {
-                    Exception::from_pybind11();
-                }
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct lt {
-            static bool operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_LT);
-                if (result == -1) {
-                    Exception::from_python();
-                }
-                return result;
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct le {
-            static bool operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_LE);
-                if (result == -1) {
-                    Exception::from_python();
-                }
-                return result;
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct eq {
-            static bool operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_EQ);
-                if (result == -1) {
-                    Exception::from_python();
-                }
-                return result;
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct ne {
-            static bool operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_NE);
-                if (result == -1) {
-                    Exception::from_python();
-                }
-                return result;
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct ge {
-            static bool operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_GE);
-                if (result == -1) {
-                    Exception::from_python();
-                }
-                return result;
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct gt {
-            static bool operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_GT);
-                if (result == -1) {
-                    Exception::from_python();
-                }
-                return result;
-            }
-        };
-
-        template <typename Return, typename Self>
-        struct abs {
-            static Return operator()(const as_object_t<Self>& self) {
-                PyObject* result = PyNumber_Absolute(self.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename Self>
-        struct invert {
-            static Return operator()(const as_object_t<Self>& self) {
-                PyObject* result = PyNumber_Invert(self.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename Self>
-        struct pos {
-            static Return operator()(const as_object_t<Self>& self) {
-                PyObject* result = PyNumber_Positive(self.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename Self>
-        struct increment {
-            static void operator()(as_object_t<Self>& self) {
-                PyObject* result = PyNumber_InPlaceAdd(self.ptr(), one.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                if (result == self.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    self = reinterpret_steal<Return>(result);
-                }
-            }
-        };
+    namespace sequence {
 
         template <typename Return, typename L, typename R>
         struct add {
-            static Return operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_Add(lhs.ptr(), rhs.ptr());
+            static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+                PyObject* result = PySequence_Concat(lhs.ptr(), rhs.ptr());
                 if (result == nullptr) {
                     Exception::from_python();
                 }
@@ -272,59 +32,11 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         struct iadd {
-            static void operator()(as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_InPlaceAdd(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                } else if (result == lhs.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    lhs = reinterpret_steal<L>(result);
-                }
-            }
-        };
-
-        template <typename Return, typename Self>
-        struct neg {
-            static Return operator()(const as_object_t<Self>& self) {
-                PyObject* result = PyNumber_Negative(self.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename Self>
-        struct decrement {
-            static void operator()(as_object_t<Self>& self) {
-                PyObject* result = PyNumber_InPlaceSubtract(self.ptr(), one.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                if (result == self.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    self = reinterpret_steal<Return>(result);
-                }
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct sub {
-            static Return operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_Subtract(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct isub {
-            static void operator()(as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_InPlaceAdd(lhs.ptr(), rhs.ptr());
+            static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
+                PyObject* result = PySequence_InPlaceConcat(
+                    lhs.ptr(),
+                    rhs.ptr()
+                );
                 if (result == nullptr) {
                     Exception::from_python();
                 } else if (result == lhs.ptr()) {
@@ -337,8 +49,13 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         struct mul {
-            static Return operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_Multiply(lhs.ptr(), rhs.ptr());
+            static Return operator()(const L& lhs, const R& rhs) {
+                PyObject* result;
+                if constexpr (impl::int_like<L>) {
+                    result = PySequence_Repeat(rhs.ptr(), lhs);
+                } else {
+                    result = PySequence_Repeat(lhs.ptr(), rhs);
+                }
                 if (result == nullptr) {
                     Exception::from_python();
                 }
@@ -348,282 +65,8 @@ namespace impl {
 
         template <typename Return, typename L, typename R>
         struct imul {
-            static void operator()(as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_InPlaceMultiply(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                } else if (result == lhs.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    lhs = reinterpret_steal<L>(result);
-                }
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct truediv {
-            static Return operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_TrueDivide(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct itruediv {
-            static void operator()(as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_InPlaceTrueDivide(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                } else if (result == lhs.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    lhs = reinterpret_steal<L>(result);
-                }
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct floordiv {
-            static Return operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_FloorDivide(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct ifloordiv {
-            static void operator()(as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_InPlaceFloorDivide(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                } else if (result == lhs.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    lhs = reinterpret_steal<L>(result);
-                }
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct mod {
-            static Return operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_Remainder(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct imod {
-            static void operator()(as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_InPlaceRemainder(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                } else if (result == lhs.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    lhs = reinterpret_steal<L>(result);
-                }
-            }
-        };
-
-        template <typename Return, typename Base, typename Exp>
-        struct pow {
-            static Return operator()(const as_object_t<Base>& base, const as_object_t<Exp>& exp) {
-                PyObject* result = PyNumber_Power(
-                    base.ptr(),
-                    exp.ptr(),
-                    Py_None
-                );
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename Base, typename Exp, typename Mod>
-        struct powmod {
-            static Return operator()(
-                const as_object_t<Base>& base,
-                const as_object_t<Exp>& exp,
-                const as_object_t<Mod>& mod
-            ) {
-                PyObject* result = PyNumber_Power(
-                    base.ptr(),
-                    exp.ptr(),
-                    mod.ptr()
-                );
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename Base, typename Exp>
-        struct ipow {
-            static void operator()(as_object_t<Base>& base, const as_object_t<Exp>& exp) {
-                PyObject* result = PyNumber_InPlacePower(
-                    base.ptr(),
-                    exp.ptr(),
-                    Py_None
-                );
-                if (result == nullptr) {
-                    Exception::from_python();
-                } else if (result == base.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    base = reinterpret_steal<Base>(result);
-                }
-            }
-        };
-
-        template <typename Return, typename Base, typename Exp, typename Mod>
-        struct ipowmod {
-            static void operator()(
-                as_object_t<Base>& base,
-                const as_object_t<Exp>& exp,
-                const as_object_t<Mod>& mod
-            ) {
-                PyObject* result = PyNumber_InPlacePower(
-                    base.ptr(),
-                    exp.ptr(),
-                    mod.ptr()
-                );
-                if (result == nullptr) {
-                    Exception::from_python();
-                } else if (result == base.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    base = reinterpret_steal<Base>(result);
-                }
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct lshift {
-            static Return operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_Lshift(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct ilshift {
-            static void operator()(as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_InPlaceLshift(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                } else if (result == lhs.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    lhs = reinterpret_steal<L>(result);
-                }
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct rshift {
-            static Return operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_Rshift(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct irshift {
-            static void operator()(as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_InPlaceRshift(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                } else if (result == lhs.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    lhs = reinterpret_steal<L>(result);
-                }
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct and_ {
-            static Return operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_And(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct iand {
-            static void operator()(as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_InPlaceAnd(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                } else if (result == lhs.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    lhs = reinterpret_steal<L>(result);
-                }
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct or_ {
-            static Return operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_Or(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct ior {
-            static void operator()(as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_InPlaceOr(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                } else if (result == lhs.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    lhs = reinterpret_steal<L>(result);
-                }
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct xor_ {
-            static Return operator()(const as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_Xor(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct ixor {
-            static void operator()(as_object_t<L>& lhs, const as_object_t<R>& rhs) {
-                PyObject* result = PyNumber_InPlaceXor(lhs.ptr(), rhs.ptr());
+            static void operator()(L& lhs, Py_ssize_t rhs) {
+                PyObject* result = PySequence_InPlaceRepeat(lhs.ptr(), rhs);
                 if (result == nullptr) {
                     Exception::from_python();
                 } else if (result == lhs.ptr()) {
@@ -636,14 +79,619 @@ namespace impl {
 
     }
 
-}  // namespace impl
+    template <typename Return, typename Self, typename... Args>
+    struct call {
+        static Return operator()(const Self& self, Args&&... args) {
+            try {
+                if constexpr (std::is_void_v<Return>) {
+                    Function<Return(Args...)>::template invoke_py<Return>(
+                        self.ptr(),
+                        std::forward<Args>(args)...
+                    );
+                } else {
+                    return Function<Return(Args...)>::template invoke_py<Return>(
+                        self.ptr(),
+                        std::forward<Args>(args)...
+                    );
+                }
+            } catch (...) {
+                Exception::from_pybind11();
+            }
+        }
+    };
+
+    template <typename Return, typename Self, typename Key>
+    struct getitem {
+        static auto operator()(const Self& self, auto&& key);
+    };
+
+    template <typename Return, typename Self, typename Key>
+    struct contains {
+        static bool operator()(const Self& self, const impl::as_object_t<Key>& key) {
+            int result = PySequence_Contains(self.ptr(), key.ptr());
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    };
+
+    template <typename Return, typename Self>
+    struct len {
+        static size_t operator()(const Self& self) {
+            Py_ssize_t size = PyObject_Size(self.ptr());
+            if (size < 0) {
+                Exception::from_python();
+            }
+            return size;
+        }
+    };
+
+    template <typename Return, typename Self>
+    struct begin {
+        static auto operator()(const Self& self);
+    };
+
+    template <typename Return, typename Self>
+    struct end {
+        static auto operator()(const Self& self);
+    };
+
+    template <typename Return, typename Self>
+    struct rbegin {
+        static auto operator()(const Self& self);
+    };
+
+    template <typename Return, typename Self>
+    struct rend {
+        static auto operator()(const Self& self);
+    };
+
+    // TODO: update dereference to use new unpacking architecture.  It should
+    // also be renamed to unpack.
+
+    template <typename Self>
+    struct dereference {
+        static auto operator()(const Self& self) {
+            try {
+                return *Handle(self.ptr());
+            } catch (...) {
+                Exception::from_pybind11();
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct lt {
+        static bool operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_LT);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct le {
+        static bool operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_LE);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct eq {
+        static bool operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_EQ);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct ne {
+        static bool operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_NE);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct ge {
+        static bool operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_GE);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct gt {
+        static bool operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            int result = PyObject_RichCompareBool(lhs.ptr(), rhs.ptr(), Py_GT);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    };
+
+    template <typename Return, typename Self>
+    struct abs {
+        static Return operator()(const Self& self) {
+            PyObject* result = PyNumber_Absolute(self.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename Self>
+    struct invert {
+        static Return operator()(const Self& self) {
+            PyObject* result = PyNumber_Invert(self.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename Self>
+    struct pos {
+        static Return operator()(const Self& self) {
+            PyObject* result = PyNumber_Positive(self.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename Self>
+    struct neg {
+        static Return operator()(const Self& self) {
+            PyObject* result = PyNumber_Negative(self.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename Self>
+    struct increment {
+        static void operator()(Self& self) {
+            PyObject* result = PyNumber_InPlaceAdd(self.ptr(), one.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            if (result == self.ptr()) {
+                Py_DECREF(result);
+            } else {
+                self = reinterpret_steal<Return>(result);
+            }
+        }
+    };
+
+    template <typename Return, typename Self>
+    struct decrement {
+        static void operator()(Self& self) {
+            PyObject* result = PyNumber_InPlaceSubtract(self.ptr(), one.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            if (result == self.ptr()) {
+                Py_DECREF(result);
+            } else {
+                self = reinterpret_steal<Return>(result);
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct add {
+        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_Add(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct iadd {
+        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_InPlaceAdd(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct sub {
+        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_Subtract(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct isub {
+        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_InPlaceAdd(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct mul {
+        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_Multiply(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct imul {
+        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_InPlaceMultiply(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct truediv {
+        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_TrueDivide(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct itruediv {
+        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_InPlaceTrueDivide(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct floordiv {
+        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_FloorDivide(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct ifloordiv {
+        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_InPlaceFloorDivide(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct mod {
+        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_Remainder(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct imod {
+        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_InPlaceRemainder(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+    };
+
+    template <typename Return, typename Base, typename Exp>
+    struct pow {
+        static Return operator()(const impl::as_object_t<Base>& base, const impl::as_object_t<Exp>& exp) {
+            PyObject* result = PyNumber_Power(
+                base.ptr(),
+                exp.ptr(),
+                Py_None
+            );
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename Base, typename Exp, typename Mod>
+    struct powmod {
+        static Return operator()(
+            const impl::as_object_t<Base>& base,
+            const impl::as_object_t<Exp>& exp,
+            const impl::as_object_t<Mod>& mod
+        ) {
+            PyObject* result = PyNumber_Power(
+                base.ptr(),
+                exp.ptr(),
+                mod.ptr()
+            );
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename Base, typename Exp>
+    struct ipow {
+        static void operator()(Base& base, const impl::as_object_t<Exp>& exp) {
+            PyObject* result = PyNumber_InPlacePower(
+                base.ptr(),
+                exp.ptr(),
+                Py_None
+            );
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == base.ptr()) {
+                Py_DECREF(result);
+            } else {
+                base = reinterpret_steal<Base>(result);
+            }
+        }
+    };
+
+    template <typename Return, typename Base, typename Exp, typename Mod>
+    struct ipowmod {
+        static void operator()(
+            Base& base,
+            const impl::as_object_t<Exp>& exp,
+            const impl::as_object_t<Mod>& mod
+        ) {
+            PyObject* result = PyNumber_InPlacePower(
+                base.ptr(),
+                exp.ptr(),
+                mod.ptr()
+            );
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == base.ptr()) {
+                Py_DECREF(result);
+            } else {
+                base = reinterpret_steal<Base>(result);
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct lshift {
+        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_Lshift(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct ilshift {
+        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_InPlaceLshift(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct rshift {
+        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_Rshift(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct irshift {
+        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_InPlaceRshift(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct and_ {
+        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_And(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct iand {
+        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_InPlaceAnd(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct or_ {
+        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_Or(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct ior {
+        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_InPlaceOr(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct xor_ {
+        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_Xor(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Return>(result);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+    struct ixor {
+        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = PyNumber_InPlaceXor(lhs.ptr(), rhs.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            } else if (result == lhs.ptr()) {
+                Py_DECREF(result);
+            } else {
+                lhs = reinterpret_steal<L>(result);
+            }
+        }
+    };
+
+}
 
 
 /* Convert an arbitrary C++ value to an equivalent Python object if it isn't one
 already. */
 template <typename T> requires (__as_object__<std::decay_t<T>>::enable)
-auto as_object(T&& value) -> __as_object__<std::decay_t<T>>::Return {
+[[nodiscard]] auto as_object(T&& value) -> __as_object__<std::decay_t<T>>::Return {
     return std::forward<T>(value);
+}
+
+
+/* Equivalent to Python `print(args...)`. */
+template <typename... Args>
+void print(Args&&... args) {
+    try {
+        pybind11::print(std::forward<Args>(args)...);
+    } catch (...) {
+        Exception::from_pybind11();
+    }
+}
+
+
+/* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
+represent C++ types using std::to_string or the stream insertion operator (<<).  If all
+else fails, falls back to typeid(obj).name(). */
+template <typename T>
+[[nodiscard]] std::string repr(const T& obj) {
+    if constexpr (impl::has_stream_insertion<T>) {
+        std::ostringstream stream;
+        stream << obj;
+        return stream.str();
+
+    } else if constexpr (impl::has_to_string<T>) {
+        return std::to_string(obj);
+
+    } else {
+        try {
+            return pybind11::repr(obj).template cast<std::string>();
+        } catch (...) {
+            return typeid(obj).name();
+        }
+    }
 }
 
 
@@ -651,7 +699,7 @@ auto as_object(T&& value) -> __as_object__<std::decay_t<T>>::Return {
 for the relevant Python types.  This promotes hash-not-implemented exceptions into
 compile-time equivalents. */
 template <impl::is_hashable T>
-size_t hash(const T& obj) {
+[[nodiscard]] size_t hash(const T& obj) {
     return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
 }
 
@@ -659,7 +707,7 @@ size_t hash(const T& obj) {
 /* Equivalent to Python `len(obj)`, but also accepts C++ types implementing a .size()
 method. */
 template <typename T> requires (impl::has_size<T> || std::derived_from<T, pybind11::object>)
-size_t len(const T& obj) {
+[[nodiscard]] size_t len(const T& obj) {
     try {
         if constexpr (impl::has_size<T>) {
             return std::size(obj);
@@ -676,7 +724,7 @@ size_t len(const T& obj) {
 generate Python iterators over them.  Note that requesting an iterator over an rvalue
 is not allowed, and will trigger a compiler error. */
 template <impl::is_iterable T>
-pybind11::iterator iter(T&& obj) {
+[[nodiscard]] pybind11::iterator iter(T&& obj) {
     static_assert(
         !std::is_rvalue_reference_v<T>,
         "passing a temporary container to py::iter() is unsafe"
@@ -692,7 +740,7 @@ pybind11::iterator iter(T&& obj) {
 /* Equivalent to Python `iter(obj)` except that it takes raw C++ iterators and converts
 them into a valid Python iterator object. */
 template <typename Iter, std::sentinel_for<Iter> Sentinel>
-pybind11::iterator iter(Iter&& begin, Sentinel&& end) {
+[[nodiscard]] pybind11::iterator iter(Iter&& begin, Sentinel&& end) {
     try {
         return pybind11::make_iterator(
             std::forward<Iter>(begin),
@@ -708,7 +756,7 @@ pybind11::iterator iter(Iter&& begin, Sentinel&& end) {
 and generate Python iterators over them.  Note that requesting an iterator over an
 rvalue is not allowed, and will trigger a compiler error. */
 template <impl::is_reverse_iterable T>
-pybind11::iterator reversed(T&& obj) {
+[[nodiscard]] pybind11::iterator reversed(T&& obj) {
     static_assert(
         !std::is_rvalue_reference_v<T>,
         "passing a temporary container to py::reversed() is unsafe"
@@ -730,7 +778,7 @@ pybind11::iterator reversed(T&& obj) {
 /* Equivalent to Python `reversed(obj)` except that it takes raw C++ iterators and
 converts them into a valid Python iterator object. */
 template <typename Iter, std::sentinel_for<Iter> Sentinel>
-pybind11::iterator reversed(Iter&& begin, Sentinel&& end) {
+[[nodiscard]] pybind11::iterator reversed(Iter&& begin, Sentinel&& end) {
     try {
         return pybind11::make_iterator(
             std::forward<Iter>(begin),
@@ -745,7 +793,7 @@ pybind11::iterator reversed(Iter&& begin, Sentinel&& end) {
 /* Equivalent to Python `abs(obj)` for any object that specializes the __abs__ control
 struct. */
 template <std::derived_from<Object> Self> requires (__abs__<Self>::enable)
-auto abs(const Self& self) {
+[[nodiscard]] auto abs(const Self& self) {
     using Return = __abs__<Self>::Return;
     static_assert(
         std::derived_from<Return, Object>,
@@ -756,7 +804,7 @@ auto abs(const Self& self) {
     if constexpr (impl::proxy_like<Self>) {
         return abs(self.value());
     } else {
-        return impl::ops::abs<Return, Self>::operator()(self);
+        return ops::abs<Return, Self>::operator()(self);
     }
 }
 
@@ -764,14 +812,14 @@ auto abs(const Self& self) {
 /* Equivalent to Python `abs(obj)`, except that it takes a C++ value and applies
 std::abs() for identical semantics. */
 template <impl::has_abs T> requires (!__abs__<T>::enable)
-auto abs(const T& value) {
+[[nodiscard]] auto abs(const T& value) {
     return std::abs(value);
 }
 
 
 /* Equivalent to Python `base ** exp` (exponentiation). */
 template <typename Base, typename Exp> requires (__pow__<Base, Exp>::enable)
-auto pow(const Base& base, const Exp& exp) {
+[[nodiscard]] auto pow(const Base& base, const Exp& exp) {
     using Return = typename __pow__<Base, Exp>::Return;
     static_assert(
         std::derived_from<Return, Object>,
@@ -784,7 +832,7 @@ auto pow(const Base& base, const Exp& exp) {
     } else if constexpr (impl::proxy_like<Exp>) {
         return pow(base, exp.value());
     } else {
-        return impl::ops::pow<Return, Base, Exp>::operator()(base, exp);
+        return ops::pow<Return, Base, Exp>::operator()(base, exp);
     }
 }
 
@@ -792,7 +840,7 @@ auto pow(const Base& base, const Exp& exp) {
 /* Equivalent to Python `pow(base, exp)`, except that it takes a C++ value and applies
 std::pow() for identical semantics. */
 template <typename Base, typename Exp> requires (!impl::any_are_python_like<Base, Exp>)
-auto pow(const Base& base, const Exp& exponent) {
+[[nodiscard]] auto pow(const Base& base, const Exp& exponent) {
     if constexpr (impl::complex_like<Base> && impl::complex_like<Exp>) {
         return std::common_type_t<Base, Exp>(
             std::pow(base.real(), exponent.real()),
@@ -817,7 +865,7 @@ auto pow(const Base& base, const Exp& exponent) {
 /* Equivalent to Python `pow(base, exp, mod)`. */
 template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
     requires (__pow__<Base, Exp>::enable)
-auto pow(const Base& base, const Exp& exp, const Mod& mod) {
+[[nodiscard]] auto pow(const Base& base, const Exp& exp, const Mod& mod) {
     using Return = typename __pow__<Base, Exp>::Return;
     static_assert(
         std::derived_from<Return, Object>,
@@ -830,7 +878,7 @@ auto pow(const Base& base, const Exp& exp, const Mod& mod) {
     } else if constexpr (impl::proxy_like<Exp>) {
         return pow(base, exp.value(), mod);
     } else {
-        return impl::ops::powmod<Return, Base, Exp, Mod>::operator()(base, exp, mod);
+        return ops::powmod<Return, Base, Exp, Mod>::operator()(base, exp, mod);
     }
 }
 
@@ -840,7 +888,7 @@ auto pow(const Base& base, const Exp& exp, const Mod& mod) {
 // /* Equivalent to Python `pow(base, exp, mod)`, but works on C++ integers with identical
 // semantics. */
 // template <std::integral Base, std::integral Exp, std::integral Mod>
-// auto pow(Base base, Exp exp, Mod mod) {
+// [[nodiscard]] auto pow(Base base, Exp exp, Mod mod) {
 //     std::common_type_t<Base, Exp, Mod> result = 1;
 //     base = py::mod(base, mod);
 //     while (exp > 0) {
@@ -859,7 +907,7 @@ auto operator*(const Self& self) {
     if constexpr (impl::proxy_like<Self>) {
         return *self.value();
     } else {
-        return impl::ops::dereference<Self>::operator()(self);
+        return ops::dereference<Self>::operator()(self);
     }
 }
 
@@ -878,7 +926,7 @@ auto operator~(const Self& self) {
     if constexpr (impl::proxy_like<Self>) {
         return ~self.value();
     } else {
-        return impl::ops::invert<Return, Self>::operator()(self);
+        return ops::invert<Return, Self>::operator()(self);
     }
 }
 
@@ -897,7 +945,7 @@ auto operator+(const Self& self) {
     if constexpr (impl::proxy_like<Self>) {
         return +self.value();
     } else {
-        return impl::ops::pos<Return, Self>::operator()(self);
+        return ops::pos<Return, Self>::operator()(self);
     }
 }
 
@@ -916,7 +964,7 @@ auto operator-(const Self& self) {
     if constexpr (impl::proxy_like<Self>) {
         return -self.value();
     } else {
-        return impl::ops::neg<Return, Self>::operator()(self);
+        return ops::neg<Return, Self>::operator()(self);
     }
 }
 
@@ -939,7 +987,7 @@ Self& operator++(Self& self) {
             impl::python_like<Self>,
             "Increment operator requires a Python object."
         );
-        impl::ops::increment<Return, Self>::operator()(self);
+        ops::increment<Return, Self>::operator()(self);
     }
     return self;
 }
@@ -964,7 +1012,7 @@ Self operator++(Self& self, int) {
             impl::python_like<Self>,
             "Increment operator requires a Python object."
         );
-        impl::ops::increment<Return, Self>::operator()(self);
+        ops::increment<Return, Self>::operator()(self);
     }
     return copy;
 }
@@ -988,7 +1036,7 @@ Self& operator--(Self& self) {
             impl::python_like<Self>,
             "Decrement operator requires a Python object."
         );
-        impl::ops::decrement<Return, Self>::operator()(self);
+        ops::decrement<Return, Self>::operator()(self);
     }
     return self;
 }
@@ -1013,7 +1061,7 @@ Self operator--(Self& self, int) {
             impl::python_like<Self>,
             "Decrement operator requires a Python object."
         );
-        impl::ops::decrement<Return, Self>::operator()(self);
+        ops::decrement<Return, Self>::operator()(self);
     }
     return copy;
 }
@@ -1037,7 +1085,7 @@ auto operator<(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs < rhs.value();
     } else {
-        return impl::ops::lt<Return, L, R>::operator()(lhs, rhs);
+        return ops::lt<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1060,7 +1108,7 @@ auto operator<=(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs <= rhs.value();
     } else {
-        return impl::ops::le<Return, L, R>::operator()(lhs, rhs);
+        return ops::le<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1083,7 +1131,7 @@ auto operator==(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs == rhs.value();
     } else {
-        return impl::ops::eq<Return, L, R>::operator()(lhs, rhs);
+        return ops::eq<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1106,7 +1154,7 @@ auto operator!=(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs != rhs.value();
     } else {
-        return impl::ops::ne<Return, L, R>::operator()(lhs, rhs);
+        return ops::ne<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1129,7 +1177,7 @@ auto operator>=(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs >= rhs.value();
     } else {
-        return impl::ops::ge<Return, L, R>::operator()(lhs, rhs);
+        return ops::ge<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1152,7 +1200,7 @@ auto operator>(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs > rhs.value();
     } else {
-        return impl::ops::gt<Return, L, R>::operator()(lhs, rhs);
+        return ops::gt<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1175,7 +1223,7 @@ auto operator+(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs + rhs.value();
     } else {
-        return impl::ops::add<Return, L, R>::operator()(lhs, rhs);
+        return ops::add<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1200,7 +1248,7 @@ L& operator+=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place addition operator requires a Python object."
         );
-        impl::ops::iadd<Return, L, R>::operator()(lhs, rhs);
+        ops::iadd<Return, L, R>::operator()(lhs, rhs);
     }
     return lhs;
 }
@@ -1224,7 +1272,7 @@ auto operator-(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs - rhs.value();
     } else {
-        return impl::ops::sub<Return, L, R>::operator()(lhs, rhs);
+        return ops::sub<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1249,7 +1297,7 @@ L& operator-=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place addition operator requires a Python object."
         );
-        impl::ops::isub<Return, L, R>::operator()(lhs, rhs);
+        ops::isub<Return, L, R>::operator()(lhs, rhs);
     }
     return lhs;
 }
@@ -1273,7 +1321,7 @@ auto operator*(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs * rhs.value();
     } else {
-        return impl::ops::mul<Return, L, R>::operator()(lhs, rhs);
+        return ops::mul<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1298,7 +1346,7 @@ L& operator*=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place multiplication operator requires a Python object."
         );
-        impl::ops::imul<Return, L, R>::operator()(lhs, rhs);
+        ops::imul<Return, L, R>::operator()(lhs, rhs);
     }
     return lhs;
 }
@@ -1322,7 +1370,7 @@ auto operator/(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs / rhs.value();
     } else {
-        return impl::ops::truediv<Return, L, R>::operator()(lhs, rhs);
+        return ops::truediv<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1347,7 +1395,7 @@ L& operator/=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place true division operator requires a Python object."
         );
-        impl::ops::itruediv<Return, L, R>::operator()(lhs, rhs);
+        ops::itruediv<Return, L, R>::operator()(lhs, rhs);
     }
     return lhs;
 }
@@ -1371,7 +1419,7 @@ auto operator%(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs % rhs.value();
     } else {
-        return impl::ops::mod<Return, L, R>::operator()(lhs, rhs);
+        return ops::mod<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1396,7 +1444,7 @@ L& operator%=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place modulus operator requires a Python object."
         );
-        impl::ops::imod<Return, L, R>::operator()(lhs, rhs);
+        ops::imod<Return, L, R>::operator()(lhs, rhs);
     }
     return lhs;
 }
@@ -1428,7 +1476,7 @@ auto operator<<(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs << rhs.value();
     } else {
-        return impl::ops::lshift<Return, L, R>::operator()(lhs, rhs);
+        return ops::lshift<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1478,7 +1526,7 @@ L& operator<<=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place left shift operator requires a Python object."
         );
-        impl::ops::ilshift<Return, L, R>::operator()(lhs, rhs);
+        ops::ilshift<Return, L, R>::operator()(lhs, rhs);
     }
     return lhs;
 }
@@ -1502,7 +1550,7 @@ auto operator>>(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs >> rhs.value();
     } else {
-        return impl::ops::rshift<Return, L, R>::operator()(lhs, rhs);
+        return ops::rshift<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1527,7 +1575,7 @@ L& operator>>=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place right shift operator requires a Python object."
         );
-        impl::ops::irshift<Return, L, R>::operator()(lhs, rhs);
+        ops::irshift<Return, L, R>::operator()(lhs, rhs);
     }
     return lhs;
 }
@@ -1551,7 +1599,7 @@ auto operator&(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs & rhs.value();
     } else {
-        return impl::ops::and_<Return, L, R>::operator()(lhs, rhs);
+        return ops::and_<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1576,7 +1624,7 @@ L& operator&=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place bitwise AND operator requires a Python object."
         );
-        impl::ops::iand<Return, L, R>::operator()(lhs, rhs);
+        ops::iand<Return, L, R>::operator()(lhs, rhs);
     }
     return lhs;
 }
@@ -1608,7 +1656,7 @@ auto operator|(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs | rhs.value();
     } else {
-        return impl::ops::or_<Return, L, R>::operator()(lhs, rhs);
+        return ops::or_<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1646,7 +1694,7 @@ L& operator|=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place bitwise OR operator requires a Python object."
         );
-        impl::ops::ior<Return, L, R>::operator()(lhs, rhs);
+        ops::ior<Return, L, R>::operator()(lhs, rhs);
     }
     return lhs;
 }
@@ -1670,7 +1718,7 @@ auto operator^(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs ^ rhs.value();
     } else {
-        return impl::ops::xor_<Return, L, R>::operator()(lhs, rhs);
+        return ops::xor_<Return, L, R>::operator()(lhs, rhs);
     }
 }
 
@@ -1695,7 +1743,7 @@ L& operator^=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place bitwise XOR operator requires a Python object."
         );
-        impl::ops::ixor<Return, L, R>::operator()(lhs, rhs);
+        ops::ixor<Return, L, R>::operator()(lhs, rhs);
     }
     return lhs;
 }
@@ -1705,4 +1753,42 @@ L& operator^=(L& lhs, const R& rhs) {
 }  // namespace bertrand
 
 
-#endif  // BERTRAND_PYTHON_COMMON_OPERATORS_H
+namespace std {
+
+    template <typename T> requires (bertrand::py::__hash__<T>::enable)
+    struct hash<T> {
+        static_assert(
+            std::same_as<typename bertrand::py::__hash__<T>::Return, size_t>,
+            "std::hash<> must return size_t for compatibility with other C++ types.  "
+            "Check your specialization of __hash__ for this type and ensure the "
+            "Return type is set to size_t."
+        );
+
+        static size_t operator()(const T& obj) {
+            Py_ssize_t result = PyObject_Hash(obj.ptr());
+            if (result == -1 && PyErr_Occurred()) {
+                bertrand::py::Exception::from_python();
+            }
+            return static_cast<size_t>(result);
+        }
+    };
+
+    #define BERTRAND_STD_EQUAL_TO(cls)                                                  \
+        template <>                                                                     \
+        struct equal_to<cls> {                                                          \
+            static bool operator()(const cls& a, const cls& b) {                        \
+                return a.equal(b);                                                      \
+            }                                                                           \
+        };                                                                              \
+
+    BERTRAND_STD_EQUAL_TO(bertrand::py::Handle)
+    BERTRAND_STD_EQUAL_TO(bertrand::py::WeakRef)
+    BERTRAND_STD_EQUAL_TO(bertrand::py::Capsule)
+
+
+    #undef BERTRAND_STD_EQUAL_TO
+
+};
+
+
+#endif  // BERTRAND_PYTHON_COMMON_OPS_H

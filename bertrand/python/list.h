@@ -76,144 +76,32 @@ struct __getattr__<Self, "sort">                                : Returns<Functi
         typename Arg<"reverse", const Bool&>::kw::opt
     )
 >> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __len__<Self>                                            : Returns<size_t> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __iter__<Self>                                           : Returns<typename Self::value_type> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __reversed__<Self>                                       : Returns<typename Self::value_type> {};
-template <
-    std::derived_from<impl::ListTag> Self,
-    std::convertible_to<typename Self::value_type> Key
->
-struct __contains__<Self, Key>                                  : Returns<bool> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __getitem__<Self, Object>                                : Returns<Object> {};
-template <std::derived_from<impl::ListTag> Self, impl::int_like Index>
-struct __getitem__<Self, Index>                                 : Returns<typename Self::value_type> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __getitem__<Self, Slice>                                 : Returns<Self> {};
-template <
-    std::derived_from<impl::ListTag> Self,
-    std::convertible_to<typename Self::value_type> Value
->
-struct __setitem__<Self, Object, Value>                         : Returns<void> {};
-template <
-    std::derived_from<impl::ListTag> Self,
-    impl::int_like Key,
-    std::convertible_to<typename Self::value_type> Value
->
-struct __setitem__<Self, Key, Value>                            : Returns<void> {};
-template <
-    std::derived_from<impl::ListTag> Self,
-    std::convertible_to<Self> Value  // use Self::check<T>()?
->
-struct __setitem__<Self, Slice, Value>                          : Returns<void> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __delitem__<Self, Object>                                : Returns<void> {};
-template <std::derived_from<impl::ListTag> Self, impl::int_like Key>
-struct __delitem__<Self, Key>                                   : Returns<void> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __delitem__<Self, Slice>                                 : Returns<void> {};
-template <std::derived_from<impl::ListTag> Self, impl::list_like T>
-    requires (impl::Broadcast<impl::lt_comparable, Self, T>::value)
-struct __lt__<Self, T>                                          : Returns<bool> {};
-template <impl::list_like T, std::derived_from<impl::ListTag> Self>
-    requires (
-        !std::derived_from<T, impl::ListTag> &&
-        impl::Broadcast<impl::lt_comparable, Self, T>::value
-    )
-struct __lt__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::ListTag> Self, impl::list_like T>
-    requires (impl::Broadcast<impl::le_comparable, Self, T>::value)
-struct __le__<Self, T>                                          : Returns<bool> {};
-template <impl::list_like T, std::derived_from<impl::ListTag> Self>
-    requires (
-        !std::derived_from<T, impl::ListTag> &&
-        impl::Broadcast<impl::le_comparable, Self, T>::value
-    )
-struct __le__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::ListTag> Self, impl::list_like T>
-    requires (impl::Broadcast<impl::eq_comparable, Self, T>::value)
-struct __eq__<Self, T>                                          : Returns<bool> {};
-template <impl::list_like T, std::derived_from<impl::ListTag> Self>
-    requires (
-        !std::derived_from<T, impl::ListTag> &&
-        impl::Broadcast<impl::eq_comparable, Self, T>::value
-    )
-struct __eq__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::ListTag> Self, impl::list_like T>
-    requires (impl::Broadcast<impl::ne_comparable, Self, T>::value)
-struct __ne__<Self, T>                                          : Returns<bool> {};
-template <impl::list_like T, std::derived_from<impl::ListTag> Self>
-    requires (
-        !std::derived_from<T, impl::ListTag> &&
-        impl::Broadcast<impl::ne_comparable, Self, T>::value
-    )
-struct __ne__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::ListTag> Self, impl::list_like T>
-    requires (impl::Broadcast<impl::ge_comparable, Self, T>::value)
-struct __ge__<Self, T>                                          : Returns<bool> {};
-template <impl::list_like T, std::derived_from<impl::ListTag> Self>
-    requires (
-        !std::derived_from<T, impl::ListTag> &&
-        impl::Broadcast<impl::ge_comparable, Self, T>::value
-    )
-struct __ge__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::ListTag> Self, impl::list_like T>
-    requires (impl::Broadcast<impl::gt_comparable, Self, T>::value)
-struct __gt__<Self, T>                                          : Returns<bool> {};
-template <impl::list_like T, std::derived_from<impl::ListTag> Self>
-    requires (
-        !std::derived_from<T, impl::ListTag> &&
-        impl::Broadcast<impl::gt_comparable, Self, T>::value
-    )
-struct __gt__<T, Self>                                          : Returns<bool> {};
-
-template <std::derived_from<impl::ListTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __add__<Self, T>                                         : Returns<Self> {};
-template <
-    std::derived_from<impl::ListTag> T,
-    std::derived_from<impl::ListTag> Self
-> requires (!T::template check<Self>() && Self::template check<T>())
-struct __add__<T, Self>                                         : Returns<Self> {};
-template <std::derived_from<impl::ListTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __iadd__<Self, T>                                        : Returns<Self&> {};
-template <std::derived_from<impl::ListTag> Self, impl::int_like T>
-struct __mul__<Self, T>                                         : Returns<Self> {};
-template <impl::int_like T, std::derived_from<impl::ListTag> Self>
-struct __mul__<T, Self>                                         : Returns<Self> {};
-template <std::derived_from<impl::ListTag> Self, impl::int_like T>
-struct __imul__<Self, T>                                        : Returns<Self&> {};
 
 
-namespace impl {
 namespace ops {
 
-    template <typename Return, std::derived_from<ListTag> Self>
+    template <typename Return, std::derived_from<impl::ListTag> Self>
     struct len<Return, Self> {
         static size_t operator()(const Self& self) {
             return PyList_GET_SIZE(self.ptr());
         }
     };
 
-    template <typename Return, std::derived_from<ListTag> Self>
+    template <typename Return, std::derived_from<impl::ListTag> Self>
     struct begin<Return, Self> {
         static auto operator()(const Self& self) {
             return impl::Iterator<impl::ListIter<Return>>(self, 0);
         }
     };
 
-    template <typename Return, std::derived_from<ListTag> Self>
+    template <typename Return, std::derived_from<impl::ListTag> Self>
     struct end<Return, Self> {
         static auto operator()(const Self& self) {
             return impl::Iterator<impl::ListIter<Return>>(PyList_GET_SIZE(self.ptr()));
         }
     };
 
-    template <typename Return, std::derived_from<ListTag> Self>
+    template <typename Return, std::derived_from<impl::ListTag> Self>
     struct rbegin<Return, Self> {
         static auto operator()(const Self& self) {
             return impl::ReverseIterator<impl::ListIter<Return>>(
@@ -223,7 +111,7 @@ namespace ops {
         }
     };
 
-    template <typename Return, std::derived_from<ListTag> Self>
+    template <typename Return, std::derived_from<impl::ListTag> Self>
     struct rend<Return, Self> {
         static auto operator()(const Self& self) {
             return impl::ReverseIterator<impl::ListIter<Return>>(-1);
@@ -231,20 +119,19 @@ namespace ops {
     };
 
     template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, ListTag> || std::derived_from<R, ListTag>)
+        requires (std::derived_from<L, impl::ListTag> || std::derived_from<R, impl::ListTag>)
     struct add<Return, L, R> : sequence::add<Return, L, R> {};
 
-    template <typename Return, std::derived_from<ListTag> L, typename R>
+    template <typename Return, std::derived_from<impl::ListTag> L, typename R>
     struct iadd<Return, L, R> : sequence::iadd<Return, L, R> {};
 
     template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, ListTag> || std::derived_from<R, ListTag>)
+        requires (std::derived_from<L, impl::ListTag> || std::derived_from<R, impl::ListTag>)
     struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
 
-    template <typename Return, std::derived_from<ListTag> L, typename R>
+    template <typename Return, std::derived_from<impl::ListTag> L, typename R>
     struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
 
-}
 }
 
 
@@ -774,131 +661,6 @@ protected:
         }
     }
 
-};
-
-
-template <std::derived_from<impl::ListTag> Self, impl::list_like T>
-    requires (impl::pybind11_like<T> && !Self::template check<T>())
-struct __cast__<Self, T> : Returns<T> {
-    static T operator()(const Self& self) {
-        return reinterpret_borrow<T>(self.ptr());
-    }
-};
-
-
-template <std::derived_from<impl::ListTag> Self, typename First, typename Second>
-    requires (
-        std::convertible_to<typename Self::value_type, First> &&
-        std::convertible_to<typename Self::value_type, Second>
-    )
-struct __cast__<Self, std::pair<First, Second>> : Returns<std::pair<First, Second>> {
-    static std::pair<First, Second> operator()(const Self& self) {
-        if (self.size() != 2) {
-            throw IndexError(
-                "conversion to std::pair requires list of size 2, not "
-                + std::to_string(self.size())
-            );
-        }
-        return {
-            impl::implicit_cast<First>(self.GET_ITEM(0)),
-            impl::implicit_cast<Second>(self.GET_ITEM(1))
-        };
-    }
-};
-
-
-template <std::derived_from<impl::ListTag> Self, typename... Args>
-    requires (std::convertible_to<typename Self::value_type, Args> && ...)
-struct __cast__<Self, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
-    static std::tuple<Args...> operator()(const Self& self) {
-        if (self.size() != sizeof...(Args)) {
-            throw IndexError(
-                "conversion to std::tuple requires list of size " +
-                std::to_string(sizeof...(Args)) + ", not " +
-                std::to_string(self.size())
-            );
-        }
-        return [&]<size_t... N>(std::index_sequence<N...>) {
-            return std::make_tuple(
-                impl::implicit_cast<Args>(self.GET_ITEM(N))...
-            );
-        }(std::index_sequence_for<Args...>{});
-    }
-};
-
-
-template <std::derived_from<impl::ListTag> Self, typename T, size_t N>
-    requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::array<T, N>> : Returns<std::array<T, N>> {
-    static std::array<T, N> operator()(const Self& self) {
-        if (N != self.size()) {
-            throw IndexError(
-                "conversion to std::array requires list of size " +
-                std::to_string(N) + ", not " + std::to_string(self.size())
-            );
-        }
-        std::array<T, N> result;
-        for (size_t i = 0; i < N; ++i) {
-            result[i] = impl::implicit_cast<T>(self.GET_ITEM(i));
-        }
-        return result;
-    }
-};
-
-
-template <std::derived_from<impl::ListTag> Self, typename T, typename... Args>
-    requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::vector<T, Args...>> : Returns<std::vector<T, Args...>> {
-    static std::vector<T, Args...> operator()(const Self& self) {
-        std::vector<T, Args...> result;
-        result.reserve(self.size());
-        for (const auto& item : self) {
-            result.push_back(impl::implicit_cast<T>(item));
-        }
-        return result;
-    }
-};
-
-
-template <std::derived_from<impl::ListTag> Self, typename T, typename... Args>
-    requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::list<T, Args...>> : Returns<std::list<T, Args...>> {
-    static std::list<T, Args...> operator()(const Self& self) {
-        std::list<T, Args...> result;
-        for (const auto& item : self) {
-            result.push_back(impl::implicit_cast<T>(item));
-        }
-        return result;
-    }
-};
-
-
-template <std::derived_from<impl::ListTag> Self, typename T, typename... Args>
-    requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::forward_list<T, Args...>> : Returns<std::forward_list<T, Args...>> {
-    static std::forward_list<T, Args...> operator()(const Self& self) {
-        std::forward_list<T, Args...> result;
-        auto it = self.rbegin();
-        auto end = self.rend();
-        while (it != end) {
-            result.push_front(impl::implicit_cast<T>(*it));
-            ++it;
-        }
-        return result;
-    }
-};
-
-
-template <std::derived_from<impl::ListTag> Self, typename T, typename... Args>
-    requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> {
-    static std::deque<T, Args...> operator()(const Self& self) {
-        std::deque<T, Args...> result;
-        for (const auto& item : self) {
-            result.push_back(impl::implicit_cast<T>(item));
-        }
-        return result;
-    }
 };
 
 

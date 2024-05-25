@@ -8,7 +8,9 @@
 
 #include "declarations.h"
 #include "except.h"
-// #include "object.h"
+#include "ops.h"
+#include "object.h"
+#include "func.h"
 
 
 namespace bertrand {
@@ -138,7 +140,7 @@ struct __as_object__<T>                                     : Returns<Type> {};
 
 /* Implicitly convert a Python object to a pybind11::handle. */
 template <typename Self>
-struct __cast__<Self, pybind11::handle> : Returns<pybind11::handle> {
+struct __implicit_cast__<Self, pybind11::handle> : Returns<pybind11::handle> {
     static pybind11::handle operator()(const Self& self) {
         return self.ptr();
     }
@@ -147,7 +149,7 @@ struct __cast__<Self, pybind11::handle> : Returns<pybind11::handle> {
 
 /* Implicitly convert a Python object to a pybind11::object */
 template <typename Self>
-struct __cast__<Self, pybind11::object> : Returns<pybind11::object> {
+struct __implicit_cast__<Self, pybind11::object> : Returns<pybind11::object> {
     static pybind11::object operator()(const Self& self) {
         return pybind11::reinterpret_borrow<pybind11::object>(self.ptr());
     }
@@ -155,8 +157,8 @@ struct __cast__<Self, pybind11::object> : Returns<pybind11::object> {
 
 
 /* Implicitly convert a Python object to an equivalent pybind11 type. */
-template <typename Self, impl::pybind11_like T> requires (impl::typecheck<T, Self>)
-struct __cast__<Self, T> : Returns<T> {
+template <typename Self, impl::pybind11_like T> requires (Self::template check<T>())
+struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
         return pybind11::reinterpret_borrow<T>(self.ptr());
     }
@@ -166,7 +168,7 @@ struct __cast__<Self, T> : Returns<T> {
 /* Implicitly convert a Python object to one of its subclasses by applying a type
 check. */
 template <typename Self, std::derived_from<Self> T>
-struct __cast__<Self, T> : Returns<T> {
+struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
         if (!T::check(self)) {
             throw impl::noconvert<T>(self.ptr());
@@ -179,10 +181,10 @@ struct __cast__<Self, T> : Returns<T> {
 /* Implicitly convert a Python object to a proxy type by converting to the contained
 type and then moving the result into the proxy's buffer. */
 template <typename Self, impl::proxy_like T>
-    requires (__cast__<Self, impl::unwrap_proxy<T>>::enable)
-struct __cast__<Self, T> : Returns<T> {
+    requires (__implicit_cast__<Self, impl::unwrap_proxy<T>>::enable)
+struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
-        return T(__cast__<Self, impl::unwrap_proxy<T>>::operator()(self));
+        return T(__implicit_cast__<Self, impl::unwrap_proxy<T>>::operator()(self));
     }
 };
 
@@ -198,7 +200,7 @@ template <impl::not_proxy_like T>
         !std::derived_from<T, pybind11::arg> &&
         !std::derived_from<T, Object>
     )
-struct __cast__<Object, T> : Returns<T> {
+struct __implicit_cast__<Object, T> : Returns<T> {
     static T operator()(const Object& self) {
         try {
             return Handle(self.ptr()).template cast<T>();
@@ -211,7 +213,7 @@ struct __cast__<Object, T> : Returns<T> {
 
 /* Implicitly convert a py::Bool to a C++ bool. */
 template <std::derived_from<Bool> Self>
-struct __cast__<Self, bool> : Returns<bool> {
+struct __implicit_cast__<Self, bool> : Returns<bool> {
     static bool operator()(const Self& self) {
         int result = PyObject_IsTrue(self.ptr());
         if (result == -1) {
@@ -224,25 +226,25 @@ struct __cast__<Self, bool> : Returns<bool> {
 
 /* Implicitly convert a py::Bool to a C++ integer type. */
 template <std::derived_from<Bool> Self, std::integral T>
-struct __cast__<Self, T> : Returns<T> {
+struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
-        return __cast__<Self, bool>::operator()(self);
+        return __implicit_cast__<Self, bool>::operator()(self);
     }
 };
 
 
 /* Implicitly convert a py::Bool to a C++ floating point type. */
 template <std::derived_from<Bool> Self, std::floating_point T>
-struct __cast__<Self, T> : Returns<T> {
+struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
-        return __cast__<Self, bool>::operator()(self);
+        return __implicit_cast__<Self, bool>::operator()(self);
     }
 };
 
 
 /* Implicitly convert a py::Int to a C++ integer type. */
 template <std::derived_from<Int> Self, std::integral T>
-struct __cast__<Self, T> : Returns<T> {
+struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
         if constexpr (sizeof(T) <= sizeof(long)) {
             if constexpr (std::signed_integral<T>) {
@@ -278,7 +280,7 @@ struct __cast__<Self, T> : Returns<T> {
 
 /* Implicitly promote a py::Int to a C++ floating point type. */
 template <std::derived_from<Int> Self, std::floating_point T>
-struct __cast__<Self, T> : Returns<T> {
+struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
         return PyLong_AsDouble(self.ptr());
     }
@@ -287,7 +289,7 @@ struct __cast__<Self, T> : Returns<T> {
 
 /* Implicitly convert a py::Float to a C++ floating point type. */
 template <std::derived_from<Float> Self, std::floating_point T>
-struct __cast__<Self, T> : Returns<T> {
+struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
         return PyFloat_AS_DOUBLE(self.ptr());
     }
@@ -296,7 +298,7 @@ struct __cast__<Self, T> : Returns<T> {
 
 /* Implicitly convert a py::Complex to a C++ std::complex<>. */
 template <std::derived_from<Complex> Self, typename T>
-struct __cast__<Self, std::complex<T>> : Returns<std::complex<T>> {
+struct __implicit_cast__<Self, std::complex<T>> : Returns<std::complex<T>> {
     static std::complex<T> operator()(const Self& self) {
         Py_complex complex = PyComplex_AsCComplex(self.ptr());
         if (complex.real == -1.0 && PyErr_Occurred()) {
@@ -309,7 +311,7 @@ struct __cast__<Self, std::complex<T>> : Returns<std::complex<T>> {
 
 /* Implicitly convert a py::Str into a C++ std::string. */
 template <std::derived_from<Str> Self>
-struct __cast__<Self, std::string> : Returns<std::string> {
+struct __implicit_cast__<Self, std::string> : Returns<std::string> {
     static std::string operator()(const Self& self) {
         Py_ssize_t length;
         const char* result = PyUnicode_AsUTF8AndSize(self.ptr(), &length);
@@ -324,8 +326,8 @@ struct __cast__<Self, std::string> : Returns<std::string> {
 /* Implicitly convert a py::Tuple into a pybind11::tuple regardless of its template
 signature. */
 template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
-    requires (impl::pybind11_like<T> && !impl::typecheck<T, Self>)
-struct __cast__<Self, T> : Returns<T> {
+    requires (impl::pybind11_like<T> && !Self::template check<T>())
+struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
         return reinterpret_borrow<T>(self.ptr());
     }
@@ -339,7 +341,7 @@ template <std::derived_from<impl::TupleTag> Self, typename First, typename Secon
         std::convertible_to<typename Self::value_type, First> &&
         std::convertible_to<typename Self::value_type, Second>
     )
-struct __cast__<Self, std::pair<First, Second>> : Returns<std::pair<First, Second>> {
+struct __implicit_cast__<Self, std::pair<First, Second>> : Returns<std::pair<First, Second>> {
     static std::pair<First, Second> operator()(const Self& self) {
         if (self.size() != 2) {
             throw IndexError(
@@ -359,7 +361,7 @@ struct __cast__<Self, std::pair<First, Second>> : Returns<std::pair<First, Secon
 convertible and the length matches the tuple's template signature. */
 template <std::derived_from<impl::TupleTag> Self, typename... Args>
     requires (std::convertible_to<typename Self::value_type, Args> && ...)
-struct __cast__<Self, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
+struct __implicit_cast__<Self, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
     static std::tuple<Args...> operator()(const Self& self) {
         if (self.size() != sizeof...(Args)) {
             throw IndexError(
@@ -381,7 +383,7 @@ struct __cast__<Self, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
 convertible and the length matches the array's template signature. */
 template <std::derived_from<impl::TupleTag> Self, typename T, size_t N>
     requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::array<T, N>> : Returns<std::array<T, N>> {
+struct __implicit_cast__<Self, std::array<T, N>> : Returns<std::array<T, N>> {
     static std::array<T, N> operator()(const Self& self) {
         if (N != self.size()) {
             throw IndexError(
@@ -402,7 +404,7 @@ struct __cast__<Self, std::array<T, N>> : Returns<std::array<T, N>> {
 convertible. */
 template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
     requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::vector<T, Args...>> : Returns<std::vector<T, Args...>> {
+struct __implicit_cast__<Self, std::vector<T, Args...>> : Returns<std::vector<T, Args...>> {
     static std::vector<T, Args...> operator()(const Self& self) {
         std::vector<T, Args...> result;
         result.reserve(self.size());
@@ -418,7 +420,7 @@ struct __cast__<Self, std::vector<T, Args...>> : Returns<std::vector<T, Args...>
 convertible. */
 template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
     requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::list<T, Args...>> : Returns<std::list<T, Args...>> {
+struct __implicit_cast__<Self, std::list<T, Args...>> : Returns<std::list<T, Args...>> {
     static std::list<T, Args...> operator()(const Self& self) {
         std::list<T, Args...> result;
         for (const auto& item : self) {
@@ -433,7 +435,7 @@ struct __cast__<Self, std::list<T, Args...>> : Returns<std::list<T, Args...>> {
 convertible. */
 template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
     requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::forward_list<T, Args...>> : Returns<std::forward_list<T, Args...>> {
+struct __implicit_cast__<Self, std::forward_list<T, Args...>> : Returns<std::forward_list<T, Args...>> {
     static std::forward_list<T, Args...> operator()(const Self& self) {
         std::forward_list<T, Args...> result;
         auto it = self.rbegin();
@@ -451,7 +453,7 @@ struct __cast__<Self, std::forward_list<T, Args...>> : Returns<std::forward_list
 convertible. */
 template <std::derived_from<impl::TupleTag> Self, typename T, typename... Args>
     requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> {
+struct __implicit_cast__<Self, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> {
     static std::deque<T, Args...> operator()(const Self& self) {
         std::deque<T, Args...> result;
         for (const auto& item : self) {
@@ -465,8 +467,8 @@ struct __cast__<Self, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> 
 /* Implicitly convert a py::List into a pybind11::list regardless of its template
 signature. */
 template <std::derived_from<impl::ListTag> Self, impl::list_like T>
-    requires (impl::pybind11_like<T> && !impl::typecheck<T, Self>)
-struct __cast__<Self, T> : Returns<T> {
+    requires (impl::pybind11_like<T> && !Self::template check<T>())
+struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
         return reinterpret_borrow<T>(self.ptr());
     }
@@ -480,7 +482,7 @@ template <std::derived_from<impl::ListTag> Self, typename First, typename Second
         std::convertible_to<typename Self::value_type, First> &&
         std::convertible_to<typename Self::value_type, Second>
     )
-struct __cast__<Self, std::pair<First, Second>> : Returns<std::pair<First, Second>> {
+struct __implicit_cast__<Self, std::pair<First, Second>> : Returns<std::pair<First, Second>> {
     static std::pair<First, Second> operator()(const Self& self) {
         if (self.size() != 2) {
             throw IndexError(
@@ -500,7 +502,7 @@ struct __cast__<Self, std::pair<First, Second>> : Returns<std::pair<First, Secon
 convertible and the length matches the tuple's template signature. */
 template <std::derived_from<impl::ListTag> Self, typename... Args>
     requires (std::convertible_to<typename Self::value_type, Args> && ...)
-struct __cast__<Self, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
+struct __implicit_cast__<Self, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
     static std::tuple<Args...> operator()(const Self& self) {
         if (self.size() != sizeof...(Args)) {
             throw IndexError(
@@ -522,7 +524,7 @@ struct __cast__<Self, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
 convertible and the length matches the array's template signature. */
 template <std::derived_from<impl::ListTag> Self, typename T, size_t N>
     requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::array<T, N>> : Returns<std::array<T, N>> {
+struct __implicit_cast__<Self, std::array<T, N>> : Returns<std::array<T, N>> {
     static std::array<T, N> operator()(const Self& self) {
         if (N != self.size()) {
             throw IndexError(
@@ -543,7 +545,7 @@ struct __cast__<Self, std::array<T, N>> : Returns<std::array<T, N>> {
 convertible. */
 template <std::derived_from<impl::ListTag> Self, typename T, typename... Args>
     requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::vector<T, Args...>> : Returns<std::vector<T, Args...>> {
+struct __implicit_cast__<Self, std::vector<T, Args...>> : Returns<std::vector<T, Args...>> {
     static std::vector<T, Args...> operator()(const Self& self) {
         std::vector<T, Args...> result;
         result.reserve(self.size());
@@ -559,7 +561,7 @@ struct __cast__<Self, std::vector<T, Args...>> : Returns<std::vector<T, Args...>
 convertible. */
 template <std::derived_from<impl::ListTag> Self, typename T, typename... Args>
     requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::list<T, Args...>> : Returns<std::list<T, Args...>> {
+struct __implicit_cast__<Self, std::list<T, Args...>> : Returns<std::list<T, Args...>> {
     static std::list<T, Args...> operator()(const Self& self) {
         std::list<T, Args...> result;
         for (const auto& item : self) {
@@ -574,7 +576,7 @@ struct __cast__<Self, std::list<T, Args...>> : Returns<std::list<T, Args...>> {
 convertible. */
 template <std::derived_from<impl::ListTag> Self, typename T, typename... Args>
     requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::forward_list<T, Args...>> : Returns<std::forward_list<T, Args...>> {
+struct __implicit_cast__<Self, std::forward_list<T, Args...>> : Returns<std::forward_list<T, Args...>> {
     static std::forward_list<T, Args...> operator()(const Self& self) {
         std::forward_list<T, Args...> result;
         auto it = self.rbegin();
@@ -592,7 +594,7 @@ struct __cast__<Self, std::forward_list<T, Args...>> : Returns<std::forward_list
 convertible. */
 template <std::derived_from<impl::ListTag> Self, typename T, typename... Args>
     requires (std::convertible_to<typename Self::value_type, T>)
-struct __cast__<Self, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> {
+struct __implicit_cast__<Self, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> {
     static std::deque<T, Args...> operator()(const Self& self) {
         std::deque<T, Args...> result;
         for (const auto& item : self) {
@@ -606,7 +608,7 @@ struct __cast__<Self, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> 
 /* Implicitly convert a py::Set to a C++ set type. */
 template <std::derived_from<impl::SetTag> Self, impl::cpp_like T>
     requires (impl::anyset_like<T>)
-struct __cast__<Self, T> : Returns<T> {
+struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
         T result;
         for (const auto& item : self) {
@@ -620,7 +622,7 @@ struct __cast__<Self, T> : Returns<T> {
 /* Implicitly convert a py::FrozenSet to a C++ set type. */
 template <std::derived_from<impl::FrozenSetTag> Self, impl::cpp_like T>
     requires (impl::anyset_like<T>)
-struct __cast__<Self, T> : Returns<T> {
+struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
         T result;
         for (const auto& item : self) {
@@ -634,7 +636,7 @@ struct __cast__<Self, T> : Returns<T> {
 /* Implicitly convert a py::Dict into a C++ mapping type. */
 template <std::derived_from<impl::DictTag> Self, impl::cpp_like T>
     requires (impl::dict_like<T>)
-struct __cast__<Self, T> {
+struct __implicit_cast__<Self, T> {
     static T operator()(const Self& self) {
         T result;
         PyObject* k;
@@ -651,85 +653,1392 @@ struct __cast__<Self, T> {
 };
 
 
+/* Explicitly convert a Python object into an arbitrary C++ type by invoking
+pybind11::cast. */
+template <typename Self, typename T>
+inline T __explicit_cast__<Self, T>::operator()(const Self& self) {
+    try {
+        return Handle(self.ptr()).template cast<T>();
+    } catch (...) {
+        Exception::from_pybind11();
+    }
+}
+
+
 template <impl::proxy_like Self, StaticStr Name>
 struct __getattr__<Self, Name> : __getattr__<impl::unwrap_proxy<Self>, Name> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__init__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    void(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__new__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__call__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__name__")
+struct __getattr__<Self, Name>                              : Returns<Str> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__qualname__")
+struct __getattr__<Self, Name>                              : Returns<Str> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__module__")
+struct __getattr__<Self, Name>                              : Returns<Dict<Str, Object>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__self__")
+struct __getattr__<Self, Name>                              : Returns<Object> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__wrapped__")
+struct __getattr__<Self, Name>                              : Returns<Object> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__repr__")
+struct __getattr__<Self, Name>                              : Returns<Function<Str()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__str__")
+struct __getattr__<Self, Name>                              : Returns<Function<Str()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__bool__")
+struct __getattr__<Self, Name>                              : Returns<Function<Bool()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__int__")
+struct __getattr__<Self, Name>                              : Returns<Function<Int()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__index__")
+struct __getattr__<Self, Name>                              : Returns<Function<Int()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__float__")
+struct __getattr__<Self, Name>                              : Returns<Function<Float()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__complex__")
+struct __getattr__<Self, Name>                              : Returns<Function<Complex()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__bytes__")
+struct __getattr__<Self, Name>                              : Returns<Function<Bytes()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__hash__")
+struct __getattr__<Self, Name>                              : Returns<Function<Int()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__slots__")
+struct __getattr__<Self, Name>                              : Returns<Object> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__dict__")
+struct __getattr__<Self, Name>                              : Returns<Dict<Str, Object>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__dir__")
+struct __getattr__<Self, Name>                              : Returns<Function<List<Str>()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__doc__")
+struct __getattr__<Self, Name>                              : Returns<Str> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__class__")
+struct __getattr__<Self, Name>                              : Returns<Type> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__bases__")
+struct __getattr__<Self, Name>                              : Returns<Tuple<Type>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__mro__")
+struct __getattr__<Self, Name>                              : Returns<Tuple<Type>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__subclasses__")
+struct __getattr__<Self, Name>                              : Returns<Function<List<Type>()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__subclasscheck__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Bool(Arg<"subclass", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__instancecheck__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Bool(Arg<"instance", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__init_subclass__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    void(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__class_getitem__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"item", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__set_name__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    void(Arg<"owner", Type>, Arg<"name", Str>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__get__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"instance", Object>, Arg<"owner", Type>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__set__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    void(Arg<"instance", Object>, Arg<"value", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__del__")
+struct __getattr__<Self, Name>                              : Returns<Function<void()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__delete__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    void(Arg<"instance", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__getattribute__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"name", Str>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__getattr__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"name", Str>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__setattr__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    void(Arg<"name", Str>, Arg<"value", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__delattr__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    void(Arg<"name", Str>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__getitem__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"key", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__setitem__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    void(Arg<"key", Object>, Arg<"value", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__delitem__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    void(Arg<"key", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__missing__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"key", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__contains__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Bool(Arg<"key", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__enter__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__exit__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Bool(Arg<"exc_type", Type>, Arg<"exc_value", Object>, Arg<"traceback", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__aenter__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__aexit__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Bool(Arg<"exc_type", Type>, Arg<"exc_value", Object>, Arg<"traceback", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__iter__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__next__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__aiter__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__anext__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__reversed__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__len__")
+struct __getattr__<Self, Name>                              : Returns<Function<Int()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__length_hint__")
+struct __getattr__<Self, Name>                              : Returns<Function<Int()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__await__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__buffer__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    MemoryView(Arg<"flags", Int>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__release_buffer__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    void(Arg<"buffer", MemoryView>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__match_args__")
+struct __getattr__<Self, Name>                              : Returns<Tuple<Str>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__objclass__")
+struct __getattr__<Self, Name>                              : Returns<Object> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__format__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Str(Arg<"format_spec", Str>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__type_params__")
+struct __getattr__<Self, Name>                              : Returns<Tuple<Object>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__weakref__")
+struct __getattr__<Self, Name>                              : Returns<Object> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__abs__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__invert__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__pos__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__neg__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__round__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__trunc__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__floor__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ceil__")
+struct __getattr__<Self, Name>                              : Returns<Function<Object()>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__lt__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Bool(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__le__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Bool(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__eq__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Bool(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ne__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Bool(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ge__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Bool(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__gt__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Bool(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__add__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__radd__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__iadd__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__sub__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rsub__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__isub__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__mul__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rmul__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__imul__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__matmul__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rmatmul__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__imatmul__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__truediv__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rtruediv__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__itruediv__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__floordiv__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rfloordiv__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ifloordiv__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__mod__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rmod__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__imod__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__divmod__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Tuple<Object>(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__pow__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>, Arg<"mod", Object>::opt)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rpow__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>, Arg<"mod", Object>::opt)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ipow__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>, Arg<"mod", Object>::opt)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__lshift__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rlshift__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ilshift__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rshift__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rrshift__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__irshift__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__and__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rand__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__iand__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__or__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ror__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ior__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__xor__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rxor__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ixor__")
+struct __getattr__<Self, Name>                              : Returns<Function<
+    Object(Arg<"other", Object>)
+>> {};
+
+
+template <impl::proxy_like Self, StaticStr Name, impl::not_proxy_like Value>
+struct __setattr__<Self, Name, Value> : __setattr__<impl::unwrap_proxy<Self>, Name, Value> {};
+template <impl::not_proxy_like Self, StaticStr Name, impl::proxy_like Value>
+struct __setattr__<Self, Name, Value> : __setattr__<Self, Name, impl::unwrap_proxy<Value>> {};
+template <impl::proxy_like Self, StaticStr Name, impl::proxy_like Value>
+struct __setattr__<Self, Name, Value> : __setattr__<impl::unwrap_proxy<Self>, Name, impl::unwrap_proxy<Value>> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__init__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__new__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__call__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__name__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__qualname__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__module__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__self__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__wrapped__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__repr__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__str__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__bool__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__int__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__index__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__float__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__complex__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__bytes__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__hash__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__slots__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__dict__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__dir__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__doc__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__class__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__bases__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__mro__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__subclasses__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__subclasscheck__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__instancecheck__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__init_subclass__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__class_getitem__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__set_name__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__get__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__set__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__del__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__delete__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__getattribute__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__getattr__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__setattr__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__delattr__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__getitem__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__setitem__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__delitem__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__missing__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__contains__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__enter__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__exit__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__aenter__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__aexit__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__iter__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__next__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__aiter__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__anext__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__reversed__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__len__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__length_hint__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__await__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__buffer__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__release_buffer__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__match_args__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__objclass__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__format__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__type_params__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__weakref__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__abs__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__invert__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__pos__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__neg__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__round__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__trunc__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__floor__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__ceil__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__lt__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__le__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__eq__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__ne__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__ge__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__gt__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__add__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__radd__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__iadd__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__sub__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__rsub__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__isub__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__mul__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__rmul__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__imul__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__matmul__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__rmatmul__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__imatmul__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__truediv__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__rtruediv__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__itruediv__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__floordiv__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__rfloordiv__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__ifloordiv__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__mod__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__rmod__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__imod__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__divmod__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__rdivmod__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__pow__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__rpow__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__ipow__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__lshift__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__rlshift__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__ilshift__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__rshift__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__rrshift__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__irshift__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__and__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__rand__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__iand__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__or__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__ror__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__ior__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__xor__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+    requires (
+        Name == "__rxor__" && __getattr__<Self, Name>::enable &&
+        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+    )
+struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+
+
+template <impl::proxy_like Self, StaticStr Name>
+struct __delattr__<Self, Name> : __delattr__<impl::unwrap_proxy<Self>, Name> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__init__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__new__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__call__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__name__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__qualname__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__module__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__self__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__wrapped__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__repr__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__str__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__bool__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__int__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__index__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__float__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__complex__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__bytes__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__hash__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__slots__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__dict__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__dir__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__doc__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__class__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__bases__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__mro__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__subclasses__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__subclasscheck__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__instancecheck__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__init_subclass__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__class_getitem__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__set_name__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__get__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__set__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__del__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__delete__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__getattribute__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__getattr__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__setattr__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__delattr__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__getitem__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__setitem__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__delitem__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__missing__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__contains__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__enter__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__exit__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__aenter__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__aexit__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__iter__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__next__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__aiter__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__anext__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__reversed__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__len__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__length_hint__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__await__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__buffer__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__release_buffer__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__match_args__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__objclass__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__format__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__type_params__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__weakref__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__abs__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__invert__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__pos__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__neg__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__round__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__trunc__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__floor__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ceil__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__lt__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__le__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__eq__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ne__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ge__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__gt__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__add__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__radd__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__iadd__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__sub__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rsub__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__isub__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__mul__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rmul__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__imul__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__matmul__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rmatmul__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__imatmul__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__truediv__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rtruediv__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__itruediv__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__floordiv__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rfloordiv__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ifloordiv__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__mod__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rmod__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__imod__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__divmod__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rdivmod__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__pow__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rpow__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ipow__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__lshift__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rlshift__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ilshift__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rshift__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rrshift__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__irshift__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__and__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rand__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__iand__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__or__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ror__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ior__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__xor__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__rxor__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
+template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__ixor__")
+struct __delattr__<Self, Name>                              : Returns<void> {};
 
 
 template <StaticStr Name>
 struct __getattr__<Object, Name>                            : Returns<Object> {};
-template <>
-struct __getattr__<Object, "__dict__">                      : Returns<Dict<Str, Object>> {};
-template <std::convertible_to<Dict<Str, Object>> Value>
-struct __setattr__<Object, "__dict__", Value>               : Returns<void> {};
-template <>
-struct __delattr__<Object, "__dict__">                      : Returns<void> {};
-template <>
-struct __getattr__<Object, "__class__">                     : Returns<Type> {};
-template <std::convertible_to<Type> Value>
-struct __setattr__<Object, "__class__", Value>              : Returns<void> {};
-template <>
-struct __delattr__<Object, "__class__">                     : Returns<void> {};
-template <>
-struct __getattr__<Object, "__bases__">                     : Returns<Tuple<Type>> {};
-template <std::convertible_to<Tuple<Type>> Value>
-struct __setattr__<Object, "__bases__", Value>              : Returns<void> {};
-template <>
-struct __delattr__<Object, "__bases__">                     : Returns<void> {};
-template <>
-struct __getattr__<Object, "__name__">                      : Returns<Str> {};
-template <std::convertible_to<Str> Value>
-struct __setattr__<Object, "__name__", Value>               : Returns<void> {};
-template <>
-struct __delattr__<Object, "__name__">                      : Returns<void> {};
-template <>
-struct __getattr__<Object, "__qualname__">                  : Returns<Str> {};
-template <std::convertible_to<Str> Value>
-struct __setattr__<Object, "__qualname__", Value>           : Returns<void> {};
-template <>
-struct __delattr__<Object, "__qualname__">                  : Returns<void> {};
-template <>
-struct __getattr__<Object, "__type_params__">               : Returns<Object> {};  // TODO: Type?
-template <std::convertible_to<Object> Value>
-struct __setattr__<Object, "__type_params__", Value>        : Returns<void> {};
-template <>
-struct __delattr__<Object, "__type_params__">               : Returns<void> {};
-template <>
-struct __getattr__<Object, "__mro__">                       : Returns<Tuple<Type>> {};
-template <std::convertible_to<Tuple<Type>> Value>
-struct __setattr__<Object, "__mro__", Value>                : Returns<void> {};
-template <>
-struct __delattr__<Object, "__mro__">                       : Returns<void> {};
-template <>
-struct __getattr__<Object, "__subclasses__">                : Returns<Function<List<Type>()>> {};
-template <std::convertible_to<Function<List<Type>()>> Value>
-struct __setattr__<Object, "__subclasses__", Value>         : Returns<void> {};
-template <>
-struct __delattr__<Object, "__subclasses__">                : Returns<void> {};
-template <>
-struct __getattr__<Object, "__doc__">                       : Returns<Str> {};
-template <std::convertible_to<Str> Value>
-struct __setattr__<Object, "__doc__", Value>                : Returns<void> {};
-template <>
-struct __delattr__<Object, "__doc__">                       : Returns<void> {};
-template <>
-struct __getattr__<Object, "__module__">                    : Returns<Dict<Str, Object>> {};
-template <std::convertible_to<Dict<Str, Object>> Value>
-struct __setattr__<Object, "__module__", Value>             : Returns<void> {};
-template <>
-struct __delattr__<Object, "__module__">                    : Returns<void> {};
+template <StaticStr Name, std::convertible_to<Object> Value>
+struct __setattr__<Object, Name, Value>                     : Returns<void> {};
+template <StaticStr Name>
+struct __delattr__<Object, Name>                            : Returns<void> {};
+
+
+template <StaticStr Name>
+struct __getattr__<Module, Name>                            : Returns<Object> {};
+template <StaticStr Name, std::convertible_to<Object> Value>
+struct __setattr__<Module, Name, Value>                     : Returns<void> {};
+template <StaticStr Name>
+struct __delattr__<Module, Name>                            : Returns<void> {};
+
+
+template <StaticStr Name>
+struct __getattr__<Type, Name>                              : Returns<Object> {};
+template <StaticStr Name, std::convertible_to<Object> Value>
+struct __setattr__<Type, Name, Value>                       : Returns<void> {};
+template <StaticStr Name>
+struct __delattr__<Type, Name>                              : Returns<void> {};
+
+
+template <StaticStr Name>
+struct __getattr__<Super, Name>                             : Returns<Object> {};
+template <StaticStr Name, std::convertible_to<Object> Value>
+struct __setattr__<Super, Name, Value>                      : Returns<void> {};
+template <StaticStr Name>
+struct __delattr__<Super, Name>                             : Returns<void> {};
+
+
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__func__">                        : Returns<Function<
+    Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)
+>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__code__">                        : Returns<Code> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__globals__">                     : Returns<Dict<Str, Object>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__closure__">                     : Returns<Tuple<Object>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__defaults__">                    : Returns<Tuple<Object>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__kwdefaults__">                  : Returns<Dict<Str, Object>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__annotations__">                 : Returns<Dict<Str, Object>> {};
 
 
 
 
 
-
-
-
-
-// TODO: figure out how to handle __getattr__, __setattr__, __delattr__
-
-
-
+// TODO: continue for all attributes of all types
 
 
 
@@ -742,44 +2051,36 @@ template <impl::not_proxy_like Self, impl::proxy_like Key>
 struct __getitem__<Self, Key> : __getitem__<Self, impl::unwrap_proxy<Key>> {};
 template <impl::proxy_like Self, impl::proxy_like Key>
 struct __getitem__<Self, Key> : __getitem__<impl::unwrap_proxy<Self>, impl::unwrap_proxy<Key>> {};
-template <typename Key>
+template <std::convertible_to<Object> Key>
 struct __getitem__<Object, Key>                             : Returns<Object> {};
-template <std::derived_from<Str> Self>
-struct __getitem__<Self, Object>                            : Returns<Self> {};
+template <std::convertible_to<Object> Key>
+struct __getitem__<Type, Key>                               : Returns<Object> {};
+template <std::convertible_to<Object> Key>
+struct __getitem__<Super, Key>                              : Returns<Object> {};
 template <std::derived_from<Str> Self, impl::int_like Index>
-struct __getitem__<Self, Index>                             : Returns<Self> {};
+struct __getitem__<Self, Index>                             : Returns<Str> {};
 template <std::derived_from<Str> Self>
-struct __getitem__<Self, Slice>                             : Returns<Self> {};
-template <std::derived_from<Bytes> Self>
-struct __getitem__<Self, Object>                            : Returns<Object> {};
+struct __getitem__<Self, Slice>                             : Returns<Str> {};
 template <std::derived_from<Bytes> Self, impl::int_like Index>
 struct __getitem__<Self, Index>                             : Returns<Int> {};
 template <std::derived_from<Bytes> Self>
-struct __getitem__<Self, Slice>                             : Returns<Self> {};
-template <std::derived_from<ByteArray> Self>
-struct __getitem__<Self, Object>                            : Returns<Object> {};
+struct __getitem__<Self, Slice>                             : Returns<Bytes> {};
 template <std::derived_from<ByteArray> Self, impl::int_like Index>
 struct __getitem__<Self, Index>                             : Returns<Int> {};
 template <std::derived_from<ByteArray> Self>
-struct __getitem__<Self, Slice>                             : Returns<Self> {};
-template <std::derived_from<Range> Self>
-struct __getitem__<Self, Object>                            : Returns<Object> {};
+struct __getitem__<Self, Slice>                             : Returns<ByteArray> {};
 template <std::derived_from<Range> Self, impl::int_like Index>
 struct __getitem__<Self, Index>                             : Returns<Int> {};
 template <std::derived_from<Range> Self>
-struct __getitem__<Self, Slice>                             : Returns<Self> {};
-template <std::derived_from<impl::TupleTag> Self>
-struct __getitem__<Self, Object>                            : Returns<Object> {};
+struct __getitem__<Self, Slice>                             : Returns<Range> {};
 template <std::derived_from<impl::TupleTag> Self, impl::int_like Index>
 struct __getitem__<Self, Index>                             : Returns<typename Self::value_type> {};
 template <std::derived_from<impl::TupleTag> Self>
-struct __getitem__<Self, Slice>                             : Returns<Self> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __getitem__<Self, Object>                            : Returns<Object> {};
+struct __getitem__<Self, Slice>                             : Returns<Tuple<typename Self::value_type>> {};
 template <std::derived_from<impl::ListTag> Self, impl::int_like Index>
 struct __getitem__<Self, Index>                             : Returns<typename Self::value_type> {};
 template <std::derived_from<impl::ListTag> Self>
-struct __getitem__<Self, Slice>                             : Returns<Self> {};
+struct __getitem__<Self, Slice>                             : Returns<List<typename Self::value_type>> {};
 template <
     std::derived_from<impl::DictTag> Self,
     std::convertible_to<typename Self::key_type> Key
@@ -790,10 +2091,6 @@ template <
     std::convertible_to<typename Self::key_type> Key
 >
 struct __getitem__<Self, Key>                               : Returns<typename Self::value_type> {};
-template <typename T>
-struct __getitem__<Type, T>                                 : Returns<Object> {};
-template <typename Key>
-struct __getitem__<Super, Key>                              : Returns<Object> {};
 
 
 template <impl::proxy_like Self, impl::not_proxy_like Key, impl::not_proxy_like Value>
@@ -810,8 +2107,10 @@ template <impl::not_proxy_like Self, impl::not_proxy_like Key, impl::proxy_like 
 struct __setitem__<Self, Key, Value> : __setitem__<Self, Key, impl::unwrap_proxy<Value>> {};
 template <impl::not_proxy_like Self, impl::proxy_like Key, impl::proxy_like Value>
 struct __setitem__<Self, Key, Value> : __setitem__<Self, impl::unwrap_proxy<Key>, impl::unwrap_proxy<Value>> {};
-template <typename Key, typename Value>
+template <std::convertible_to<Object> Key, std::convertible_to<Object> Value>
 struct __setitem__<Object, Key, Value>                      : Returns<void> {};
+template <std::convertible_to<Object> Key, std::convertible_to<Object> Value>
+struct __setitem__<Super, Key, Value>                       : Returns<void> {};
 template <
     std::derived_from<impl::ListTag> Self,
     impl::int_like Key,
@@ -829,8 +2128,6 @@ template <
     std::convertible_to<typename Self::value_type> Value
 >
 struct __setitem__<Self, Key, Value>                        : Returns<void> {};
-template <std::convertible_to<Object> Key, std::convertible_to<Object> Value>
-struct __setitem__<Super, Key, Value>                       : Returns<void> {};
 
 
 template <impl::proxy_like Self, impl::not_proxy_like Key>
@@ -839,10 +2136,10 @@ template <impl::not_proxy_like Self, impl::proxy_like Key>
 struct __delitem__<Self, Key> : __delitem__<Self, impl::unwrap_proxy<Key>> {};
 template <impl::proxy_like Self, impl::proxy_like Key>
 struct __delitem__<Self, Key> : __delitem__<impl::unwrap_proxy<Self>, impl::unwrap_proxy<Key>> {};
-template <typename Key>
+template <std::convertible_to<Object> Key>
 struct __delitem__<Object, Key>                             : Returns<void> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __delitem__<Self, Object>                            : Returns<void> {};
+template <std::convertible_to<Object> Key>
+struct __delitem__<Super, Key>                              : Returns<void> {};
 template <std::derived_from<impl::ListTag> Self, impl::int_like Key>
 struct __delitem__<Self, Key>                               : Returns<void> {};
 template <std::derived_from<impl::ListTag> Self>
@@ -852,8 +2149,6 @@ template <
     std::convertible_to<typename Self::key_type> Key
 >
 struct __delitem__<Self, Key>                               : Returns<void> {};
-template <typename Key>
-struct __delitem__<Super, Key>                              : Returns<void> {};
 
 
 template <impl::proxy_like Self, impl::not_proxy_like Key>
@@ -928,23 +2223,6 @@ template <
     std::convertible_to<typename Self::key_type> Key
 >
 struct __contains__<Self, Key>                              : Returns<bool> {};
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 template <impl::proxy_like Self>
@@ -1073,6 +2351,14 @@ template <>
 struct __hash__<WeakRef>                                    : Returns<size_t> {};
 template <>
 struct __hash__<Object>                                     : Returns<size_t> {};
+template <>
+struct __hash__<NoneType>                                   : Returns<size_t> {};
+template <>
+struct __hash__<NotImplementedType>                         : Returns<size_t> {};
+template <>
+struct __hash__<EllipsisType>                               : Returns<size_t> {};
+template <>
+struct __hash__<Module>                                     : Returns<size_t> {};
 template <>
 struct __hash__<Type>                                       : Returns<size_t> {};
 template <>

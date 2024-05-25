@@ -7,8 +7,9 @@
 
 #include "declarations.h"
 #include "except.h"
-#include "operators.h"
 #include "object.h"
+#include "ops.h"
+#include "control.h"
 
 
 // TODO: something about the way these are handled calls the copy assignment operator

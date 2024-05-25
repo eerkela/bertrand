@@ -61,104 +61,8 @@ template <std::derived_from<impl::KeyTag> Self>
 struct __getattr__<Self, "isdisjoint">                          : Returns<Function<
     Bool(typename Arg<"other", const Object&>::pos)
 >> {};
-template <std::derived_from<impl::KeyTag> Self>
-struct __len__<Self>                                            : Returns<size_t> {};
-template <std::derived_from<impl::KeyTag> Self>
-struct __iter__<Self>                                           : Returns<typename Self::key_type> {};
-template <std::derived_from<impl::KeyTag> Self>
-struct __reversed__<Self>                                       : Returns<typename Self::key_type> {};
-template <
-    std::derived_from<impl::KeyTag> Self,
-    std::convertible_to<typename Self::key_type> Key
->
-struct __contains__<Self, Key>                                  : Returns<bool> {};
-template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
-struct __lt__<Self, T>                                          : Returns<bool> {};
-template <std::derived_from<impl::KeyTag> Self, impl::anyset_like T>
-struct __lt__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::KeyTag> Self>
-struct __lt__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
-struct __le__<Self, T>                                          : Returns<bool> {};
-template <std::derived_from<impl::KeyTag> Self, impl::anyset_like T>
-struct __le__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::KeyTag> Self>
-struct __le__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
-struct __eq__<Self, T>                                          : Returns<bool> {};
-template <std::derived_from<impl::KeyTag> Self, impl::anyset_like T>
-struct __eq__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::KeyTag> Self>
-struct __eq__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
-struct __ne__<Self, T>                                          : Returns<bool> {};
-template <std::derived_from<impl::KeyTag> Self, impl::anyset_like T>
-struct __ne__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::KeyTag> Self>
-struct __ne__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
-struct __ge__<Self, T>                                          : Returns<bool> {};
-template <std::derived_from<impl::KeyTag> Self, impl::anyset_like T>
-struct __ge__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::KeyTag> Self>
-struct __ge__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
-struct __gt__<Self, T>                                          : Returns<bool> {};
-template <std::derived_from<impl::KeyTag> Self, impl::anyset_like T>
-struct __gt__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::KeyTag> Self>
-struct __gt__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
-    requires (Self::template check<T>())
-struct __or__<Self, T>                                          : Returns<Set<typename Self::key_type>> {};
-template <std::derived_from<impl::KeyTag> T, std::derived_from<impl::KeyTag> Self>
-    requires (!T::template check<Self>() && Self::template check<T>())
-struct __or__<T, Self>                                          : Returns<Set<typename Self::key_type>> {};
-template <std::derived_from<impl::KeyTag> Self, typename T>
-    requires (Set<typename Self::key_type>::template check<T>())
-struct __or__<Self, T>                                          : Returns<Set<typename Self::key_type>> {};
-template <typename T, std::derived_from<impl::KeyTag> Self>
-    requires (Set<typename Self::key_type>::template check<T>())
-struct __or__<T, Self>                                          : Returns<Set<typename Self::key_type>> {};
-template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
-    requires (Self::template check<T>())
-struct __and__<Self, T>                                         : Returns<Set<typename Self::key_type>> {};
-template <std::derived_from<impl::KeyTag> T, std::derived_from<impl::KeyTag> Self>
-    requires (!T::template check<Self>() && Self::template check<T>())
-struct __and__<T, Self>                                         : Returns<Set<typename Self::key_type>> {};
-template <std::derived_from<impl::KeyTag> Self, typename T>
-    requires (Set<typename Self::key_type>::template check<T>())
-struct __and__<Self, T>                                         : Returns<Set<typename Self::key_type>> {};
-template <typename T, std::derived_from<impl::KeyTag> Self>
-    requires (Set<typename Self::key_type>::template check<T>())
-struct __and__<T, Self>                                         : Returns<Set<typename Self::key_type>> {};
-template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
-    requires (Self::template check<T>())
-struct __sub__<Self, T>                                         : Returns<Set<typename Self::key_type>> {};
-template <std::derived_from<impl::KeyTag> T, std::derived_from<impl::KeyTag> Self>
-    requires (!T::template check<Self>() && Self::template check<T>())
-struct __sub__<T, Self>                                         : Returns<Set<typename Self::key_type>> {};
-template <std::derived_from<impl::KeyTag> Self, typename T>
-    requires (Set<typename Self::key_type>::template check<T>())
-struct __sub__<Self, T>                                         : Returns<Set<typename Self::key_type>> {};
-template <typename T, std::derived_from<impl::KeyTag> Self>
-    requires (Set<typename Self::key_type>::template check<T>())
-struct __sub__<T, Self>                                         : Returns<Set<typename Self::key_type>> {};
-template <std::derived_from<impl::KeyTag> Self, std::derived_from<impl::KeyTag> T>
-    requires (Self::template check<T>())
-struct __xor__<Self, T>                                         : Returns<Set<typename Self::key_type>> {};
-template <std::derived_from<impl::KeyTag> T, std::derived_from<impl::KeyTag> Self>
-    requires (!T::template check<Self>() && Self::template check<T>())
-struct __xor__<T, Self>                                         : Returns<Set<typename Self::key_type>> {};
-template <std::derived_from<impl::KeyTag> Self, typename T>
-    requires (Set<typename Self::key_type>::template check<T>())
-struct __xor__<Self, T>                                         : Returns<Set<typename Self::key_type>> {};
-template <typename T, std::derived_from<impl::KeyTag> Self>
-    requires (Set<typename Self::key_type>::template check<T>())
-struct __xor__<T, Self>                                         : Returns<Set<typename Self::key_type>> {};
 
 
-namespace impl {
 namespace ops {
 
     template <typename Return, std::derived_from<impl::KeyTag> Self>
@@ -180,7 +84,6 @@ namespace ops {
         };
     };
 
-}
 }
 
 
@@ -332,23 +235,11 @@ public:
 
 template <std::derived_from<impl::ValueTag> Self>
 struct __getattr__<Self, "mapping">                             : Returns<MappingProxy<typename Self::mapping_type>> {};
-template <std::derived_from<impl::ValueTag> Self>
-struct __len__<Self>                                            : Returns<size_t> {};
-template <std::derived_from<impl::ValueTag> Self>
-struct __iter__<Self>                                           : Returns<typename Self::value_type> {};
-template <std::derived_from<impl::ValueTag> Self>
-struct __reversed__<Self>                                       : Returns<typename Self::value_type> {};
-template <
-    std::derived_from<impl::ValueTag> Self,
-    std::convertible_to<typename Self::value_type> Key
->
-struct __contains__<Self, Key>                                  : Returns<bool> {};
 
 
-namespace impl {
 namespace ops {
 
-    template <typename Return, std::derived_from<ValueTag> Self>
+    template <typename Return, std::derived_from<impl::ValueTag> Self>
     struct begin<Return, Self> {
         static auto operator()(const Self& self) {
             PyObject* dict = reinterpret_cast<PyObject*>(
@@ -360,14 +251,13 @@ namespace ops {
         };
     };
 
-    template <typename Return, std::derived_from<ValueTag> Self>
+    template <typename Return, std::derived_from<impl::ValueTag> Self>
     struct end<Return, Self> {
         static auto operator()(const Self& self) {
             return impl::Iterator<impl::ValueIter<Return>>();
         };
     };
 
-}
 }
 
 
@@ -462,20 +352,11 @@ public:
 
 template <std::derived_from<impl::ItemTag> Self>
 struct __getattr__<Self, "mapping">                             : Returns<MappingProxy<typename Self::mapping_type>> {};
-template <std::derived_from<impl::ItemTag> Self>
-struct __len__<Self>                                            : Returns<size_t> {};
-template <std::derived_from<impl::ItemTag> Self>
-struct __iter__<Self>                                           : Returns<std::pair<typename Self::key_type, typename Self::value_type>> {};
-template <std::derived_from<impl::ItemTag> Self>
-struct __reversed__<Self>                                       : Returns<std::pair<typename Self::key_type, typename Self::value_type>> {};
-template <std::derived_from<impl::ItemTag> Self, impl::tuple_like Key>
-struct __contains__<Self, Key>                                  : Returns<bool> {};
 
 
-namespace impl {
 namespace ops {
 
-    template <typename Return, std::derived_from<ItemTag> Self>
+    template <typename Return, std::derived_from<impl::ItemTag> Self>
     struct begin<Return, Self> {
         static auto operator()(const Self& self) {
             PyObject* dict = reinterpret_cast<PyObject*>(
@@ -487,7 +368,7 @@ namespace ops {
         };
     };
 
-    template <typename Return, std::derived_from<ItemTag> Self>
+    template <typename Return, std::derived_from<impl::ItemTag> Self>
     struct end<Return, Self> {
         static auto operator()(const Self& self) {
             return impl::Iterator<impl::ItemIter<Return>>();
@@ -503,7 +384,6 @@ namespace ops {
     // -> This is the exact use case for py::Struct, but py::Struct requires elements
     // from the function refactor (namely py::arg<name, type>)
 
-}
 }
 
 
@@ -658,47 +538,11 @@ template <std::derived_from<impl::DictTag> Self>
 struct __getattr__<Self, "items">                           : Returns<Function<
     ItemView<Self>()
 >> {};
-template <std::derived_from<impl::DictTag> Self>
-struct __len__<Self>                                        : Returns<size_t> {};
-template <std::derived_from<impl::DictTag> Self>
-struct __iter__<Self>                                       : Returns<typename Self::key_type> {};
-template <std::derived_from<impl::DictTag> Self>
-struct __reversed__<Self>                                   : Returns<typename Self::key_type> {};
-template <
-    std::derived_from<impl::DictTag> Self,
-    std::convertible_to<typename Self::key_type> Key
->
-struct __contains__<Self, Key>                              : Returns<bool> {};
-template <
-    std::derived_from<impl::DictTag> Self,
-    std::convertible_to<typename Self::key_type> Key
->
-struct __getitem__<Self, Key>                               : Returns<typename Self::value_type> {};
-template <
-    std::derived_from<impl::DictTag> Self,
-    std::convertible_to<typename Self::key_type> Key
->
-struct __setitem__<Self, Key, typename Self::value_type>    : Returns<void> {};
-template <
-    std::derived_from<impl::DictTag> Self,
-    std::convertible_to<typename Self::key_type> Key
->
-struct __delitem__<Self, Key>                               : Returns<void> {};
-template <std::derived_from<impl::DictTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __or__<Self, T>                                      : Returns<Self> {};
-template <std::derived_from<impl::DictTag> T, std::derived_from<impl::DictTag> Self>
-    requires (!T::template check<Self>() && Self::template check<T>())
-struct __or__<T, Self>                                      : Returns<Self> {};
-template <std::derived_from<impl::DictTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __ior__<Self, T>                                     : Returns<Self&> {};
 
 
-namespace impl {
 namespace ops {
 
-    template <typename Return, std::derived_from<DictTag> Self>
+    template <typename Return, std::derived_from<impl::DictTag> Self>
     struct len<Return, Self> {
         static size_t operator()(const Self& self) {
             return static_cast<size_t>(PyDict_Size(self.ptr()));
@@ -719,9 +563,9 @@ namespace ops {
         };
     };
 
-    template <typename Return, std::derived_from<DictTag> Self, typename Key>
+    template <typename Return, std::derived_from<impl::DictTag> Self, typename Key>
     struct contains<Return, Self, Key> {
-        static bool operator()(const Self& self, const to_object<Key>& key) {
+        static bool operator()(const Self& self, const impl::as_object_t<Key>& key) {
             int result = PyDict_Contains(self.ptr(), key.ptr());
             if (result == -1) {
                 Exception::from_python();
@@ -730,7 +574,6 @@ namespace ops {
         }
     };
 
-}
 }
 
 
@@ -1244,26 +1087,6 @@ public:
 };
 
 
-/* Implicitly convert a py::Dict into a C++ mapping type. */
-template <std::derived_from<impl::DictTag> Self, impl::cpp_like T>
-    requires (impl::dict_like<T>)
-struct __cast__<Self, T> {
-    static T operator()(const Self& self) {
-        T result;
-        PyObject* k;
-        PyObject* v;
-        Py_ssize_t pos = 0;
-        while (PyDict_Next(self.ptr(), &pos, &k, &v)) {
-            auto key = reinterpret_borrow<typename Self::key_type>(k);
-            auto value = reinterpret_borrow<typename Self::value_type>(v);
-            result[impl::implicit_cast<typename T::key_type>(key)] =
-                impl::implicit_cast<typename T::mapped_type>(value);
-        }
-        return result;
-    }
-};
-
-
 ////////////////////////////
 ////    MAPPINGPROXY    ////
 ////////////////////////////
@@ -1292,40 +1115,11 @@ template <std::derived_from<impl::MappingProxyTag> Self>
 struct __getattr__<Self, "items">                               : Returns<Function<
     ItemView<typename Self::mapping_type>()
 >> {};
-template <std::derived_from<impl::MappingProxyTag> Self>
-struct __len__<Self>                                            : Returns<size_t> {};
-template <std::derived_from<impl::MappingProxyTag> Self>
-struct __iter__<Self>                                           : Returns<typename Self::key_type> {};
-template <std::derived_from<impl::MappingProxyTag> Self>
-struct __reversed__<Self>                                       : Returns<typename Self::key_type> {};
-template <
-    std::derived_from<impl::MappingProxyTag> Self,
-    std::convertible_to<typename Self::key_type> Key
->
-struct __contains__<Self, Key>                                  : Returns<bool> {};
-template <
-    std::derived_from<impl::MappingProxyTag> Self,
-    std::convertible_to<typename Self::key_type> Key
->
-struct __getitem__<Self, Key>                                   : Returns<typename Self::value_type> {};
-template <std::derived_from<impl::MappingProxyTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __or__<Self, T>                                          : Returns<Dict<typename Self::key_type, typename Self::value_type>> {};
-template <std::derived_from<impl::MappingProxyTag> T, std::derived_from<impl::MappingProxyTag> Self>
-    requires (!T::template check<Self>() && Self::template check<T>())
-struct __or__<T, Self>                                          : Returns<Dict<typename Self::key_type, typename Self::value_type>> {};
-template <std::derived_from<impl::MappingProxyTag> Self, typename T>
-    requires (Dict<typename Self::key_type, typename Self::value_type>::template check<T>())
-struct __or__<Self, T>                                          : Returns<Dict<typename Self::key_type, typename Self::value_type>> {};
-template <typename T, std::derived_from<impl::MappingProxyTag> Self>
-    requires (Dict<typename Self::key_type, typename Self::value_type>::template check<T>())
-struct __or__<T, Self>                                          : Returns<Dict<typename Self::key_type, typename Self::value_type>> {};
 
 
-namespace impl {
 namespace ops {
 
-    template <typename Return, std::derived_from<MappingProxyTag> Self>
+    template <typename Return, std::derived_from<impl::MappingProxyTag> Self>
     struct len<Return, Self> {
         static size_t operator()(const Self& self) {
             PyObject* dict = reinterpret_cast<PyObject*>(
@@ -1337,7 +1131,7 @@ namespace ops {
         }
     };
 
-    template <typename Return, std::derived_from<MappingProxyTag> Self>
+    template <typename Return, std::derived_from<impl::MappingProxyTag> Self>
     struct begin<Return, Self> {
         static auto operator()(const Self& self) {
             PyObject* dict = reinterpret_cast<PyObject*>(
@@ -1349,7 +1143,7 @@ namespace ops {
         };
     };
 
-    template <typename Return, std::derived_from<MappingProxyTag> Self>
+    template <typename Return, std::derived_from<impl::MappingProxyTag> Self>
     struct end<Return, Self> {
         static auto operator()(const Self& self) {
             PyObject* dict = reinterpret_cast<PyObject*>(
@@ -1361,7 +1155,7 @@ namespace ops {
         };
     };
 
-    template <typename Return, std::derived_from<MappingProxyTag> Self>
+    template <typename Return, std::derived_from<impl::MappingProxyTag> Self>
     struct rbegin<Return, Self> {
         static auto operator()(const Self& self) {
             PyObject* dict = reinterpret_cast<PyObject*>(
@@ -1373,7 +1167,7 @@ namespace ops {
         };
     };
 
-    template <typename Return, std::derived_from<MappingProxyTag> Self>
+    template <typename Return, std::derived_from<impl::MappingProxyTag> Self>
     struct rend<Return, Self> {
         static auto operator()(const Self& self) {
             PyObject* dict = reinterpret_cast<PyObject*>(
@@ -1385,7 +1179,7 @@ namespace ops {
         };
     };
 
-    template <typename Return, std::derived_from<MappingProxyTag> Self, typename Key>
+    template <typename Return, std::derived_from<impl::MappingProxyTag> Self, typename Key>
     struct contains<Return, Self, Key> {
         static bool operator()(const Self& self, const Key& key) {
             PyObject* dict = reinterpret_cast<PyObject*>(
@@ -1398,7 +1192,6 @@ namespace ops {
         }
     };
 
-}
 }
 
 

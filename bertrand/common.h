@@ -26,4 +26,8 @@
 #endif
 
 
+#define BERTRAND_CONCAT_PAIR_DETAIL(x, y) x##y
+#define BERTRAND_CONCAT_PAIR(x, y) BERTRAND_CONCAT_PAIR_DETAIL(x, y)
+
+
 #endif  // BERTRAND_COMMON_H

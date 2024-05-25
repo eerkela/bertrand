@@ -7,8 +7,10 @@
 
 #include "declarations.h"
 #include "except.h"
-#include "operators.h"
+#include "ops.h"
 #include "object.h"
+#include "func.h"
+#include "accessor.h"
 
 
 namespace bertrand {

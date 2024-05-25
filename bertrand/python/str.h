@@ -270,55 +270,6 @@ struct __getattr__<T, "zfill">                                  : Returns<Functi
     T(typename Arg<"width", const Int&>::pos)
 >> {};
 
-template <std::derived_from<Str> T>
-struct __len__<T>                                               : Returns<size_t> {};
-template <std::derived_from<Str> T>
-struct __iter__<T>                                              : Returns<Str> {};
-template <std::derived_from<Str> T>
-struct __reversed__<T>                                          : Returns<Str> {};
-template <std::derived_from<Str> T>
-struct __contains__<T, Object>                                  : Returns<bool> {};
-template <std::derived_from<Str> T, impl::str_like Key>
-struct __contains__<T, Key>                                     : Returns<bool> {};
-template <std::derived_from<Str> T>
-struct __getitem__<T, Object>                                   : Returns<Str> {};
-template <std::derived_from<Str> T, impl::int_like Key>
-struct __getitem__<T, Key>                                      : Returns<Str> {};
-template <std::derived_from<Str> T>
-struct __getitem__<T, Slice>                                    : Returns<Str> {};
-template <std::derived_from<Str> L>
-struct __lt__<L, Object>                                        : Returns<bool> {};
-template <std::derived_from<Str> L, impl::str_like R>
-struct __lt__<L, R>                                             : Returns<bool> {};
-template <std::derived_from<Str> L>
-struct __le__<L, Object>                                        : Returns<bool> {};
-template <std::derived_from<Str> L, impl::str_like R>
-struct __le__<L, R>                                             : Returns<bool> {};
-template <std::derived_from<Str> L>
-struct __ge__<L, Object>                                        : Returns<bool> {};
-template <std::derived_from<Str> L, impl::str_like R>
-struct __ge__<L, R>                                             : Returns<bool> {};
-template <std::derived_from<Str> L>
-struct __gt__<L, Object>                                        : Returns<bool> {};
-template <std::derived_from<Str> L, impl::str_like R>
-struct __gt__<L, R>                                             : Returns<bool> {};
-template <std::derived_from<Str> L>
-struct __add__<L, Object>                                       : Returns<Str> {};
-template <std::derived_from<Str> L, impl::str_like R>
-struct __add__<L, R>                                            : Returns<Str> {};
-template <std::derived_from<Str> L>
-struct __iadd__<L, Object>                                      : Returns<Str> {};
-template <std::derived_from<Str> L, impl::str_like R>
-struct __iadd__<L, R>                                           : Returns<Str> {};
-template <std::derived_from<Str> L>
-struct __mul__<L, Object>                                       : Returns<Str> {};
-template <std::derived_from<Str> L, impl::int_like R>
-struct __mul__<L, R>                                            : Returns<Str> {};
-template <std::derived_from<Str> L>
-struct __imul__<L, Object>                                      : Returns<Str> {};
-template <std::derived_from<Str> L, impl::int_like R>
-struct __imul__<L, R>                                           : Returns<Str> {};
-
 
 /* Represents a statically-typed Python string in C++. */
 class Str : public Object {
@@ -977,21 +928,6 @@ public:
 };
 
 
-/* Implicitly convert a py::Str into a C++ std::string. */
-template <std::derived_from<Str> Self>
-struct __cast__<Self, std::string> : Returns<std::string> {
-    static std::string operator()(const Self& self) {
-        Py_ssize_t length;
-        const char* result = PyUnicode_AsUTF8AndSize(self.ptr(), &length);
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return {result, static_cast<size_t>(length)};
-    }
-};
-
-
-namespace impl {
 namespace ops {
 
     template <typename Return, std::derived_from<Str> Self>
@@ -1003,7 +939,7 @@ namespace ops {
 
     template <typename Return, std::derived_from<Str> Self, typename Key>
     struct contains<Return, Self, Key> {
-        static bool operator()(const Self& self, const to_object<Key>& key) {
+        static bool operator()(const Self& self, const impl::as_object_t<Key>& key) {
             int result = PyUnicode_Contains(self.ptr(), key.ptr());
             if (result == -1) {
                 Exception::from_python();
@@ -1015,7 +951,7 @@ namespace ops {
     template <typename Return, typename L, typename R>
         requires (std::derived_from<L, Str> || std::derived_from<R, Str>)
     struct add<Return, L, R> {
-        static Return operator()(const to_object<L>& lhs, to_object<R>& rhs) {
+        static Return operator()(const impl::as_object_t<L>& lhs, impl::as_object_t<R>& rhs) {
             PyObject* result = PyUnicode_Concat(lhs.ptr(), rhs.ptr());
             if (result == nullptr) {
                 Exception::from_python();
@@ -1039,7 +975,6 @@ namespace ops {
     template <typename Return, std::derived_from<Str> L, typename R>
     struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
 
-}
 }
 
 

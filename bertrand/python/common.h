@@ -8,78 +8,21 @@
 
 #include "common/declarations.h"
 #include "common/except.h"
-#include "common/operators.h"
+#include "common/ops.h"
 #include "common/object.h"
+#include "common/func.h"
 #include "common/accessor.h"
 #include "common/iter.h"
-#include "common/func.h"
-
-
-// TODO: separate module into its own module.h file, along with py::import<>.
+#include "common/control.h"
 
 
 namespace bertrand {
 namespace py {
 
 
-/* Pybind11's wrapper classes cover most of the Python standard library, but not all of
- * it, and not with the same syntax as normal Python.  They're also all given in
- * lowercase C++ style, which can cause ambiguities with native C++ types (e.g.
- * pybind11::int_) and non-member functions of the same name.  As such, bertrand
- * provides its own set of wrappers that extend the pybind11 types to the whole CPython
- * API.  These wrappers are designed to be used with nearly identical semantics to the
- * Python types they represent, making them more self-documenting and easier to use
- * from C++.  For questions, refer to the Python documentation first and then the
- * source code for the types themselves, which are provided in named header files
- * within this directory.
- *
- * The final syntax is very similar to standard pybind11.  For example, the following
- * pybind11 code:
- *
- *    py::list foo = py::cast(std::vector<int>{1, 2, 3});
- *    py::int_ bar = foo.attr("pop")();
- *
- * Would be written as:
- *
- *    py::List foo = {1, 2, 3};
- *    py::Int bar = foo.pop();
- *
- * Which closely mimics Python:
- *
- *    foo = [1, 2, 3]
- *    bar = foo.pop()
- *
- * Note that the initializer list syntax is standardized for all container types, as
- * well as any function/method that expects a sequence.  This gives a direct equivalent
- * to Python's tuple, list, set, and dict literals, which can be expressed as:
- *
- *     py::Tuple{1, "a", true};                     // (1, "a", True)
- *     py::List{1, "a", true};                      // [1, 2, 3]
- *     py::Set{1, "a", true};                       // {1, 2, 3}
- *     py::Dict{{1, 3.0}, {"a", 2}, {true, "x"}};   // {1: 3.0, "a": 2, True: "x"}
- *
- * Note also that these initializer lists can contain any type, including mixed types.
- *
- * Built-in Python types:
- *    https://docs.python.org/3/library/stdtypes.html
- */
-
-
-template <>
-struct __hash__<Handle>                                         : Returns<size_t> {};
-template <>
-struct __hash__<Capsule>                                        : Returns<size_t> {};
-template <>
-struct __hash__<WeakRef>                                        : Returns<size_t> {};
-
-
 ////////////////////
 ////    NONE    ////
 ////////////////////
-
-
-template <>
-struct __hash__<NoneType>                                       : Returns<size_t> {};
 
 
 /* Represents the type of Python's `None` singleton in C++. */
@@ -128,10 +71,6 @@ public:
 //////////////////////////////
 ////    NOTIMPLEMENTED    ////
 //////////////////////////////
-
-
-template <>
-struct __hash__<NotImplementedType>                             : Returns<size_t> {};
 
 
 /* Represents the type of Python's `NotImplemented` singleton in C++. */
@@ -190,10 +129,6 @@ public:
 ////////////////////////
 ////    ELLIPSIS    ////
 ////////////////////////
-
-
-template <>
-struct __hash__<EllipsisType>                                   : Returns<size_t> {};
 
 
 /* Represents the type of Python's `Ellipsis` singleton in C++. */
@@ -289,23 +224,6 @@ template <std::derived_from<Slice> Self>
 struct __getattr__<Self, "stop">                                : Returns<Object> {};
 template <std::derived_from<Slice> Self>
 struct __getattr__<Self, "step">                                : Returns<Object> {};
-
-template <>
-struct __lt__<Slice, Object>                                    : Returns<bool> {};
-template <impl::slice_like T>
-struct __lt__<Slice, T>                                         : Returns<bool> {};
-template <>
-struct __le__<Slice, Object>                                    : Returns<bool> {};
-template <impl::slice_like T>
-struct __le__<Slice, T>                                         : Returns<bool> {};
-template <>
-struct __ge__<Slice, Object>                                    : Returns<bool> {};
-template <impl::slice_like T>
-struct __ge__<Slice, T>                                         : Returns<bool> {};
-template <>
-struct __gt__<Slice, Object>                                    : Returns<bool> {};
-template <impl::slice_like T>
-struct __gt__<Slice, T>                                         : Returns<bool> {};
 
 
 /* Represents a statically-typed Python `slice` object in C++.  Note that the start,
@@ -468,14 +386,9 @@ public:
 };
 
 
-template <>
-struct __hash__<Module>                                         : Returns<size_t> {};
-template <StaticStr name> requires (!impl::getattr_helper<name>::enable)
-struct __getattr__<Module, name>                                : Returns<Object> {};
-template <StaticStr name, typename Value> requires (!impl::setattr_helper<name>::enable)
-struct __setattr__<Module, name, Value>                         : Returns<void> {};
-template <StaticStr name> requires (!impl::delattr_helper<name>::enable)
-struct __delattr__<Module, name>                                : Returns<void> {};
+//////////////////////
+////    MODULE    ////
+//////////////////////
 
 
 /* Represents an imported Python module in C++. */
@@ -565,7 +478,7 @@ public:
                 pybind11::name(name_),
                 pybind11::scope(*this),
                 pybind11::sibling(
-                    pybind11::getattr(*this, name_, None)
+                    pybind11::getattr(*this, name_, Py_None)
                 ),
                 extra...
             );
@@ -613,13 +526,33 @@ public:
 };
 
 
+/* Equivalent to Python `import module`.  Only recognizes absolute imports. */
+template <StaticStr name>
+Module import() {
+    PyObject* obj = PyImport_Import(impl::TemplateString<name>::ptr);
+    if (obj == nullptr) {
+        Exception::from_python();
+    }
+    return reinterpret_steal<Module>(obj);
+}
+
+
+/* A replacement for PYBIND11_MODULE that reinterprets the resulting module as a
+py::Module object. */
+#define BERTRAND_MODULE(name, variable) \
+    PYBIND11_MODULE(name, BERTRAND_CONCAT_PAIR(variable, __LINE__)) \
+    auto variable = bertrand::py::reinterpret_steal<bertrand::py::Module>( \
+        BERTRAND_CONCAT_PAIR(variable, __LINE__).release() \
+    );
+
+
 ////////////////////////////////////
 ////    FORWARD DECLARATIONS    ////
 ////////////////////////////////////
 
 
 template <typename Return, typename Self, typename Key>
-auto impl::ops::getitem<Return, Self, Key>::operator()(const Self& self, auto&& key) {
+auto ops::getitem<Return, Self, Key>::operator()(const Self& self, auto&& key) {
     return impl::Item<Self, Key>(self, std::forward<decltype(key)>(key));
 }
 
@@ -630,7 +563,7 @@ auto Object::operator[](
     const std::initializer_list<impl::SliceInitializer>& slice
 ) {
     using Return = typename __getitem__<Self, Slice>::Return;
-    return impl::ops::getitem<Return, Self, Slice>::operator()(
+    return ops::getitem<Return, Self, Slice>::operator()(
         self,
         Slice(slice)
     );
@@ -638,7 +571,7 @@ auto Object::operator[](
 
 
 template <typename Return, typename Self>
-auto impl::ops::begin<Return, Self>::operator()(const Self& self) {
+auto ops::begin<Return, Self>::operator()(const Self& self) {
     PyObject* iter = PyObject_GetIter(self.ptr());
     if (iter == nullptr) {
         Exception::from_python();
@@ -648,13 +581,13 @@ auto impl::ops::begin<Return, Self>::operator()(const Self& self) {
 
 
 template <typename Return, typename Self>
-auto impl::ops::end<Return, Self>::operator()(const Self& self) {
+auto ops::end<Return, Self>::operator()(const Self& self) {
     return impl::Iterator<impl::GenericIter<Return>>();
 }
 
 
 template <typename Return, typename Self>
-auto impl::ops::rbegin<Return, Self>::operator()(const Self& self) {
+auto ops::rbegin<Return, Self>::operator()(const Self& self) {
     return impl::Iterator<impl::GenericIter<Return>>(
         impl::call_method<"__reversed__">(self)
     );
@@ -662,7 +595,7 @@ auto impl::ops::rbegin<Return, Self>::operator()(const Self& self) {
 
 
 template <typename Return, typename Self>
-auto impl::ops::rend<Return, Self>::operator()(const Self& self) {
+auto ops::rend<Return, Self>::operator()(const Self& self) {
     return impl::Iterator<impl::GenericIter<Return>>();
 }
 
@@ -673,22 +606,6 @@ auto impl::Proxy<Obj, Wrapped>::operator[](
     const std::initializer_list<impl::SliceInitializer>& slice
 ) const {
     return get_value()[slice];
-}
-
-
-////////////////////////////////
-////    GLOBAL FUNCTIONS    ////
-////////////////////////////////
-
-
-/* Equivalent to Python `import module`.  Only recognizes absolute imports. */
-template <StaticStr name>
-Module import() {
-    PyObject* obj = PyImport_Import(impl::TemplateString<name>::ptr);
-    if (obj == nullptr) {
-        Exception::from_python();
-    }
-    return reinterpret_steal<Module>(obj);
 }
 
 
@@ -709,7 +626,7 @@ template <std::derived_from<bertrand::py::Object> T>
 struct type_caster<T> {
     PYBIND11_TYPE_CASTER(T, const_name("Object"));
 
-    /* Convert Python object to a C++ Object. */
+    /* Convert Python object to a C++ py::Object. */
     bool load(handle src, bool convert) {
         if (!convert) {
             return false;
@@ -730,7 +647,7 @@ template <bertrand::py::impl::proxy_like T>
 struct type_caster<T> {
     PYBIND11_TYPE_CASTER(T, const_name("Proxy"));
 
-    /* Convert Python object to a C++ Proxy. */
+    /* Convert Python object to a C++ accessor proxy. */
     bool load(handle src, bool convert) {
         return false;
     }
@@ -745,52 +662,6 @@ struct type_caster<T> {
 
 }  // namespace detail
 }  // namespace pybind11
-
-
-//////////////////////////////
-////    STL EXTENSIONS    ////
-//////////////////////////////
-
-
-/* Bertrand overloads std::hash<> for all Python objects hashable so that they can be
- * used in STL containers like std::unordered_map and std::unordered_set.  This is
- * accomplished by overloading std::hash<> for the relevant types, which also allows
- * us to promote hash-not-implemented errors to compile-time.
- */
-
-
-namespace std {
-
-    template <typename T> requires (bertrand::py::__hash__<T>::enable)
-    struct hash<T> {
-        static_assert(
-            std::same_as<typename bertrand::py::__hash__<T>::Return, size_t>,
-            "std::hash<> must return size_t for compatibility with other C++ types.  "
-            "Check your specialization of __hash__ for this type and ensure the "
-            "Return type is set to size_t."
-        );
-
-        static size_t operator()(const T& obj) {
-            return pybind11::hash(obj);
-        }
-    };
-
-    #define BERTRAND_STD_EQUAL_TO(cls)                                                  \
-        template <>                                                                     \
-        struct equal_to<cls> {                                                          \
-            static bool operator()(const cls& a, const cls& b) {                        \
-                return a.equal(b);                                                      \
-            }                                                                           \
-        };                                                                              \
-
-    BERTRAND_STD_EQUAL_TO(bertrand::py::Handle)
-    BERTRAND_STD_EQUAL_TO(bertrand::py::WeakRef)
-    BERTRAND_STD_EQUAL_TO(bertrand::py::Capsule)
-
-
-    #undef BERTRAND_STD_EQUAL_TO
-
-};
 
 
 #endif // BERTRAND_PYTHON_COMMON_H

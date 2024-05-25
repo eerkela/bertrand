@@ -321,60 +321,6 @@ namespace impl {
 
 
 template <std::derived_from<impl::IBytesTag> T>
-struct __len__<T>                                               : Returns<size_t> {};
-template <std::derived_from<Bytes> T>
-struct __hash__<T>                                              : Returns<size_t> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __iter__<T>                                              : Returns<Int> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __reversed__<T>                                          : Returns<Int> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __contains__<T, Object>                                  : Returns<bool> {};
-template <std::derived_from<impl::IBytesTag> T, impl::int_like Key>
-struct __contains__<T, Key>                                     : Returns<bool> {};
-template <std::derived_from<impl::IBytesTag> T, impl::anybytes_like Key>
-struct __contains__<T, Key>                                     : Returns<bool> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getitem__<T, Object>                                   : Returns<Object> {};
-template <std::derived_from<impl::IBytesTag> T, impl::int_like Key>
-struct __getitem__<T, Key>                                      : Returns<Int> {};
-template <std::derived_from<impl::IBytesTag> T>
-struct __getitem__<T, Slice>                                    : Returns<T> {};
-template <std::derived_from<impl::IBytesTag> L>
-struct __lt__<L, Object>                                        : Returns<bool> {};
-template <std::derived_from<impl::IBytesTag> L, impl::anybytes_like R>
-struct __lt__<L, R>                                             : Returns<bool> {};
-template <std::derived_from<impl::IBytesTag> L>
-struct __le__<L, Object>                                        : Returns<bool> {};
-template <std::derived_from<impl::IBytesTag> L, impl::anybytes_like R>
-struct __le__<L, R>                                             : Returns<bool> {};
-template <std::derived_from<impl::IBytesTag> L>
-struct __gt__<L, Object>                                        : Returns<bool> {};
-template <std::derived_from<impl::IBytesTag> L, impl::anybytes_like R>
-struct __gt__<L, R>                                             : Returns<bool> {};
-template <std::derived_from<impl::IBytesTag> L>
-struct __ge__<L, Object>                                        : Returns<bool> {};
-template <std::derived_from<impl::IBytesTag> L, impl::anybytes_like R>
-struct __ge__<L, R>                                             : Returns<bool> {};
-template <std::derived_from<impl::IBytesTag> L>
-struct __add__<L, Object>                                       : Returns<L> {};
-template <std::derived_from<impl::IBytesTag> L, impl::anybytes_like R>
-struct __add__<L, R>                                            : Returns<L> {};
-template <std::derived_from<impl::IBytesTag> L>
-struct __iadd__<L, Object>                                      : Returns<L&> {};
-template <std::derived_from<impl::IBytesTag> L, impl::anybytes_like R>
-struct __iadd__<L, R>                                           : Returns<L&> {};
-template <std::derived_from<impl::IBytesTag> L>
-struct __mul__<L, Object>                                       : Returns<L> {};
-template <std::derived_from<impl::IBytesTag> L, impl::int_like R>
-struct __mul__<L, R>                                            : Returns<L> {};
-template <std::derived_from<impl::IBytesTag> L>
-struct __imul__<L, Object>                                      : Returns<L&> {};
-template <std::derived_from<impl::IBytesTag> L, impl::int_like R>
-struct __imul__<L, R>                                           : Returns<L&> {};
-
-
-template <std::derived_from<impl::IBytesTag> T>
 struct __getattr__<T, "capitalize">                             : Returns<Function<
     T()
 >> {};
@@ -712,7 +658,6 @@ public:
 };
 
 
-namespace impl {
 namespace ops {
 
     template <typename Return, std::derived_from<Bytes> Self>
@@ -724,7 +669,7 @@ namespace ops {
 
     template <typename Return, std::derived_from<Bytes> L, typename R>
     struct iadd<Return, L, R> {
-        static void operator()(L& lhs, const to_object<R>& rhs) {
+        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
             PyObject* result = lhs.ptr();
             PyBytes_Concat(&result, Bytes(rhs).ptr());
             if (result == nullptr) {
@@ -756,7 +701,6 @@ namespace ops {
     template <typename Return, std::derived_from<Bytes> L, typename R>
     struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
 
-}
 }
 
 
@@ -874,7 +818,6 @@ public:
 };
 
 
-namespace impl {
 namespace ops {
 
     template <typename Return, std::derived_from<ByteArray> Self>
@@ -910,7 +853,6 @@ namespace ops {
     template <typename Return, std::derived_from<ByteArray> L, typename R>
     struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
 
-}
 }
 
 

@@ -11,7 +11,6 @@
 #include "common.h"
 #include "int.h"
 #include "float.h"
-#include "code.h"  // TODO: delete?
 
 
 // TODO: allow for complex/Decimal operands?
@@ -102,7 +101,7 @@ class Round {
             return Derived::template py_div<Quotient, L, R>(lhs, rhs);
         }
 
-        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        template <typename L, typename R> requires (!impl::any_are_python_like<L, R>)
         static auto div(const L& lhs, const R& rhs) {
             if (rhs == 0) {
                 throw ZeroDivisionError("division by zero");
@@ -117,7 +116,7 @@ class Round {
             return Derived::template py_mod<Remainder, L, R>(lhs, rhs);
         }
 
-        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        template <typename L, typename R> requires (!impl::any_are_python_like<L, R>)
         static auto mod(const L& lhs, const R& rhs) {
             if (rhs == 0) {
                 throw ZeroDivisionError("division by zero");
@@ -135,7 +134,7 @@ class Round {
             return Derived::template py_divmod<Quotient, Remainder, L, R>(lhs, rhs);
         }
 
-        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        template <typename L, typename R> requires (!impl::any_are_python_like<L, R>)
         static auto divmod(const L& lhs, const R& rhs) {
             if (rhs == 0) {
                 throw ZeroDivisionError("division by zero");
@@ -226,16 +225,16 @@ class Round {
 
     };
 
-    struct ops {
+    struct op {
 
         template <typename Return, typename L, typename R>
         static Return floordiv(const L& lhs, const R& rhs) {
-            return impl::ops::floordiv<Return, L, R>::operator()(lhs, rhs);
+            return ops::floordiv<Return, L, R>::operator()(lhs, rhs);
         }
 
         template <typename Return, typename L, typename R>
         static Return mod(const L& lhs, const R& rhs) {
-            return impl::ops::mod<Return, L, R>::operator()(lhs, rhs);
+            return ops::mod<Return, L, R>::operator()(lhs, rhs);
         }
 
     };
@@ -249,19 +248,19 @@ public:
          * incurred by the division.
          */
 
-        template <typename L, typename R> requires (impl::object_operand<L, R>)
+        template <typename L, typename R> requires (impl::any_are_python_like<L, R>)
         static auto div(const L& lhs, const R& rhs) {
             return lhs / rhs;
         }
 
-        template <typename L, typename R> requires (impl::object_operand<L, R>)
+        template <typename L, typename R> requires (impl::any_are_python_like<L, R>)
         static auto mod(const L& lhs, const R& rhs) {
             using Remainder = decltype(lhs - ((lhs / rhs) * rhs));
             Object a = lhs, b = rhs;
             return reinterpret_steal<Remainder>((a - ((a / b) * b)).release());
         }
 
-        template <typename L, typename R> requires (impl::object_operand<L, R>)
+        template <typename L, typename R> requires (impl::any_are_python_like<L, R>)
         static auto divmod(const L& lhs, const R& rhs) {
             using Quotient = decltype(lhs / rhs);
             using Remainder = decltype(lhs - ((lhs / rhs) * rhs));
@@ -274,7 +273,7 @@ public:
             );
         }
 
-        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        template <typename L, typename R> requires (!impl::any_are_python_like<L, R>)
         static auto div(const L& lhs, const R& rhs) {
             if constexpr (std::integral<L> && std::integral<R>) {
                 return static_cast<double>(lhs) / rhs;
@@ -283,12 +282,12 @@ public:
             }
         }
 
-        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        template <typename L, typename R> requires (!impl::any_are_python_like<L, R>)
         static auto mod(const L& lhs, const R& rhs) {
             return lhs - (div(lhs, rhs) * rhs);
         }
 
-        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        template <typename L, typename R> requires (!impl::any_are_python_like<L, R>)
         static auto divmod(const L& lhs, const R& rhs) {
             auto quotient = div(lhs, rhs);
             return std::make_pair(quotient, lhs - (quotient * rhs));
@@ -309,11 +308,11 @@ public:
          * integer division.
          */
 
-        template <typename L, typename R> requires (impl::object_operand<L, R>)
+        template <typename L, typename R> requires (impl::any_are_python_like<L, R>)
         static auto div(const L& lhs, const R& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
                 Int a = lhs, b = rhs;
-                Int quotient = ops::floordiv<Int>(a, b);
+                Int quotient = op::floordiv<Int>(a, b);
                 if ((quotient < Int::zero()) && ((a % b) != Int::zero())) {
                     ++quotient;
                 }
@@ -322,7 +321,7 @@ public:
             } else if constexpr (std::same_as<L, Object> && std::same_as<R, Object>) {
                 Object a = lhs, b = rhs;
                 if (PyLong_Check(a.ptr()) && PyLong_Check(b.ptr())) {
-                    Object quotient = ops::floordiv<Object>(a, b);
+                    Object quotient = op::floordiv<Object>(a, b);
                     if ((quotient < Int::zero()) && ((a % b) != Int::zero())) {
                         ++quotient;
                     }
@@ -335,7 +334,7 @@ public:
             }
         }
 
-        template <typename L, typename R> requires (impl::object_operand<L, R>)
+        template <typename L, typename R> requires (impl::any_are_python_like<L, R>)
         static auto mod(const L& lhs, const R& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
                 Int a = lhs, b = rhs;
@@ -363,11 +362,11 @@ public:
             }
         }
 
-        template <typename L, typename R> requires (impl::object_operand<L, R>)
+        template <typename L, typename R> requires (impl::any_are_python_like<L, R>)
         static auto divmod(const L& lhs, const R& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
                 Int a = lhs, b = rhs;
-                Int quotient = ops::floordiv<Int>(a, b);
+                Int quotient = op::floordiv<Int>(a, b);
                 Int remainder = a % b;
                 if ((quotient < Int::zero()) && (remainder != Int::zero())) {
                     ++quotient;
@@ -378,7 +377,7 @@ public:
             } else if constexpr (std::same_as<L, Object> && std::same_as<R, Object>) {
                 Object a = lhs, b = rhs;
                 if (PyLong_Check(a.ptr()) && PyLong_Check(b.ptr())) {
-                    Object quotient = ops::floordiv<Object>(a, b);
+                    Object quotient = op::floordiv<Object>(a, b);
                     Object remainder = a % b;
                     if ((quotient < Int::zero()) && (remainder != Int::zero())) {
                         ++quotient;
@@ -402,12 +401,12 @@ public:
             }
         }
 
-        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        template <typename L, typename R> requires (!impl::any_are_python_like<L, R>)
         static auto div(const L& lhs, const R& rhs) {
             return lhs / rhs;
         }
 
-        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        template <typename L, typename R> requires (!impl::any_are_python_like<L, R>)
         static auto mod(const L& lhs, const R& rhs) {
             if constexpr (std::floating_point<L> || std::floating_point<R>) {
                 return std::fmod(lhs, rhs);
@@ -416,7 +415,7 @@ public:
             }
         }
 
-        template <typename L, typename R> requires (!impl::object_operand<L, R>)
+        template <typename L, typename R> requires (!impl::any_are_python_like<L, R>)
         static auto divmod(const L& lhs, const R& rhs) {
             if constexpr (std::floating_point<L> || std::floating_point<R>) {
                 return std::make_pair(lhs / rhs, std::fmod(lhs, rhs));
@@ -436,12 +435,12 @@ public:
 
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
-            return ops::floordiv<Quotient>(lhs, rhs);
+            return op::floordiv<Quotient>(lhs, rhs);
         }
 
         template <typename Remainder>
         static auto py_mod(const Object& lhs, const Object& rhs) {
-            return ops::mod<Remainder>(lhs, rhs);
+            return op::mod<Remainder>(lhs, rhs);
         }
 
         // TODO: maybe use built-in Python divmod()?  It might avoid some extra work,
@@ -451,8 +450,8 @@ public:
         template <typename Quotient, typename Remainder, typename L, typename R>
         static auto py_divmod(const Object& lhs, const Object& rhs) {
             return std::make_pair(
-                ops::floordiv<Quotient>(lhs, rhs),
-                ops::mod<Remainder>(lhs, rhs)
+                op::floordiv<Quotient>(lhs, rhs),
+                op::mod<Remainder>(lhs, rhs)
             );
         }
 
@@ -500,13 +499,13 @@ public:
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             return reinterpret_steal<Quotient>(
-                (-ops::floordiv<Object>(-lhs, rhs)).release()
+                (-op::floordiv<Object>(-lhs, rhs)).release()
             );
         }
 
         template <typename Remainder>
         static auto py_mod(const Object& lhs, const Object& rhs) {
-            return reinterpret_steal<Remainder>(-ops::mod<Object>(-lhs, rhs).release()
+            return reinterpret_steal<Remainder>(-op::mod<Object>(-lhs, rhs).release()
             );
         }
 
@@ -515,10 +514,10 @@ public:
             Object c = -lhs;
             return std::make_pair(
                 reinterpret_steal<Quotient>(
-                    -ops::floordiv<Object>(c, rhs).release()
+                    -op::floordiv<Object>(c, rhs).release()
                 ),
                 reinterpret_steal<Remainder>(
-                    -ops::mod<Object>(c, rhs).release()
+                    -op::mod<Object>(c, rhs).release()
                 )
             );
         }
@@ -566,10 +565,10 @@ public:
         static auto py_div(const Object& lhs, const Object& rhs) {
             if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {
                 return reinterpret_steal<Quotient>(
-                    (-ops::floordiv<Object>(-lhs, rhs)).release()
+                    (-op::floordiv<Object>(-lhs, rhs)).release()
                 );
             } else {
-                return ops::floordiv<Quotient>(lhs, rhs);
+                return op::floordiv<Quotient>(lhs, rhs);
             }
         }
 
@@ -577,10 +576,10 @@ public:
         static auto py_mod(const Object& lhs, const Object& rhs) {
             if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {
                 return reinterpret_steal<Remainder>(
-                    -ops::floordiv<Object>(-lhs, rhs).release()
+                    -op::floordiv<Object>(-lhs, rhs).release()
                 );
             } else {
-                return ops::mod<Remainder>(lhs, rhs);
+                return op::mod<Remainder>(lhs, rhs);
             }
         }
 
@@ -590,16 +589,16 @@ public:
                 Object c = -lhs;
                 return std::make_pair(
                     reinterpret_steal<Quotient>(
-                        -ops::floordiv<Object>(c, rhs).release()
+                        -op::floordiv<Object>(c, rhs).release()
                     ),
                     reinterpret_steal<Remainder>(
-                        -ops::mod<Object>(c, rhs).release()
+                        -op::mod<Object>(c, rhs).release()
                     )
                 );
             } else {
                 return std::make_pair(
-                    ops::floordiv<Quotient>(lhs, rhs),
-                    ops::mod<Remainder>(lhs, rhs)
+                    op::floordiv<Quotient>(lhs, rhs),
+                    op::mod<Remainder>(lhs, rhs)
                 );
             }
         }
@@ -648,10 +647,10 @@ public:
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {
-                return ops::floordiv<Quotient>(lhs, rhs);
+                return op::floordiv<Quotient>(lhs, rhs);
             } else {
                 return reinterpret_steal<Quotient>(
-                    (-ops::floordiv<Object>(-lhs, rhs)).release()
+                    (-op::floordiv<Object>(-lhs, rhs)).release()
                 );
             }
         }
@@ -659,10 +658,10 @@ public:
         template <typename Remainder>
         static auto py_mod(const Object& lhs, const Object& rhs) {
             if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {
-                return ops::mod<Remainder>(lhs, rhs);
+                return op::mod<Remainder>(lhs, rhs);
             } else {
                 return reinterpret_steal<Remainder>(
-                    -ops::mod<Object>(-lhs, rhs).release()
+                    -op::mod<Object>(-lhs, rhs).release()
                 );
             }
         }
@@ -671,17 +670,17 @@ public:
         static auto py_divmod(const Object& lhs, const Object& rhs) {
             if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {
                 return std::make_pair(
-                    ops::floordiv<Quotient>(lhs, rhs),
-                    ops::mod<Remainder>(lhs, rhs)
+                    op::floordiv<Quotient>(lhs, rhs),
+                    op::mod<Remainder>(lhs, rhs)
                 );
             } else {
                 Object c = -lhs;
                 return std::make_pair(
                     reinterpret_steal<Quotient>(
-                        -ops::floordiv<Object>(c, rhs).release()
+                        -op::floordiv<Object>(c, rhs).release()
                     ),
                     reinterpret_steal<Remainder>(
-                        -ops::mod<Object>(c, rhs).release()
+                        -op::mod<Object>(c, rhs).release()
                     )
                 );
             }
@@ -755,12 +754,12 @@ public:
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
                 Object a {rhs > Int::zero()};
-                Object numerator = lhs + ops::floordiv<Object>(
+                Object numerator = lhs + op::floordiv<Object>(
                     rhs + ~a,
                     Int::two()
                 );
                 return reinterpret_steal<Quotient>(
-                    ops::floordiv<Object>(numerator, rhs).release()
+                    op::floordiv<Object>(numerator, rhs).release()
                 );
                 /*   a ~a    (rhs + ~a) // 2
                  *   0 -1  = (rhs -  1) // 2  =  (rhs - 1) // 2 
@@ -771,21 +770,21 @@ public:
             } else if constexpr (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
                     Object a {rhs > Int::zero()};
-                    Object numerator = lhs + ops::floordiv<Object>(
+                    Object numerator = lhs + op::floordiv<Object>(
                         rhs + ~a,
                         Int::two()
                     );
                     return reinterpret_steal<Quotient>(
-                        ops::floordiv<Object>(numerator, rhs).release()
+                        op::floordiv<Object>(numerator, rhs).release()
                     );
                 }
                 return reinterpret_steal<Quotient>(
-                    -ops::floordiv<Object>(-lhs + rhs / Int::two(), rhs).release()
+                    -op::floordiv<Object>(-lhs + rhs / Int::two(), rhs).release()
                 );
 
             } else {
                 return reinterpret_steal<Quotient>(
-                    -ops::floordiv<Object>(-lhs + rhs / Int::two(), rhs).release()
+                    -op::floordiv<Object>(-lhs + rhs / Int::two(), rhs).release()
                 );
             }
         }
@@ -844,12 +843,12 @@ public:
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
                 Object a {rhs > Int::zero()};
-                Object numerator = lhs + ops::floordiv<Object>(
+                Object numerator = lhs + op::floordiv<Object>(
                     rhs + a,
                     Int::two()
                 );
                 return reinterpret_steal<Quotient>(
-                    ops::floordiv<Object>(numerator, rhs).release()
+                    op::floordiv<Object>(numerator, rhs).release()
                 );
                 /*   a    (rhs + a) // 2
                  *   0  = (rhs + 0) // 2  =  (rhs    ) // 2 
@@ -860,21 +859,21 @@ public:
             } else if constexpr (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
                     Object a {rhs > Int::zero()};
-                    Object numerator = lhs +  ops::floordiv<Object>(
+                    Object numerator = lhs +  op::floordiv<Object>(
                         rhs + a,
                         Int::two()
                     );
                     return reinterpret_steal<Quotient>(
-                        ops::floordiv<Object>(numerator, rhs).release()
+                        op::floordiv<Object>(numerator, rhs).release()
                     );
                 }
                 return reinterpret_steal<Quotient>(
-                    ops::floordiv<Object>(lhs + rhs / Int::two(), rhs).release()
+                    op::floordiv<Object>(lhs + rhs / Int::two(), rhs).release()
                 );
 
             } else {
                 return reinterpret_steal<Quotient>(
-                    ops::floordiv<Object>(lhs + rhs / Int::two(), rhs).release()
+                    op::floordiv<Object>(lhs + rhs / Int::two(), rhs).release()
                 );
             }
         }
@@ -921,12 +920,12 @@ public:
                 Object b {lhs > Int::zero()};
                 Object numerator = lhs;
                 if (a == b) {  // NOTE: branches are faster than writing more Python
-                    numerator += ops::floordiv<Object>(rhs + ~a, Int::two());
+                    numerator += op::floordiv<Object>(rhs + ~a, Int::two());
                 } else {
-                    numerator += ops::floordiv<Object>(rhs + a, Int::two());
+                    numerator += op::floordiv<Object>(rhs + a, Int::two());
                 }
                 return reinterpret_steal<Quotient>(
-                    ops::floordiv<Object>(numerator, rhs).release()
+                    op::floordiv<Object>(numerator, rhs).release()
                 );
 
             } else if (std::same_as<L, Object> || std::same_as<R, Object>) {
@@ -935,12 +934,12 @@ public:
                     Object b { lhs > Int::zero() };
                     Object numerator = lhs;
                     if (a == b) {  // NOTE: branches are faster than writing more Python
-                        numerator += ops::floordiv<Object>(rhs + ~a, Int::two());
+                        numerator += op::floordiv<Object>(rhs + ~a, Int::two());
                     } else {
-                        numerator += ops::floordiv<Object>(rhs + a, Int::two());
+                        numerator += op::floordiv<Object>(rhs + a, Int::two());
                     }
                     return reinterpret_steal<Quotient>(
-                        ops::floordiv<Object>(numerator, rhs).release()
+                        op::floordiv<Object>(numerator, rhs).release()
                     );
                 }
 
@@ -948,11 +947,11 @@ public:
                 Object bias = rhs / Int::two();
                 if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {  // half-ceiling
                     return reinterpret_steal<Quotient>(
-                        ops::floordiv<Object>(lhs + bias, rhs).release()
+                        op::floordiv<Object>(lhs + bias, rhs).release()
                     );
                 } else {  // half-floor
                     return reinterpret_steal<Quotient>(
-                        -ops::floordiv<Object>(-lhs + bias, rhs).release()
+                        -op::floordiv<Object>(-lhs + bias, rhs).release()
                     );
                 }
 
@@ -961,11 +960,11 @@ public:
                 Object bias = rhs / Int::two();
                 if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {  // half-ceiling
                     return reinterpret_steal<Quotient>(
-                        ops::floordiv<Object>(lhs + bias, rhs).release()
+                        op::floordiv<Object>(lhs + bias, rhs).release()
                     );
                 } else {  // half-floor
                     return reinterpret_steal<Quotient>(
-                        -ops::floordiv<Object>(-lhs + bias, rhs).release()
+                        -op::floordiv<Object>(-lhs + bias, rhs).release()
                     );
                 }
             }
@@ -1022,12 +1021,12 @@ public:
                 Object b {lhs > Int::zero()};
                 Object numerator = lhs;
                 if (a == b) {  // NOTE: branches are faster than writing more Python
-                    numerator += ops::floordiv<Object>(rhs + a, Int::two());
+                    numerator += op::floordiv<Object>(rhs + a, Int::two());
                 } else {
-                    numerator += ops::floordiv<Object>(rhs + ~a, Int::two());
+                    numerator += op::floordiv<Object>(rhs + ~a, Int::two());
                 }
                 return reinterpret_steal<Quotient>(
-                    ops::floordiv<Object>(numerator, rhs).release()
+                    op::floordiv<Object>(numerator, rhs).release()
                 );
 
             } else if (std::same_as<L, Object> || std::same_as<R, Object>) {
@@ -1036,12 +1035,12 @@ public:
                     Object b {lhs > Int::zero()};
                     Object numerator = lhs;
                     if (a == b) {  // NOTE: branches are faster than writing more Python
-                        numerator += ops::floordiv<Object>(rhs + a, Int::two());
+                        numerator += op::floordiv<Object>(rhs + a, Int::two());
                     } else {
-                        numerator += ops::floordiv<Object>(rhs + ~a, Int::two());
+                        numerator += op::floordiv<Object>(rhs + ~a, Int::two());
                     }
                     return reinterpret_steal<Quotient>(
-                        ops::floordiv<Object>(numerator, rhs).release()
+                        op::floordiv<Object>(numerator, rhs).release()
                     );
                 }
 
@@ -1049,11 +1048,11 @@ public:
                 Object bias = rhs / Int::two();
                 if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {  // half-floor
                     return reinterpret_steal<Quotient>(
-                        -ops::floordiv<Object>(-lhs + bias, rhs).release()
+                        -op::floordiv<Object>(-lhs + bias, rhs).release()
                     );
                 } else {  // half-ceiling
                     return reinterpret_steal<Quotient>(
-                        ops::floordiv<Object>(lhs + bias, rhs).release()
+                        op::floordiv<Object>(lhs + bias, rhs).release()
                     );
                 }
 
@@ -1062,11 +1061,11 @@ public:
                 Object bias = rhs / Int::two();
                 if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {  // half-floor
                     return reinterpret_steal<Quotient>(
-                        -ops::floordiv<Object>(-lhs + bias, rhs).release()
+                        -op::floordiv<Object>(-lhs + bias, rhs).release()
                     );
                 } else {  // half-ceiling
                     return reinterpret_steal<Quotient>(
-                        ops::floordiv<Object>(lhs + bias, rhs).release()
+                        op::floordiv<Object>(lhs + bias, rhs).release()
                     );
                 }
             }
@@ -1133,51 +1132,51 @@ public:
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
                 Object a {rhs > Int::zero()};
                 Object numerator = lhs;
-                if (ops::floordiv<Object>(lhs, rhs) % Int::two()) {
-                    numerator += ops::floordiv<Object>(rhs + a, Int::two());
+                if (op::floordiv<Object>(lhs, rhs) % Int::two()) {
+                    numerator += op::floordiv<Object>(rhs + a, Int::two());
                 } else {
-                    numerator += ops::floordiv<Object>(rhs + ~a, Int::two());
+                    numerator += op::floordiv<Object>(rhs + ~a, Int::two());
                 }
                 return reinterpret_steal<Quotient>(
-                    ops::floordiv<Object>(numerator, rhs).release()
+                    op::floordiv<Object>(numerator, rhs).release()
                 );
 
             } else if (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
                     Object a {rhs > Int::zero()};
                     Object numerator = lhs;
-                    if (ops::floordiv<Object>(lhs, rhs) % Int::two()) {
-                        numerator += ops::floordiv<Object>(rhs + a, Int::two());
+                    if (op::floordiv<Object>(lhs, rhs) % Int::two()) {
+                        numerator += op::floordiv<Object>(rhs + a, Int::two());
                     } else {
-                        numerator += ops::floordiv<Object>(rhs + ~a, Int::two());
+                        numerator += op::floordiv<Object>(rhs + ~a, Int::two());
                     }
                     return reinterpret_steal<Quotient>(
-                        ops::floordiv<Object>(numerator, rhs).release()
+                        op::floordiv<Object>(numerator, rhs).release()
                     );
                 }
 
                 // half-ceiling where the quotient would be odd, half-floor otherwise
                 Object bias = rhs / Int::two();
-                if (ops::floordiv<Object>(lhs, rhs) % Int::two()) {  // half-ceiling
+                if (op::floordiv<Object>(lhs, rhs) % Int::two()) {  // half-ceiling
                     return reinterpret_steal<Quotient>(
-                        ops::floordiv<Object>(lhs + bias, rhs).release()
+                        op::floordiv<Object>(lhs + bias, rhs).release()
                     );
                 } else {  // half-floor
                     return reinterpret_steal<Quotient>(
-                        -ops::floordiv<Object>(-lhs + bias, rhs).release()
+                        -op::floordiv<Object>(-lhs + bias, rhs).release()
                     );
                 }
 
             } else {
                 // half-ceiling where the quotient would be odd, half-floor otherwise
                 Object bias = rhs / Int::two();
-                if (ops::floordiv<Object>(lhs, rhs) % Int::two()) {  // half-ceiling
+                if (op::floordiv<Object>(lhs, rhs) % Int::two()) {  // half-ceiling
                     return reinterpret_steal<Quotient>(
-                        ops::floordiv<Object>(lhs + bias, rhs).release()
+                        op::floordiv<Object>(lhs + bias, rhs).release()
                     );
                 } else {  // half-floor
                     return reinterpret_steal<Quotient>(
-                        -ops::floordiv<Object>(-lhs + bias, rhs).release()
+                        -op::floordiv<Object>(-lhs + bias, rhs).release()
                     );
                 }
             }

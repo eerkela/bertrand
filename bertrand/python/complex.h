@@ -21,91 +21,6 @@ struct __getattr__<T, "real">                                   : Returns<Float>
 template <std::derived_from<Complex> T>
 struct __getattr__<T, "imag">                                   : Returns<Float> {};
 
-template <std::derived_from<Complex> T>
-struct __pos__<T>                                               : Returns<Complex> {};
-template <std::derived_from<Complex> T>
-struct __neg__<T>                                               : Returns<Complex> {};
-template <std::derived_from<Complex> T>
-struct __abs__<T>                                               : Returns<Complex> {};
-template <std::derived_from<Complex> T>
-struct __increment__<T>                                         : Returns<Complex> {};
-template <std::derived_from<Complex> T>
-struct __decrement__<T>                                         : Returns<Complex> {};
-template <std::derived_from<Complex> T>
-struct __hash__<T>                                              : Returns<size_t> {};
-template <std::derived_from<Complex> L>
-struct __add__<L, Object>                                       : Returns<Object> {};
-template <std::derived_from<Complex> L, impl::bool_like R>
-struct __add__<L, R>                                            : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::int_like R>
-struct __add__<L, R>                                            : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::float_like R>
-struct __add__<L, R>                                            : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::complex_like R>
-struct __add__<L, R>                                            : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::bool_like R>
-struct __iadd__<L, R>                                           : Returns<L&> {};
-template <std::derived_from<Complex> L, impl::int_like R>
-struct __iadd__<L, R>                                           : Returns<L&> {};
-template <std::derived_from<Complex> L, impl::float_like R>
-struct __iadd__<L, R>                                           : Returns<L&> {};
-template <std::derived_from<Complex> L, impl::complex_like R>
-struct __iadd__<L, R>                                           : Returns<L&> {};
-template <std::derived_from<Complex> L>
-struct __sub__<L, Object>                                       : Returns<Object> {};
-template <std::derived_from<Complex> L, impl::bool_like R>
-struct __sub__<L, R>                                            : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::int_like R>
-struct __sub__<L, R>                                            : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::float_like R>
-struct __sub__<L, R>                                            : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::complex_like R>
-struct __sub__<L, R>                                            : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::bool_like R>
-struct __isub__<L, R>                                           : Returns<L&> {};
-template <std::derived_from<Complex> L, impl::int_like R>
-struct __isub__<L, R>                                           : Returns<L&> {};
-template <std::derived_from<Complex> L, impl::float_like R>
-struct __isub__<L, R>                                           : Returns<L&> {};
-template <std::derived_from<Complex> L, impl::complex_like R>
-struct __isub__<L, R>                                           : Returns<L&> {};
-template <std::derived_from<Complex> L>
-struct __mul__<L, Object>                                       : Returns<Object> {};
-template <std::derived_from<Complex> L, impl::bool_like R>
-struct __mul__<L, R>                                            : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::int_like R>
-struct __mul__<L, R>                                            : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::float_like R>
-struct __mul__<L, R>                                            : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::complex_like R>
-struct __mul__<L, R>                                            : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::bool_like R>
-struct __imul__<L, R>                                           : Returns<L&> {};
-template <std::derived_from<Complex> L, impl::int_like R>
-struct __imul__<L, R>                                           : Returns<L&> {};
-template <std::derived_from<Complex> L, impl::float_like R>
-struct __imul__<L, R>                                           : Returns<L&> {};
-template <std::derived_from<Complex> L, impl::complex_like R>
-struct __imul__<L, R>                                           : Returns<L&> {};
-template <std::derived_from<Complex> L>
-struct __truediv__<L, Object>                                   : Returns<Object> {};
-template <std::derived_from<Complex> L, impl::bool_like R>
-struct __truediv__<L, R>                                        : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::int_like R>
-struct __truediv__<L, R>                                        : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::float_like R>
-struct __truediv__<L, R>                                        : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::complex_like R>
-struct __truediv__<L, R>                                        : Returns<Complex> {};
-template <std::derived_from<Complex> L, impl::bool_like R>
-struct __itruediv__<L, R>                                       : Returns<L&> {};
-template <std::derived_from<Complex> L, impl::int_like R>
-struct __itruediv__<L, R>                                       : Returns<L&> {};
-template <std::derived_from<Complex> L, impl::float_like R>
-struct __itruediv__<L, R>                                       : Returns<L&> {};
-template <std::derived_from<Complex> L, impl::complex_like R>
-struct __itruediv__<L, R>                                       : Returns<L&> {};
-
 
 /* Represents a statically-typed Python complex number in C++. */
 class Complex : public Object {
@@ -231,18 +146,6 @@ public:
         return Complex(complex.real, -complex.imag);
     }
 
-};
-
-
-template <std::derived_from<Complex> Self, typename T>
-struct __cast__<Self, std::complex<T>> : Returns<std::complex<T>> {
-    static std::complex<T> operator()(const Self& self) {
-        Py_complex complex = PyComplex_AsCComplex(self.ptr());
-        if (complex.real == -1.0 && PyErr_Occurred()) {
-            Exception::from_python();
-        }
-        return std::complex<T>(complex.real, complex.imag);
-    }
 };
 
 

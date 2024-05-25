@@ -422,7 +422,11 @@ struct Returns {
 template <typename T>
 struct __as_object__                        : Returns<Object> {};  // enabled by default
 template <typename Self, typename T>
-struct __cast__                             { static constexpr bool enable = false; };
+struct __implicit_cast__                    { static constexpr bool enable = false; };
+template <typename Self, typename T>
+struct __explicit_cast__                    : Returns<T> {  // enabled by default
+    static T operator()(const Self& self);  // falls back to pybind11::cast
+};
 template <typename Self, typename... Args>
 struct __call__                             { static constexpr bool enable = false; };
 template <typename Self, StaticStr Name>

@@ -52,110 +52,20 @@ template <std::derived_from<impl::FrozenSetTag> Self>
 struct __getattr__<Self, "symmetric_difference">                : Returns<Function<
     Self(typename Arg<"other", const Object&>::pos)
 >> {};
-template <std::derived_from<impl::FrozenSetTag> Self>
-struct __len__<Self>                                            : Returns<size_t> {};
-template <std::derived_from<impl::FrozenSetTag> Self>
-struct __hash__<Self>                                           : Returns<size_t> {};
-template <std::derived_from<impl::FrozenSetTag> Self>
-struct __iter__<Self>                                           : Returns<typename Self::key_type> {};
-template <std::derived_from<impl::FrozenSetTag> Self>
-struct __reversed__<Self>                                       : Returns<typename Self::key_type> {};
-template <
-    std::derived_from<impl::FrozenSetTag> Self,
-    std::convertible_to<typename Self::key_type> Key
->
-struct __contains__<Self, Key>                                  : Returns<bool> {};
-template <std::derived_from<impl::FrozenSetTag> Self, impl::anyset_like T>
-struct __lt__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::FrozenSetTag> Self>
-    requires (!std::derived_from<T, impl::FrozenSetTag>)
-struct __lt__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::FrozenSetTag> Self, impl::anyset_like T>
-struct __le__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::FrozenSetTag> Self>
-    requires (!std::derived_from<T, impl::FrozenSetTag>)
-struct __le__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::FrozenSetTag> Self, impl::anyset_like T>
-struct __eq__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::FrozenSetTag> Self>
-    requires (!std::derived_from<T, impl::FrozenSetTag>)
-struct __eq__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::FrozenSetTag> Self, impl::anyset_like T>
-struct __ne__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::FrozenSetTag> Self>
-    requires (!std::derived_from<T, impl::FrozenSetTag>)
-struct __ne__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::FrozenSetTag> Self, impl::anyset_like T>
-struct __ge__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::FrozenSetTag> Self>
-    requires (!std::derived_from<T, impl::FrozenSetTag>)
-struct __ge__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::FrozenSetTag> Self, impl::anyset_like T>
-struct __gt__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::FrozenSetTag> Self>
-    requires (!std::derived_from<T, impl::FrozenSetTag>)
-struct __gt__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::FrozenSetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __or__<Self, T>                                          : Returns<Self> {};
-template <
-    std::derived_from<impl::FrozenSetTag> T,
-    std::derived_from<impl::FrozenSetTag> Self
-> requires (!T::template check<Self>() && Self::template check<T>())
-struct __or__<T, Self>                                          : Returns<Self> {};
-template <std::derived_from<impl::FrozenSetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __ior__<Self, T>                                         : Returns<Self&> {};
-template <std::derived_from<impl::FrozenSetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __and__<Self, T>                                         : Returns<Self> {};
-template <
-    std::derived_from<impl::FrozenSetTag> T,
-    std::derived_from<impl::FrozenSetTag> Self
-> requires (!T::template check<Self>() && Self::template check<T>())
-struct __and__<T, Self>                                         : Returns<Self> {};
-template <std::derived_from<impl::FrozenSetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __iand__<Self, T>                                        : Returns<Self&> {};
-template <std::derived_from<impl::FrozenSetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __sub__<Self, T>                                         : Returns<Self> {};
-template <
-    std::derived_from<impl::FrozenSetTag> T,
-    std::derived_from<impl::FrozenSetTag> Self
-> requires (!T::template check<Self>() && Self::template check<T>())
-struct __sub__<T, Self>                                         : Returns<Self> {};
-template <std::derived_from<impl::FrozenSetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __isub__<Self, T>                                        : Returns<Self&> {};
-template <std::derived_from<impl::FrozenSetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __xor__<Self, T>                                         : Returns<Self> {};
-template <
-    std::derived_from<impl::FrozenSetTag> T,
-    std::derived_from<impl::FrozenSetTag> Self
-> requires (!T::template check<Self>() && Self::template check<T>())
-struct __xor__<T, Self>                                         : Returns<Self> {};
-template <std::derived_from<impl::FrozenSetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __ixor__<Self, T>                                        : Returns<Self&> {};
 
 
-namespace impl {
 namespace ops {
 
-    template <typename Return, std::derived_from<FrozenSetTag> Self>
+    template <typename Return, std::derived_from<impl::FrozenSetTag> Self>
     struct len<Return, Self> {
         static size_t operator()(const Self& self) {
             return PySet_GET_SIZE(self.ptr());
         }
     };
 
-    // TODO: to_object might need a rethink given CTAD container templates
-
-    template <typename Return, std::derived_from<FrozenSetTag> Self, typename Key>
+    template <typename Return, std::derived_from<impl::FrozenSetTag> Self, typename Key>
     struct contains<Return, Self, Key> {
-        static bool operator()(const Self& self, const to_object<Key>& key) {
+        static bool operator()(const Self& self, const impl::as_object_t<Key>& key) {
             int result = PySet_Contains(self.ptr(), key.ptr());
             if (result == -1) {
                 Exception::from_python();
@@ -164,7 +74,6 @@ namespace ops {
         }
     };
 
-}
 }
 
 
@@ -687,19 +596,6 @@ public:
 };
 
 
-template <std::derived_from<impl::FrozenSetTag> Self, impl::cpp_like T>
-    requires (impl::anyset_like<T>)
-struct __cast__<Self, T> : Returns<T> {
-    static T operator()(const Self& self) {
-        T result;
-        for (const auto& item : self) {
-            result.insert(static_cast<typename T::value_type>(item));
-        }
-        return result;
-    }
-};
-
-
 ///////////////////
 ////    SET    ////
 ///////////////////
@@ -775,106 +671,18 @@ struct __getattr__<Self, "symmetric_difference_update">         : Returns<Functi
 >> {};
 
 
-template <std::derived_from<impl::SetTag> Self>
-struct __len__<Self>                                            : Returns<size_t> {};
-template <std::derived_from<impl::SetTag> Self>
-struct __iter__<Self>                                           : Returns<typename Self::key_type> {};
-template <std::derived_from<impl::SetTag> Self>
-struct __reversed__<Self>                                       : Returns<typename Self::key_type> {};
-template <
-    std::derived_from<impl::SetTag> Self,
-    std::convertible_to<typename Self::key_type> Key
->
-struct __contains__<Self, Key>                                  : Returns<bool> {};
-template <std::derived_from<impl::SetTag> Self, impl::anyset_like T>
-struct __lt__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::SetTag> Self>
-    requires (!std::derived_from<T, impl::FrozenSetTag>)
-struct __lt__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::SetTag> Self, impl::anyset_like T>
-struct __le__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::SetTag> Self>
-    requires (!std::derived_from<T, impl::FrozenSetTag>)
-struct __le__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::SetTag> Self, impl::anyset_like T>
-struct __eq__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::SetTag> Self>
-    requires (!std::derived_from<T, impl::FrozenSetTag>)
-struct __eq__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::SetTag> Self, impl::anyset_like T>
-struct __ne__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::SetTag> Self>
-    requires (!std::derived_from<T, impl::FrozenSetTag>)
-struct __ne__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::SetTag> Self, impl::anyset_like T>
-struct __ge__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::SetTag> Self>
-    requires (!std::derived_from<T, impl::FrozenSetTag>)
-struct __ge__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::SetTag> Self, impl::anyset_like T>
-struct __gt__<Self, T>                                          : Returns<bool> {};
-template <impl::anyset_like T, std::derived_from<impl::SetTag> Self>
-    requires (!std::derived_from<T, impl::FrozenSetTag>)
-struct __gt__<T, Self>                                          : Returns<bool> {};
-template <std::derived_from<impl::SetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __or__<Self, T>                                          : Returns<Self> {};
-template <
-    std::derived_from<impl::SetTag> T,
-    std::derived_from<impl::SetTag> Self
-> requires (!T::template check<Self>() && Self::template check<T>())
-struct __or__<T, Self>                                          : Returns<Self> {};
-template <std::derived_from<impl::SetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __ior__<Self, T>                                         : Returns<Self&> {};
-template <std::derived_from<impl::SetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __and__<Self, T>                                         : Returns<Self> {};
-template <
-    std::derived_from<impl::SetTag> T,
-    std::derived_from<impl::SetTag> Self
-> requires (!T::template check<Self>() && Self::template check<T>())
-struct __and__<T, Self>                                         : Returns<Self> {};
-template <std::derived_from<impl::SetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __iand__<Self, T>                                        : Returns<Self&> {};
-template <std::derived_from<impl::SetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __sub__<Self, T>                                         : Returns<Self> {};
-template <
-    std::derived_from<impl::SetTag> T,
-    std::derived_from<impl::SetTag> Self
-> requires (!T::template check<Self>() && Self::template check<T>())
-struct __sub__<T, Self>                                         : Returns<Self> {};
-template <std::derived_from<impl::SetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __isub__<Self, T>                                        : Returns<Self&> {};
-template <std::derived_from<impl::SetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __xor__<Self, T>                                         : Returns<Self> {};
-template <
-    std::derived_from<impl::SetTag> T,
-    std::derived_from<impl::SetTag> Self
-> requires (!T::template check<Self>() && Self::template check<T>())
-struct __xor__<T, Self>                                         : Returns<Self> {};
-template <std::derived_from<impl::SetTag> Self, typename T>
-    requires (Self::template check<T>())
-struct __ixor__<Self, T>                                        : Returns<Self&> {};
-
-
-namespace impl {
 namespace ops {
 
-    template <typename Return, std::derived_from<SetTag> Self>
+    template <typename Return, std::derived_from<impl::SetTag> Self>
     struct len<Return, Self> {
         static size_t operator()(const Self& self) {
             return PySet_GET_SIZE(self.ptr());
         }
     };
 
-    template <typename Return, std::derived_from<SetTag> Self, typename Key>
+    template <typename Return, std::derived_from<impl::SetTag> Self, typename Key>
     struct contains<Return, Self, Key> {
-        static bool operator()(const Self& self, const to_object<Key>& key) {
+        static bool operator()(const Self& self, const impl::as_object_t<Key>& key) {
             int result = PySet_Contains(self.ptr(), key.ptr());
             if (result == -1) {
                 Exception::from_python();
@@ -883,7 +691,6 @@ namespace ops {
         }
     };
 
-}
 }
 
 
@@ -1488,19 +1295,6 @@ public:
         return self.symmetric_difference(other);
     }
 
-};
-
-
-template <std::derived_from<impl::SetTag> Self, impl::cpp_like T>
-    requires (impl::anyset_like<T>)
-struct __cast__<Self, T> : Returns<T> {
-    static T operator()(const Self& self) {
-        T result;
-        for (const auto& item : self) {
-            result.insert(static_cast<typename T::value_type>(item));
-        }
-        return result;
-    }
 };
 
 
