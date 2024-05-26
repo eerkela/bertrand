@@ -665,6 +665,27 @@ inline T __explicit_cast__<Self, T>::operator()(const Self& self) {
 }
 
 
+/* Explicitly convert a Python object into a std::string by calling `str(obj)`. */
+template <std::derived_from<Object> Self> 
+struct __explicit_cast__<Self, std::string> : Returns<std::string> {
+    static std::string operator()(const Self& self) {
+        PyObject* str = PyObject_Str(self.ptr());
+        if (str == nullptr) {
+            Exception::from_python();
+        }
+        Py_ssize_t size;
+        const char* data = PyUnicode_AsUTF8AndSize(str, &size);
+        if (data == nullptr) {
+            Py_DECREF(str);
+            Exception::from_python();
+        }
+        std::string result(data, size);
+        Py_DECREF(str);
+        return result;
+    }
+};
+
+
 template <impl::proxy_like Self, StaticStr Name>
 struct __getattr__<Self, Name> : __getattr__<impl::unwrap_proxy<Self>, Name> {};
 template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__init__")

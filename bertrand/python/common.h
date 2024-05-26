@@ -501,32 +501,46 @@ public:
     // would just be handled automatically by the modular descriptor objects.  If the
     // same method is defined multiple times, the first conflict would convert the
     // descriptor into an overload set, and subsequent conflicts would add to that set.
+    // They would be resolved using a trie rather than a linear search.
 
-    /* Equivalent to pybind11::module_::def(). */
-    template <typename Func, typename... Extra>
-    Module& def(const char* name_, Func&& f, const Extra&... extra) {
+    // TODO: check if the function is overwriting an existing attribute?
+
+    template <typename Func, typename... Defaults>
+    Module& def(const char* name, const char* doc, Func&& body, Defaults&&... defaults) {
+        Function f(
+            (name == nullptr) ? "" : name,
+            (doc == nullptr) ? "" : doc,
+            std::forward<Func>(body),
+            std::forward<Defaults>(defaults)...
+        );
+        if (PyModule_AddObjectRef(this->ptr(), name, f.ptr())) {
+            Exception::from_python();
+        }
+        return *this;
+    }
+
+    /* Equivalent to pybind11::module_::def_submodule(). */
+    Module def_submodule(const char* name, const char* doc = nullptr) {
+        const char* this_name = PyModule_GetName(m_ptr);
+        if (this_name == nullptr) {
+            Exception::from_python();
+        }
+        std::string full_name = std::string(this_name) + '.' + name;
+        Handle submodule = PyImport_AddModule(full_name.c_str());
+        if (!submodule) {
+            Exception::from_python();
+        }
+        Module result = reinterpret_borrow<Module>(submodule);
         try {
-            pybind11::cpp_function func(
-                std::forward<Func>(f),
-                pybind11::name(name_),
-                pybind11::scope(*this),
-                pybind11::sibling(
-                    pybind11::getattr(*this, name_, Py_None)
-                ),
-                extra...
-            );
-            // NB: allow overwriting here because cpp_function sets up a chain with the
-            // intention of overwriting (and has already checked internally that it isn't
-            // overwriting non-functions).
-            add_object(name_, func, true /* overwrite */);
-            return *this;
+            if (doc && pybind11::options::show_user_defined_docstrings()) {
+                result.template attr<"__doc__">() = pybind11::str(doc);
+            }
+            pybind11::setattr(*this, name, result);
+            return result;
         } catch (...) {
             Exception::from_pybind11();
         }
     }
-
-    /* Equivalent to pybind11::module_::def_submodule(). */
-    Module def_submodule(const char* name, const char* doc = nullptr);
 
     /* Reload the module or throw an error. */
     void reload() {
@@ -535,25 +549,6 @@ public:
             Exception::from_python();
         }
         *this = reinterpret_steal<Module>(obj);
-    }
-
-    /* Equivalent to pybind11::module_::add_object(). */
-    PYBIND11_NOINLINE void add_object(
-        const char* name,
-        Handle obj,
-        bool overwrite = false
-    ) {
-        try {
-            if (!overwrite && pybind11::hasattr(*this, name)) {
-                pybind11::pybind11_fail(
-                    "Error during initialization: multiple incompatible "
-                    "definitions with name \"" + std::string(name) + "\""
-                );
-            }
-            PyModule_AddObjectRef(ptr(), name, obj.ptr());
-        } catch (...) {
-            Exception::from_pybind11();
-        }
     }
 
 };

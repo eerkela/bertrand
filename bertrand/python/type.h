@@ -15,11 +15,6 @@ namespace bertrand {
 namespace py {
 
 
-////////////////////
-////    TYPE    ////
-////////////////////
-
-
 /* Represents a statically-typed Python type object in C++.  Note that new types can be
 created on the fly by invoking the `type` metaclass directly, using an optional name,
 bases, and namespace. */
@@ -293,11 +288,6 @@ public:
     }
 
 };
-
-
-/////////////////////
-////    SUPER    ////
-/////////////////////
 
 
 /* Represents a statically-typed Python `super` object in C++. */

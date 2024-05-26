@@ -987,9 +987,9 @@ namespace impl {
 
 
 template <std::derived_from<Object> T>
-T reinterpret_borrow(Handle obj);
+[[nodiscard]] T reinterpret_borrow(Handle obj);
 template <std::derived_from<Object> T>
-T reinterpret_steal(Handle obj);
+[[nodiscard]] T reinterpret_steal(Handle obj);
 
 
 }  // namespace py

@@ -96,19 +96,6 @@ namespace ops {
 }
 
 
-template <typename T>
-Tuple(const std::initializer_list<T>&) -> Tuple<impl::as_object_t<T>>;
-template <impl::is_iterable T>
-Tuple(T) -> Tuple<impl::as_object_t<impl::dereference_type<T>>>;
-template <typename T, typename... Args>
-    requires (!impl::is_iterable<T> && !impl::str_like<T>)
-Tuple(T, Args...) -> Tuple<Object>;
-template <impl::str_like T>
-Tuple(T) -> Tuple<Str>;
-template <size_t N>
-Tuple(const char(&)[N]) -> Tuple<Str>;
-
-
 /* Represents a statically-typed Python tuple in C++. */
 template <typename Val>
 class Tuple : public Object, public impl::TupleTag {
@@ -597,6 +584,19 @@ protected:
     }
 
 };
+
+
+template <typename T>
+Tuple(const std::initializer_list<T>&) -> Tuple<impl::as_object_t<T>>;
+template <impl::is_iterable T>
+Tuple(T) -> Tuple<impl::as_object_t<impl::dereference_type<T>>>;
+template <typename T, typename... Args>
+    requires (!impl::is_iterable<T> && !impl::str_like<T>)
+Tuple(T, Args...) -> Tuple<Object>;
+template <impl::str_like T>
+Tuple(T) -> Tuple<Str>;
+template <size_t N>
+Tuple(const char(&)[N]) -> Tuple<Str>;
 
 
 }  // namespace py

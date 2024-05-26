@@ -156,13 +156,6 @@ void run() {
 
     // TODO: this should be an example showcase
 
-    // TODO: the lifetime issue stems from the fact that this triggers implicit conversions,
-    // which yield temporaries when called from Python.  When I call the function from
-    // Python, I interpret the argument as a py::Object, and then I apply an implicit
-    // conversion to const int&, which creates a temporary.  In this case, I probably
-    // have to construct a tuple and then call it via std::apply to avoid lifetime
-    // issues.
-
     auto lambda = [](
         py::Arg<"x", const int&>::opt x,
         py::Arg<"y", const int&>::opt y
@@ -176,7 +169,7 @@ void run() {
 
     py::Function func("subtract", lambda, y = 2, x = 1);
 
-    py::print(func());  // TODO: not memory safe for some reason
+    py::print(func());
 
     py::print(func(1));
     py::print(func(x = 1));
@@ -186,6 +179,18 @@ void run() {
     py::print(func(1, y = 2));
     py::print(func(x = 1, y = 2));
     py::print(func(y = 2, x = 1));
+
+
+
+
+    py::Function func2 = [](int x, int y) {
+        return x + y;
+    };
+
+    py::print(func2(1, 2));
+
+
+
 
 
 
@@ -988,5 +993,5 @@ static const py::Function func(
 BERTRAND_MODULE(example, m) {
     m.attr<"__doc__">() = "bertrand example plugin";
     m.attr<"func">() = func;
-    m.def("run", &run, "A test function to demonstrate pybind11");
+    m.def("run", "example function to demonstrate bertrand", &run);
 }

@@ -227,31 +227,8 @@ inline const Type Frame::type = reinterpret_borrow<Type>((PyObject*) &PyFrame_Ty
 ////////////////////////////////////
 
 
-Module Module::def_submodule(const char* name, const char* doc) {
-    const char* this_name = PyModule_GetName(m_ptr);
-    if (this_name == nullptr) {
-        Exception::from_python();
-    }
-    std::string full_name = std::string(this_name) + '.' + name;
-    Handle submodule = PyImport_AddModule(full_name.c_str());
-    if (!submodule) {
-        Exception::from_python();
-    }
-    Module result = reinterpret_borrow<Module>(submodule);
-    try {
-        if (doc && pybind11::options::show_user_defined_docstrings()) {
-            result.template attr<"__doc__">() = pybind11::str(doc);
-        }
-        pybind11::setattr(*this, name, result);
-        return result;
-    } catch (...) {
-        Exception::from_pybind11();
-    }
-}
-
-
 template <typename Return, typename... Target>
-std::optional<std::string> Function<Return(Target...)>::filename() const {
+inline std::optional<std::string> Function<Return(Target...)>::filename() const {
     std::optional<Code> code = this->code();
     if (code.has_value()) {
         return code->filename();
@@ -261,7 +238,7 @@ std::optional<std::string> Function<Return(Target...)>::filename() const {
 
 
 template <typename Return, typename... Target>
-std::optional<size_t> Function<Return(Target...)>::lineno() const {
+inline std::optional<size_t> Function<Return(Target...)>::lineno() const {
     std::optional<Code> code = this->code();
     if (code.has_value()) {
         return code->line_number();
@@ -271,7 +248,7 @@ std::optional<size_t> Function<Return(Target...)>::lineno() const {
 
 
 template <typename Return, typename... Target>
-std::optional<Module> Function<Return(Target...)>::module_() const {
+inline std::optional<Module> Function<Return(Target...)>::module_() const {
     PyObject* result = PyFunction_GetModule(unwrap_method());
     if (result == nullptr) {
         if (PyErr_Occurred()) {
@@ -284,7 +261,7 @@ std::optional<Module> Function<Return(Target...)>::module_() const {
 
 
 template <typename Return, typename... Target>
-std::optional<Code> Function<Return(Target...)>::code() const {
+inline std::optional<Code> Function<Return(Target...)>::code() const {
     PyObject* result = PyFunction_GetCode(unwrap_method());
     if (result == nullptr) {
         if (PyErr_Occurred()) {
@@ -297,7 +274,7 @@ std::optional<Code> Function<Return(Target...)>::code() const {
 
 
 template <typename Return, typename... Target>
-std::optional<Dict<Str, Object>> Function<Return(Target...)>::globals() const {
+inline std::optional<Dict<Str, Object>> Function<Return(Target...)>::globals() const {
     PyObject* result = PyFunction_GetGlobals(unwrap_method());
     if (result == nullptr) {
         if (PyErr_Occurred()) {
@@ -336,7 +313,7 @@ std::optional<Dict<Str, Object>> Function<Return(Target...)>::globals() const {
 
 
 template <typename Return, typename... Target>
-std::optional<Tuple<Object>> Function<Return(Target...)>::closure() const {
+inline std::optional<Tuple<Object>> Function<Return(Target...)>::closure() const {
     PyObject* result = PyFunction_GetClosure(unwrap_method());
     if (result == nullptr) {
         if (PyErr_Occurred()) {
@@ -349,7 +326,7 @@ std::optional<Tuple<Object>> Function<Return(Target...)>::closure() const {
 
 
 template <typename Return, typename... Target>
-void Function<Return(Target...)>::closure(std::optional<Tuple<Object>> closure) {
+inline void Function<Return(Target...)>::closure(std::optional<Tuple<Object>> closure) {
     PyObject* item = closure.has_value() ? closure->ptr() : Py_None;
     if (PyFunction_SetClosure(unwrap_method(), item)) {
         Exception::from_python();
@@ -358,7 +335,7 @@ void Function<Return(Target...)>::closure(std::optional<Tuple<Object>> closure) 
 
 
 template <impl::python_like T> requires (impl::str_like<T>)
-Int::Int(const T& str, int base) :
+inline Int::Int(const T& str, int base) :
     Base(PyLong_FromUnicodeObject(str.ptr(), base), stolen_t{})
 {
     if (m_ptr == nullptr) {
@@ -367,7 +344,7 @@ Int::Int(const T& str, int base) :
 }
 
 
-Float::Float(const Str& str) :
+inline Float::Float(const Str& str) :
     Base(PyFloat_FromString(str.ptr()), stolen_t{})
 {
     if (m_ptr == nullptr) {
@@ -376,7 +353,7 @@ Float::Float(const Str& str) :
 }
 
 
-Type::Type(
+inline Type::Type(
     const Str& name,
     const Tuple<Type>& bases,
     const Dict<Str, Object>& dict
@@ -398,7 +375,7 @@ Type::Type(
 #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
 
     /* Get the type's qualified name. */
-    Str Type::qualname() const {
+    inline Str Type::qualname() const {
         PyObject* result = PyType_GetQualName(self());
         if (result == nullptr) {
             Exception::from_python();
@@ -412,7 +389,7 @@ Type::Type(
 template <typename Val>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Val>)
-void List<Val>::extend(const T& items) {
+inline void List<Val>::extend(const T& items) {
     if constexpr (impl::python_like<T>) {
         attr<"extend">()(items);
     } else {
@@ -424,25 +401,25 @@ void List<Val>::extend(const T& items) {
 
 
 template <typename Val>
-void List<Val>::remove(const Val& value) {
+inline void List<Val>::remove(const Val& value) {
     attr<"remove">()(value);
 }
 
 
 template <typename Val>
-Val List<Val>::pop(Py_ssize_t index) {
+inline Val List<Val>::pop(Py_ssize_t index) {
     return reinterpet_steal<Val>(attr<"pop">()(index).release());
 }
 
 
 template <typename Val>
-void List<Val>::sort(const Bool& reverse) {
+inline void List<Val>::sort(const Bool& reverse) {
     attr<"sort">()(py::arg("reverse") = reverse);
 }
 
 
 template <typename Val>
-void List<Val>::sort(const Function<const Val&>& key, const Bool& reverse) {
+inline void List<Val>::sort(const Function<const Val&>& key, const Bool& reverse) {
     attr<"sort">()(py::arg("key") = key, py::arg("reverse") = reverse);
 }
 
@@ -450,7 +427,7 @@ void List<Val>::sort(const Function<const Val&>& key, const Bool& reverse) {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-bool FrozenSet<Key>::isdisjoint(const T& other) const {
+inline bool FrozenSet<Key>::isdisjoint(const T& other) const {
     if constexpr (impl::python_like<T>) {
         return static_cast<bool>(attr<"isdisjoint">()(other));
     } else {
@@ -467,7 +444,7 @@ bool FrozenSet<Key>::isdisjoint(const T& other) const {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-bool Set<Key>::isdisjoint(const T& other) const {
+inline bool Set<Key>::isdisjoint(const T& other) const {
     if constexpr (impl::python_like<T>) {
         return static_cast<bool>(attr<"isdisjoint">()(other));
     } else {
@@ -484,7 +461,7 @@ bool Set<Key>::isdisjoint(const T& other) const {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-bool FrozenSet<Key>::issuperset(const T& other) const {
+inline bool FrozenSet<Key>::issuperset(const T& other) const {
     if constexpr (impl::python_like<T>) {
         return static_cast<bool>(attr<"issuperset">()(other));
     } else {
@@ -501,7 +478,7 @@ bool FrozenSet<Key>::issuperset(const T& other) const {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-bool Set<Key>::issuperset(const T& other) const {
+inline bool Set<Key>::issuperset(const T& other) const {
     if constexpr (impl::python_like<T>) {
         return static_cast<bool>(attr<"issuperset">()(other));
     } else {
@@ -518,7 +495,7 @@ bool Set<Key>::issuperset(const T& other) const {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-bool FrozenSet<Key>::issubset(const T& other) const {
+inline bool FrozenSet<Key>::issubset(const T& other) const {
     return static_cast<bool>(attr<"issubset">()(other));
 }
 
@@ -526,19 +503,19 @@ bool FrozenSet<Key>::issubset(const T& other) const {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-bool Set<Key>::issubset(const T& other) const {
+inline bool Set<Key>::issubset(const T& other) const {
     return static_cast<bool>(attr<"issubset">()(other));
 }
 
 
 template <typename Key>
-bool FrozenSet<Key>::issubset(const std::initializer_list<Key>& other) const {
+inline bool FrozenSet<Key>::issubset(const std::initializer_list<Key>& other) const {
     return static_cast<bool>(attr<"issubset">()(FrozenSet(other)));
 }
 
 
 template <typename Key>
-bool Set<Key>::issubset(const std::initializer_list<Key>& other) const {
+inline bool Set<Key>::issubset(const std::initializer_list<Key>& other) const {
     return static_cast<bool>(attr<"issubset">()(Set(other)));
 }
 
@@ -546,7 +523,7 @@ bool Set<Key>::issubset(const std::initializer_list<Key>& other) const {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-FrozenSet<Key> FrozenSet<Key>::union_(const Args&... others) const {
+inline FrozenSet<Key> FrozenSet<Key>::union_(const Args&... others) const {
     return reinterpret_steal<FrozenSet<Key>>(
         attr<"union">()(std::forward<Args>(others)...).release()
     );
@@ -556,7 +533,7 @@ FrozenSet<Key> FrozenSet<Key>::union_(const Args&... others) const {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-Set<Key> Set<Key>::union_(const Args&... others) const {
+inline Set<Key> Set<Key>::union_(const Args&... others) const {
     return reinterpet_steal<Set<Key>>(
         attr<"union">()(std::forward<Args>(others)...).release()
     );
@@ -566,7 +543,7 @@ Set<Key> Set<Key>::union_(const Args&... others) const {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-FrozenSet<Key> FrozenSet<Key>::intersection(const Args&... others) const {
+inline FrozenSet<Key> FrozenSet<Key>::intersection(const Args&... others) const {
     return reinterpret_steal<FrozenSet<Key>>(
         attr<"intersection">()(std::forward<Args>(others)...).release()
     );
@@ -576,7 +553,7 @@ FrozenSet<Key> FrozenSet<Key>::intersection(const Args&... others) const {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-Set<Key> Set<Key>::intersection(const Args&... others) const {
+inline Set<Key> Set<Key>::intersection(const Args&... others) const {
     return reinterpet_steal<Set<Key>>(
         attr<"intersection">()(std::forward<Args>(others)...).release()
     );
@@ -586,7 +563,7 @@ Set<Key> Set<Key>::intersection(const Args&... others) const {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-FrozenSet<Key> FrozenSet<Key>::difference(const Args&... others) const {
+inline FrozenSet<Key> FrozenSet<Key>::difference(const Args&... others) const {
     return reinterpret_steal<FrozenSet<Key>>(
         attr<"difference">()(std::forward<Args>(others)...).release()
     );
@@ -596,7 +573,7 @@ FrozenSet<Key> FrozenSet<Key>::difference(const Args&... others) const {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-Set<Key> Set<Key>::difference(const Args&... others) const {
+inline Set<Key> Set<Key>::difference(const Args&... others) const {
     return reinterpet_steal<Set<Key>>(
         attr<"difference">()(std::forward<Args>(others)...).release()
     );
@@ -606,7 +583,7 @@ Set<Key> Set<Key>::difference(const Args&... others) const {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-FrozenSet<Key> FrozenSet<Key>::symmetric_difference(const T& other) const {
+inline FrozenSet<Key> FrozenSet<Key>::symmetric_difference(const T& other) const {
     return reinterpret_steal<FrozenSet<Key>>(
         attr<"symmetric_difference">()(other).release()
     );
@@ -616,7 +593,7 @@ FrozenSet<Key> FrozenSet<Key>::symmetric_difference(const T& other) const {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-Set<Key> Set<Key>::symmetric_difference(const T& other) const {
+inline Set<Key> Set<Key>::symmetric_difference(const T& other) const {
     return reinterpret_steal<Set<Key>>(
         attr<"symmetric_difference">()(other).release()
     );
@@ -626,7 +603,7 @@ Set<Key> Set<Key>::symmetric_difference(const T& other) const {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-void Set<Key>::update(const Args&... others) {
+inline void Set<Key>::update(const Args&... others) {
     attr<"update">()(std::forward<Args>(others)...);
 }
 
@@ -634,13 +611,13 @@ void Set<Key>::update(const Args&... others) {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-void Set<Key>::intersection_update(const Args&... others) {
+inline void Set<Key>::intersection_update(const Args&... others) {
     attr<"intersection_update">()(std::forward<Args>(others)...);
 }
 
 
 template <typename Key>
-void Set<Key>::intersection_update(const std::initializer_list<Key>& other) {
+inline void Set<Key>::intersection_update(const std::initializer_list<Key>& other) {
     attr<"intersection_update">()(Set(other));
 }
 
@@ -648,7 +625,7 @@ void Set<Key>::intersection_update(const std::initializer_list<Key>& other) {
 template <typename Key>
 template <impl::is_iterable... Args>
     requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
-void Set<Key>::difference_update(const Args&... others) {
+inline void Set<Key>::difference_update(const Args&... others) {
     attr<"difference_update">()(std::forward<Args>(others)...);
 }
 
@@ -656,7 +633,7 @@ void Set<Key>::difference_update(const Args&... others) {
 template <typename Key>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, Key>)
-void Set<Key>::symmetric_difference_update(const T& other) {
+inline void Set<Key>::symmetric_difference_update(const T& other) {
     attr<"symmetric_difference_update">()(other);
 }
 
@@ -665,7 +642,7 @@ void Set<Key>::symmetric_difference_update(const T& other) {
 
 
 template <typename Map>
-KeyView<Map>::KeyView(const Map& dict) :
+inline KeyView<Map>::KeyView(const Map& dict) :
     Base(dict.template attr<"keys">()().release(), stolen_t{})
 {}
 
@@ -673,54 +650,54 @@ KeyView<Map>::KeyView(const Map& dict) :
 template <typename Map>
 template <impl::is_iterable T>
     requires (std::convertible_to<impl::dereference_type<T>, typename Map::key_type>)
-bool KeyView<Map>::isdisjoint(const T& other) const {
+inline bool KeyView<Map>::isdisjoint(const T& other) const {
     return static_cast<bool>(attr<"isdisjoint">()(other));
 }
 
 
 template <typename Map>
-bool KeyView<Map>::isdisjoint(const std::initializer_list<typename Map::key_type>& other) const {
+inline bool KeyView<Map>::isdisjoint(const std::initializer_list<typename Map::key_type>& other) const {
     return static_cast<bool>(attr<"isdisjoint">()(Set<typename Map::key_type>(other)));
 }
 
 
 template <typename Key, typename Value>
-KeyView<Dict<Key, Value>> Dict<Key, Value>::keys() const {
+inline KeyView<Dict<Key, Value>> Dict<Key, Value>::keys() const {
     return KeyView(*this);
 }
 
 
 template <typename Map>
-ValueView<Map>::ValueView(const Map& dict) :
+inline ValueView<Map>::ValueView(const Map& dict) :
     Base(dict.template attr<"values">()().release(), stolen_t{})
 {}
 
 
 template <typename Key, typename Value>
-ValueView<Dict<Key, Value>> Dict<Key, Value>::values() const {
+inline ValueView<Dict<Key, Value>> Dict<Key, Value>::values() const {
     return ValueView(*this);
 }
 
 
 template <typename Map>
-ItemView<Map>::ItemView(const Map& dict) :
+inline ItemView<Map>::ItemView(const Map& dict) :
     Base(dict.template attr<"items">()().release(), stolen_t{})
 {}
 
 
 template <typename Key, typename Value>
-ItemView<Dict<Key, Value>> Dict<Key, Value>::items() const {
+inline ItemView<Dict<Key, Value>> Dict<Key, Value>::items() const {
     return ItemView(*this);
 }
 
 
 template <typename Key, typename Value>
-Value Dict<Key, Value>::popitem() {
+inline Value Dict<Key, Value>::popitem() {
     return reinterpret_steal<Value>(attr<"popitem">()().release());
 }
 
 
-Bytes Code::bytecode() const {
+inline Bytes Code::bytecode() const {
     return attr<"co_code">();
 }
 

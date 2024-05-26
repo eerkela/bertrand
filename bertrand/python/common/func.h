@@ -1657,6 +1657,7 @@ protected:
         static constexpr StaticStr capsule_name = "bertrand";
         static const char* capsule_id;
         std::string name;
+        std::string docstring;
         std::function<Return(Target...)> func;
         DefaultValues defaults;
         PyMethodDef method_def;
@@ -1665,16 +1666,18 @@ protected:
         values. */
         Capsule(
             std::string&& func_name,
+            std::string&& func_doc,
             std::function<Return(Target...)>&& func,
             DefaultValues&& defaults
         ) : name(std::move(func_name)),
+            docstring(std::move(func_doc)),
             func(std::move(func)),
             defaults(std::move(defaults)),
             method_def(
                 name.c_str(),
                 (PyCFunction) &Wrap<call_policy>::python,
                 Wrap<call_policy>::flags,
-                nullptr
+                docstring.c_str()
             )
         {}
 
@@ -1786,7 +1789,12 @@ protected:
 
             static PyObject* python(PyObject* capsule, PyObject* /* unused */) {
                 try {
-                    return as_object(get(capsule)->func()).release().ptr();
+                    if constexpr (std::is_void_v<Return>) {
+                        get(capsule)->func();
+                        Py_RETURN_NONE;
+                    } else {
+                        return as_object(get(capsule)->func()).release().ptr();
+                    }
                 } catch (...) {
                     Exception::to_python();
                     return nullptr;
@@ -1802,18 +1810,31 @@ protected:
             static PyObject* python(PyObject* capsule, PyObject* obj) {
                 try {
                     Capsule* contents = get(capsule);
-                    if (obj == nullptr) {
-                        if constexpr (target::has_opt) {
-                            return as_object(contents->func(
-                                contents->defaults.template get<0>()
-                            )).release().ptr();
+                    if constexpr (std::is_void_v<Return>) {
+                        if (obj == nullptr) {
+                            if constexpr (target::has_opt) {
+                                contents->func(contents->defaults.template get<0>());
+                            } else {
+                                throw TypeError("missing required argument");
+                            }
                         } else {
-                            throw TypeError("missing required argument");
+                            contents->func(reinterpret_borrow<Object>(obj));
                         }
+                        Py_RETURN_NONE;
+                    } else {
+                        if (obj == nullptr) {
+                            if constexpr (target::has_opt) {
+                                return as_object(contents->func(
+                                    contents->defaults.template get<0>()
+                                )).release().ptr();
+                            } else {
+                                throw TypeError("missing required argument");
+                            }
+                        }
+                        return as_object(contents->func(
+                            reinterpret_borrow<Object>(obj)
+                        )).release().ptr();
                     }
-                    return as_object(contents->func(
-                        reinterpret_borrow<Object>(obj)
-                    )).release().ptr();
                 } catch (...) {
                     Exception::to_python();
                     return nullptr;
@@ -1849,7 +1870,7 @@ protected:
                             }
                         }
                         Capsule* contents = get(capsule);
-                        return as_object(
+                        if constexpr (std::is_void_v<Return>) {
                             contents->func(
                                 Arguments<Target...>::template from_python<Is>(
                                     contents->defaults,
@@ -1858,8 +1879,21 @@ protected:
                                     nullptr,
                                     0
                                 )...
-                            )
-                        ).release().ptr();
+                            );
+                            Py_RETURN_NONE;
+                        } else {
+                            return as_object(
+                                contents->func(
+                                    Arguments<Target...>::template from_python<Is>(
+                                        contents->defaults,
+                                        args,
+                                        true_nargs,
+                                        nullptr,
+                                        0
+                                    )...
+                                )
+                            ).release().ptr();
+                        }
                     }(
                         std::make_index_sequence<target::size>{},
                         capsule,
@@ -1924,7 +1958,7 @@ protected:
                             }
                         }
                         Capsule* contents = get(capsule);
-                        return as_object(
+                        if constexpr (std::is_void_v<Return>) {
                             contents->func(
                                 Arguments<Target...>::template from_python<Is>(
                                     contents->defaults,
@@ -1933,8 +1967,21 @@ protected:
                                     kwnames,
                                     kwcount
                                 )...
-                            )
-                        ).release().ptr();
+                            );
+                            Py_RETURN_NONE;
+                        } else {
+                            return as_object(
+                                contents->func(
+                                    Arguments<Target...>::template from_python<Is>(
+                                        contents->defaults,
+                                        args,
+                                        true_nargs,
+                                        kwnames,
+                                        kwcount
+                                    )...
+                                )
+                            ).release().ptr();
+                        }
                     }(
                         std::make_index_sequence<target::size>{},
                         capsule,
@@ -2047,6 +2094,9 @@ public:
         Base(h, t), contents(Capsule::from_python(h.ptr()))
     {}
 
+    Function(const Function& other) : Base(other), contents(other.contents) {}
+    Function(Function&& other) : Base(std::move(other.contents)) {}
+
     template <impl::pybind11_like T> requires (check<T>())
     Function(T&& other) : Base(std::forward<T>(other)) {
         contents = Capsule::from_python(m_ptr);
@@ -2055,6 +2105,69 @@ public:
     template <typename Policy>
     Function(const pybind11::detail::accessor<Policy>& accessor) : Base(accessor) {
         contents = Capsule::from_python(m_ptr);
+    }
+
+    /* Construct a py::Function from a valid C++ function with the templated signature.
+    Use CTAD to deduce the signature if not explicitly provided.  If the signature
+    contains default value annotations, they must be specified here. */
+    template <typename Func, typename... Values>
+        requires (
+            !impl::python_like<Func> &&
+            std::is_invocable_r_v<Return, Func, Target...> &&
+            Defaults::template enable<Values...>
+        )
+    Function(Func&& func, Values&&... defaults) :
+        Base(nullptr, stolen_t{}),
+        contents(new Capsule{
+            "",
+            "",
+            std::function(std::forward<Func>(func)),
+            Defaults(std::forward<Values>(defaults)...)
+        })
+    {
+        m_ptr = Capsule::to_python(contents);
+    }
+
+    /* Construct a py::Function from a valid C++ function with the templated signature.
+    Use CTAD to deduce the signature if not explicitly provided.  If the signature
+    contains default value annotations, they must be specified here. */
+    template <typename Func, typename... Values>
+        requires (
+            !impl::python_like<Func> &&
+            std::is_invocable_r_v<Return, Func, Target...> &&
+            Defaults::template enable<Values...>
+        )
+    Function(std::string name, Func&& func, Values&&... defaults) :
+        Base(nullptr, stolen_t{}),
+        contents(new Capsule{
+            std::move(name),
+            "",
+            std::function(std::forward<Func>(func)),
+            Defaults(std::forward<Values>(defaults)...)
+        })
+    {
+        m_ptr = Capsule::to_python(contents);
+    }
+
+    /* Construct a py::Function from a valid C++ function with the templated signature.
+    Use CTAD to deduce the signature if not explicitly provided.  If the signature
+    contains default value annotations, they must be specified here. */
+    template <typename Func, typename... Values>
+        requires (
+            !impl::python_like<Func> &&
+            std::is_invocable_r_v<Return, Func, Target...> &&
+            Defaults::template enable<Values...>
+        )
+    Function(std::string name, std::string doc, Func&& func, Values&&... defaults) :
+        Base(nullptr, stolen_t{}),
+        contents(new Capsule{
+            std::move(name),
+            std::move(doc),
+            std::function(std::forward<Func>(func)),
+            Defaults(std::forward<Values>(defaults)...)
+        })
+    {
+        m_ptr = Capsule::to_python(contents);
     }
 
     ~Function() noexcept {
@@ -2069,31 +2182,6 @@ public:
             }
         }
     }
-
-    /* Construct a py::Function from a valid C++ function with the templated signature.
-    Use CTAD to deduce the signature if not explicitly provided.  If the signature
-    contains default value annotations, they must be specified here. */
-    template <typename Func, typename... Values>
-        requires (
-            std::is_invocable_r_v<Return, Func, Target...> &&
-            Defaults::template enable<Values...>
-        )
-    Function(std::string name, Func&& func, Values&&... defaults) :
-        Base(nullptr, stolen_t{}),
-        contents(new Capsule{
-            std::move(name),
-            std::function(std::forward<Func>(func)),
-            Defaults(std::forward<Values>(defaults)...)
-        })
-    {
-        m_ptr = Capsule::to_python(contents);
-    }
-
-    /* Copy constructor. */
-    Function(const Function& other) : Base(other), contents(other.contents) {}
-
-    /* Move constructor. */
-    Function(Function&& other) : Base(std::move(other.contents)) {}
 
     /////////////////////////
     ////    INTERFACE    ////
@@ -2756,8 +2844,14 @@ public:
 };
 
 
-template <typename F, typename... D>
+template <impl::is_callable_any F, typename... D> requires (!impl::python_like<F>)
+Function(F, D...) -> Function<typename impl::GetSignature<std::decay_t<F>>::type>;
+template <impl::is_callable_any F, typename... D> requires (!impl::python_like<F>)
 Function(std::string, F, D...) -> Function<
+    typename impl::GetSignature<std::decay_t<F>>::type
+>;
+template <impl::is_callable_any F, typename... D> requires (!impl::python_like<F>)
+Function(std::string, std::string, F, D...) -> Function<
     typename impl::GetSignature<std::decay_t<F>>::type
 >;
 
@@ -2790,7 +2884,7 @@ namespace impl {
             Exception::from_python();
         }
         try {
-            return Func::template invoke_py<typename Func::ReturnValue>(
+            return Func::template invoke_py<typename Func::ReturnType>(
                 meth,
                 std::forward<Args>(args)...
             );
@@ -2812,7 +2906,7 @@ namespace impl {
             Exception::from_python();
         }
         try {
-            return Func::template invoke_py<typename Func::ReturnValue>(
+            return Func::template invoke_py<typename Func::ReturnType>(
                 meth,
                 std::forward<Args>(args)...
             );

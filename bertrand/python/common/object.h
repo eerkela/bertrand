@@ -128,7 +128,7 @@ public:
 
     /* Copy assignment operator. */
     Object& operator=(const Object& other) {
-        std::cout << "object copy assignment\n";
+        std::cout << "object copy assignment\n";  // TODO: remove print statement
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = Py_XNewRef(other.m_ptr);
@@ -139,7 +139,7 @@ public:
 
     /* Move assignment operator. */
     Object& operator=(Object&& other) {
-        std::cout << "object move assignment\n";
+        std::cout << "object move assignment\n";  // TODO: remove print statement
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = other.m_ptr;
@@ -195,28 +195,11 @@ public:
 
     /* Contextually convert an Object into a boolean value for use in if/else 
     statements, with the same semantics as in Python. */
-    explicit operator bool() const {
+    [[nodiscard]] explicit operator bool() const {
         int result = PyObject_IsTrue(m_ptr);
         if (result == -1) {
             Exception::from_python();
         }
-        return result;
-    }
-
-    /* Explicitly cast to a string representation.  Equivalent to Python `str(obj)`. */
-    explicit operator std::string() const {
-        PyObject* str = PyObject_Str(m_ptr);
-        if (str == nullptr) {
-            Exception::from_python();
-        }
-        Py_ssize_t size;
-        const char* data = PyUnicode_AsUTF8AndSize(str, &size);
-        if (data == nullptr) {
-            Py_DECREF(str);
-            Exception::from_python();
-        }
-        std::string result(data, size);
-        Py_DECREF(str);
         return result;
     }
 
@@ -259,7 +242,7 @@ public:
     Ambiguities can still arise via the control struct, but they are more predictable
     and avoidable. */
     template <typename Self, typename T>
-        requires (__implicit_cast__<Self, T>::enable && !impl::initializer_like<T>)
+        requires (__implicit_cast__<Self, T>::enable && !impl::initializer_like<T>)  // TODO: no need for initializer_like
     [[nodiscard]] operator T(this const Self& self) {
         return __implicit_cast__<Self, T>::operator()(self);
     }
@@ -270,7 +253,7 @@ public:
     `pybind11::cast<T>()` and replaces it with the native `static_cast<T>()` and
     implicit conversions instead.  */
     template <typename Self, typename T>
-        requires (!__implicit_cast__<Self, T>::enable)
+        requires (!__implicit_cast__<Self, T>::enable /* && __explicit_cast__<Self, T>::enable */)  // TODO: checking explicit_cast causes errors
     [[nodiscard]] explicit operator T(this const Self& self) {
         return __explicit_cast__<Self, T>::operator()(self);
     }
@@ -439,28 +422,28 @@ public:
 
 /* Borrow a reference to a raw Python handle. */
 template <std::derived_from<Object> T>
-T reinterpret_borrow(Handle obj) {
+[[nodiscard]] T reinterpret_borrow(Handle obj) {
     return T(obj, Object::borrowed_t{});
 }
 
 
 /* Borrow a reference to a raw Python handle. */
 template <std::derived_from<pybind11::object> T>
-T reinterpret_borrow(Handle obj) {
+[[nodiscard]] T reinterpret_borrow(Handle obj) {
     return pybind11::reinterpret_borrow<T>(obj);
 }
 
 
 /* Steal a reference to a raw Python handle. */
 template <std::derived_from<Object> T>
-T reinterpret_steal(Handle obj) {
+[[nodiscard]] T reinterpret_steal(Handle obj) {
     return T(obj, Object::stolen_t{});
 }
 
 
 /* Steal a reference to a raw Python handle. */
 template <std::derived_from<pybind11::object> T>
-T reinterpret_steal(Handle obj) {
+[[nodiscard]] T reinterpret_steal(Handle obj) {
     return pybind11::reinterpret_steal<T>(obj);
 }
 
