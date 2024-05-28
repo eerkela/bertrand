@@ -388,7 +388,7 @@ inline Type::Type(
 
 template <typename Val>
 template <impl::is_iterable T>
-    requires (std::convertible_to<impl::dereference_type<T>, Val>)
+    requires (std::convertible_to<impl::iter_type<T>, Val>)
 inline void List<Val>::extend(const T& items) {
     if constexpr (impl::python_like<T>) {
         attr<"extend">()(items);
@@ -426,7 +426,7 @@ inline void List<Val>::sort(const Function<const Val&>& key, const Bool& reverse
 
 template <typename Key>
 template <impl::is_iterable T>
-    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+    requires (std::convertible_to<impl::iter_type<T>, Key>)
 inline bool FrozenSet<Key>::isdisjoint(const T& other) const {
     if constexpr (impl::python_like<T>) {
         return static_cast<bool>(attr<"isdisjoint">()(other));
@@ -443,7 +443,7 @@ inline bool FrozenSet<Key>::isdisjoint(const T& other) const {
 
 template <typename Key>
 template <impl::is_iterable T>
-    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+    requires (std::convertible_to<impl::iter_type<T>, Key>)
 inline bool Set<Key>::isdisjoint(const T& other) const {
     if constexpr (impl::python_like<T>) {
         return static_cast<bool>(attr<"isdisjoint">()(other));
@@ -460,7 +460,7 @@ inline bool Set<Key>::isdisjoint(const T& other) const {
 
 template <typename Key>
 template <impl::is_iterable T>
-    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+    requires (std::convertible_to<impl::iter_type<T>, Key>)
 inline bool FrozenSet<Key>::issuperset(const T& other) const {
     if constexpr (impl::python_like<T>) {
         return static_cast<bool>(attr<"issuperset">()(other));
@@ -477,7 +477,7 @@ inline bool FrozenSet<Key>::issuperset(const T& other) const {
 
 template <typename Key>
 template <impl::is_iterable T>
-    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+    requires (std::convertible_to<impl::iter_type<T>, Key>)
 inline bool Set<Key>::issuperset(const T& other) const {
     if constexpr (impl::python_like<T>) {
         return static_cast<bool>(attr<"issuperset">()(other));
@@ -494,7 +494,7 @@ inline bool Set<Key>::issuperset(const T& other) const {
 
 template <typename Key>
 template <impl::is_iterable T>
-    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+    requires (std::convertible_to<impl::iter_type<T>, Key>)
 inline bool FrozenSet<Key>::issubset(const T& other) const {
     return static_cast<bool>(attr<"issubset">()(other));
 }
@@ -502,7 +502,7 @@ inline bool FrozenSet<Key>::issubset(const T& other) const {
 
 template <typename Key>
 template <impl::is_iterable T>
-    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+    requires (std::convertible_to<impl::iter_type<T>, Key>)
 inline bool Set<Key>::issubset(const T& other) const {
     return static_cast<bool>(attr<"issubset">()(other));
 }
@@ -522,7 +522,7 @@ inline bool Set<Key>::issubset(const std::initializer_list<Key>& other) const {
 
 template <typename Key>
 template <impl::is_iterable... Args>
-    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+    requires (std::convertible_to<impl::iter_type<Args>, Key> && ...)
 inline FrozenSet<Key> FrozenSet<Key>::union_(const Args&... others) const {
     return reinterpret_steal<FrozenSet<Key>>(
         attr<"union">()(std::forward<Args>(others)...).release()
@@ -532,7 +532,7 @@ inline FrozenSet<Key> FrozenSet<Key>::union_(const Args&... others) const {
 
 template <typename Key>
 template <impl::is_iterable... Args>
-    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+    requires (std::convertible_to<impl::iter_type<Args>, Key> && ...)
 inline Set<Key> Set<Key>::union_(const Args&... others) const {
     return reinterpet_steal<Set<Key>>(
         attr<"union">()(std::forward<Args>(others)...).release()
@@ -542,7 +542,7 @@ inline Set<Key> Set<Key>::union_(const Args&... others) const {
 
 template <typename Key>
 template <impl::is_iterable... Args>
-    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+    requires (std::convertible_to<impl::iter_type<Args>, Key> && ...)
 inline FrozenSet<Key> FrozenSet<Key>::intersection(const Args&... others) const {
     return reinterpret_steal<FrozenSet<Key>>(
         attr<"intersection">()(std::forward<Args>(others)...).release()
@@ -552,7 +552,7 @@ inline FrozenSet<Key> FrozenSet<Key>::intersection(const Args&... others) const 
 
 template <typename Key>
 template <impl::is_iterable... Args>
-    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+    requires (std::convertible_to<impl::iter_type<Args>, Key> && ...)
 inline Set<Key> Set<Key>::intersection(const Args&... others) const {
     return reinterpet_steal<Set<Key>>(
         attr<"intersection">()(std::forward<Args>(others)...).release()
@@ -562,7 +562,7 @@ inline Set<Key> Set<Key>::intersection(const Args&... others) const {
 
 template <typename Key>
 template <impl::is_iterable... Args>
-    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+    requires (std::convertible_to<impl::iter_type<Args>, Key> && ...)
 inline FrozenSet<Key> FrozenSet<Key>::difference(const Args&... others) const {
     return reinterpret_steal<FrozenSet<Key>>(
         attr<"difference">()(std::forward<Args>(others)...).release()
@@ -572,7 +572,7 @@ inline FrozenSet<Key> FrozenSet<Key>::difference(const Args&... others) const {
 
 template <typename Key>
 template <impl::is_iterable... Args>
-    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+    requires (std::convertible_to<impl::iter_type<Args>, Key> && ...)
 inline Set<Key> Set<Key>::difference(const Args&... others) const {
     return reinterpet_steal<Set<Key>>(
         attr<"difference">()(std::forward<Args>(others)...).release()
@@ -582,7 +582,7 @@ inline Set<Key> Set<Key>::difference(const Args&... others) const {
 
 template <typename Key>
 template <impl::is_iterable T>
-    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+    requires (std::convertible_to<impl::iter_type<T>, Key>)
 inline FrozenSet<Key> FrozenSet<Key>::symmetric_difference(const T& other) const {
     return reinterpret_steal<FrozenSet<Key>>(
         attr<"symmetric_difference">()(other).release()
@@ -592,7 +592,7 @@ inline FrozenSet<Key> FrozenSet<Key>::symmetric_difference(const T& other) const
 
 template <typename Key>
 template <impl::is_iterable T>
-    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+    requires (std::convertible_to<impl::iter_type<T>, Key>)
 inline Set<Key> Set<Key>::symmetric_difference(const T& other) const {
     return reinterpret_steal<Set<Key>>(
         attr<"symmetric_difference">()(other).release()
@@ -602,7 +602,7 @@ inline Set<Key> Set<Key>::symmetric_difference(const T& other) const {
 
 template <typename Key>
 template <impl::is_iterable... Args>
-    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+    requires (std::convertible_to<impl::iter_type<Args>, Key> && ...)
 inline void Set<Key>::update(const Args&... others) {
     attr<"update">()(std::forward<Args>(others)...);
 }
@@ -610,7 +610,7 @@ inline void Set<Key>::update(const Args&... others) {
 
 template <typename Key>
 template <impl::is_iterable... Args>
-    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+    requires (std::convertible_to<impl::iter_type<Args>, Key> && ...)
 inline void Set<Key>::intersection_update(const Args&... others) {
     attr<"intersection_update">()(std::forward<Args>(others)...);
 }
@@ -624,7 +624,7 @@ inline void Set<Key>::intersection_update(const std::initializer_list<Key>& othe
 
 template <typename Key>
 template <impl::is_iterable... Args>
-    requires (std::convertible_to<impl::dereference_type<Args>, Key> && ...)
+    requires (std::convertible_to<impl::iter_type<Args>, Key> && ...)
 inline void Set<Key>::difference_update(const Args&... others) {
     attr<"difference_update">()(std::forward<Args>(others)...);
 }
@@ -632,7 +632,7 @@ inline void Set<Key>::difference_update(const Args&... others) {
 
 template <typename Key>
 template <impl::is_iterable T>
-    requires (std::convertible_to<impl::dereference_type<T>, Key>)
+    requires (std::convertible_to<impl::iter_type<T>, Key>)
 inline void Set<Key>::symmetric_difference_update(const T& other) {
     attr<"symmetric_difference_update">()(other);
 }
@@ -649,7 +649,7 @@ inline KeyView<Map>::KeyView(const Map& dict) :
 
 template <typename Map>
 template <impl::is_iterable T>
-    requires (std::convertible_to<impl::dereference_type<T>, typename Map::key_type>)
+    requires (std::convertible_to<impl::iter_type<T>, typename Map::key_type>)
 inline bool KeyView<Map>::isdisjoint(const T& other) const {
     return static_cast<bool>(attr<"isdisjoint">()(other));
 }
@@ -742,7 +742,7 @@ namespace impl {
     auto visit_recursive(Obj&& obj, Func&& func, Rest&&... rest) {
         using Arg = visit_helper<std::decay_t<Obj>, std::decay_t<Func>>::Arg;
 
-        if (Arg::check(obj)) {
+        if (Arg::typecheck(obj)) {
             return std::invoke(func, reinterpret_borrow<Arg>(obj.ptr()));
 
         } else {
@@ -929,7 +929,7 @@ This is roughly equivalent to std::visit, but with a few key differences:
     2.  Each function is checked in order, which invokes a runtime type check against
         the type of the first argument.  The first function that matches the observed
         type of the object is called, and all other functions are ignored.
-    3.  The generic `py::Object` type acts as a catch-all, since its check() method
+    3.  The generic `py::Object` type acts as a catch-all, since its typecheck() method
         always returns true as long as the object is not null.  Including a function
         that accepts `py::Object` can therefore act as a default case, if no previous
         function matches.
@@ -1625,9 +1625,9 @@ auto Regex::Match::group(const py::args& args) const
     result.reserve(tuple.size());
 
     for (const auto& arg : tuple) {
-        if (py::Str::check(arg)) {
+        if (py::Str::typecheck(arg)) {
             result.push_back(group(static_cast<std::string>(arg)));
-        } else if (py::Int::check(arg)) {
+        } else if (py::Int::typecheck(arg)) {
             result.push_back(group(static_cast<size_t>(arg)));
         } else {
             throw py::TypeError(

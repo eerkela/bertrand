@@ -291,15 +291,15 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         return std::derived_from<T, Code>;
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
-        } else if constexpr (check<T>()) {
+            return typecheck<T>();
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
         } else if constexpr (impl::python_like<T>) {
             return obj.ptr() != nullptr && PyCode_Check(obj.ptr());
@@ -315,7 +315,7 @@ public:
     Code(Handle h, const borrowed_t& t) : Base(h, t) {}
     Code(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
+    template <impl::pybind11_like T> requires (typecheck<T>())
     Code(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
@@ -534,15 +534,15 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         return std::derived_from<T, Frame>;
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
-        } else if constexpr (check<T>()) {
+            return typecheck<T>();
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
         } else if constexpr (impl::is_object_exact<T>) {
             return obj.ptr() != nullptr && PyFrame_Check(obj.ptr());
@@ -558,7 +558,7 @@ public:
     Frame(Handle h, const borrowed_t& t) : Base(h, t) {}
     Frame(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
+    template <impl::pybind11_like T> requires (typecheck<T>())
     Frame(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
@@ -740,16 +740,16 @@ public:
 //     static const Type type;
 
 //     template <typename T>
-//     static consteval bool check() {
+//     static consteval bool typecheck() {
 //         return std::derived_from<T, ClassMethod>;
 //     }
 
 //     template <typename T>
-//     static constexpr bool check(const T& obj) {
+//     static constexpr bool typecheck(const T& obj) {
 //         if constexpr (impl::cpp_like<T>) {
-//             return check<T>();
+//             return typecheck<T>();
 
-//         } else if constexpr (check<T>()) {
+//         } else if constexpr (typecheck<T>()) {
 //             return obj.ptr() != nullptr;
 
 //         } else if constexpr (impl::is_object_exact<T>) {
@@ -773,7 +773,7 @@ public:
 //     ClassMethod(Handle h, const borrowed_t& t) : Base(h, t) {}
 //     ClassMethod(Handle h, const stolen_t& t) : Base(h, t) {}
 
-//     template <impl::pybind11_like T> requires (check<T>())
+//     template <impl::pybind11_like T> requires (typecheck<T>())
 //     ClassMethod(T&& other) : Base(std::forward<T>(other)) {}
 
 //     template <typename Policy>
@@ -818,16 +818,16 @@ public:
 //     static const Type type;
 
 //     template <typename T>
-//     static consteval bool check() {
+//     static consteval bool typecheck() {
 //         return std::derived_from<T, StaticMethod>;
 //     }
 
 //     template <typename T>
-//     static constexpr bool check(const T& obj) {
+//     static constexpr bool typecheck(const T& obj) {
 //         if constexpr (impl::cpp_like<T>) {
-//             return check<T>();
+//             return typecheck<T>();
 
-//         } else if constexpr (check<T>()) {
+//         } else if constexpr (typecheck<T>()) {
 //             return obj.ptr() != nullptr;
 
 //         } else if constexpr (impl::is_object_exact<T>) {
@@ -851,7 +851,7 @@ public:
 //     StaticMethod(Handle h, const borrowed_t& t) : Base(h, t) {}
 //     StaticMethod(Handle h, const stolen_t& t) : Base(h, t) {}
 
-//     template <impl::pybind11_like T> requires (check<T>())
+//     template <impl::pybind11_like T> requires (typecheck<T>())
 //     StaticMethod(T&& other) : Base(std::forward<T>(other)) {}
 
 //     template <typename Policy>
@@ -911,16 +911,16 @@ public:
 //     static const Type type;
 
 //     template <typename T>
-//     static consteval bool check() {
+//     static consteval bool typecheck() {
 //         return std::derived_from<T, Property>;
 //     }
 
 //     template <typename T>
-//     static constexpr bool check(const T& obj) {
+//     static constexpr bool typecheck(const T& obj) {
 //         if constexpr (impl::cpp_like<T>) {
-//             return check<T>();
+//             return typecheck<T>();
 
-//         } else if constexpr (check<T>()) {
+//         } else if constexpr (typecheck<T>()) {
 //             return obj.ptr() != nullptr;
 
 //         } else if constexpr (impl::is_object_exact<T>) {
@@ -943,7 +943,7 @@ public:
 //     Property(Handle h, const borrowed_t& t) : Base(h, t) {}
 //     Property(Handle h, const stolen_t& t) : Base(h, t) {}
 
-//     template <impl::pybind11_like T> requires (check<T>())
+//     template <impl::pybind11_like T> requires (typecheck<T>())
 //     Property(T&& other) : Base(std::forward<T>(other)) {}
 
 //     template <typename Policy>

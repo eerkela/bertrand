@@ -157,7 +157,7 @@ struct __implicit_cast__<Self, pybind11::object> : Returns<pybind11::object> {
 
 
 /* Implicitly convert a Python object to an equivalent pybind11 type. */
-template <typename Self, impl::pybind11_like T> requires (Self::template check<T>())
+template <typename Self, impl::pybind11_like T> requires (Self::template typecheck<T>())
 struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
         return pybind11::reinterpret_borrow<T>(self.ptr());
@@ -170,7 +170,7 @@ check. */
 template <typename Self, std::derived_from<Self> T>
 struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
-        if (!T::check(self)) {
+        if (!T::typecheck(self)) {
             throw impl::noconvert<T>(self.ptr());
         }
         return reinterpret_borrow<T>(self.ptr());
@@ -326,7 +326,7 @@ struct __implicit_cast__<Self, std::string> : Returns<std::string> {
 /* Implicitly convert a py::Tuple into a pybind11::tuple regardless of its template
 signature. */
 template <std::derived_from<impl::TupleTag> Self, impl::tuple_like T>
-    requires (impl::pybind11_like<T> && !Self::template check<T>())
+    requires (impl::pybind11_like<T> && !Self::template typecheck<T>())
 struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
         return reinterpret_borrow<T>(self.ptr());
@@ -467,7 +467,7 @@ struct __implicit_cast__<Self, std::deque<T, Args...>> : Returns<std::deque<T, A
 /* Implicitly convert a py::List into a pybind11::list regardless of its template
 signature. */
 template <std::derived_from<impl::ListTag> Self, impl::list_like T>
-    requires (impl::pybind11_like<T> && !Self::template check<T>())
+    requires (impl::pybind11_like<T> && !Self::template typecheck<T>())
 struct __implicit_cast__<Self, T> : Returns<T> {
     static T operator()(const Self& self) {
         return reinterpret_borrow<T>(self.ptr());
@@ -2014,6 +2014,36 @@ template <StaticStr Name>
 struct __delattr__<Object, Name>                            : Returns<void> {};
 
 
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__func__">                        : Returns<Function<
+    Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)
+>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__code__">                        : Returns<Code> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__globals__">                     : Returns<Dict<Str, Object>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__closure__">                     : Returns<Tuple<Object>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__defaults__">                    : Returns<Tuple<Object>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__kwdefaults__">                  : Returns<Dict<Str, Object>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__annotations__">                 : Returns<Dict<Str, Object>> {};
+
+
+template <std::derived_from<Slice> Self>
+struct __getattr__<Self, "indices">                             : Returns<Function<
+    Tuple<Int>(Arg<"length", const Int&>)
+>> {};
+template <std::derived_from<Slice> Self>
+struct __getattr__<Self, "start">                               : Returns<Object> {};
+template <std::derived_from<Slice> Self>
+struct __getattr__<Self, "stop">                                : Returns<Object> {};
+template <std::derived_from<Slice> Self>
+struct __getattr__<Self, "step">                                : Returns<Object> {};
+
+
 template <StaticStr Name>
 struct __getattr__<Module, Name>                            : Returns<Object> {};
 template <StaticStr Name, std::convertible_to<Object> Value>
@@ -2038,28 +2068,476 @@ template <StaticStr Name>
 struct __delattr__<Super, Name>                             : Returns<void> {};
 
 
-template <std::derived_from<impl::FunctionTag> Self>
-struct __getattr__<Self, "__func__">                        : Returns<Function<
-    Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)
+
+
+
+// TODO: others, in logical order
+
+
+
+
+
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "capitalize">                      : Returns<Function<
+    Bytes()
 >> {};
-template <std::derived_from<impl::FunctionTag> Self>
-struct __getattr__<Self, "__code__">                        : Returns<Code> {};
-template <std::derived_from<impl::FunctionTag> Self>
-struct __getattr__<Self, "__globals__">                     : Returns<Dict<Str, Object>> {};
-template <std::derived_from<impl::FunctionTag> Self>
-struct __getattr__<Self, "__closure__">                     : Returns<Tuple<Object>> {};
-template <std::derived_from<impl::FunctionTag> Self>
-struct __getattr__<Self, "__defaults__">                    : Returns<Tuple<Object>> {};
-template <std::derived_from<impl::FunctionTag> Self>
-struct __getattr__<Self, "__kwdefaults__">                  : Returns<Dict<Str, Object>> {};
-template <std::derived_from<impl::FunctionTag> Self>
-struct __getattr__<Self, "__annotations__">                 : Returns<Dict<Str, Object>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "center">                          : Returns<Function<
+    Bytes(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillchar", const Bytes&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "count">                           : Returns<Function<
+    Int(
+        typename Arg<"sub", const Bytes&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "decode">                          : Returns<Function<
+    Str(
+        typename Arg<"encoding", const Str&>::opt,
+        typename Arg<"errors", const Str&>::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "endswith">                        : Returns<Function<
+    Bool(
+        typename Arg<"suffix", const Bytes&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "expandtabs">                      : Returns<Function<
+    Bytes(typename Arg<"tabsize", const Int&>::opt)
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "find">                            : Returns<Function<
+    Int(
+        typename Arg<"sub", const Bytes&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "fromhex">                         : Returns<Function<
+    Bytes(Arg<"string", const Str&>::pos)
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "hex">                             : Returns<Function<
+    Str(
+        typename Arg<"sep", const Bytes&>::opt,
+        typename Arg<"bytes_per_sep", const Int&>::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "index">                           : Returns<Function<
+    Int(
+        typename Arg<"sub", const Bytes&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "isalnum">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "isalpha">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "isascii">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "isdigit">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "islower">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "isspace">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "istitle">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "isupper">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "join">                            : Returns<Function<
+    Bytes(typename Arg<"iterable", const Object&>::pos)
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "ljust">                           : Returns<Function<
+    Bytes(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillbyte", const Bytes&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "lower">                           : Returns<Function<
+    Bytes()
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "lstrip">                          : Returns<Function<
+    Bytes(typename Arg<"chars", const Bytes&>::opt)
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "maketrans">                       : Returns<Function<
+    Dict<Bytes, Bytes>(
+        typename Arg<"from", const Bytes&>::pos,
+        typename Arg<"to", const Bytes&>::pos
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "partition">                       : Returns<Function<
+    Tuple<Bytes>(typename Arg<"sep", const Bytes&>::pos)
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "removeprefix">                    : Returns<Function<
+    Bytes(typename Arg<"prefix", const Bytes&>::pos)
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "removesuffix">                    : Returns<Function<
+    Bytes(typename Arg<"suffix", const Bytes&>::pos)
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "replace">                         : Returns<Function<
+    Bytes(
+        typename Arg<"old", const Bytes&>::pos,
+        typename Arg<"new", const Bytes&>::pos,
+        typename Arg<"count", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "rfind">                           : Returns<Function<
+    Int(
+        typename Arg<"sub", const Bytes&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "rindex">                          : Returns<Function<
+    Int(
+        typename Arg<"sub", const Bytes&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "rjust">                           : Returns<Function<
+    Bytes(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillbyte", const Bytes&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "rpartition">                      : Returns<Function<
+    Tuple<Bytes>(typename Arg<"sep", const Bytes&>::pos)
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "rsplit">                          : Returns<Function<
+    List<Bytes>(
+        typename Arg<"sep", const Bytes&>::opt,
+        typename Arg<"maxsplit", const Int&>::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "rstrip">                          : Returns<Function<
+    Bytes(typename Arg<"chars", const Bytes&>::opt)
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "split">                           : Returns<Function<
+    List<Bytes>(
+        typename Arg<"sep", const Bytes&>::opt,
+        typename Arg<"maxsplit", const Int&>::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "splitlines">                      : Returns<Function<
+    List<Bytes>(typename Arg<"keepends", const Bool&>::opt)
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "startswith">                      : Returns<Function<
+    Bool(
+        typename Arg<"prefix", const Bytes&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "strip">                           : Returns<Function<
+    Bytes(typename Arg<"chars", const Bytes&>::opt)
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "swapcase">                        : Returns<Function<
+    Bytes()
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "title">                           : Returns<Function<
+    Bytes()
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "translate">                       : Returns<Function<
+    Bytes(
+        typename Arg<"table", const Dict<Bytes, Bytes>&>::pos,
+        typename Arg<"delete", const Bytes&>::opt
+    )
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "upper">                           : Returns<Function<
+    Bytes()
+>> {};
+template <std::derived_from<Bytes> Self>
+struct __getattr__<Self, "zfill">                           : Returns<Function<
+    Bytes(typename Arg<"width", const Int&>::pos)
+>> {};
+
+
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "capitalize">                      : Returns<Function<
+    ByteArray()
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "center">                          : Returns<Function<
+    ByteArray(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillchar", const ByteArray&>::pos::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "count">                           : Returns<Function<
+    Int(
+        typename Arg<"sub", const ByteArray&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "decode">                          : Returns<Function<
+    Str(
+        typename Arg<"encoding", const Str&>::opt,
+        typename Arg<"errors", const Str&>::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "endswith">                        : Returns<Function<
+    Bool(
+        typename Arg<"suffix", const ByteArray&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "expandtabs">                      : Returns<Function<
+    ByteArray(typename Arg<"tabsize", const Int&>::opt)
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "find">                            : Returns<Function<
+    Int(
+        typename Arg<"sub", const ByteArray&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "fromhex">                         : Returns<Function<
+    ByteArray(Arg<"string", const Str&>::pos)
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "hex">                             : Returns<Function<
+    Str(
+        typename Arg<"sep", const ByteArray&>::opt,
+        typename Arg<"bytes_per_sep", const Int&>::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "index">                           : Returns<Function<
+    Int(
+        typename Arg<"sub", const ByteArray&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "isalnum">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "isalpha">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "isascii">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "isdigit">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "islower">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "isspace">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "istitle">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "isupper">                         : Returns<Function<
+    Bool()
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "join">                            : Returns<Function<
+    ByteArray(typename Arg<"iterable", const Object&>::pos)
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "ljust">                           : Returns<Function<
+    ByteArray(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillbyte", const ByteArray&>::pos::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "lower">                           : Returns<Function<
+    ByteArray()
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "lstrip">                          : Returns<Function<
+    ByteArray(typename Arg<"chars", const ByteArray&>::opt)
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "maketrans">                       : Returns<Function<
+    Dict<ByteArray, ByteArray>(
+        typename Arg<"from", const ByteArray&>::pos,
+        typename Arg<"to", const ByteArray&>::pos
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "partition">                       : Returns<Function<
+    Tuple<ByteArray>(typename Arg<"sep", const ByteArray&>::pos)
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "removeprefix">                    : Returns<Function<
+    ByteArray(typename Arg<"prefix", const ByteArray&>::pos)
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "removesuffix">                    : Returns<Function<
+    ByteArray(typename Arg<"suffix", const ByteArray&>::pos)
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "replace">                         : Returns<Function<
+    ByteArray(
+        typename Arg<"old", const ByteArray&>::pos,
+        typename Arg<"new", const ByteArray&>::pos,
+        typename Arg<"count", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "rfind">                           : Returns<Function<
+    Int(
+        typename Arg<"sub", const ByteArray&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "rindex">                          : Returns<Function<
+    Int(
+        typename Arg<"sub", const ByteArray&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "rjust">                           : Returns<Function<
+    ByteArray(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillbyte", const ByteArray&>::pos::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "rpartition">                      : Returns<Function<
+    Tuple<ByteArray>(typename Arg<"sep", const ByteArray&>::pos)
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "rsplit">                          : Returns<Function<
+    List<ByteArray>(
+        typename Arg<"sep", const ByteArray&>::opt,
+        typename Arg<"maxsplit", const Int&>::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "rstrip">                          : Returns<Function<
+    ByteArray(typename Arg<"chars", const ByteArray&>::opt)
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "split">                           : Returns<Function<
+    List<ByteArray>(
+        typename Arg<"sep", const ByteArray&>::opt,
+        typename Arg<"maxsplit", const Int&>::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "splitlines">                      : Returns<Function<
+    List<ByteArray>(typename Arg<"keepends", const Bool&>::opt)
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "startswith">                      : Returns<Function<
+    Bool(
+        typename Arg<"prefix", const ByteArray&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "strip">                           : Returns<Function<
+    ByteArray(typename Arg<"chars", const ByteArray&>::opt)
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "swapcase">                        : Returns<Function<
+    ByteArray()
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "title">                           : Returns<Function<
+    ByteArray()
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "translate">                       : Returns<Function<
+    ByteArray(
+        typename Arg<"table", const Dict<ByteArray, ByteArray>&>::pos,
+        typename Arg<"delete", const ByteArray&>::opt
+    )
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "upper">                           : Returns<Function<
+    ByteArray()
+>> {};
+template <std::derived_from<ByteArray> Self>
+struct __getattr__<Self, "zfill">                           : Returns<Function<
+    ByteArray(typename Arg<"width", const Int&>::pos)
+>> {};
 
 
 
 
 
-// TODO: continue for all attributes of all types
 
 
 

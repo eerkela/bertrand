@@ -903,7 +903,7 @@ template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
 
 
 template <std::derived_from<Object> Self> requires (__iter__<Self>::enable)
-auto operator*(const Self& self) {
+[[nodiscard]] auto operator*(const Self& self) {
     if constexpr (impl::proxy_like<Self>) {
         return *self.value();
     } else {

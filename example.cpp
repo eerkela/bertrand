@@ -183,11 +183,13 @@ void run() {
 
 
 
-    py::Function func2 = [](int x, int y) {
+    py::Function func2 = [](py::Arg<"x", int> x, py::Arg<"y", int> y) {
         return x + y;
     };
 
-    py::print(func2(1, 2));
+    py::print(func2(x = 1, y = 2));
+
+
 
 
 

@@ -29,15 +29,15 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         return impl::type_like<T>;
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
-        } else if constexpr (check<T>()) {
+            return typecheck<T>();
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
         } else if constexpr (impl::is_object_exact<T>) {
             return obj.ptr() != nullptr && PyType_Check(obj.ptr());
@@ -53,7 +53,7 @@ public:
     Type(Handle h, const borrowed_t& t) : Base(h, t) {}
     Type(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
+    template <impl::pybind11_like T> requires (typecheck<T>())
     Type(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
@@ -298,16 +298,16 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         return std::derived_from<T, Super>;
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
 
-        } else if constexpr (check<T>()) {
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
 
         } else if constexpr (impl::is_object_exact<T>) {
@@ -335,7 +335,7 @@ public:
     Super(Handle h, const borrowed_t& t) : Base(h, t) {}
     Super(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
+    template <impl::pybind11_like T> requires (typecheck<T>())
     Super(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>

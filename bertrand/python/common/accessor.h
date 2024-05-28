@@ -142,11 +142,11 @@ public:
     ////    DEREFERENCE    ////
     ///////////////////////////
 
-    bool has_value() const {
+    [[nodiscard]] bool has_value() const {
         return initialized;
     }
 
-    Wrapped& value() {
+    [[nodiscard]] Wrapped& value() {
         if (!initialized) {
             throw ValueError(
                 "attempt to dereference an uninitialized accessor.  Either the "
@@ -156,7 +156,7 @@ public:
         return reinterpret_cast<Wrapped&>(buffer);
     }
 
-    const Wrapped& value() const {
+    [[nodiscard]] const Wrapped& value() const {
         if (!initialized) {
             throw ValueError(
                 "attempt to dereference an uninitialized accessor.  Either the "
@@ -170,39 +170,39 @@ public:
     ////    FORWARDING INTERFACE    ////
     ////////////////////////////////////
 
-    auto operator*() {
+    [[nodiscard]] auto operator*() {
         return *get_value();
     }
 
     // all attributes of wrapped type are forwarded using the arrow operator.  Just
     // replace all instances of `.` with `->`
-    Wrapped* operator->() {
+    [[nodiscard]] Wrapped* operator->() {
         return &get_value();
     };
 
-    const Wrapped* operator->() const {
+    [[nodiscard]] const Wrapped* operator->() const {
         return &get_value();
     };
 
     // TODO: make sure that converting proxy to wrapped object does not create a copy.
     // -> This matters when modifying kwonly defaults in func.h
 
-    operator Wrapped&() {
+    [[nodiscard]] operator Wrapped&() {
         return get_value();
     }
 
-    operator const Wrapped&() const {
+    [[nodiscard]] operator const Wrapped&() const {
         return get_value();
     }
 
     template <typename T>
         requires (!std::same_as<Wrapped, T> && std::convertible_to<Wrapped, T>)
-    operator T() const {
+    [[nodiscard]] operator T() const {
         return implicit_cast<T>(get_value());
     }
 
     template <typename T> requires (!std::convertible_to<Wrapped, T>)
-    explicit operator T() const {
+    [[nodiscard]] explicit operator T() const {
         return static_cast<T>(get_value());
     }
 
@@ -224,12 +224,12 @@ public:
     auto operator[](const std::initializer_list<impl::SliceInitializer>& slice) const;
 
     template <typename T>
-    auto contains(const T& key) const { return get_value().contains(key); }
-    auto size() const { return get_value().size(); }
-    auto begin() const { return get_value().begin(); }
-    auto end() const { return get_value().end(); }
-    auto rbegin() const { return get_value().rbegin(); }
-    auto rend() const { return get_value().rend(); }
+    [[nodiscard]] auto contains(const T& key) const { return get_value().contains(key); }
+    [[nodiscard]] auto size() const { return get_value().size(); }
+    [[nodiscard]] auto begin() const { return get_value().begin(); }
+    [[nodiscard]] auto end() const { return get_value().end(); }
+    [[nodiscard]] auto rbegin() const { return get_value().rbegin(); }
+    [[nodiscard]] auto rend() const { return get_value().rend(); }
 
 };
 
@@ -300,14 +300,14 @@ public:
      *      py::Int i = reinterpret_steal<py::Int>(obj.attr<"some_int">().release());
      */
 
-    Wrapped& value() {
+    [[nodiscard]] Wrapped& value() {
         if (!Base::initialized) {
             get_attr();
         }
         return reinterpret_cast<Wrapped&>(Base::buffer);
     }
 
-    const Wrapped& value() const {
+    [[nodiscard]] const Wrapped& value() const {
         if (!Base::initialized) {
             get_attr();
         }
@@ -536,7 +536,7 @@ public:
      *      py::Int item = list[{1, 3}];  // compile error, List is not convertible to Int
      */
 
-    Wrapped& value() {
+    [[nodiscard]] Wrapped& value() {
         if (!Base::initialized) {
             new (Base::buffer) Wrapped(reinterpret_steal<Wrapped>(policy.get()));
             Base::initialized = true;
@@ -544,7 +544,7 @@ public:
         return reinterpret_cast<Wrapped&>(Base::buffer);
     }
 
-    const Wrapped& value() const {
+    [[nodiscard]] const Wrapped& value() const {
         if (!Base::initialized) {
             new (Base::buffer) Wrapped(reinterpret_steal<Wrapped>(policy.get()));
             Base::initialized = true;

@@ -76,12 +76,12 @@ public:
     /////////////////////////////////
 
     /* Dereference the iterator. */
-    inline value_type operator*() const {
+    [[nodiscard]] inline value_type operator*() const {
         return policy.deref();
     }
 
     /* Dereference the iterator. */
-    inline pointer operator->() const {
+    [[nodiscard]] inline pointer operator->() const {
         return &(**this);
     }
 
@@ -99,12 +99,12 @@ public:
     }
 
     /* Compare two iterators for equality. */
-    inline bool operator==(const Iterator& other) const {
+    [[nodiscard]] inline bool operator==(const Iterator& other) const {
         return policy.compare(other.policy);
     }
 
     /* Compare two iterators for inequality. */
-    inline bool operator!=(const Iterator& other) const {
+    [[nodiscard]] inline bool operator!=(const Iterator& other) const {
         return !policy.compare(other.policy);
     }
 
@@ -133,7 +133,7 @@ public:
 
     /* Advance the iterator by n steps. */
     template <typename T = Iterator> requires (random_access<Policy>)
-    inline Iterator operator+(difference_type n) const {
+    [[nodiscard]] inline Iterator operator+(difference_type n) const {
         Iterator copy = *this;
         copy += n;
         return copy;
@@ -148,7 +148,7 @@ public:
 
     /* Retreat the iterator by n steps. */
     template <typename T = Iterator> requires (random_access<Policy>)
-    inline Iterator operator-(difference_type n) const {
+    [[nodiscard]] inline Iterator operator-(difference_type n) const {
         Iterator copy = *this;
         copy -= n;
         return copy;
@@ -163,37 +163,37 @@ public:
 
     /* Calculate the distance between two iterators. */
     template <typename T = Iterator> requires (random_access<Policy>)
-    inline difference_type operator-(const Iterator& other) const {
+    [[nodiscard]] inline difference_type operator-(const Iterator& other) const {
         return policy.distance(other.policy);
     }
 
     /* Access the iterator at an offset. */
     template <typename T = Iterator> requires (random_access<Policy>)
-    inline value_type operator[](difference_type n) const {
+    [[nodiscard]] inline value_type operator[](difference_type n) const {
         return *(*this + n);
     }
 
     /* Compare two iterators for ordering. */
     template <typename T = Iterator> requires (random_access<Policy>)
-    inline bool operator<(const Iterator& other) const {
+    [[nodiscard]] inline bool operator<(const Iterator& other) const {
         return !!policy && (*this - other) < 0;
     }
 
     /* Compare two iterators for ordering. */
     template <typename T = Iterator> requires (random_access<Policy>)
-    inline bool operator<=(const Iterator& other) const {
+    [[nodiscard]] inline bool operator<=(const Iterator& other) const {
         return !!policy && (*this - other) <= 0;
     }
 
     /* Compare two iterators for ordering. */
     template <typename T = Iterator> requires (random_access<Policy>)
-    inline bool operator>=(const Iterator& other) const {
+    [[nodiscard]] inline bool operator>=(const Iterator& other) const {
         return !policy || (*this - other) >= 0;
     }
 
     /* Compare two iterators for ordering. */
     template <typename T = Iterator> requires (random_access<Policy>)
-    inline bool operator>(const Iterator& other) const {
+    [[nodiscard]] inline bool operator>(const Iterator& other) const {
         return !policy || (*this - other) > 0;
     }
 

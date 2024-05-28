@@ -108,7 +108,7 @@ class Tuple : public Object, public impl::TupleTag {
     static constexpr bool generic = std::same_as<Val, Object>;
 
     template <typename T>
-    static constexpr bool typecheck = std::derived_from<T, Object> ?
+    static constexpr bool check_value_type = std::derived_from<T, Object> ?
         std::derived_from<T, Val> : std::convertible_to<T, Val>;
 
     template <typename T>
@@ -119,13 +119,13 @@ class Tuple : public Object, public impl::TupleTag {
     template <typename First, typename Second>
     struct std_tuple_check<std::pair<First, Second>> {
         static constexpr bool match = true;
-        static constexpr bool value = typecheck<First> && typecheck<Second>;
+        static constexpr bool value = check_value_type<First> && check_value_type<Second>;
     };
 
     template <typename... Args>
     struct std_tuple_check<std::tuple<Args...>> {
         static constexpr bool match = true;
-        static constexpr bool value = (typecheck<Args> && ...);
+        static constexpr bool value = (check_value_type<Args> && ...);
     };
 
 public:
@@ -146,14 +146,14 @@ public:
     // TODO: use decay_t in all Object::check<T>(); methods
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         using U = std::decay_t<T>;
         if constexpr (!impl::tuple_like<U>) {
             return false;
         } else if constexpr (impl::pybind11_like<U>) {
             return generic;
         } else if constexpr (impl::is_iterable<U>) {
-            return typecheck<impl::dereference_type<U>>;
+            return check_value_type<impl::iter_type<U>>;
         } else if constexpr (std_tuple_check<U>::match) {
             return std_tuple_check<U>::value;
         } else {
@@ -162,9 +162,9 @@ public:
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
 
         } else if constexpr (impl::is_object_exact<T>) {
             if constexpr (generic) {
@@ -173,7 +173,7 @@ public:
                 return (
                     obj.ptr() != nullptr && PyTuple_Check(obj.ptr()) &&
                     std::ranges::all_of(obj, [](const auto& item) {
-                        return value_type::check(item);
+                        return value_type::typecheck(item);
                     })
                 );
             }
@@ -188,13 +188,13 @@ public:
                 return (
                     obj.ptr() != nullptr &&
                     std::ranges::all_of(obj, [](const auto& item) {
-                        return value_type::check(item);
+                        return value_type::typecheck(item);
                     })
                 );
             }
 
         } else if constexpr (impl::tuple_like<T>) {
-            return obj.ptr() != nullptr && typecheck<impl::dereference_type<T>>;
+            return obj.ptr() != nullptr && check_value_type<impl::iter_type<T>>;
 
         } else {
             return false;
@@ -240,7 +240,7 @@ public:
 
     /* Copy/move constructors from equivalent pybind11 types or other tuples with a
     narrower value type. */
-    template <impl::python_like T> requires (check<T>())
+    template <impl::python_like T> requires (typecheck<T>())
     Tuple(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly unpack a generic Python container into a py::Tuple. */
@@ -589,7 +589,7 @@ protected:
 template <typename T>
 Tuple(const std::initializer_list<T>&) -> Tuple<impl::as_object_t<T>>;
 template <impl::is_iterable T>
-Tuple(T) -> Tuple<impl::as_object_t<impl::dereference_type<T>>>;
+Tuple(T) -> Tuple<impl::as_object_t<impl::iter_type<T>>>;
 template <typename T, typename... Args>
     requires (!impl::is_iterable<T> && !impl::str_like<T>)
 Tuple(T, Args...) -> Tuple<Object>;

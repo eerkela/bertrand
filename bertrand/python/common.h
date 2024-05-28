@@ -33,15 +33,15 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         return impl::none_like<T>;
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
-        } else if constexpr (check<T>()) {
+            return typecheck<T>();
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
         } else if constexpr (impl::is_object_exact<T>) {
             return obj.ptr() != nullptr && Py_IsNone(obj.ptr());
@@ -53,7 +53,7 @@ public:
     NoneType(Handle h, const borrowed_t& t) : Base(h, t) {}
     NoneType(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
+    template <impl::pybind11_like T> requires (typecheck<T>())
     NoneType(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
@@ -81,16 +81,16 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         return std::derived_from<T, NotImplementedType>;
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
 
-        } else if constexpr (check<T>()) {
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
 
         } else if constexpr (impl::is_object_exact<T>) {
@@ -114,7 +114,7 @@ public:
     NotImplementedType(Handle h, const borrowed_t& t) : Base(h, t) {}
     NotImplementedType(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
+    template <impl::pybind11_like T> requires (typecheck<T>())
     NotImplementedType(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
@@ -139,16 +139,16 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         return std::derived_from<T, EllipsisType>;
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
 
-        } else if constexpr (check<T>()) {
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
 
         } else if constexpr (impl::is_object_exact<T>) {
@@ -172,7 +172,7 @@ public:
     EllipsisType(Handle h, const borrowed_t& t) : Base(h, t) {}
     EllipsisType(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
+    template <impl::pybind11_like T> requires (typecheck<T>())
     EllipsisType(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
@@ -196,34 +196,15 @@ static const NotImplementedType NotImplemented;
 
 namespace impl {
 
-    // TODO: SliceInitializer should be a std::variant of py::Int, py::None?
-    // -> Does this work?
-
     /* An initializer that explicitly requires an integer or None. */
     struct SliceInitializer {
         Object value;
         template <typename T>
-            requires (
-                impl::int_like<std::decay_t<T>> ||
-                std::same_as<std::decay_t<T>, std::nullopt_t> ||
-                std::same_as<std::decay_t<T>, NoneType>
-            )
+            requires (impl::int_like<std::decay_t<T>> || impl::none_like<std::decay_t<T>>)
         SliceInitializer(T&& value) : value(std::forward<T>(value)) {}
     };
 
 }
-
-
-template <std::derived_from<Slice> Self>
-struct __getattr__<Self, "indices">                             : Returns<Function<
-    Tuple<Int>(Arg<"length", const Int&>)
->> {};
-template <std::derived_from<Slice> Self>
-struct __getattr__<Self, "start">                               : Returns<Object> {};
-template <std::derived_from<Slice> Self>
-struct __getattr__<Self, "stop">                                : Returns<Object> {};
-template <std::derived_from<Slice> Self>
-struct __getattr__<Self, "step">                                : Returns<Object> {};
 
 
 /* Represents a statically-typed Python `slice` object in C++.  Note that the start,
@@ -235,15 +216,15 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool check() {
+    [[nodiscard]] static consteval bool typecheck() {
         return impl::slice_like<T>;
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
-        } else if constexpr (check<T>()) {
+            return typecheck<T>();
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
         } else if constexpr (impl::is_object_exact<T>) {
             return obj.ptr() != nullptr && PySlice_Check(obj.ptr());
@@ -259,7 +240,7 @@ public:
     Slice(Handle h, const borrowed_t& t) : Base(h, t) {}
     Slice(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
+    template <impl::pybind11_like T> requires (typecheck<T>())
     Slice(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
@@ -334,17 +315,17 @@ public:
     ////////////////////////////////
 
     /* Get the start object of the slice.  Note that this might not be an integer. */
-    auto start() const {
+    [[nodiscard]] auto start() const {
         return attr<"start">().value();
     }
 
     /* Get the stop object of the slice.  Note that this might not be an integer. */
-    auto stop() const {
+    [[nodiscard]] auto stop() const {
         return attr<"stop">().value();
     }
 
     /* Get the step object of the slice.  Note that this might not be an integer. */
-    auto step() const {
+    [[nodiscard]] auto step() const {
         return attr<"step">().value();
     }
 
@@ -361,7 +342,7 @@ public:
 
         auto [start, stop, step, length] = slice.indices(size);
     */
-    auto indices(size_t size) const {
+    [[nodiscard]] auto indices(size_t size) const {
         struct Indices {
             Py_ssize_t start = 0;
             Py_ssize_t stop = 0;
@@ -399,15 +380,15 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         return impl::module_like<T>;
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
-        } else if constexpr (check<T>()) {
+            return typecheck<T>();
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
         } else if constexpr (impl::is_object_exact<T>) {
             return obj.ptr() != nullptr && PyModule_Check(obj.ptr());
@@ -423,7 +404,7 @@ public:
     Module(Handle h, const borrowed_t& t) : Base(h, t) {}
     Module(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
+    template <impl::pybind11_like T> requires (typecheck<T>())
     Module(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>

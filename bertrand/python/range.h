@@ -54,16 +54,16 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         return impl::range_like<T>;
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
 
-        } else if constexpr (check<T>()) {
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
 
         } else if constexpr (impl::is_object_exact<T>) {
@@ -91,7 +91,7 @@ public:
     Range(Handle h, const borrowed_t& t) : Base(h, t) {}
     Range(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
+    template <impl::pybind11_like T> requires (typecheck<T>())
     Range(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>

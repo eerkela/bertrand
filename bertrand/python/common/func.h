@@ -90,7 +90,7 @@ namespace py {
 
 // -> Use a Trie to store the overloads, and then search it using a depth-first search
 // to backtrack.  Each node in the trie will store a list of types from most to least
-// specific, as determined by either a check<> or issubclass() call (Maybe these can
+// specific, as determined by either a typecheck<> or issubclass() call (Maybe these can
 // be unified as check_type<>?).  Each node will need the following:
 
 // 1.   An ordered map of types to the next node in the trie, which is sorted in
@@ -2011,19 +2011,19 @@ protected:
 
 public:
 
-    // TODO: if default specialization is given, check<> should be fully generic, right?
-    // check<T>() should check impl::is_callable_any<T>;
+    // TODO: if default specialization is given, typecheck<> should be fully generic, right?
+    // typecheck<T>() should check impl::is_callable_any<T>;
 
     template <typename T>
-    static consteval bool check() {
+    [[nodiscard]] static consteval bool typecheck() {
         return std::is_invocable_r_v<Return, T, Target...>;  // TODO: ensure this is correct
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if (impl::cpp_like<T>) {
-            return check<T>();
-        } else if constexpr (check<T>()) {
+            return typecheck<T>();
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
         } else if constexpr (impl::is_object_exact<T>) {
             return obj.ptr() != nullptr && (
@@ -2097,7 +2097,7 @@ public:
     Function(const Function& other) : Base(other), contents(other.contents) {}
     Function(Function&& other) : Base(std::move(other.contents)) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
+    template <impl::pybind11_like T> requires (typecheck<T>())
     Function(T&& other) : Base(std::forward<T>(other)) {
         contents = Capsule::from_python(m_ptr);
     }
@@ -2504,18 +2504,30 @@ public:
     template <typename... Source> requires (invocable<Source...>)
     Return operator()(Source&&... args) const {
         if (contents == nullptr) {
-            return invoke_py(this->ptr(), std::forward<Source>(args)...);
+            if constexpr (std::is_void_v<Return>) {
+                invoke_py(this->ptr(), std::forward<Source>(args)...);
+            } else {
+                return invoke_py(this->ptr(), std::forward<Source>(args)...);
+            }
         } else {
-            return invoke_cpp(
-                contents->defaults,
-                contents->func,
-                std::forward<Source>(args)...
-            );
+            if constexpr (std::is_void_v<Return>) {
+                invoke_cpp(
+                    contents->defaults,
+                    contents->func,
+                    std::forward<Source>(args)...
+                );
+            } else {
+                return invoke_cpp(
+                    contents->defaults,
+                    contents->func,
+                    std::forward<Source>(args)...
+                );
+            }
         }
     }
 
     /* Get the name of the wrapped function. */
-    std::string name() const {
+    [[nodiscard]] std::string name() const {
         if (contents != nullptr) {
             return contents->name;
         }
@@ -2534,7 +2546,7 @@ public:
     }
 
     /* Get the function's fully qualified (dotted) name. */
-    std::string qualname() const {
+    [[nodiscard]] std::string qualname() const {
         PyObject* result = PyObject_GetAttrString(this->ptr(), "__qualname__");
         if (result == nullptr) {
             Exception::from_python();
@@ -2553,16 +2565,16 @@ public:
 
     /* Get the name of the file in which the function was defined, or nullopt if it
     was defined from C/C++. */
-    std::optional<std::string> filename() const;
+    [[nodiscard]] std::optional<std::string> filename() const;
 
     /* Get the line number where the function was defined, or nullopt if it was
     defined from C/C++. */
-    std::optional<size_t> lineno() const;
+    [[nodiscard]] std::optional<size_t> lineno() const;
 
 
 
     // /* Get a read-only dictionary mapping argument names to their default values. */
-    // MappingProxy<Dict<Str, Object>> defaults() const {
+    // [[nodiscard]] MappingProxy<Dict<Str, Object>> defaults() const {
     //     Code code = this->code();
 
     //     // check for positional defaults
@@ -2660,7 +2672,7 @@ public:
     // }
 
     // /* Get a read-only dictionary holding type annotations for the function. */
-    // MappingProxy<Dict<Str, Object>> annotations() const {
+    // [[nodiscard]] MappingProxy<Dict<Str, Object>> annotations() const {
     //     PyObject* result = PyFunction_GetAnnotations(self());
     //     if (result == nullptr) {
     //         return MappingProxy(Dict<Str, Object>{});
@@ -2729,25 +2741,25 @@ public:
 
     /* Get the module in which this function was defined, or nullopt if it is not
     associated with any module. */
-    std::optional<Module> module_() const;
+    [[nodiscard]] std::optional<Module> module_() const;
 
     /* Get the Python code object that backs this function, or nullopt if the function
     was not defined from Python. */
-    std::optional<Code> code() const;
+    [[nodiscard]] std::optional<Code> code() const;
 
     /* Get the globals dictionary from the function object, or nullopt if it could not
     be introspected. */
-    std::optional<Dict<Str, Object>> globals() const;
+    [[nodiscard]] std::optional<Dict<Str, Object>> globals() const;
 
     /* Get a read-only mapping of argument names to their default values. */
-    MappingProxy<Dict<Str, Object>> defaults() const;
+    [[nodiscard]] MappingProxy<Dict<Str, Object>> defaults() const;
 
     /* Set the default value for one or more arguments. */
     template <typename... Values> requires (sizeof...(Values) > 0)  // and all are valid
     void defaults(Values&&... values);
 
     /* Get a read-only mapping of argument names to their type annotations. */
-    MappingProxy<Dict<Str, Object>> annotations() const;
+    [[nodiscard]] MappingProxy<Dict<Str, Object>> annotations() const;
 
     /* Set the type annotation for one or more arguments. */
     template <typename... Annotations> requires (sizeof...(Annotations) > 0)  // and all are valid
@@ -2755,7 +2767,7 @@ public:
 
     /* Get the closure associated with the function.  This is a Tuple of cell objects
     encapsulating data to be used by the function body. */
-    std::optional<Tuple<Object>> closure() const;
+    [[nodiscard]] std::optional<Tuple<Object>> closure() const;
 
     /* Set the closure associated with the function.  If nullopt is given, then the
     closure will be deleted. */
@@ -2808,8 +2820,6 @@ public:
     // void attach(Type& type, std::string name, Descr policy = Descr::METHOD) {
     //     // TODO: same as above.
     // };
-
-    // TODO: PyCFunctions do carry a __name__ attribute, so we can at least use that.
 
     // TODO: Perhaps `py::DynamicFunction` is a separate class after all, and only
     // represents a PyFunctionObject.
@@ -2915,26 +2925,63 @@ namespace impl {
         }
     }
 
-    /* A convenience macro to correctly forward an instance method of a Python object
-    using its __getattr__ function definition to specify return types and argument
-    conventions. */
+    /* The following macros are used to generate thin wrappers around named methods
+     * of Python objects.  By invoking it in the body of a class, a corresponding
+     * of the same name will be generated with an arbitrary signature, which will be
+     * forwarded using the definition found the __getattr__ specialization.  This
+     * allows for keyword arguments and container unpacking, just like in Python.
+     */
+
     #define BERTRAND_METHOD(name) \
         template <typename Self, typename... Args> \
-            requires (impl::invocable<Self, BERTRAND_STRINGIFY(name), Args...>) \
+            requires (::bertrand::py::impl::invocable<Self, BERTRAND_STRINGIFY(name), Args...>) \
         decltype(auto) name(this Self&& self, Args&&... args) { \
-            return impl::call_method<BERTRAND_STRINGIFY(name)>( \
+            return ::bertrand::py::impl::call_method<BERTRAND_STRINGIFY(name)>( \
                 std::forward<Self>(self), std::forward<Args>(args)... \
             ); \
         }
 
-    /* A convenience macro for correctly forwarding a class or static method of a
-    Python object using its __getattr__ function definition to specify return types
-    and argument conventions. */
+    #define BERTRAND_NODISCARD_METHOD(name) \
+        template <typename Self, typename... Args> \
+            requires (::bertrand::py::impl::invocable<Self, BERTRAND_STRINGIFY(name), Args...>) \
+        [[nodiscard]] decltype(auto) name(this Self&& self, Args&&... args) { \
+            return ::bertrand::py::impl::call_method<BERTRAND_STRINGIFY(name)>( \
+                std::forward<Self>(self), std::forward<Args>(args)... \
+            ); \
+        }
+
+    #define BERTRAND_CONST_METHOD(name) \
+        template <typename Self, typename... Args> \
+            requires (::bertrand::py::impl::invocable<Self, BERTRAND_STRINGIFY(name), Args...>) \
+        decltype(auto) name(this const Self& self, Args&&... args) { \
+            return ::bertrand::py::impl::call_method<BERTRAND_STRINGIFY(name)>( \
+                self, std::forward<Args>(args)... \
+            ); \
+        }
+
+    #define BERTRAND_NODISCARD_CONST_METHOD(name) \
+        template <typename Self, typename... Args> \
+            requires (::bertrand::py::impl::invocable<Self, BERTRAND_STRINGIFY(name), Args...>) \
+        [[nodiscard]] decltype(auto) name(this const Self& self, Args&&... args) { \
+            return ::bertrand::py::impl::call_method<BERTRAND_STRINGIFY(name)>( \
+                self, std::forward<Args>(args)... \
+            ); \
+        }
+
     #define BERTRAND_STATIC_METHOD(type, name) \
         template <typename... Args> \
-            requires (impl::invocable<type, BERTRAND_STRINGIFY(name), Args...>) \
+            requires (::bertrand::py::impl::invocable<type, BERTRAND_STRINGIFY(name), Args...>) \
         decltype(auto) name(Args&&... args) { \
-            return impl::call_static<type, BERTRAND_STRINGIFY(name)>( \
+            return ::bertrand::py::impl::call_static<type, BERTRAND_STRINGIFY(name)>( \
+                std::forward<Args>(args)... \
+            ); \
+        }
+
+    #define BERTRAND_NODISCARD_STATIC_METHOD(type, name) \
+        template <typename... Args> \
+            requires (::bertrand::py::impl::invocable<type, BERTRAND_STRINGIFY(name), Args...>) \
+       [[nodiscard]] decltype(auto) name(Args&&... args) { \
+            return ::bertrand::py::impl::call_static<type, BERTRAND_STRINGIFY(name)>( \
                 std::forward<Args>(args)... \
             ); \
         }

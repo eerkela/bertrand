@@ -18,236 +18,6 @@ namespace bertrand {
 namespace py {
 
 
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "capitalize">                             : Returns<Function<
-    T()
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "center">                                 : Returns<Function<
-    T(
-        typename Arg<"width", const Int&>::pos,
-        typename Arg<"fillchar", const T&>::pos::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "count">                                  : Returns<Function<
-    Int(
-        typename Arg<"sub", const T&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"end", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "decode">                                 : Returns<Function<
-    Str(
-        typename Arg<"encoding", const Str&>::opt,
-        typename Arg<"errors", const Str&>::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "endswith">                               : Returns<Function<
-    Bool(
-        typename Arg<"suffix", const T&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"end", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "expandtabs">                             : Returns<Function<
-    T(typename Arg<"tabsize", const Int&>::opt)
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "find">                                   : Returns<Function<
-    Int(
-        typename Arg<"sub", const T&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"end", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "hex">                                    : Returns<Function<
-    Str(
-        typename Arg<"sep", const T&>::opt,
-        typename Arg<"bytes_per_sep", const Int&>::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "index">                                  : Returns<Function<
-    Int(
-        typename Arg<"value", const T&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"stop", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "isalnum">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "isalpha">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "isascii">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "isdigit">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "islower">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "isspace">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "istitle">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "isupper">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "join">                                   : Returns<Function<
-    T(typename Arg<"iterable", const Object&>::pos)
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "ljust">                                  : Returns<Function<
-    T(
-        typename Arg<"width", const Int&>::pos,
-        typename Arg<"fillbyte", const T&>::pos::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "lower">                                  : Returns<Function<
-    T()
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "lstrip">                                 : Returns<Function<
-    T(typename Arg<"chars", const T&>::opt)
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "maketrans">                              : Returns<Function<
-    Dict<T, T>(
-        typename Arg<"from", const T&>::pos,
-        typename Arg<"to", const T&>::pos
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "partition">                              : Returns<Function<
-    Tuple<T>(typename Arg<"sep", const T&>::pos)
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "removeprefix">                           : Returns<Function<
-    T(typename Arg<"prefix", const T&>::pos)
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "removesuffix">                           : Returns<Function<
-    T(typename Arg<"suffix", const T&>::pos)
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "replace">                                : Returns<Function<
-    T(
-        typename Arg<"old", const T&>::pos,
-        typename Arg<"new", const T&>::pos,
-        typename Arg<"count", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "rfind">                                  : Returns<Function<
-    Int(
-        typename Arg<"sub", const T&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"end", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "rindex">                                 : Returns<Function<
-    Int(
-        typename Arg<"sub", const T&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"end", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "rjust">                                  : Returns<Function<
-    T(
-        typename Arg<"width", const Int&>::pos,
-        typename Arg<"fillbyte", const T&>::pos::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "rpartition">                             : Returns<Function<
-    Tuple<T>(typename Arg<"sep", const T&>::pos)
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "rsplit">                                 : Returns<Function<
-    List<T>(
-        typename Arg<"sep", const T&>::opt,
-        typename Arg<"maxsplit", const Int&>::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "rstrip">                                 : Returns<Function<
-    T(typename Arg<"chars", const T&>::opt)
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "split">                                  : Returns<Function<
-    List<T>(
-        typename Arg<"sep", const T&>::opt,
-        typename Arg<"maxsplit", const Int&>::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "splitlines">                             : Returns<Function<
-    List<T>(typename Arg<"keepends", const Bool&>::opt)
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "startswith">                             : Returns<Function<
-    Bool(
-        typename Arg<"prefix", const T&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"end", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "strip">                                  : Returns<Function<
-    T(typename Arg<"chars", const T&>::opt)
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "swapcase">                               : Returns<Function<
-    T()
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "title">                                  : Returns<Function<
-    T()
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "translate">                              : Returns<Function<
-    T(
-        typename Arg<"table", const Dict<T, T>&>::pos,
-        typename Arg<"delete", const T&>::opt
-    )
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "upper">                                  : Returns<Function<
-    T()
->> {};
-template <std::derived_from<Bytes> T>
-struct __getattr__<T, "zfill">                                  : Returns<Function<
-    T(typename Arg<"width", const Int&>::pos)
->> {};
-
-
-/////////////////////
-////    BYTES    ////
-/////////////////////
-
-
 /* Represents a statically-typed Python `bytes` object in C++. */
 class Bytes : public Object {
     using Base = Object;
@@ -256,16 +26,16 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool check() {
+    [[nodiscard]] static consteval bool typecheck() {
         return impl::bytes_like<T>;
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
 
-        } else if constexpr (check<T>()) {
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
 
         } else if constexpr (impl::is_object_exact<T>) {
@@ -283,7 +53,7 @@ public:
     Bytes(Handle h, const borrowed_t& t) : Base(h, t) {}
     Bytes(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
+    template <impl::pybind11_like T> requires (typecheck<T>())
     Bytes(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
@@ -339,35 +109,39 @@ public:
     includes an extra null byte at the end of the buffer, regardless of any nulls that
     were already present.  The data should not be modified unless the bytes object was
     just created via `py::Bytes(size)`, and it should never be deallocated. */
-    char* data() const {
+    [[nodiscard]] char* data() const {
         return PyBytes_AS_STRING(this->ptr());
     }
 
-    auto copy() const {
-        return reinterpret_steal<Bytes>(PyBytes_FromStringAndSize(
+    [[nodiscard]] auto copy() const {
+        PyObject* result = PyBytes_FromStringAndSize(
             PyBytes_AS_STRING(this->ptr()),
             PyBytes_GET_SIZE(this->ptr())
-        ));
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Bytes>(result);
     }
 
-    Py_ssize_t count(
-        const Bytes& value,
+    [[nodiscard]] Py_ssize_t count(
+        const Bytes& sub,
         Py_ssize_t start = 0,
-        Py_ssize_t stop = -1
+        Py_ssize_t end = -1
     ) const {
-        if (start != 0 || stop != -1) {
-            PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
+        if (start != 0 || end != -1) {
+            PyObject* slice = PySequence_GetSlice(this->ptr(), start, end);
             if (slice == nullptr) {
                 Exception::from_python();
             }
-            Py_ssize_t result = PySequence_Count(slice, value.ptr());
+            Py_ssize_t result = PySequence_Count(slice, sub.ptr());
             Py_DECREF(slice);
             if (result < 0) {
                 Exception::from_python();
             }
             return result;
         } else {
-            Py_ssize_t result = PySequence_Count(this->ptr(), value.ptr());
+            Py_ssize_t result = PySequence_Count(this->ptr(), sub.ptr());
             if (result < 0) {
                 Exception::from_python();
             }
@@ -375,24 +149,24 @@ public:
         }
     }
 
-    Py_ssize_t index(
-        const Bytes& value,
+    [[nodiscard]] Py_ssize_t index(
+        const Bytes& sub,
         Py_ssize_t start = 0,
-        Py_ssize_t stop = -1
+        Py_ssize_t end = -1
     ) const {
-        if (start != 0 || stop != -1) {
-            PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
+        if (start != 0 || end != -1) {
+            PyObject* slice = PySequence_GetSlice(this->ptr(), start, end);
             if (slice == nullptr) {
                 Exception::from_python();
             }
-            Py_ssize_t result = PySequence_Index(slice, value.ptr());
+            Py_ssize_t result = PySequence_Index(slice, sub.ptr());
             Py_DECREF(slice);
             if (result < 0) {
                 Exception::from_python();
             }
             return result;
         } else {
-            Py_ssize_t result = PySequence_Index(this->ptr(), value.ptr());
+            Py_ssize_t result = PySequence_Index(this->ptr(), sub.ptr());
             if (result < 0) {
                 Exception::from_python();
             }
@@ -400,99 +174,51 @@ public:
         }
     }
 
-    BERTRAND_STATIC_METHOD(Bytes, fromhex)
-    BERTRAND_STATIC_METHOD(Bytes, maketrans)
-    BERTRAND_METHOD(capitalize)
-    BERTRAND_METHOD(center)
-    BERTRAND_METHOD(decode)
-    BERTRAND_METHOD(endswith)
-    BERTRAND_METHOD(expandtabs)
-    BERTRAND_METHOD(find)
-    BERTRAND_METHOD(hex)
-    BERTRAND_METHOD(isalnum)
-    BERTRAND_METHOD(isalpha)
-    BERTRAND_METHOD(isascii)
-    BERTRAND_METHOD(isdigit)
-    BERTRAND_METHOD(islower)
-    BERTRAND_METHOD(isspace)
-    BERTRAND_METHOD(istitle)
-    BERTRAND_METHOD(isupper)
-    BERTRAND_METHOD(join)
-    BERTRAND_METHOD(ljust)
-    BERTRAND_METHOD(lower)
-    BERTRAND_METHOD(lstrip)
-    BERTRAND_METHOD(partition)
-    BERTRAND_METHOD(removeprefix)
-    BERTRAND_METHOD(removesuffix)
-    BERTRAND_METHOD(replace)
-    BERTRAND_METHOD(rfind)
-    BERTRAND_METHOD(rindex)
-    BERTRAND_METHOD(rjust)
-    BERTRAND_METHOD(rpartition)
-    BERTRAND_METHOD(rsplit)
-    BERTRAND_METHOD(rstrip)
-    BERTRAND_METHOD(split)
-    BERTRAND_METHOD(splitlines)
-    BERTRAND_METHOD(startswith)
-    BERTRAND_METHOD(strip)
-    BERTRAND_METHOD(swapcase)
-    BERTRAND_METHOD(title)
-    BERTRAND_METHOD(translate)
-    BERTRAND_METHOD(upper)
-    BERTRAND_METHOD(zfill)
+    // TODO: need to find a way to mark methods as const, and potentially add a
+    // [[nodiscard]] attribute in front of the definition.
+
+    BERTRAND_NODISCARD_CONST_METHOD(capitalize)
+    BERTRAND_NODISCARD_CONST_METHOD(center)
+    BERTRAND_NODISCARD_CONST_METHOD(decode)
+    BERTRAND_NODISCARD_CONST_METHOD(endswith)
+    BERTRAND_NODISCARD_CONST_METHOD(expandtabs)
+    BERTRAND_NODISCARD_CONST_METHOD(find)
+    BERTRAND_NODISCARD_STATIC_METHOD(Bytes, fromhex)
+    BERTRAND_NODISCARD_CONST_METHOD(hex)
+    BERTRAND_NODISCARD_CONST_METHOD(isalnum)
+    BERTRAND_NODISCARD_CONST_METHOD(isalpha)
+    BERTRAND_NODISCARD_CONST_METHOD(isascii)
+    BERTRAND_NODISCARD_CONST_METHOD(isdigit)
+    BERTRAND_NODISCARD_CONST_METHOD(islower)
+    BERTRAND_NODISCARD_CONST_METHOD(isspace)
+    BERTRAND_NODISCARD_CONST_METHOD(istitle)
+    BERTRAND_NODISCARD_CONST_METHOD(isupper)
+    BERTRAND_NODISCARD_CONST_METHOD(join)
+    BERTRAND_NODISCARD_CONST_METHOD(ljust)
+    BERTRAND_NODISCARD_CONST_METHOD(lower)
+    BERTRAND_NODISCARD_CONST_METHOD(lstrip)
+    BERTRAND_NODISCARD_STATIC_METHOD(Bytes, maketrans)
+    BERTRAND_NODISCARD_CONST_METHOD(partition)
+    BERTRAND_NODISCARD_CONST_METHOD(removeprefix)
+    BERTRAND_NODISCARD_CONST_METHOD(removesuffix)
+    BERTRAND_NODISCARD_CONST_METHOD(replace)
+    BERTRAND_NODISCARD_CONST_METHOD(rfind)
+    BERTRAND_NODISCARD_CONST_METHOD(rindex)
+    BERTRAND_NODISCARD_CONST_METHOD(rjust)
+    BERTRAND_NODISCARD_CONST_METHOD(rpartition)
+    BERTRAND_NODISCARD_CONST_METHOD(rsplit)
+    BERTRAND_NODISCARD_CONST_METHOD(rstrip)
+    BERTRAND_NODISCARD_CONST_METHOD(split)
+    BERTRAND_NODISCARD_CONST_METHOD(splitlines)
+    BERTRAND_NODISCARD_CONST_METHOD(startswith)
+    BERTRAND_NODISCARD_CONST_METHOD(strip)
+    BERTRAND_NODISCARD_CONST_METHOD(swapcase)
+    BERTRAND_NODISCARD_CONST_METHOD(title)
+    BERTRAND_NODISCARD_CONST_METHOD(translate)
+    BERTRAND_NODISCARD_CONST_METHOD(upper)
+    BERTRAND_NODISCARD_CONST_METHOD(zfill)
 
 };
-
-
-namespace ops {
-
-    template <typename Return, std::derived_from<Bytes> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            return PyBytes_GET_SIZE(self.ptr());
-        }
-    };
-
-    template <typename Return, std::derived_from<Bytes> L, typename R>
-    struct iadd<Return, L, R> {
-        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
-            PyObject* result = lhs.ptr();
-            PyBytes_Concat(&result, Bytes(rhs).ptr());
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-        }
-    };
-
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, Bytes> || std::derived_from<R, Bytes>)
-    struct add<Return, L, R> {
-        static Return operator()(const auto& lhs, const auto& rhs) {
-            if constexpr (std::derived_from<L, Bytes>) {
-                Return result = lhs.copy();
-                iadd<Return, L, R>::operator()(result, rhs);
-                return result;
-            } else {
-                Return result = rhs.copy();
-                iadd<Return, L, R>::operator()(result, lhs);
-                return result;
-            }
-        }
-    };
-
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, Bytes> || std::derived_from<R, Bytes>)
-    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
-
-    template <typename Return, std::derived_from<Bytes> L, typename R>
-    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
-
-}
-
-
-/////////////////////////
-////    BYTEARRAY    ////
-/////////////////////////
 
 
 /* Represents a statically-typed Python `bytearray` in C++. */
@@ -503,15 +229,15 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         return impl::bytearray_like<T>;
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if (impl::cpp_like<T>) {
-            return check<T>();
-        } else if constexpr (check<T>()) {
+            return typecheck<T>();
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
         } else if constexpr (impl::is_object_exact<T>) {
             return obj.ptr() != nullptr && PyByteArray_Check(obj.ptr());
@@ -527,7 +253,7 @@ public:
     ByteArray(Handle h, const borrowed_t& t) : Base(h, t) {}
     ByteArray(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
+    template <impl::pybind11_like T> requires (typecheck<T>())
     ByteArray(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
@@ -586,35 +312,39 @@ public:
 
     /* Access the internal buffer of the bytearray object.  The data can be modified
     in-place, but should never be deallocated. */
-    char* data() const {
+    [[nodiscard]] char* data() const {
         return PyByteArray_AS_STRING(this->ptr());
     }
 
-    auto copy() const {
-        return reinterpret_steal<ByteArray>(PyByteArray_FromStringAndSize(
+    [[nodiscard]] auto copy() const {
+        PyObject* result = PyByteArray_FromStringAndSize(
             PyByteArray_AS_STRING(this->ptr()),
             PyByteArray_GET_SIZE(this->ptr())
-        ));
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<ByteArray>(result);
     }
 
-    Py_ssize_t count(
-        const ByteArray& value,
+    [[nodiscard]] Py_ssize_t count(
+        const ByteArray& sub,
         Py_ssize_t start = 0,
-        Py_ssize_t stop = -1
+        Py_ssize_t end = -1
     ) const {
-        if (start != 0 || stop != -1) {
-            PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
+        if (start != 0 || end != -1) {
+            PyObject* slice = PySequence_GetSlice(this->ptr(), start, end);
             if (slice == nullptr) {
                 Exception::from_python();
             }
-            Py_ssize_t result = PySequence_Count(slice, value.ptr());
+            Py_ssize_t result = PySequence_Count(slice, sub.ptr());
             Py_DECREF(slice);
             if (result < 0) {
                 Exception::from_python();
             }
             return result;
         } else {
-            Py_ssize_t result = PySequence_Count(this->ptr(), value.ptr());
+            Py_ssize_t result = PySequence_Count(this->ptr(), sub.ptr());
             if (result < 0) {
                 Exception::from_python();
             }
@@ -622,24 +352,24 @@ public:
         }
     }
 
-    Py_ssize_t index(
-        const ByteArray& value,
+    [[nodiscard]] Py_ssize_t index(
+        const ByteArray& sub,
         Py_ssize_t start = 0,
-        Py_ssize_t stop = -1
+        Py_ssize_t end = -1
     ) const {
-        if (start != 0 || stop != -1) {
-            PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
+        if (start != 0 || end != -1) {
+            PyObject* slice = PySequence_GetSlice(this->ptr(), start, end);
             if (slice == nullptr) {
                 Exception::from_python();
             }
-            Py_ssize_t result = PySequence_Index(slice, value.ptr());
+            Py_ssize_t result = PySequence_Index(slice, sub.ptr());
             Py_DECREF(slice);
             if (result < 0) {
                 Exception::from_python();
             }
             return result;
         } else {
-            Py_ssize_t result = PySequence_Index(this->ptr(), value.ptr());
+            Py_ssize_t result = PySequence_Index(this->ptr(), sub.ptr());
             if (result < 0) {
                 Exception::from_python();
             }
@@ -647,51 +377,92 @@ public:
         }
     }
 
-    BERTRAND_STATIC_METHOD(ByteArray, fromhex)
-    BERTRAND_STATIC_METHOD(ByteArray, maketrans)
-    BERTRAND_METHOD(capitalize)
-    BERTRAND_METHOD(center)
-    BERTRAND_METHOD(decode)
-    BERTRAND_METHOD(endswith)
-    BERTRAND_METHOD(expandtabs)
-    BERTRAND_METHOD(find)
-    BERTRAND_METHOD(hex)
-    BERTRAND_METHOD(isalnum)
-    BERTRAND_METHOD(isalpha)
-    BERTRAND_METHOD(isascii)
-    BERTRAND_METHOD(isdigit)
-    BERTRAND_METHOD(islower)
-    BERTRAND_METHOD(isspace)
-    BERTRAND_METHOD(istitle)
-    BERTRAND_METHOD(isupper)
-    BERTRAND_METHOD(join)
-    BERTRAND_METHOD(ljust)
-    BERTRAND_METHOD(lower)
-    BERTRAND_METHOD(lstrip)
-    BERTRAND_METHOD(partition)
-    BERTRAND_METHOD(removeprefix)
-    BERTRAND_METHOD(removesuffix)
-    BERTRAND_METHOD(replace)
-    BERTRAND_METHOD(rfind)
-    BERTRAND_METHOD(rindex)
-    BERTRAND_METHOD(rjust)
-    BERTRAND_METHOD(rpartition)
-    BERTRAND_METHOD(rsplit)
-    BERTRAND_METHOD(rstrip)
-    BERTRAND_METHOD(split)
-    BERTRAND_METHOD(splitlines)
-    BERTRAND_METHOD(startswith)
-    BERTRAND_METHOD(strip)
-    BERTRAND_METHOD(swapcase)
-    BERTRAND_METHOD(title)
-    BERTRAND_METHOD(translate)
-    BERTRAND_METHOD(upper)
-    BERTRAND_METHOD(zfill)
+    BERTRAND_NODISCARD_CONST_METHOD(capitalize)
+    BERTRAND_NODISCARD_CONST_METHOD(center)
+    BERTRAND_NODISCARD_CONST_METHOD(decode)
+    BERTRAND_NODISCARD_CONST_METHOD(endswith)
+    BERTRAND_NODISCARD_CONST_METHOD(expandtabs)
+    BERTRAND_NODISCARD_CONST_METHOD(find)
+    BERTRAND_NODISCARD_STATIC_METHOD(ByteArray, fromhex)
+    BERTRAND_NODISCARD_CONST_METHOD(hex)
+    BERTRAND_NODISCARD_CONST_METHOD(isalnum)
+    BERTRAND_NODISCARD_CONST_METHOD(isalpha)
+    BERTRAND_NODISCARD_CONST_METHOD(isascii)
+    BERTRAND_NODISCARD_CONST_METHOD(isdigit)
+    BERTRAND_NODISCARD_CONST_METHOD(islower)
+    BERTRAND_NODISCARD_CONST_METHOD(isspace)
+    BERTRAND_NODISCARD_CONST_METHOD(istitle)
+    BERTRAND_NODISCARD_CONST_METHOD(isupper)
+    BERTRAND_NODISCARD_CONST_METHOD(join)
+    BERTRAND_NODISCARD_CONST_METHOD(ljust)
+    BERTRAND_NODISCARD_CONST_METHOD(lower)
+    BERTRAND_NODISCARD_CONST_METHOD(lstrip)
+    BERTRAND_NODISCARD_STATIC_METHOD(ByteArray, maketrans)
+    BERTRAND_NODISCARD_CONST_METHOD(partition)
+    BERTRAND_NODISCARD_CONST_METHOD(removeprefix)
+    BERTRAND_NODISCARD_CONST_METHOD(removesuffix)
+    BERTRAND_NODISCARD_CONST_METHOD(replace)
+    BERTRAND_NODISCARD_CONST_METHOD(rfind)
+    BERTRAND_NODISCARD_CONST_METHOD(rindex)
+    BERTRAND_NODISCARD_CONST_METHOD(rjust)
+    BERTRAND_NODISCARD_CONST_METHOD(rpartition)
+    BERTRAND_NODISCARD_CONST_METHOD(rsplit)
+    BERTRAND_NODISCARD_CONST_METHOD(rstrip)
+    BERTRAND_NODISCARD_CONST_METHOD(split)
+    BERTRAND_NODISCARD_CONST_METHOD(splitlines)
+    BERTRAND_NODISCARD_CONST_METHOD(startswith)
+    BERTRAND_NODISCARD_CONST_METHOD(strip)
+    BERTRAND_NODISCARD_CONST_METHOD(swapcase)
+    BERTRAND_NODISCARD_CONST_METHOD(title)
+    BERTRAND_NODISCARD_CONST_METHOD(translate)
+    BERTRAND_NODISCARD_CONST_METHOD(upper)
+    BERTRAND_NODISCARD_CONST_METHOD(zfill)
 
 };
 
 
 namespace ops {
+
+    template <typename Return, std::derived_from<Bytes> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            return PyBytes_GET_SIZE(self.ptr());
+        }
+    };
+
+    template <typename Return, std::derived_from<Bytes> L, typename R>
+    struct iadd<Return, L, R> {
+        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = lhs.ptr();
+            PyBytes_Concat(&result, Bytes(rhs).ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, Bytes> || std::derived_from<R, Bytes>)
+    struct add<Return, L, R> {
+        static Return operator()(const auto& lhs, const auto& rhs) {
+            if constexpr (std::derived_from<L, Bytes>) {
+                Return result = lhs.copy();
+                iadd<Return, L, R>::operator()(result, rhs);
+                return result;
+            } else {
+                Return result = rhs.copy();
+                iadd<Return, L, R>::operator()(result, lhs);
+                return result;
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, Bytes> || std::derived_from<R, Bytes>)
+    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
+
+    template <typename Return, std::derived_from<Bytes> L, typename R>
+    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
 
     template <typename Return, std::derived_from<ByteArray> Self>
     struct len<Return, Self> {

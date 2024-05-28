@@ -138,7 +138,7 @@ namespace ops {
 template <typename T>
 List(const std::initializer_list<T>&) -> List<impl::as_object_t<T>>;
 template <impl::is_iterable T>
-List(T) -> List<impl::as_object_t<impl::dereference_type<T>>>;
+List(T) -> List<impl::as_object_t<impl::iter_type<T>>>;
 template <typename T, typename... Args>
     requires (!impl::is_iterable<T> && !impl::str_like<T>)
 List(T, Args...) -> List<Object>;
@@ -160,7 +160,7 @@ class List : public Object, public impl::ListTag {
     static constexpr bool generic = std::same_as<Val, Object>;
 
     template <typename T>
-    static constexpr bool typecheck = std::derived_from<T, Object> ?
+    static constexpr bool check_value_type = std::derived_from<T, Object> ?
         std::derived_from<T, Val> : std::convertible_to<T, Val>;
 
 public:
@@ -179,22 +179,22 @@ public:
     using const_reverse_iterator = impl::ReverseIterator<impl::ListIter<const value_type>>;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         if constexpr (!impl::list_like<std::decay_t<T>>) {
             return false;
         } else if constexpr (impl::pybind11_like<std::decay_t<T>>) {
             return generic;
         } else if constexpr (impl::is_iterable<std::decay_t<T>>) {
-            return typecheck<impl::dereference_type<std::decay_t<T>>>;
+            return check_value_type<impl::iter_type<std::decay_t<T>>>;
         } else {
             return false;
         }
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
 
         } else if constexpr (impl::is_object_exact<T>) {
             if constexpr (generic) {
@@ -203,7 +203,7 @@ public:
                 return (
                     obj.ptr() != nullptr && PyTuple_Check(obj.ptr()) &&
                     std::ranges::all_of(obj, [](const auto& item) {
-                        return value_type::check(item);
+                        return value_type::typecheck(item);
                     })
                 );
             }
@@ -218,13 +218,13 @@ public:
                 return (
                     obj.ptr() != nullptr &&
                     std::ranges::all_of(obj, [](const auto& item) {
-                        return value_type::check(item);
+                        return value_type::typecheck(item);
                     })
                 );
             }
 
         } else if constexpr (impl::list_like<T>) {
-            return obj.ptr() != nullptr && typecheck<impl::dereference_type<T>>;
+            return obj.ptr() != nullptr && check_value_type<impl::iter_type<T>>;
 
         } else {
             return false;
@@ -270,7 +270,7 @@ public:
 
     /* Copy/move constructors from equivalent pybind11 types or other lists with a
     narrower value type. */
-    template <impl::python_like T> requires (check<T>())
+    template <impl::python_like T> requires (typecheck<T>())
     List(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly unpack a generic Python container into a py::List. */
@@ -492,7 +492,7 @@ public:
 
     /* Equivalent to Python `list.extend(items)`. */
     template <impl::is_iterable T>
-        requires (std::convertible_to<impl::dereference_type<T>, value_type>)
+        requires (std::convertible_to<impl::iter_type<T>, value_type>)
     void extend(const T& items);
 
     /* Equivalent to Python `list.extend(items)`, where items are given as a braced

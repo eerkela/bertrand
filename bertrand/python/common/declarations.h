@@ -43,7 +43,7 @@
 #include <pybind11/stl_bind.h>
 
 #include <bertrand/common.h>
-#include "bertrand/static_str.h"
+#include <bertrand/static_str.h>
 
 
 namespace bertrand {
@@ -390,7 +390,6 @@ class Datetime;
 
 
 namespace impl {
-    struct InitializerTag {};  // TODO: delete?
     struct ProxyTag {};
     struct FunctionTag { static const Type type; };
     struct TupleTag { static const Type type; };
@@ -546,14 +545,14 @@ namespace impl {
     attribute name, even if that attribute name is repeated across multiple contexts. */
     template <StaticStr name>
     struct TemplateString {
-        static PyObject* ptr;  // NOTE: string will be garbage collected at shutdown
+        static PyObject* ptr;
     };
 
     template <StaticStr name>
     inline PyObject* TemplateString<name>::ptr = PyUnicode_FromStringAndSize(
         name,
         name.size()
-    );
+    );  // NOTE: string will be garbage collected at shutdown
 
     template <typename T>
     using as_object_t = __as_object__<std::remove_cvref_t<T>>::Return;
@@ -569,25 +568,16 @@ namespace impl {
     template <typename Deref>
     class GenericIter;
 
-    // TODO: remove SliceInitializer or make it into a std::variant?
     struct SliceInitializer;
 
     template <typename T>
-    constexpr bool is_initializer_list = false;
-    template <typename T>
-    constexpr bool is_initializer_list<std::initializer_list<T>> = true;
+    using iter_type = decltype(*std::begin(std::declval<T>()));
 
     template <typename T>
-    using dereference_type = decltype(*std::begin(std::declval<T>()));
-
-    template <typename T>
-    using reverse_dereference_type = decltype(*std::rbegin(std::declval<T>()));
+    using reverse_iter_type = decltype(*std::rbegin(std::declval<T>()));
 
     template <typename T, typename Key>
     using lookup_type = decltype(std::declval<T>()[std::declval<Key>()]);
-
-    template <typename T, typename... Ts>
-    using first = T;
 
 }
 
@@ -608,9 +598,6 @@ namespace impl {
     concept explicitly_convertible_to = requires(const From& from) {
         static_cast<To>(from);
     };
-
-    template <typename T>
-    concept initializer_like = is_initializer_list<std::remove_cvref_t<T>>;
 
     template <typename T>
     concept is_iterable = requires(T t) {
@@ -715,9 +702,6 @@ namespace impl {
         std::is_member_function_pointer_v<std::decay_t<T>> ||
         has_call_operator<T>;
 
-    template <typename T, typename... Ts>
-    concept homogenous = (std::same_as<T, Ts> && ...);
-
     template <typename T>
     concept proxy_like = std::derived_from<std::remove_cvref_t<T>, ProxyTag>;
 
@@ -799,17 +783,14 @@ namespace impl {
     template <typename T>
     concept module_like = std::derived_from<as_object_t<T>, Module>;
 
-    // TODO: if I swap this to std::derived_from, I get compile errors
     template <typename T>
-    concept bool_like = std::same_as<as_object_t<T>, Bool>;
+    concept bool_like = std::derived_from<as_object_t<T>, Bool>;
 
-    // TODO: if I swap this to std::derived_from, I get compile errors
     template <typename T>
-    concept int_like = std::same_as<as_object_t<T>, Int>;
+    concept int_like = std::derived_from<as_object_t<T>, Int>;
 
-    // TODO: if I swap this to std::derived_from, I get compile errors
     template <typename T>
-    concept float_like = std::same_as<as_object_t<T>, Float>;
+    concept float_like = std::derived_from<as_object_t<T>, Float>;
 
     template <typename T>
     concept str_like = std::derived_from<as_object_t<T>, Str>;
@@ -817,6 +798,7 @@ namespace impl {
     template <typename T>
     concept bytes_like = (
         string_literal<std::remove_cvref_t<T>> ||
+        std::same_as<std::remove_cvref_t<T>, void*> ||
         std::derived_from<as_object_t<T>, Bytes>
     );
 
@@ -875,9 +857,6 @@ namespace impl {
     template <typename T>
     concept type_like = std::derived_from<as_object_t<T>, Type>;
 
-    template <typename Derived, typename Base>
-    concept typecheck = Base::template check<Derived>();
-
     /* NOTE: some binary operators (such as lexicographic comparisons) accept generic
      * containers, which may be combined with containers of different types.  In these
      * cases, the operator should be enabled if and only if it is also supported by the
@@ -902,9 +881,7 @@ namespace impl {
         struct deref { using type = T; };
         template <is_iterable T>
         struct deref<T> {
-            using type = std::conditional_t<
-                pybind11_like<T>, Object, dereference_type<T>
-            >;
+            using type = std::conditional_t<pybind11_like<T>, Object, iter_type<T>>;
         };
 
         static constexpr bool value = Condition<

@@ -80,7 +80,7 @@ namespace ops {
 template <typename T>
 FrozenSet(const std::initializer_list<T>&) -> FrozenSet<impl::as_object_t<T>>;
 template <impl::is_iterable T>
-FrozenSet(T) -> FrozenSet<impl::as_object_t<impl::dereference_type<T>>>;
+FrozenSet(T) -> FrozenSet<impl::as_object_t<impl::iter_type<T>>>;
 template <typename T, typename... Args>
     requires (!impl::is_iterable<T> && !impl::str_like<T>)
 FrozenSet(T, Args...) -> FrozenSet<Object>;
@@ -106,7 +106,7 @@ class FrozenSet : public Object, public impl::FrozenSetTag {
     static constexpr bool generic = std::same_as<Key, Object>;
 
     template <typename T>
-    static constexpr bool typecheck = std::derived_from<T, Object> ?
+    static constexpr bool check_key_type = std::derived_from<T, Object> ?
         std::derived_from<T, Key> : std::convertible_to<T, Key>;
 
 public:
@@ -125,22 +125,22 @@ public:
     using const_reverse_iterator = impl::ReverseIterator<impl::GenericIter<const key_type>>;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         if constexpr (!impl::frozenset_like<std::decay_t<T>>) {
             return false;
         } else if constexpr (impl::pybind11_like<std::decay_t<T>>) {
             return generic;
         } else if constexpr (impl::is_iterable<std::decay_t<T>>) {
-            return typecheck<impl::dereference_type<std::decay_t<T>>>;
+            return check_key_type<impl::iter_type<std::decay_t<T>>>;
         } else {
             return false;
         }
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
 
         } else if constexpr (impl::is_object_exact<T>) {
             if constexpr (generic) {
@@ -149,7 +149,7 @@ public:
                 return (
                     obj.ptr() != nullptr && PyFrozenSet_Check(obj.ptr()) &&
                     std::ranges::all_of(obj, [](const auto& item) {
-                        return key_type::check(item);
+                        return key_type::typecheck(item);
                     })
                 );
             }
@@ -164,13 +164,13 @@ public:
                 return (
                     obj.ptr() != nullptr &&
                     std::ranges::all_of(obj, [](const auto& item) {
-                        return key_type::check(item);
+                        return key_type::typecheck(item);
                     })
                 );
             }
 
         } else if constexpr (impl::frozenset_like<T>) {
-            return obj.ptr() != nullptr && typecheck<impl::dereference_type<T>>;
+            return obj.ptr() != nullptr && check_key_type<impl::iter_type<T>>;
 
         } else {
             return false;
@@ -217,7 +217,7 @@ public:
 
     /* Copy/move constructors from equivalent pybind11 types or other frozensets with
     a narrower key type. */
-    template <impl::python_like T> requires (check<T>())
+    template <impl::python_like T> requires (typecheck<T>())
     FrozenSet(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly unpack an arbitrary Python container into a new py::FrozenSet. */
@@ -382,7 +382,7 @@ public:
 
     /* Equivalent to Python `set.isdisjoint(other)`. */
     template <impl::is_iterable T>
-        requires (std::convertible_to<impl::dereference_type<T>, key_type>)
+        requires (std::convertible_to<impl::iter_type<T>, key_type>)
     bool isdisjoint(const T& other) const;
 
     /* Equivalent to Python `set.isdisjoint(other)`, where other is given as a
@@ -398,7 +398,7 @@ public:
 
     /* Equivalent to Python `set.issubset(other)`. */
     template <impl::is_iterable T>
-        requires (std::convertible_to<impl::dereference_type<T>, key_type>)
+        requires (std::convertible_to<impl::iter_type<T>, key_type>)
     bool issubset(const T& other) const;
 
     /* Equivalent to Python `set.issubset(other)`, where other is given as a
@@ -407,7 +407,7 @@ public:
 
     /* Equivalent to Python `set.issuperset(other)`. */
     template <impl::is_iterable T>
-        requires (std::convertible_to<impl::dereference_type<T>, key_type>)
+        requires (std::convertible_to<impl::iter_type<T>, key_type>)
     bool issuperset(const T& other) const;
 
     /* Equivalent to Python `set.issuperset(other)`, where other is given as a
@@ -423,7 +423,7 @@ public:
 
     /* Equivalent to Python `set.union(*others)`. */
     template <impl::is_iterable... Args>
-        requires (std::convertible_to<impl::dereference_type<Args>, key_type> && ...)
+        requires (std::convertible_to<impl::iter_type<Args>, key_type> && ...)
     FrozenSet union_(const Args&... others) const;
 
     /* Equivalent to Python `set.union(other)`, where other is given as a braced
@@ -448,7 +448,7 @@ public:
 
     /* Equivalent to Python `set.intersection(other)`. */
     template <impl::is_iterable... Args>
-        requires (std::convertible_to<impl::dereference_type<Args>, key_type> && ...)
+        requires (std::convertible_to<impl::iter_type<Args>, key_type> && ...)
     FrozenSet intersection(const Args&... others) const;
 
     /* Equivalent to Python `set.intersection(other)`, where other is given as a
@@ -475,7 +475,7 @@ public:
 
     /* Equivalent to Python `set.difference(other)`. */
     template <impl::is_iterable... Args>
-        requires (std::convertible_to<impl::dereference_type<Args>, key_type> && ...)
+        requires (std::convertible_to<impl::iter_type<Args>, key_type> && ...)
     FrozenSet difference(const Args&... others) const;
 
     /* Equivalent to Python `set.difference(other)`, where other is given as a
@@ -500,7 +500,7 @@ public:
 
     /* Equivalent to Python `set.symmetric_difference(other)`. */
     template <impl::is_iterable T>
-        requires (std::convertible_to<impl::dereference_type<T>, key_type>)
+        requires (std::convertible_to<impl::iter_type<T>, key_type>)
     FrozenSet symmetric_difference(const T& other) const;
 
     /* Equivalent to Python `set.symmetric_difference(other)`, where other is given
@@ -697,7 +697,7 @@ namespace ops {
 template <typename T>
 Set(const std::initializer_list<T>&) -> Set<impl::as_object_t<T>>;
 template <impl::is_iterable T>
-Set(T) -> Set<impl::as_object_t<impl::dereference_type<T>>>;
+Set(T) -> Set<impl::as_object_t<impl::iter_type<T>>>;
 template <typename T, typename... Args>
     requires (!impl::is_iterable<T> && !impl::str_like<T>)
 Set(T, Args...) -> Set<Object>;
@@ -723,7 +723,7 @@ class Set : public Object, public impl::SetTag {
     static constexpr bool generic = std::same_as<Key, Object>;
 
     template <typename T>
-    static constexpr bool typecheck = std::derived_from<T, Object> ?
+    static constexpr bool check_key_type = std::derived_from<T, Object> ?
         std::derived_from<T, Key> : std::convertible_to<T, Key>;
 
 public:
@@ -742,22 +742,22 @@ public:
     using const_reverse_iterator = impl::ReverseIterator<impl::GenericIter<const value_type>>;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         if constexpr (!impl::set_like<std::decay_t<T>>) {
             return false;
         } else if constexpr (impl::pybind11_like<std::decay_t<T>>) {
             return generic;
         } else if constexpr (impl::is_iterable<std::decay_t<T>>) {
-            return typecheck<impl::dereference_type<std::decay_t<T>>>;
+            return check_key_type<impl::iter_type<std::decay_t<T>>>;
         } else {
             return false;
         }
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
 
         } else if constexpr (impl::is_object_exact<T>) {
             if constexpr (generic) {
@@ -766,7 +766,7 @@ public:
                 return (
                     obj.ptr() != nullptr && PySet_Check(obj.ptr()) &&
                     std::ranges::all_of(obj, [](const auto& item) {
-                        return key_type::check(item);
+                        return key_type::typecheck(item);
                     })
                 );
             }
@@ -781,13 +781,13 @@ public:
                 return (
                     obj.ptr() != nullptr &&
                     std::ranges::all_of(obj, [](const auto& item) {
-                        return key_type::check(item);
+                        return key_type::typecheck(item);
                     })
                 );
             }
 
         } else if constexpr (impl::set_like<T>) {
-            return obj.ptr() != nullptr && typecheck<impl::dereference_type<T>>;
+            return obj.ptr() != nullptr && check_key_type<impl::iter_type<T>>;
 
         } else {
             return false;
@@ -834,7 +834,7 @@ public:
 
     /* Copy/move constructors from equivalent pybind11 types or other sets with a
     narrower key type. */
-    template <impl::python_like T> requires (check<T>())
+    template <impl::python_like T> requires (typecheck<T>())
     Set(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly unpack an arbitrary Python container into a new py::Set. */
@@ -1036,7 +1036,7 @@ public:
 
     /* Equivalent to Python `set.isdisjoint(other)`. */
     template <impl::is_iterable T>
-        requires (std::convertible_to<impl::dereference_type<T>, key_type>)
+        requires (std::convertible_to<impl::iter_type<T>, key_type>)
     bool isdisjoint(const T& other) const;
 
     /* Equivalent to Python `set.isdisjoint(other)`, where other is given as a
@@ -1052,7 +1052,7 @@ public:
 
     /* Equivalent to Python `set.issubset(other)`. */
     template <impl::is_iterable T>
-        requires (std::convertible_to<impl::dereference_type<T>, key_type>)
+        requires (std::convertible_to<impl::iter_type<T>, key_type>)
     bool issubset(const T& other) const;
 
     /* Equivalent to Python `set.issubset(other)`, where other is given as a
@@ -1061,7 +1061,7 @@ public:
 
     /* Equivalent to Python `set.issuperset(other)`. */
     template <impl::is_iterable T>
-        requires (std::convertible_to<impl::dereference_type<T>, key_type>)
+        requires (std::convertible_to<impl::iter_type<T>, key_type>)
     bool issuperset(const T& other) const;
 
     /* Equivalent to Python `set.issuperset(other)`, where other is given as a
@@ -1077,7 +1077,7 @@ public:
 
     /* Equivalent to Python `set.union(*others)`. */
     template <impl::is_iterable... Args>
-        requires (std::convertible_to<impl::dereference_type<Args>, key_type> && ...)
+        requires (std::convertible_to<impl::iter_type<Args>, key_type> && ...)
     Set union_(const Args&... others) const;
 
     /* Equivalent to Python `set.union(other)`, where other is given as a braced
@@ -1102,7 +1102,7 @@ public:
 
     /* Equivalent to Python `set.update(*others)`. */
     template <impl::is_iterable... Args>
-        requires (std::convertible_to<impl::dereference_type<Args>, key_type> && ...)
+        requires (std::convertible_to<impl::iter_type<Args>, key_type> && ...)
     void update(const Args&... others);
 
     /* Equivalent to Python `set.update(<braced initializer list>)`. */
@@ -1114,7 +1114,7 @@ public:
 
     /* Equivalent to Python `set.intersection(other)`. */
     template <impl::is_iterable... Args>
-        requires (std::convertible_to<impl::dereference_type<Args>, key_type> && ...)
+        requires (std::convertible_to<impl::iter_type<Args>, key_type> && ...)
     Set intersection(const Args&... others) const;
 
     /* Equivalent to Python `set.intersection(other)`, where other is given as a
@@ -1141,7 +1141,7 @@ public:
 
     /* Equivalent to Python `set.intersection_update(*others)`. */
     template <impl::is_iterable... Args>
-        requires (std::convertible_to<impl::dereference_type<Args>, key_type> && ...)
+        requires (std::convertible_to<impl::iter_type<Args>, key_type> && ...)
     void intersection_update(const Args&... others);
 
     /* Equivalent to Python `set.intersection_update(<braced initializer list>)`. */
@@ -1149,7 +1149,7 @@ public:
 
     /* Equivalent to Python `set.difference(other)`. */
     template <impl::is_iterable... Args>
-        requires (std::convertible_to<impl::dereference_type<Args>, key_type> && ...)
+        requires (std::convertible_to<impl::iter_type<Args>, key_type> && ...)
     Set difference(const Args&... others) const;
 
     /* Equivalent to Python `set.difference(other)`, where other is given as a
@@ -1174,7 +1174,7 @@ public:
 
     /* Equivalent to Python `set.difference_update(*others)`. */
     template <impl::is_iterable... Args>
-        requires (std::convertible_to<impl::dereference_type<Args>, key_type> && ...)
+        requires (std::convertible_to<impl::iter_type<Args>, key_type> && ...)
     void difference_update(const Args&... others);
 
     /* Equivalent to Python `set.difference_update(<braced initializer list>)`. */
@@ -1186,7 +1186,7 @@ public:
 
     /* Equivalent to Python `set.symmetric_difference(other)`. */
     template <impl::is_iterable T>
-        requires (std::convertible_to<impl::dereference_type<T>, key_type>)
+        requires (std::convertible_to<impl::iter_type<T>, key_type>)
     Set symmetric_difference(const T& other) const;
 
     /* Equivalent to Python `set.symmetric_difference(other)`, where other is given
@@ -1217,7 +1217,7 @@ public:
 
     /* Equivalent to Python `set.symmetric_difference_update(other)`. */
     template <impl::is_iterable T>
-        requires (std::convertible_to<impl::dereference_type<T>, key_type>)
+        requires (std::convertible_to<impl::iter_type<T>, key_type>)
     void symmetric_difference_update(const T& other);
 
     /* Equivalent to Python `set.symmetric_difference_update(<braced initializer list>)`. */

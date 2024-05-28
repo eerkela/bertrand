@@ -112,20 +112,20 @@ public:
     using const_reverse_iterator = impl::Iterator<impl::GenericIter<const key_type>>;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         if constexpr (std::derived_from<std::decay_t<T>, impl::KeyTag>) {
-            return mapping_type::template check<typename std::decay_t<T>::mapping_type>();
+            return mapping_type::template typecheck<typename std::decay_t<T>::mapping_type>();
         } else {
             return false;
         }
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
 
-        } else if constexpr (check<T>()) {
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
 
         } else if constexpr (impl::is_object_exact<T>) {
@@ -135,7 +135,7 @@ public:
             PyObject* dict = reinterpret_cast<PyObject*>(
                 reinterpret_cast<impl::_PyDictViewObject*>(obj.ptr())->dv_dict
             );
-            return mapping_type::check(reinterpret_borrow<Object>(dict));
+            return mapping_type::typecheck(reinterpret_borrow<Object>(dict));
 
         } else {
             return false;
@@ -156,7 +156,7 @@ public:
 
     /* Copy/move constructor from equivalent pybind11 type(s) and other key views with
     the same or narrower mapping type. */
-    template <impl::python_like T> requires (check<T>())
+    template <impl::python_like T> requires (typecheck<T>())
     KeyView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a key view on an existing dictionary. */
@@ -171,7 +171,7 @@ public:
 
     /* Equivalent to Python `dict.keys().isdisjoint(other)`. */
     template <impl::is_iterable T>
-        requires (std::convertible_to<impl::dereference_type<T>, key_type>)
+        requires (std::convertible_to<impl::iter_type<T>, key_type>)
     bool isdisjoint(const T& other) const;
 
     /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
@@ -285,20 +285,20 @@ public:
     using const_reverse_iterator = impl::Iterator<impl::GenericIter<const value_type>>;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         if constexpr (std::derived_from<std::decay_t<T>, impl::ValueTag>) {
-            return mapping_type::template check<typename std::decay_t<T>::mapping_type>();
+            return mapping_type::template typecheck<typename std::decay_t<T>::mapping_type>();
         } else {
             return false;
         }
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
 
-        } else if constexpr (check<T>()) {
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
 
         } else if constexpr (impl::is_object_exact<T>) {
@@ -308,7 +308,7 @@ public:
             PyObject* dict = reinterpret_cast<PyObject*>(
                 reinterpret_cast<impl::_PyDictViewObject*>(obj.ptr())->dv_dict
             );
-            return mapping_type::check(reinterpret_borrow<Object>(dict));
+            return mapping_type::typecheck(reinterpret_borrow<Object>(dict));
 
         } else {
             return false;
@@ -329,7 +329,7 @@ public:
 
     /* Copy/move constructor from equivalent pybind11 type(s) and other value views
     with the same or narrower mapping type. */
-    template <impl::python_like T> requires (check<T>())
+    template <impl::python_like T> requires (typecheck<T>())
     ValueView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a values view on an existing dictionary. */
@@ -414,20 +414,20 @@ public:
     using const_reverse_iterator = impl::Iterator<impl::GenericIter<const_pair>>;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         if constexpr (std::derived_from<std::decay_t<T>, impl::ItemTag>) {
-            return mapping_type::template check<typename std::decay_t<T>::mapping_type>();
+            return mapping_type::template typecheck<typename std::decay_t<T>::mapping_type>();
         } else {
             return false;
         }
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
 
-        } else if constexpr (check<T>()) {
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
 
         } else if constexpr (impl::is_object_exact<T>) {
@@ -437,7 +437,7 @@ public:
             PyObject* dict = reinterpret_cast<PyObject*>(
                 reinterpret_cast<impl::_PyDictViewObject*>(obj.ptr())->dv_dict
             );
-            return mapping_type::check(reinterpret_borrow<Object>(dict));
+            return mapping_type::typecheck(reinterpret_borrow<Object>(dict));
 
         } else {
             return false;
@@ -458,7 +458,7 @@ public:
 
     /* Copy/move constructor from equivalent pybind11 type(s) and other value views
     with the same or narrower mapping type. */
-    template <impl::python_like T> requires (check<T>())
+    template <impl::python_like T> requires (typecheck<T>())
     ItemView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create an items view on an existing dictionary. */
@@ -598,10 +598,10 @@ class Dict : public Object, public impl::DictTag {
     static constexpr bool generic_value = std::same_as<Value, Object>;
 
     template <typename T>
-    static constexpr bool typecheck_key = std::derived_from<T, Object> ?
+    static constexpr bool check_key_type = std::derived_from<T, Object> ?
         std::derived_from<T, Key> : std::convertible_to<T, Key>;
     template <typename T>
-    static constexpr bool typecheck_value = std::derived_from<T, Object> ?
+    static constexpr bool check_value_type = std::derived_from<T, Object> ?
         std::derived_from<T, Value> : std::convertible_to<T, Value>;
 
     template <bool check_key, bool check_value>
@@ -612,17 +612,17 @@ class Dict : public Object, public impl::DictTag {
         while (PyDict_Next(ptr, &pos, &key, &value)) {
             if constexpr (check_key && check_value) {
                 if (
-                    !Key::check(reinterpret_borrow<Object>(key)) ||
-                    !Value::check(reinterpret_borrow<Object>(value))
+                    !Key::typecheck(reinterpret_borrow<Object>(key)) ||
+                    !Value::typecheck(reinterpret_borrow<Object>(value))
                 ) {
                     return false;
                 }
             } else if constexpr (check_key) {
-                if (!Key::check(reinterpret_borrow<Object>(key))) {
+                if (!Key::typecheck(reinterpret_borrow<Object>(key))) {
                     return false;
                 }
             } else if constexpr (check_value) {
-                if (!Value::check(reinterpret_borrow<Object>(value))) {
+                if (!Value::typecheck(reinterpret_borrow<Object>(value))) {
                     return false;
                 }
             } else {
@@ -653,7 +653,7 @@ public:
     // we should probably follow the same convention.
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         using U = std::decay_t<T>;
         if constexpr (!impl::dict_like<U>) {
             return false;
@@ -662,14 +662,14 @@ public:
             return generic_key && generic_value;
 
         } else if constexpr (std::derived_from<U, impl::DictTag>) {
-            return typecheck_key<typename U::key_type> &&
-                   typecheck_value<typename U::value_type>;
+            return check_key_type<typename U::key_type> &&
+                   check_value_type<typename U::value_type>;
 
         } else if constexpr (impl::is_iterable<U>) {
-            using Deref = impl::dereference_type<U>;
+            using Deref = impl::iter_type<U>;
             if constexpr (impl::pair_like<Deref>) {
-                return typecheck_key<decltype(std::declval<Deref>().first)> &&
-                       typecheck_value<decltype(std::declval<Deref>().second)>;
+                return check_key_type<decltype(std::declval<Deref>().first)> &&
+                       check_value_type<decltype(std::declval<Deref>().second)>;
             } else {
                 return false;
             }
@@ -680,9 +680,9 @@ public:
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
 
         } else if constexpr (impl::is_object_exact<T>) {
             if constexpr (generic_key && generic_value) {
@@ -709,13 +709,13 @@ public:
                 return obj.ptr() != nullptr &&
                     dynamic_check<check_key, check_value>(obj.ptr());
             } else if constexpr (check_key) {
-                return obj.ptr() != nullptr && typecheck_value<V> &&
+                return obj.ptr() != nullptr && check_value_type<V> &&
                     dynamic_check<check_key, check_value>(obj.ptr());
             } else if constexpr (check_value) {
-                return obj.ptr() != nullptr && typecheck_key<K> &&
+                return obj.ptr() != nullptr && check_key_type<K> &&
                     dynamic_check<check_key, check_value>(obj.ptr());
             } else {
-                return obj.ptr() != nullptr && typecheck_key<K> && typecheck_value<V>;
+                return obj.ptr() != nullptr && check_key_type<K> && check_value_type<V>;
             }
 
         } else {
@@ -767,7 +767,7 @@ public:
 
     /* Copy/move constructors from equivalent pybind11 types or other dicts with a
     narrower key or value type. */
-    template <impl::python_like T> requires (check<T>())
+    template <impl::python_like T> requires (typecheck<T>())
     Dict(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly unpack an arbitrary Python container into a new py::Dict. */
@@ -783,7 +783,7 @@ public:
 
     /* Explicitly unpack a arbitrary C++ container into a new py::Dict. */
     template <impl::cpp_like T>
-        requires (impl::is_iterable<T> && impl::pair_like<impl::dereference_type<T>>)
+        requires (impl::is_iterable<T> && impl::pair_like<impl::iter_type<T>>)
     explicit Dict(const T& container) : Base(PyDict_New(), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -867,7 +867,7 @@ public:
 
     /* Equivalent to Python `dict.fromkeys(keys, value)`. */
     template <impl::is_iterable T>
-        requires (std::convertible_to<impl::dereference_type<T>, key_type>)
+        requires (std::convertible_to<impl::iter_type<T>, key_type>)
     static Dict fromkeys(const T& keys, const value_type& value) {
         PyObject* result = PyDict_New();
         if (result == nullptr) {
@@ -1220,20 +1220,20 @@ public:
     using value_type = typename Map::value_type;
 
     template <typename T>
-    static consteval bool check() {
+    static consteval bool typecheck() {
         if constexpr (std::derived_from<std::decay_t<T>, impl::MappingProxyTag>) {
-            return mapping_type::template check<typename std::decay_t<T>::mapping_type>();
+            return mapping_type::template typecheck<typename std::decay_t<T>::mapping_type>();
         } else {
             return false;
         }
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
 
-        } else if constexpr (check<T>()) {
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
 
         } else if constexpr (impl::is_object_exact<T>) {
@@ -1250,7 +1250,7 @@ public:
                 PyObject* dict = reinterpret_cast<PyObject*>(
                     reinterpret_cast<impl::mappingproxyobject*>(obj.ptr())->mapping
                 );
-                return mapping_type::check(reinterpret_borrow<Object>(dict));
+                return mapping_type::typecheck(reinterpret_borrow<Object>(dict));
             }
             return false;
 
@@ -1273,7 +1273,7 @@ public:
 
     /* Copy/move constructor from equivalent pybind11 type(s) and other proxies with
     the same or narrower mapping type. */
-    template <impl::python_like T> requires (check<T>())
+    template <impl::python_like T> requires (typecheck<T>())
     MappingProxy(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Construct a read-only view on an existing dictionary. */

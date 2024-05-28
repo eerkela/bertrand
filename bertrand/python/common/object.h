@@ -54,7 +54,7 @@ protected:
         const pybind11::detail::accessor<Policy>& accessor
     ) {
         pybind11::object obj(accessor);
-        if (Self::check(obj)) {
+        if (Self::typecheck(obj)) {
             return obj;
         } else {
             throw impl::noconvert<Self>(obj.ptr());
@@ -66,15 +66,15 @@ public:
 
     /* Check whether the templated type is considered object-like at compile time. */
     template <typename T>
-    static constexpr bool check() {
+    [[nodiscard]] static constexpr bool typecheck() {
         return std::derived_from<T, Object> || std::derived_from<T, pybind11::object>;
     }
 
     /* Check whether a Python/C++ value is considered object-like at compile time. */
     template <typename T>
-    static constexpr bool check(const T& value) {
+    [[nodiscard]] static constexpr bool typecheck(const T& value) {
         if constexpr (impl::cpp_like<T>) {
-            return check<T>();
+            return typecheck<T>();
         } else {
             return value.ptr() != nullptr;
         }
@@ -97,7 +97,7 @@ public:
     template <typename Policy>
     Object(const pybind11::detail::accessor<Policy>& accessor) : m_ptr(nullptr) {
         pybind11::object obj(accessor);
-        if (check(obj)) {
+        if (typecheck(obj)) {
             m_ptr = obj.release().ptr();
         } else {
             throw impl::noconvert<Object>(obj.ptr());
@@ -242,7 +242,7 @@ public:
     Ambiguities can still arise via the control struct, but they are more predictable
     and avoidable. */
     template <typename Self, typename T>
-        requires (__implicit_cast__<Self, T>::enable && !impl::initializer_like<T>)  // TODO: no need for initializer_like
+        requires (__implicit_cast__<Self, T>::enable)
     [[nodiscard]] operator T(this const Self& self) {
         return __implicit_cast__<Self, T>::operator()(self);
     }

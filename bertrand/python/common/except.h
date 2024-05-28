@@ -288,9 +288,6 @@ namespace impl {
 
     };
 
-    #define STR_EXPAND(tok) #tok
-    #define STR(tok) STR_EXPAND(tok)
-
     /* NOTE: passing `-DBERTRAND_TRACEBACK_EXCLUDE=...` (where `...` is a
     colon-separated list of paths - e.g. 'some/local/dir:another/local/dir') causes
     bertrand's traceback system to ignore certain directories when building mixed
@@ -309,7 +306,7 @@ namespace impl {
         std::vector<std::string> result;
         std::string path;
         #ifdef BERTRAND_TRACEBACK_EXCLUDE_PYTHON
-            std::istringstream exclude_base(STR(BERTRAND_TRACEBACK_EXCLUDE_PYTHON));
+            std::istringstream exclude_base(BERTRAND_STRINGIFY(BERTRAND_TRACEBACK_EXCLUDE_PYTHON));
             while (std::getline(exclude_base, path, ':')) {
                 if (!path.empty()) {
                     result.push_back(path);
@@ -320,7 +317,7 @@ namespace impl {
             result.push_back("usr/lib/python");
         #endif
         #ifdef BERTRAND_TRACEBACK_EXCLUDE
-            std::istringstream exclude(STR(BERTRAND_TRACEBACK_EXCLUDE));
+            std::istringstream exclude(BERTRAND_STRINGIFY(BERTRAND_TRACEBACK_EXCLUDE));
             while (std::getline(exclude, path, ':')) {
                 if (!path.empty()) {
                     result.push_back(path);
@@ -330,9 +327,6 @@ namespace impl {
         #endif
         return result;
     }();
-
-    #undef STR
-    #undef STR_EXPAND
 
     /* A language-agnostic stack trace that is attached to all Python/C++ errors. */
     class StackTrace {
@@ -952,7 +946,7 @@ public:
         context without being explicitly caught.  If debug symbols are enabled, then this
         will include a Python-style traceback covering both the Python and C++ frames that
         were traversed to reach the error. */
-        virtual const char* what() const noexcept override {
+        [[nodiscard]] const char* what() const noexcept override {
             if (what_string.empty()) {
                 what_string += traceback.to_string();
                 what_string += "\nException: ";
@@ -964,7 +958,7 @@ public:
         /* Convert this exception into an equivalent Python error, so that it can be
         propagated to a Python context.  The resulting traceback reflects both the Python
         and C++ frames that were traversed to reach the error.  */
-        virtual void set_error() const override {
+        void set_error() const override {
             traceback.restore(PyExc_Exception, Base::what());
         }
 
@@ -1032,7 +1026,7 @@ public:
         context without being explicitly caught.  If debug symbols are enabled, then this
         will include a Python-style traceback covering both the Python and C++ frames that
         were traversed to reach the error. */
-        virtual const char* what() const noexcept override {
+        [[nodiscard]] const char* what() const noexcept override {
             if (what_string.empty()) {
                 what_string += "Exception: ";
                 what_string += message();
@@ -1043,13 +1037,13 @@ public:
         /* Convert this exception into an equivalent Python error, so that it can be
         propagated to a Python context.  The resulting traceback reflects both the Python
         and C++ frames that were traversed to reach the error.  */
-        virtual void set_error() const override {
+        void set_error() const override {
             PyErr_SetString(PyExc_Exception, message());
         }
 
     #endif
 
-    const char* message() const noexcept {
+    [[nodiscard]] const char* message() const noexcept {
         return Base::what();
     }
 

@@ -20,15 +20,15 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool check() {
+    [[nodiscard]] static consteval bool typecheck() {
         return impl::bool_like<T>;
     }
 
     template <typename T>
-    static constexpr bool check(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if (impl::cpp_like<T>) {
-            return check<T>();
-        } else if constexpr (check<T>()) {
+            return typecheck<T>();
+        } else if constexpr (typecheck<T>()) {
             return obj.ptr() != nullptr;
         } else if constexpr (impl::is_object_exact<T>) {
             return obj.ptr() != nullptr && PyBool_Check(obj.ptr());
@@ -44,7 +44,7 @@ public:
     Bool(Handle h, const borrowed_t& t) : Base(h, t) {}
     Bool(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (check<T>())
+    template <impl::pybind11_like T> requires (typecheck<T>())
     Bool(T&& other) : Base(std::forward<T>(other)) {}
 
     template <typename Policy>
