@@ -156,39 +156,42 @@ void run() {
 
     // TODO: this should be an example showcase
 
-    auto lambda = [](
-        py::Arg<"x", const int&>::opt x,
-        py::Arg<"y", const int&>::opt y
-    ) {
-        return x - y;
-    };
+    // auto lambda = [](
+    //     py::Arg<"x", const int&>::opt x,
+    //     py::Arg<"y", const int&>::opt y
+    // ) {
+    //     return x - y;
+    // };
 
-    constexpr auto x = py::arg_<"x">;
-    constexpr auto y = py::arg_<"y">;
-    // constexpr auto z = py::arg_<"z">;
+    // constexpr auto x = py::arg_<"x">;
+    // constexpr auto y = py::arg_<"y">;
+    // // constexpr auto z = py::arg_<"z">;
 
-    py::Function func("subtract", lambda, y = 2, x = 1);
+    // py::Function func("subtract", lambda, y = 2, x = 1);
 
-    py::print(func());
+    // py::print(func());
 
-    py::print(func(1));
-    py::print(func(x = 1));
-    py::print(func(y = 2));
+    // py::print(func(1));
+    // py::print(func(x = 1));
+    // py::print(func(y = 2));
 
-    py::print(func(1, 2));
-    py::print(func(1, y = 2));
-    py::print(func(x = 1, y = 2));
-    py::print(func(y = 2, x = 1));
-
-
+    // py::print(func(1, 2));
+    // py::print(func(1, y = 2));
+    // py::print(func(x = 1, y = 2));
+    // py::print(func(y = 2, x = 1));
 
 
-    py::Function func2 = [](py::Arg<"x", int> x, py::Arg<"y", int> y) {
-        return x + y;
-    };
 
-    py::print(func2(x = 1, y = 2));
 
+    // py::Function func2 = [](py::Arg<"x", int> x, py::Arg<"y", int> y) {
+    //     return x + y;
+    // };
+
+    // py::print(func2(x = 1, y = 2));
+
+
+    py::Bytes x = "abc";
+    py::print(x.capitalize());
 
 
 

@@ -2925,67 +2925,6 @@ namespace impl {
         }
     }
 
-    /* The following macros are used to generate thin wrappers around named methods
-     * of Python objects.  By invoking it in the body of a class, a corresponding
-     * of the same name will be generated with an arbitrary signature, which will be
-     * forwarded using the definition found the __getattr__ specialization.  This
-     * allows for keyword arguments and container unpacking, just like in Python.
-     */
-
-    #define BERTRAND_METHOD(name) \
-        template <typename Self, typename... Args> \
-            requires (::bertrand::py::impl::invocable<Self, BERTRAND_STRINGIFY(name), Args...>) \
-        decltype(auto) name(this Self&& self, Args&&... args) { \
-            return ::bertrand::py::impl::call_method<BERTRAND_STRINGIFY(name)>( \
-                std::forward<Self>(self), std::forward<Args>(args)... \
-            ); \
-        }
-
-    #define BERTRAND_NODISCARD_METHOD(name) \
-        template <typename Self, typename... Args> \
-            requires (::bertrand::py::impl::invocable<Self, BERTRAND_STRINGIFY(name), Args...>) \
-        [[nodiscard]] decltype(auto) name(this Self&& self, Args&&... args) { \
-            return ::bertrand::py::impl::call_method<BERTRAND_STRINGIFY(name)>( \
-                std::forward<Self>(self), std::forward<Args>(args)... \
-            ); \
-        }
-
-    #define BERTRAND_CONST_METHOD(name) \
-        template <typename Self, typename... Args> \
-            requires (::bertrand::py::impl::invocable<Self, BERTRAND_STRINGIFY(name), Args...>) \
-        decltype(auto) name(this const Self& self, Args&&... args) { \
-            return ::bertrand::py::impl::call_method<BERTRAND_STRINGIFY(name)>( \
-                self, std::forward<Args>(args)... \
-            ); \
-        }
-
-    #define BERTRAND_NODISCARD_CONST_METHOD(name) \
-        template <typename Self, typename... Args> \
-            requires (::bertrand::py::impl::invocable<Self, BERTRAND_STRINGIFY(name), Args...>) \
-        [[nodiscard]] decltype(auto) name(this const Self& self, Args&&... args) { \
-            return ::bertrand::py::impl::call_method<BERTRAND_STRINGIFY(name)>( \
-                self, std::forward<Args>(args)... \
-            ); \
-        }
-
-    #define BERTRAND_STATIC_METHOD(type, name) \
-        template <typename... Args> \
-            requires (::bertrand::py::impl::invocable<type, BERTRAND_STRINGIFY(name), Args...>) \
-        decltype(auto) name(Args&&... args) { \
-            return ::bertrand::py::impl::call_static<type, BERTRAND_STRINGIFY(name)>( \
-                std::forward<Args>(args)... \
-            ); \
-        }
-
-    #define BERTRAND_NODISCARD_STATIC_METHOD(type, name) \
-        template <typename... Args> \
-            requires (::bertrand::py::impl::invocable<type, BERTRAND_STRINGIFY(name), Args...>) \
-       [[nodiscard]] decltype(auto) name(Args&&... args) { \
-            return ::bertrand::py::impl::call_static<type, BERTRAND_STRINGIFY(name)>( \
-                std::forward<Args>(args)... \
-            ); \
-        }
-
 }
 
 

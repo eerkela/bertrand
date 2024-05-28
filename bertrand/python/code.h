@@ -291,12 +291,12 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         return std::derived_from<T, Code>;
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
             return typecheck<T>();
         } else if constexpr (typecheck<T>()) {
@@ -333,17 +333,17 @@ public:
     explicit Code(const std::string_view& path) : Code(path.data()) {}
 
     /* Parse and compile a source string into a Python code object. */
-    static Code compile(const char* source) {
+    [[nodiscard]] static Code compile(const char* source) {
         return reinterpret_steal<Code>(build(source));
     }
 
     /* Parse and compile a source string into a Python code object. */
-    static Code compile(const std::string& source) {
+    [[nodiscard]] static Code compile(const std::string& source) {
         return reinterpret_steal<Code>(build(source));
     }
 
     /* Parse and compile a source string into a Python code object. */
-    static Code compile(const std::string_view& path) {
+    [[nodiscard]] static Code compile(const std::string_view& path) {
         return compile(std::string{path.data(), path.size()});
     }
 
@@ -387,92 +387,92 @@ public:
     /////////////////////
 
     /* Get the name of the file from which the code was compiled. */
-    Str filename() const {
+    [[nodiscard]] Str filename() const {
         return reinterpret_borrow<Str>(self()->co_filename);
     }
 
     /* Get the function's base name. */
-    Str name() const {
+    [[nodiscard]] Str name() const {
         return reinterpret_borrow<Str>(self()->co_name);
     }
 
     /* Get the function's qualified name. */
-    Str qualname() const {
+    [[nodiscard]] Str qualname() const {
         return reinterpret_borrow<Str>(self()->co_qualname);
     }
 
     /* Get the first line number of the function. */
-    Py_ssize_t line_number() const noexcept {
+    [[nodiscard]] Py_ssize_t line_number() const noexcept {
         return self()->co_firstlineno;
     }
 
     /* Get the total number of positional arguments for the function, including
     positional-only arguments and those with default values (but not variable
     or keyword-only arguments). */
-    Py_ssize_t argcount() const noexcept {
+    [[nodiscard]] Py_ssize_t argcount() const noexcept {
         return self()->co_argcount;
     }
 
     /* Get the number of positional-only arguments for the function, including
     those with default values.  Does not include variable positional or keyword
     arguments. */
-    Py_ssize_t posonlyargcount() const noexcept {
+    [[nodiscard]] Py_ssize_t posonlyargcount() const noexcept {
         return self()->co_posonlyargcount;
     }
 
     /* Get the number of keyword-only arguments for the function, including those
     with default values.  Does not include positional-only or variable
     positional/keyword arguments. */
-    Py_ssize_t kwonlyargcount() const noexcept {
+    [[nodiscard]] Py_ssize_t kwonlyargcount() const noexcept {
         return self()->co_kwonlyargcount;
     }
 
     /* Get the number of local variables used by the function (including all
     parameters). */
-    Py_ssize_t nlocals() const noexcept {
+    [[nodiscard]] Py_ssize_t nlocals() const noexcept {
         return self()->co_nlocals;
     }
 
     /* Get a tuple containing the names of the local variables in the function,
     starting with parameter names. */
-    Tuple<Str> varnames() const {
+    [[nodiscard]] Tuple<Str> varnames() const {
         return attr<"co_varnames">();
     }
 
     /* Get a tuple containing the names of local variables that are referenced by
     nested functions within this function (i.e. those that are stored in a
     PyCell). */
-    Tuple<Str> cellvars() const {
+    [[nodiscard]] Tuple<Str> cellvars() const {
         return attr<"co_cellvars">();
     }
 
     /* Get a tuple containing the names of free variables in the function (i.e.
     those that are not stored in a PyCell). */
-    Tuple<Str> freevars() const {
+    [[nodiscard]] Tuple<Str> freevars() const {
         return attr<"co_freevars">();
     }
 
     /* Get the required stack space for the code object. */
-    Py_ssize_t stacksize() const noexcept {
+    [[nodiscard]] Py_ssize_t stacksize() const noexcept {
         return self()->co_stacksize;
     }
 
     /* Get the bytecode buffer representing the sequence of instructions in the
     function. */
-    Bytes bytecode() const;
+    [[nodiscard]] Bytes bytecode() const;
 
     /* Get a tuple containing the literals used by the bytecode in the function. */
-    Tuple<Object> consts() const {
+    [[nodiscard]] Tuple<Object> consts() const {
         return reinterpret_borrow<Tuple<Object>>(self()->co_consts);
     }
 
     /* Get a tuple containing the names used by the bytecode in the function. */
-    Tuple<Str> names() const {
+    [[nodiscard]] Tuple<Str> names() const {
         return reinterpret_borrow<Tuple<Str>>(self()->co_names);
     }
 
     /* Get an integer encoding flags for the Python interpreter. */
-    int flags() const noexcept {
+    [[nodiscard]] int flags() const noexcept {
         return self()->co_flags;
     }
 
@@ -534,12 +534,12 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         return std::derived_from<T, Frame>;
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
             return typecheck<T>();
         } else if constexpr (typecheck<T>()) {
@@ -623,7 +623,7 @@ public:
     /////////////////////////////
 
     /* Get the next outer frame from this one. */
-    Frame back() const {
+    [[nodiscard]] Frame back() const {
         PyFrameObject* result = PyFrame_GetBack(self());
         if (result == nullptr) {
             Exception::from_python();
@@ -632,14 +632,14 @@ public:
     }
 
     /* Get the code object associated with this frame. */
-    Code code() const {
+    [[nodiscard]] Code code() const {
         return reinterpret_steal<Code>(
             reinterpret_cast<PyObject*>(PyFrame_GetCode(self()))  // never null
         );
     }
 
     /* Get the line number that the frame is currently executing. */
-    int line_number() const noexcept {
+    [[nodiscard]] int line_number() const noexcept {
         return PyFrame_GetLineNumber(self());
     }
 
@@ -657,14 +657,14 @@ public:
     #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
 
         /* Get the frame's builtin namespace. */
-        Dict<Str, Object> builtins() const {
+        [[nodiscard]] Dict<Str, Object> builtins() const {
             return reinterpret_steal<Dict<Str, Object>>(
                 PyFrame_GetBuiltins(self())
             );
         }
 
         /* Get the frame's globals namespace. */
-        Dict<Str, Object> globals() const {
+        [[nodiscard]] Dict<Str, Object> globals() const {
             PyObject* result = PyFrame_GetGlobals(self());
             if (result == nullptr) {
                 Exception::from_python();
@@ -673,7 +673,7 @@ public:
         }
 
         /* Get the frame's locals namespace. */
-        Dict<Str, Object> locals() const {
+        [[nodiscard]] Dict<Str, Object> locals() const {
             PyObject* result = PyFrame_GetLocals(self());
             if (result == nullptr) {
                 Exception::from_python();
@@ -683,7 +683,7 @@ public:
 
         /* Get the generator, coroutine, or async generator that owns this frame, or
         nullopt if this frame is not owned by a generator. */
-        std::optional<Object> generator() const {
+        [[nodiscard]] std::optional<Object> generator() const {
             PyObject* result = PyFrame_GetGenerator(self());
             if (result == nullptr) {
                 return std::nullopt;
@@ -695,7 +695,7 @@ public:
         /* Get the "precise instruction" of the frame object, which is an index into
         the bytecode of the last instruction that was executed by the frame's code
         object. */
-        int last_instruction() const noexcept {
+        [[nodiscard]] int last_instruction() const noexcept {
             return PyFrame_GetLasti(self());
         }
 
@@ -705,7 +705,7 @@ public:
 
         /* Get a named variable from the frame's context.  Can raise if the variable is
         not present in the frame. */
-        Object get(const Str& name) const {
+        [[nodiscard]] Object get(const Str& name) const {
             PyObject* result = PyFrame_GetVar(self(), name.ptr());
             if (result == nullptr) {
                 Exception::from_python();
@@ -740,12 +740,12 @@ public:
 //     static const Type type;
 
 //     template <typename T>
-//     static consteval bool typecheck() {
+//     [[nodiscard]] static consteval bool typecheck() {
 //         return std::derived_from<T, ClassMethod>;
 //     }
 
 //     template <typename T>
-//     static constexpr bool typecheck(const T& obj) {
+//     [[nodiscard]] static constexpr bool typecheck(const T& obj) {
 //         if constexpr (impl::cpp_like<T>) {
 //             return typecheck<T>();
 
@@ -789,7 +789,7 @@ public:
 //     }
 
 //     /* Get the underlying function. */
-//     Function function() const {
+//     [[nodiscard]] Function function() const {
 //         return reinterpret_steal<Function>(Object(attr<"__func__">()).release());
 //     }
 
@@ -818,12 +818,12 @@ public:
 //     static const Type type;
 
 //     template <typename T>
-//     static consteval bool typecheck() {
+//     [[nodiscard]] static consteval bool typecheck() {
 //         return std::derived_from<T, StaticMethod>;
 //     }
 
 //     template <typename T>
-//     static constexpr bool typecheck(const T& obj) {
+//     [[nodiscard]] static constexpr bool typecheck(const T& obj) {
 //         if constexpr (impl::cpp_like<T>) {
 //             return typecheck<T>();
 
@@ -867,7 +867,7 @@ public:
 //     }
 
 //     /* Get the underlying function. */
-//     Function function() const {
+//     [[nodiscard]] Function function() const {
 //         return reinterpret_steal<Function>(Object(attr<"__func__">()).release());
 //     }
 
@@ -911,12 +911,12 @@ public:
 //     static const Type type;
 
 //     template <typename T>
-//     static consteval bool typecheck() {
+//     [[nodiscard]] static consteval bool typecheck() {
 //         return std::derived_from<T, Property>;
 //     }
 
 //     template <typename T>
-//     static constexpr bool typecheck(const T& obj) {
+//     [[nodiscard]] static constexpr bool typecheck(const T& obj) {
 //         if constexpr (impl::cpp_like<T>) {
 //             return typecheck<T>();
 
@@ -968,17 +968,17 @@ public:
 //     {}
 
 //     /* Get the function being used as a getter. */
-//     Function fget() const {
+//     [[nodiscard]] Function fget() const {
 //         return reinterpret_steal<Function>(Object(attr<"fget">()).release());
 //     }
 
 //     /* Get the function being used as a setter. */
-//     Function fset() const {
+//     [[nodiscard]] Function fset() const {
 //         return reinterpret_steal<Function>(Object(attr<"fset">()).release());
 //     }
 
 //     /* Get the function being used as a deleter. */
-//     Function fdel() const {
+//     [[nodiscard]] Function fdel() const {
 //         return reinterpret_steal<Function>(Object(attr<"fdel">()).release());
 //     }
 

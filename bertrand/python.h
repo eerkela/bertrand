@@ -228,7 +228,7 @@ inline const Type Frame::type = reinterpret_borrow<Type>((PyObject*) &PyFrame_Ty
 
 
 template <typename Return, typename... Target>
-inline std::optional<std::string> Function<Return(Target...)>::filename() const {
+[[nodiscard]] inline std::optional<std::string> Function<Return(Target...)>::filename() const {
     std::optional<Code> code = this->code();
     if (code.has_value()) {
         return code->filename();
@@ -238,7 +238,7 @@ inline std::optional<std::string> Function<Return(Target...)>::filename() const 
 
 
 template <typename Return, typename... Target>
-inline std::optional<size_t> Function<Return(Target...)>::lineno() const {
+[[nodiscard]] inline std::optional<size_t> Function<Return(Target...)>::lineno() const {
     std::optional<Code> code = this->code();
     if (code.has_value()) {
         return code->line_number();
@@ -248,7 +248,7 @@ inline std::optional<size_t> Function<Return(Target...)>::lineno() const {
 
 
 template <typename Return, typename... Target>
-inline std::optional<Module> Function<Return(Target...)>::module_() const {
+[[nodiscard]] inline std::optional<Module> Function<Return(Target...)>::module_() const {
     PyObject* result = PyFunction_GetModule(unwrap_method());
     if (result == nullptr) {
         if (PyErr_Occurred()) {
@@ -261,7 +261,7 @@ inline std::optional<Module> Function<Return(Target...)>::module_() const {
 
 
 template <typename Return, typename... Target>
-inline std::optional<Code> Function<Return(Target...)>::code() const {
+[[nodiscard]] inline std::optional<Code> Function<Return(Target...)>::code() const {
     PyObject* result = PyFunction_GetCode(unwrap_method());
     if (result == nullptr) {
         if (PyErr_Occurred()) {
@@ -274,7 +274,7 @@ inline std::optional<Code> Function<Return(Target...)>::code() const {
 
 
 template <typename Return, typename... Target>
-inline std::optional<Dict<Str, Object>> Function<Return(Target...)>::globals() const {
+[[nodiscard]] inline std::optional<Dict<Str, Object>> Function<Return(Target...)>::globals() const {
     PyObject* result = PyFunction_GetGlobals(unwrap_method());
     if (result == nullptr) {
         if (PyErr_Occurred()) {
@@ -287,7 +287,7 @@ inline std::optional<Dict<Str, Object>> Function<Return(Target...)>::globals() c
 
 
 // template <typename Return, typename... Target>
-// MappingProxy<Dict<Str, Object>> Function<Return(Target...)>::defaults() const {
+// [[nodiscard]] MappingProxy<Dict<Str, Object>> Function<Return(Target...)>::defaults() const {
 
 // }
 
@@ -300,7 +300,7 @@ inline std::optional<Dict<Str, Object>> Function<Return(Target...)>::globals() c
 
 
 // template <typename Return, typename... Target>
-// MappingProxy<Dict<Str, Object>> Function<Return(Target...)>::annotations() const {
+// [[nodiscard]] MappingProxy<Dict<Str, Object>> Function<Return(Target...)>::annotations() const {
 
 // }
 
@@ -313,7 +313,7 @@ inline std::optional<Dict<Str, Object>> Function<Return(Target...)>::globals() c
 
 
 template <typename Return, typename... Target>
-inline std::optional<Tuple<Object>> Function<Return(Target...)>::closure() const {
+[[nodiscard]] inline std::optional<Tuple<Object>> Function<Return(Target...)>::closure() const {
     PyObject* result = PyFunction_GetClosure(unwrap_method());
     if (result == nullptr) {
         if (PyErr_Occurred()) {
@@ -375,7 +375,7 @@ inline Type::Type(
 #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
 
     /* Get the type's qualified name. */
-    inline Str Type::qualname() const {
+    [[nodiscard]] inline Str Type::qualname() const {
         PyObject* result = PyType_GetQualName(self());
         if (result == nullptr) {
             Exception::from_python();
@@ -1036,7 +1036,7 @@ Various permutations of these examples are possible, allowing users to both stat
 and dynamically dispatch based on an arbitrary function's signature, with the same
 universal syntax in both languages. */
 template <typename... Args, impl::is_callable_any Func>
-constexpr auto callable(const Func& func) {
+[[nodiscard]] constexpr auto callable(const Func& func) {
     // If no template arguments are given, default to wildcard matching
     if constexpr (sizeof...(Args) == 0) {
         return impl::CallTraits<Func, void>{func};
@@ -1210,7 +1210,7 @@ py::Object zip(First&& first, Rest&&... rest) {
 /* Get Python's builtin namespace as a dictionary.  This doesn't exist in normal
 Python, but makes it much more convenient to interact with the standard library from
 C++. */
-inline Dict<Str, Object> builtins() {
+[[nodiscard]] inline Dict<Str, Object> builtins() {
     PyObject* result = PyEval_GetBuiltins();
     if (result == nullptr) {
         Exception::from_python();
@@ -1220,7 +1220,7 @@ inline Dict<Str, Object> builtins() {
 
 
 /* Equivalent to Python `globals()`. */
-inline Dict<Str, Object> globals() {
+[[nodiscard]] inline Dict<Str, Object> globals() {
     PyObject* result = PyEval_GetGlobals();
     if (result == nullptr) {
         throw RuntimeError("cannot get globals - no frame is currently executing");
@@ -1230,7 +1230,7 @@ inline Dict<Str, Object> globals() {
 
 
 /* Equivalent to Python `locals()`. */
-inline Dict<Str, Object> locals() {
+[[nodiscard]] inline Dict<Str, Object> locals() {
     PyObject* result = PyEval_GetLocals();
     if (result == nullptr) {
         throw RuntimeError("cannot get locals - no frame is currently executing");
@@ -1240,7 +1240,7 @@ inline Dict<Str, Object> locals() {
 
 
 /* Equivalent to Python `aiter(obj)`.  Only works on asynchronous Python iterators. */
-inline Object aiter(const Object& obj) {
+[[nodiscard]] inline Object aiter(const Object& obj) {
     static const Str s_aiter = "aiter";
     return builtins()[s_aiter](obj);
 }
@@ -1264,7 +1264,7 @@ inline Object anext(const Object& obj, const T& default_value) {
 
 /* Equivalent to Python `ascii(obj)`.  Like `repr()`, but returns an ASCII-encoded
 string. */
-inline Str ascii(const Handle& obj) {
+[[nodiscard]] inline Str ascii(const Handle& obj) {
     PyObject* result = PyObject_ASCII(obj.ptr());
     if (result == nullptr) {
         Exception::from_python();
@@ -1275,7 +1275,7 @@ inline Str ascii(const Handle& obj) {
 
 /* Equivalent to Python `bin(obj)`.  Converts an integer or other object implementing
 __index__() into a binary string representation. */
-inline Str bin(const Handle& obj) {
+[[nodiscard]] inline Str bin(const Handle& obj) {
     PyObject* string = PyNumber_ToBase(obj.ptr(), 2);
     if (string == nullptr) {
         Exception::from_python();
@@ -1286,7 +1286,7 @@ inline Str bin(const Handle& obj) {
 
 /* Equivalent to Python `chr(obj)`.  Converts an integer or other object implementing
 __index__() into a unicode character. */
-inline Str chr(const Handle& obj) {
+[[nodiscard]] inline Str chr(const Handle& obj) {
     PyObject* string = PyUnicode_FromFormat("%llc", obj.cast<long long>());
     if (string == nullptr) {
         Exception::from_python();
@@ -1305,7 +1305,7 @@ inline void delattr(const Object& obj, const Str& name) {
 
 /* Equivalent to Python `dir()` with no arguments.  Returns a list of names in the
 current local scope. */
-inline List<Str> dir() {
+[[nodiscard]] inline List<Str> dir() {
     PyObject* result = PyObject_Dir(nullptr);
     if (result == nullptr) {
         Exception::from_python();
@@ -1315,7 +1315,7 @@ inline List<Str> dir() {
 
 
 /* Equivalent to Python `dir(obj)`. */
-inline List<Str> dir(const Handle& obj) {
+[[nodiscard]] inline List<Str> dir(const Handle& obj) {
     if (obj.ptr() == nullptr) {
         throw TypeError("cannot call dir() on a null object");
     }
@@ -1402,7 +1402,7 @@ inline void exec(const Code& code) {
 
 
 /* Equivalent to Python `getattr(obj, name)` with a dynamic attribute name. */
-inline Object getattr(const Handle& obj, const Str& name) {
+[[nodiscard]] inline Object getattr(const Handle& obj, const Str& name) {
     PyObject* result = PyObject_GetAttr(obj.ptr(), name.ptr());
     if (result == nullptr) {
         Exception::from_python();
@@ -1413,7 +1413,7 @@ inline Object getattr(const Handle& obj, const Str& name) {
 
 /* Equivalent to Python `getattr(obj, name, default)` with a dynamic attribute name and
 default value. */
-inline Object getattr(const Handle& obj, const Str& name, const Object& default_value) {
+[[nodiscard]] inline Object getattr(const Handle& obj, const Str& name, const Object& default_value) {
     PyObject* result = PyObject_GetAttr(obj.ptr(), name.ptr());
     if (result == nullptr) {
         PyErr_Clear();
@@ -1424,7 +1424,7 @@ inline Object getattr(const Handle& obj, const Str& name, const Object& default_
 
 
 /* Equivalent to Python `hasattr(obj, name)`. */
-inline bool hasattr(const Handle& obj, const Str& name) {
+[[nodiscard]] inline bool hasattr(const Handle& obj, const Str& name) {
     return PyObject_HasAttr(obj.ptr(), name.ptr());
 }
 
@@ -1433,7 +1433,7 @@ inline bool hasattr(const Handle& obj, const Str& name) {
 for the relevant Python types.  This promotes hash-not-implemented exceptions into
 compile-time equivalents. */
 template <typename T> requires (impl::is_hashable<T> || std::derived_from<T, Object>)
-size_t hash(T&& obj) {
+[[nodiscard]] size_t hash(T&& obj) {
     static_assert(
         impl::is_hashable<T>,
         "hash() is not supported for this type.  Did you forget to specialize "
@@ -1445,7 +1445,7 @@ size_t hash(T&& obj) {
 
 /* Equivalent to Python `hex(obj)`.  Converts an integer or other object implementing
 __index__() into a hexadecimal string representation. */
-inline Str hex(const Int& obj) {
+[[nodiscard]] inline Str hex(const Int& obj) {
     PyObject* string = PyNumber_ToBase(obj.ptr(), 16);
     if (string == nullptr) {
         Exception::from_python();
@@ -1457,7 +1457,7 @@ inline Str hex(const Int& obj) {
 /* Equivalent to Python `id(obj)`, but also works with C++ values.  Casts the object's
 memory address to a void pointer. */
 template <typename T>
-const void* id(const T& obj) {
+[[nodiscard]] const void* id(const T& obj) {
     if constexpr (std::is_pointer_v<T>) {
         return reinterpret_cast<void*>(obj);
 
@@ -1473,7 +1473,7 @@ const void* id(const T& obj) {
 /* Equivalent to Python `isinstance(derived, base)`, but base is provided as a template
 parameter. */
 template <impl::python_like T>
-inline bool isinstance(const Handle& derived) {
+[[nodiscard]] inline bool isinstance(const Handle& derived) {
     static_assert(!std::same_as<T, Handle>, "isinstance<py::Handle>() is not allowed");
     return T::check_(derived);
 }
@@ -1482,7 +1482,7 @@ inline bool isinstance(const Handle& derived) {
 /* Equivalent to Python `isinstance(derived, base)`. */
 template <typename T>
     requires (impl::type_like<T> || impl::tuple_like<T> || std::same_as<T, Object>)
-inline bool isinstance(const Handle& derived, const T& base) {
+[[nodiscard]] inline bool isinstance(const Handle& derived, const T& base) {
     int result = PyObject_IsInstance(
         derived.ptr(),
         Object(base).ptr()
@@ -1497,7 +1497,7 @@ inline bool isinstance(const Handle& derived, const T& base) {
 /* Equivalent to Python `issubclass(derived, base)`, but base is provided as a template
 parameter. */
 template <impl::python_like T>
-inline bool issubclass(const Type& derived) {
+[[nodiscard]] inline bool issubclass(const Type& derived) {
     static_assert(!std::same_as<T, Handle>, "issubclass<py::Handle>() is not allowed");
     static_assert(
         std::derived_from<T, Object>,
@@ -1516,7 +1516,7 @@ inline bool issubclass(const Type& derived) {
 /* Equivalent to Python `issubclass(derived, base)`. */
 template <typename T>
     requires (impl::type_like<T> || impl::tuple_like<T> || std::same_as<T, Object>)
-inline bool issubclass(const Type& derived, const T& base) {
+[[nodiscard]] inline bool issubclass(const Type& derived, const T& base) {
     int result = PyObject_IsSubclass(
         derived.ptr(),
         Object(base).ptr()
@@ -1530,7 +1530,7 @@ inline bool issubclass(const Type& derived, const T& base) {
 
 /* Equivalent to Python `oct(obj)`.  Converts an integer or other object implementing
 __index__() into an octal string representation. */
-inline Str oct(const Handle& obj) {
+[[nodiscard]] inline Str oct(const Handle& obj) {
     PyObject* string = PyNumber_ToBase(obj.ptr(), 8);
     if (string == nullptr) {
         Exception::from_python();
@@ -1541,7 +1541,7 @@ inline Str oct(const Handle& obj) {
 
 /* Equivalent to Python `ord(obj)`.  Converts a unicode character into an integer
 representation. */
-inline Int ord(const Handle& obj) {
+[[nodiscard]] inline Int ord(const Handle& obj) {
     PyObject* ptr = obj.ptr();
     if (ptr == nullptr) {
         throw TypeError("cannot call ord() on a null object");
@@ -1582,14 +1582,14 @@ inline void setattr(const Handle& obj, const Str& name, const Object& value) {
 
 
 // /* Equivalent to Python `sorted(obj)`. */
-// inline List sorted(const Handle& obj) {
+// [[nodiscard]] inline List sorted(const Handle& obj) {
 //     static const Str s_sorted = "sorted";
 //     return builtins()[s_sorted](obj);
 // }
 
 
 // /* Equivalent to Python `sorted(obj, key=key, reverse=reverse)`. */
-// inline List sorted(const Handle& obj, const Function& key, bool reverse = false) {
+// [[nodiscard]] inline List sorted(const Handle& obj, const Function& key, bool reverse = false) {
 //     static const Str s_sorted = "sorted";
 //     return builtins()[s_sorted](
 //         obj,
@@ -1600,13 +1600,13 @@ inline void setattr(const Handle& obj, const Str& name, const Object& value) {
 
 
 /* Equivalent to Python `vars()`. */
-inline Dict<Str, Object> vars() {
+[[nodiscard]] inline Dict<Str, Object> vars() {
     return locals();
 }
 
 
 /* Equivalent to Python `vars(object)`. */
-inline Dict<Str, Object> vars(const Object& object) {
+[[nodiscard]] inline Dict<Str, Object> vars(const Object& object) {
     static const Str lookup = "__dict__";
     return reinterpret_steal<Dict<Str, Object>>(
         getattr(object, lookup).release()

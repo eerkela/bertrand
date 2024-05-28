@@ -179,7 +179,7 @@ public:
     using const_reverse_iterator = impl::ReverseIterator<impl::ListIter<const value_type>>;
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         if constexpr (!impl::list_like<std::decay_t<T>>) {
             return false;
         } else if constexpr (impl::pybind11_like<std::decay_t<T>>) {
@@ -192,7 +192,7 @@ public:
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
             return typecheck<T>();
 
@@ -467,12 +467,12 @@ public:
     /////////////////////////
 
     /* Get the underlying PyObject* array. */
-    PyObject** DATA() const noexcept {
+    [[nodiscard]] PyObject** DATA() const noexcept {
         return PySequence_Fast_ITEMS(this->ptr());
     }
 
     /* Directly access an item without bounds checking or constructing a proxy. */
-    value_type GET_ITEM(Py_ssize_t index) const {
+    [[nodiscard]] value_type GET_ITEM(Py_ssize_t index) const {
         return reinterpret_borrow<value_type>(PyList_GET_ITEM(this->ptr(), index));
     }
 
@@ -511,7 +511,7 @@ public:
     }
 
     /* Equivalent to Python `list.copy()`. */
-    List copy() const {
+    [[nodiscard]] List copy() const {
         PyObject* result = PyList_GetSlice(this->ptr(), 0, PyList_GET_SIZE(this->ptr()));
         if (result == nullptr) {
             Exception::from_python();
@@ -521,7 +521,7 @@ public:
 
     /* Equivalent to Python `list.count(value)`, but also takes optional start/stop
     indices similar to `list.index()`. */
-    Py_ssize_t count(
+    [[nodiscard]] Py_ssize_t count(
         const value_type& value,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -547,7 +547,7 @@ public:
     }
 
     /* Equivalent to Python `list.index(value[, start[, stop]])`. */
-    Py_ssize_t index(
+    [[nodiscard]] Py_ssize_t index(
         const value_type& value,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -614,14 +614,14 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    friend List operator+(
+    [[nodiscard]] friend List operator+(
         const List& self,
         const std::initializer_list<value_type>& items
     ) {
         return self.concat(items);
     }
 
-    friend List operator+(
+    [[nodiscard]] friend List operator+(
         const std::initializer_list<value_type>& items,
         const List& self
     ) {

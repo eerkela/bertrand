@@ -20,12 +20,12 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         return impl::float_like<T>;
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
             return typecheck<T>();
         } else if constexpr (typecheck<T>()) {
@@ -107,28 +107,20 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
-    // TODO: these can be ordinary static members rather than functions, which would
-    // yield higher performance.
-
-    /* Get the zero singleton. */
-    static const Float& zero() {
-        static const Float val = 0.0;
-        return val;
-    }
-
-    /* Get the half singleton. */
-    static const Float& half() {
-        static const Float val = 0.5;
-        return val;
-    }
-
-    /* Get the one singleton. */
-    static const Float& one() {
-        static const Float val = 1.0;
-        return val;
-    }
+    static const Float neg_one;
+    static const Float neg_half;
+    static const Float zero;
+    static const Float half;
+    static const Float one;
 
 };
+
+
+inline const Float Float::neg_one = -1.0;
+inline const Float Float::neg_half = -0.5;
+inline const Float Float::zero = 0.0;
+inline const Float Float::half = 0.5;
+inline const Float Float::one = 1.0;
 
 
 }  // namespace py

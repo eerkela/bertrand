@@ -456,21 +456,28 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
+    /* Make an explicit copy of the string. */
+    [[nodiscard]] Str copy() const {
+        PyObject* result = PyUnicode_New(size(), max_char());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        if (PyUnicode_CopyCharacters(
+            result,
+            0,
+            this->ptr(),
+            0,
+            size()
+        )) {
+            Py_DECREF(result);
+            Exception::from_python();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+
     /* Get the underlying unicode buffer. */
-    void* data() const noexcept {
+    [[nodiscard]] void* data() const noexcept {
         return PyUnicode_DATA(this->ptr());
-    }
-
-    /* Get the kind of the string, indicating the size of the unicode points stored
-    within. */
-    int kind() const noexcept {
-        return PyUnicode_KIND(this->ptr());
-    }
-
-    /* Get the maximum code point that is suitable for creating another string based
-    on this string. */
-    Py_UCS4 max_char() const noexcept {
-        return PyUnicode_MAX_CHAR_VALUE(this->ptr());
     }
 
     /* Fill the string with a given character.  The input must be convertible to a
@@ -497,8 +504,20 @@ public:
         }
     }
 
+    /* Get the kind of the string, indicating the size of the unicode points stored
+    within. */
+    [[nodiscard]] int kind() const noexcept {
+        return PyUnicode_KIND(this->ptr());
+    }
+
+    /* Get the maximum code point that is suitable for creating another string based
+    on this string. */
+    [[nodiscard]] Py_UCS4 max_char() const noexcept {
+        return PyUnicode_MAX_CHAR_VALUE(this->ptr());
+    }
+
     /* Return a substring from this string. */
-    Str substring(Py_ssize_t start = 0, Py_ssize_t end = -1) const {
+    [[nodiscard]] Str substring(Py_ssize_t start = 0, Py_ssize_t end = -1) const {
         PyObject* result = PyUnicode_Substring(this->ptr(), start, end);
         if (result == nullptr) {
             Exception::from_python();
@@ -510,27 +529,25 @@ public:
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    /* Equivalent to Python `str.copy()`. */
-    Str copy() const {
-        PyObject* result = PyUnicode_New(size(), max_char());
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        if (PyUnicode_CopyCharacters(
-            result,
-            0,
-            this->ptr(),
-            0,
-            size()
-        )) {
-            Py_DECREF(result);
-            Exception::from_python();
-        }
-        return reinterpret_steal<Str>(result);
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "capitalize", Args...>)
+    [[nodiscard]] decltype(auto) capitalize(this const Self& self, Args&&... args) {
+        return impl::call_method<"capitalize">(self, std::forward<Args>(args)...);
     }
 
-    /* Count the number of occurrences of a substring within the string. */
-    size_t count(
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "casefold", Args...>)
+    [[nodiscard]] decltype(auto) casefold(this const Self& self, Args&&... args) {
+        return impl::call_method<"casefold">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "center", Args...>)
+    [[nodiscard]] decltype(auto) center(this const Self& self, Args&&... args) {
+        return impl::call_method<"center">(self, std::forward<Args>(args)...);
+    }
+
+    [[nodiscard]] size_t count(
         const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -547,8 +564,13 @@ public:
         return static_cast<size_t>(result);
     }
 
-    /* Equivalent to Python `str.endswith(suffix[, start[, end]])`. */
-    bool endswith(
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "encode", Args...>)
+    [[nodiscard]] decltype(auto) encode(this const Self& self, Args&&... args) {
+        return impl::call_method<"encode">(self, std::forward<Args>(args)...);
+    }
+
+    [[nodiscard]] bool endswith(
         const Str& suffix,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -566,8 +588,13 @@ public:
         return result;
     }
 
-    /* Equivalent to Python `str.find(sub[, start[, stop]])`. */
-    Py_ssize_t find(
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "expandtabs", Args...>)
+    [[nodiscard]] decltype(auto) expandtabs(this const Self& self, Args&&... args) {
+        return impl::call_method<"expandtabs">(self, std::forward<Args>(args)...);
+    }
+
+    [[nodiscard]] Py_ssize_t find(
         const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -581,9 +608,7 @@ public:
         );
     }
 
-    /* Equivalent to Python `str.find(sub[, start[, stop]])`, except that the substring
-    is given as a single Python unicode character. */
-    Py_ssize_t find(
+    [[nodiscard]] Py_ssize_t find(
         Py_UCS4 ch,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -591,8 +616,19 @@ public:
         return PyUnicode_FindChar(this->ptr(), ch, start, stop, 1);
     }
 
-    /* Equivalent to Python `str.index(sub[, start[, end]])`. */
-    Py_ssize_t index(
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "format", Args...>)
+    [[nodiscard]] decltype(auto) format(this const Self& self, Args&&... args) {
+        return impl::call_method<"format">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "format_map", Args...>)
+    [[nodiscard]] decltype(auto) format_map(this const Self& self, Args&&... args) {
+        return impl::call_method<"format_map">(self, std::forward<Args>(args)...);
+    }
+
+    [[nodiscard]] Py_ssize_t index(
         const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -610,9 +646,7 @@ public:
         return result;
     }
 
-    /* Equivalent to Python `str.index(sub[, start[, end]])`, except that the substring
-    is given as a single Python unicode character. */
-    Py_ssize_t index(
+    [[nodiscard]] Py_ssize_t index(
         Py_UCS4 ch,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -630,9 +664,80 @@ public:
         return result;
     }
 
-    /* Equivalent of Python `str.join(iterable)`. */
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "isalnum", Args...>)
+    [[nodiscard]] decltype(auto) isalnum(this const Self& self, Args&&... args) {
+        return impl::call_method<"isalnum">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "isalpha", Args...>)
+    [[nodiscard]] decltype(auto) isalpha(this const Self& self, Args&&... args) {
+        return impl::call_method<"isalpha">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "isascii", Args...>)
+    [[nodiscard]] decltype(auto) isascii(this const Self& self, Args&&... args) {
+        return impl::call_method<"isascii">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "isdecimal", Args...>)
+    [[nodiscard]] decltype(auto) isdecimal(this const Self& self, Args&&... args) {
+        return impl::call_method<"isdecimal">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "isdigit", Args...>)
+    [[nodiscard]] decltype(auto) isdigit(this const Self& self, Args&&... args) {
+        return impl::call_method<"isdigit">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "isidentifier", Args...>)
+    [[nodiscard]] decltype(auto) isidentifier(this const Self& self, Args&&... args) {
+        return impl::call_method<"isidentifier">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "islower", Args...>)
+    [[nodiscard]] decltype(auto) islower(this const Self& self, Args&&... args) {
+        return impl::call_method<"islower">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "isnumeric", Args...>)
+    [[nodiscard]] decltype(auto) isnumeric(this const Self& self, Args&&... args) {
+        return impl::call_method<"isnumeric">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "isprintable", Args...>)
+    [[nodiscard]] decltype(auto) isprintable(this const Self& self, Args&&... args) {
+        return impl::call_method<"isprintable">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "isspace", Args...>)
+    [[nodiscard]] decltype(auto) isspace(this const Self& self, Args&&... args) {
+        return impl::call_method<"isspace">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "istitle", Args...>)
+    [[nodiscard]] decltype(auto) istitle(this const Self& self, Args&&... args) {
+        return impl::call_method<"istitle">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "isupper", Args...>)
+    [[nodiscard]] decltype(auto) isupper(this const Self& self, Args&&... args) {
+        return impl::call_method<"isupper">(self, std::forward<Args>(args)...);
+    }
+
     template <impl::is_iterable T>
-    Str join(const T& iterable) const {
+    [[nodiscard]] Str join(const T& iterable) const {
         PyObject* result = PyUnicode_Join(
             this->ptr(),
             Object(iterable).ptr()
@@ -643,14 +748,53 @@ public:
         return reinterpret_steal<Str>(result);
     }
 
-    /* Equivalent of Python `str.join(iterable)`, where iterable is given as a
-    braced initializer list. */
-    Str join(const std::initializer_list<Str>& iterable) const {
+    [[nodiscard]] Str join(const std::initializer_list<Str>& iterable) const {
         return join(py::List(iterable));
     }
 
-    /* Equivalent to Python `str.replace(old, new, count)`. */
-    Str replace(const Str& sub, const Str& repl, Py_ssize_t maxcount = -1) const {
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "ljust", Args...>)
+    [[nodiscard]] decltype(auto) ljust(this const Self& self, Args&&... args) {
+        return impl::call_method<"ljust">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "lower", Args...>)
+    [[nodiscard]] decltype(auto) lower(this const Self& self, Args&&... args) {
+        return impl::call_method<"lower">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "lstrip", Args...>)
+    [[nodiscard]] decltype(auto) lstrip(this const Self& self, Args&&... args) {
+        return impl::call_method<"lstrip">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+        requires (impl::invocable<Str, "maketrans", Args...>)
+    [[nodiscard]] static decltype(auto) maketrans(Args&&... args) {
+        return impl::call_static<Str, "maketrans">(std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "partition", Args...>)
+    [[nodiscard]] decltype(auto) partition(this const Self& self, Args&&... args) {
+        return impl::call_method<"partition">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "removeprefix", Args...>)
+    [[nodiscard]] decltype(auto) removeprefix(this const Self& self, Args&&... args) {
+        return impl::call_method<"removeprefix">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "removesuffix", Args...>)
+    [[nodiscard]] decltype(auto) removesuffix(this const Self& self, Args&&... args) {
+        return impl::call_method<"removesuffix">(self, std::forward<Args>(args)...);
+    }
+
+    [[nodiscard]] Str replace(const Str& sub, const Str& repl, Py_ssize_t maxcount = -1) const {
         PyObject* result = PyUnicode_Replace(
             this->ptr(),
             sub.ptr(),
@@ -663,8 +807,7 @@ public:
         return reinterpret_steal<Str>(result);
     }
 
-    /* Equivalent to Python `str.rfind(sub[, start[, stop]])`. */
-    Py_ssize_t rfind(
+    [[nodiscard]] Py_ssize_t rfind(
         const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -678,9 +821,7 @@ public:
         );
     }
 
-    /* Equivalent to Python `str.rfind(sub[, start[, stop]])`, except that the
-    substring is given as a single Python unicode character. */
-    Py_ssize_t rfind(
+    [[nodiscard]] Py_ssize_t rfind(
         Py_UCS4 ch,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -688,8 +829,7 @@ public:
         return PyUnicode_FindChar(this->ptr(), ch, start, stop, -1);
     }
 
-    /* Equivalent to Python `str.rindex(sub[, start[, stop]])`. */
-    Py_ssize_t rindex(
+    [[nodiscard]] Py_ssize_t rindex(
         const Str& sub,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -707,9 +847,7 @@ public:
         return result;
     }
 
-    /* Equivalent to Python `str.rindex(sub[, start[, stop]])`, except that the
-    substring is given as a single Python unicode character. */
-    Py_ssize_t rindex(
+    [[nodiscard]] Py_ssize_t rindex(
         Py_UCS4 ch,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -727,8 +865,31 @@ public:
         return result;
     }
 
-    /* Equivalent to Python `str.split()`. */
-    List<Str> split() const {
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "rjust", Args...>)
+    [[nodiscard]] decltype(auto) rjust(this const Self& self, Args&&... args) {
+        return impl::call_method<"rjust">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "rpartition", Args...>)
+    [[nodiscard]] decltype(auto) rpartition(this const Self& self, Args&&... args) {
+        return impl::call_method<"rpartition">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "rsplit", Args...>)
+    [[nodiscard]] decltype(auto) rsplit(this const Self& self, Args&&... args) {
+        return impl::call_method<"rsplit">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "rstrip", Args...>)
+    [[nodiscard]] decltype(auto) rstrip(this const Self& self, Args&&... args) {
+        return impl::call_method<"rstrip">(self, std::forward<Args>(args)...);
+    }
+
+    [[nodiscard]] List<Str> split() const {
         PyObject* result = PyUnicode_Split(this->ptr(), nullptr, -1);
         if (result == nullptr) {
             Exception::from_python();
@@ -736,8 +897,7 @@ public:
         return reinterpret_steal<List<Str>>(result);
     }
 
-    /* Equivalent to Python `str.split(sep[, maxsplit])`. */
-    List<Str> split(const Str& sep, Py_ssize_t maxsplit = -1) const {
+    [[nodiscard]] List<Str> split(const Str& sep, Py_ssize_t maxsplit = -1) const {
         PyObject* result = PyUnicode_Split(this->ptr(), sep.ptr(), maxsplit);
         if (result == nullptr) {
             Exception::from_python();
@@ -745,8 +905,7 @@ public:
         return reinterpret_steal<List<Str>>(result);
     }
 
-    /* Equivalent to Python `str.splitlines([keepends])`. */
-    List<Str> splitlines(bool keepends = false) const {
+    [[nodiscard]] List<Str> splitlines(bool keepends = false) const {
         PyObject* result = PyUnicode_Splitlines(this->ptr(), keepends);
         if (result == nullptr) {
             Exception::from_python();
@@ -754,8 +913,7 @@ public:
         return reinterpret_steal<List<Str>>(result);
     }
 
-    /* Equivalent to Python `str.startswith(prefix[, start[, end]])`. */
-    bool startswith(
+    [[nodiscard]] bool startswith(
         const Str& prefix,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -773,42 +931,41 @@ public:
         return result;
     }
 
-    BERTRAND_METHOD(capitalize)
-    BERTRAND_METHOD(casefold)
-    BERTRAND_METHOD(center)
-    BERTRAND_METHOD(encode)
-    BERTRAND_METHOD(expandtabs)
-    BERTRAND_METHOD(format)
-    BERTRAND_METHOD(format_map)
-    BERTRAND_METHOD(isalnum)
-    BERTRAND_METHOD(isalpha)
-    BERTRAND_METHOD(isascii)
-    BERTRAND_METHOD(isdecimal)
-    BERTRAND_METHOD(isdigit)
-    BERTRAND_METHOD(isidentifier)
-    BERTRAND_METHOD(islower)
-    BERTRAND_METHOD(isnumeric)
-    BERTRAND_METHOD(isprintable)
-    BERTRAND_METHOD(isspace)
-    BERTRAND_METHOD(istitle)
-    BERTRAND_METHOD(isupper)
-    BERTRAND_METHOD(ljust)
-    BERTRAND_METHOD(lower)
-    BERTRAND_METHOD(lstrip)
-    BERTRAND_STATIC_METHOD(Str, maketrans)
-    BERTRAND_METHOD(partition)
-    BERTRAND_METHOD(removeprefix)
-    BERTRAND_METHOD(removesuffix)
-    BERTRAND_METHOD(rjust)
-    BERTRAND_METHOD(rpartition)
-    BERTRAND_METHOD(rsplit)
-    BERTRAND_METHOD(rstrip)
-    BERTRAND_METHOD(strip)
-    BERTRAND_METHOD(swapcase)
-    BERTRAND_METHOD(title)
-    BERTRAND_METHOD(translate)
-    BERTRAND_METHOD(upper)
-    BERTRAND_METHOD(zfill)
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "strip", Args...>)
+    [[nodiscard]] decltype(auto) strip(this const Self& self, Args&&... args) {
+        return impl::call_method<"strip">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "swapcase", Args...>)
+    [[nodiscard]] decltype(auto) swapcase(this const Self& self, Args&&... args) {
+        return impl::call_method<"swapcase">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "title", Args...>)
+    [[nodiscard]] decltype(auto) title(this const Self& self, Args&&... args) {
+        return impl::call_method<"title">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "translate", Args...>)
+    [[nodiscard]] decltype(auto) translate(this const Self& self, Args&&... args) {
+        return impl::call_method<"translate">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "upper", Args...>)
+    [[nodiscard]] decltype(auto) upper(this const Self& self, Args&&... args) {
+        return impl::call_method<"upper">(self, std::forward<Args>(args)...);
+    }
+
+    template <typename Self, typename... Args>
+        requires (impl::invocable<Self, "zfill", Args...>)
+    [[nodiscard]] decltype(auto) zfill(this const Self& self, Args&&... args) {
+        return impl::call_method<"zfill">(self, std::forward<Args>(args)...);
+    }
 
 };
 

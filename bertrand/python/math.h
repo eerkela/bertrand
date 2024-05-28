@@ -167,13 +167,13 @@ class Round {
                     return obj;
                 }
                 Int scale = impl::pow_int(10, digits);
-                Object whole = Round::Floor::div(obj, Int::one());
+                Object whole = Round::Floor::div(obj, Int::one);
                 return whole + (Derived::py_round((obj - whole) * scale) / scale);
 
             // Other objects are split using floor division, minimizing translation
             } else if constexpr (std::derived_from<O, Object>) {
                 Int scale = impl::pow_int(10, digits);
-                auto whole = Round::Floor::div(obj, Int::one());
+                auto whole = Round::Floor::div(obj, Int::one);
                 return whole + (Derived::py_round((obj - whole) * scale) / scale);
 
             // C++ floats can use an STL method to avoid precision loss
@@ -313,7 +313,7 @@ public:
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
                 Int a = lhs, b = rhs;
                 Int quotient = op::floordiv<Int>(a, b);
-                if ((quotient < Int::zero()) && ((a % b) != Int::zero())) {
+                if ((quotient < Int::zero) && ((a % b) != Int::zero)) {
                     ++quotient;
                 }
                 return quotient;
@@ -322,7 +322,7 @@ public:
                 Object a = lhs, b = rhs;
                 if (PyLong_Check(a.ptr()) && PyLong_Check(b.ptr())) {
                     Object quotient = op::floordiv<Object>(a, b);
-                    if ((quotient < Int::zero()) && ((a % b) != Int::zero())) {
+                    if ((quotient < Int::zero) && ((a % b) != Int::zero)) {
                         ++quotient;
                     }
                     return quotient;
@@ -339,7 +339,7 @@ public:
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
                 Int a = lhs, b = rhs;
                 Int remainder = a % b;
-                if ((a < Int::zero()) && (remainder != Int::zero())) {
+                if ((a < Int::zero) && (remainder != Int::zero)) {
                     return -remainder;
                 }
                 return remainder;
@@ -348,7 +348,7 @@ public:
                 Object a = lhs, b = rhs;
                 if (PyLong_Check(a.ptr()) && PyLong_Check(b.ptr())) {
                     Object remainder = a % b;
-                    if ((a < Int::zero()) && (remainder != Int::zero())) {
+                    if ((a < Int::zero) && (remainder != Int::zero)) {
                         return -remainder;
                     }
                     return remainder;
@@ -368,7 +368,7 @@ public:
                 Int a = lhs, b = rhs;
                 Int quotient = op::floordiv<Int>(a, b);
                 Int remainder = a % b;
-                if ((quotient < Int::zero()) && (remainder != Int::zero())) {
+                if ((quotient < Int::zero) && (remainder != Int::zero)) {
                     ++quotient;
                     return std::make_pair(quotient, -remainder);
                 }
@@ -379,7 +379,7 @@ public:
                 if (PyLong_Check(a.ptr()) && PyLong_Check(b.ptr())) {
                     Object quotient = op::floordiv<Object>(a, b);
                     Object remainder = a % b;
-                    if ((quotient < Int::zero()) && (remainder != Int::zero())) {
+                    if ((quotient < Int::zero) && (remainder != Int::zero)) {
                         ++quotient;
                         return std::make_pair(quotient, -remainder);
                     }
@@ -457,7 +457,7 @@ public:
 
         template <typename O>
         static auto py_round(const O& obj) {
-            return div(obj, Int::one());
+            return div(obj, Int::one);
         }
 
         template <typename L, typename R>
@@ -524,7 +524,7 @@ public:
 
         template <typename O>
         static auto py_round(const O& obj) {
-            return div(obj, Int::one());
+            return div(obj, Int::one);
         }
 
         template <typename L, typename R>
@@ -563,7 +563,7 @@ public:
 
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
-            if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {
+            if ((lhs < Int::zero) ^ (rhs < Int::zero)) {
                 return reinterpret_steal<Quotient>(
                     (-op::floordiv<Object>(-lhs, rhs)).release()
                 );
@@ -574,7 +574,7 @@ public:
 
         template <typename Remainder>
         static auto py_mod(const Object& lhs, const Object& rhs) {
-            if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {
+            if ((lhs < Int::zero) ^ (rhs < Int::zero)) {
                 return reinterpret_steal<Remainder>(
                     -op::floordiv<Object>(-lhs, rhs).release()
                 );
@@ -585,7 +585,7 @@ public:
 
         template <typename Quotient, typename Remainder, typename L, typename R>
         static auto py_divmod(const Object& lhs, const Object& rhs) {
-            if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {
+            if ((lhs < Int::zero) ^ (rhs < Int::zero)) {
                 Object c = -lhs;
                 return std::make_pair(
                     reinterpret_steal<Quotient>(
@@ -605,7 +605,7 @@ public:
 
         template <typename O>
         static auto py_round(const O& obj) {
-            return div(obj, Int::one());
+            return div(obj, Int::one);
         }
 
         template <typename L, typename R>
@@ -646,7 +646,7 @@ public:
 
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
-            if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {
+            if ((lhs < Int::zero) ^ (rhs < Int::zero)) {
                 return op::floordiv<Quotient>(lhs, rhs);
             } else {
                 return reinterpret_steal<Quotient>(
@@ -657,7 +657,7 @@ public:
 
         template <typename Remainder>
         static auto py_mod(const Object& lhs, const Object& rhs) {
-            if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {
+            if ((lhs < Int::zero) ^ (rhs < Int::zero)) {
                 return op::mod<Remainder>(lhs, rhs);
             } else {
                 return reinterpret_steal<Remainder>(
@@ -668,7 +668,7 @@ public:
 
         template <typename Quotient, typename Remainder, typename L, typename R>
         static auto py_divmod(const Object& lhs, const Object& rhs) {
-            if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {
+            if ((lhs < Int::zero) ^ (rhs < Int::zero)) {
                 return std::make_pair(
                     op::floordiv<Quotient>(lhs, rhs),
                     op::mod<Remainder>(lhs, rhs)
@@ -688,7 +688,7 @@ public:
 
         template <typename O>
         static auto py_round(const O& obj) {
-            return div(obj, Int::one());
+            return div(obj, Int::one);
         }
 
         template <typename L, typename R>
@@ -753,10 +753,10 @@ public:
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
-                Object a {rhs > Int::zero()};
+                Object a {rhs > Int::zero};
                 Object numerator = lhs + op::floordiv<Object>(
                     rhs + ~a,
-                    Int::two()
+                    Int::two
                 );
                 return reinterpret_steal<Quotient>(
                     op::floordiv<Object>(numerator, rhs).release()
@@ -769,29 +769,29 @@ public:
                  */
             } else if constexpr (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
-                    Object a {rhs > Int::zero()};
+                    Object a {rhs > Int::zero};
                     Object numerator = lhs + op::floordiv<Object>(
                         rhs + ~a,
-                        Int::two()
+                        Int::two
                     );
                     return reinterpret_steal<Quotient>(
                         op::floordiv<Object>(numerator, rhs).release()
                     );
                 }
                 return reinterpret_steal<Quotient>(
-                    -op::floordiv<Object>(-lhs + rhs / Int::two(), rhs).release()
+                    -op::floordiv<Object>(-lhs + rhs / Int::two, rhs).release()
                 );
 
             } else {
                 return reinterpret_steal<Quotient>(
-                    -op::floordiv<Object>(-lhs + rhs / Int::two(), rhs).release()
+                    -op::floordiv<Object>(-lhs + rhs / Int::two, rhs).release()
                 );
             }
         }
 
         template <typename O>
         static auto py_round(const O& obj) {
-            return Ceiling::py_round(obj - Float::half());
+            return Ceiling::py_round(obj - Float::half);
         }
 
         template <typename L, typename R>
@@ -842,10 +842,10 @@ public:
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
-                Object a {rhs > Int::zero()};
+                Object a {rhs > Int::zero};
                 Object numerator = lhs + op::floordiv<Object>(
                     rhs + a,
-                    Int::two()
+                    Int::two
                 );
                 return reinterpret_steal<Quotient>(
                     op::floordiv<Object>(numerator, rhs).release()
@@ -858,29 +858,29 @@ public:
                  */
             } else if constexpr (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
-                    Object a {rhs > Int::zero()};
+                    Object a {rhs > Int::zero};
                     Object numerator = lhs +  op::floordiv<Object>(
                         rhs + a,
-                        Int::two()
+                        Int::two
                     );
                     return reinterpret_steal<Quotient>(
                         op::floordiv<Object>(numerator, rhs).release()
                     );
                 }
                 return reinterpret_steal<Quotient>(
-                    op::floordiv<Object>(lhs + rhs / Int::two(), rhs).release()
+                    op::floordiv<Object>(lhs + rhs / Int::two, rhs).release()
                 );
 
             } else {
                 return reinterpret_steal<Quotient>(
-                    op::floordiv<Object>(lhs + rhs / Int::two(), rhs).release()
+                    op::floordiv<Object>(lhs + rhs / Int::two, rhs).release()
                 );
             }
         }
 
         template <typename O>
         static auto py_round(const O& obj) {
-            return Floor::py_round(obj + Float::half());
+            return Floor::py_round(obj + Float::half);
         }
 
         template <typename L, typename R>
@@ -916,13 +916,13 @@ public:
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
-                Object a {rhs > Int::zero()};
-                Object b {lhs > Int::zero()};
+                Object a {rhs > Int::zero};
+                Object b {lhs > Int::zero};
                 Object numerator = lhs;
                 if (a == b) {  // NOTE: branches are faster than writing more Python
-                    numerator += op::floordiv<Object>(rhs + ~a, Int::two());
+                    numerator += op::floordiv<Object>(rhs + ~a, Int::two);
                 } else {
-                    numerator += op::floordiv<Object>(rhs + a, Int::two());
+                    numerator += op::floordiv<Object>(rhs + a, Int::two);
                 }
                 return reinterpret_steal<Quotient>(
                     op::floordiv<Object>(numerator, rhs).release()
@@ -930,13 +930,13 @@ public:
 
             } else if (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
-                    Object a {rhs > Int::zero()};
-                    Object b { lhs > Int::zero() };
+                    Object a {rhs > Int::zero};
+                    Object b { lhs > Int::zero};
                     Object numerator = lhs;
                     if (a == b) {  // NOTE: branches are faster than writing more Python
-                        numerator += op::floordiv<Object>(rhs + ~a, Int::two());
+                        numerator += op::floordiv<Object>(rhs + ~a, Int::two);
                     } else {
-                        numerator += op::floordiv<Object>(rhs + a, Int::two());
+                        numerator += op::floordiv<Object>(rhs + a, Int::two);
                     }
                     return reinterpret_steal<Quotient>(
                         op::floordiv<Object>(numerator, rhs).release()
@@ -944,8 +944,8 @@ public:
                 }
 
                 // half-floor where operands are different signs, half-ceiling otherwise
-                Object bias = rhs / Int::two();
-                if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {  // half-ceiling
+                Object bias = rhs / Int::two;
+                if ((lhs < Int::zero) ^ (rhs < Int::zero)) {  // half-ceiling
                     return reinterpret_steal<Quotient>(
                         op::floordiv<Object>(lhs + bias, rhs).release()
                     );
@@ -957,8 +957,8 @@ public:
 
             } else {
                 // half-floor where operands are different signs, half-ceiling otherwise
-                Object bias = rhs / Int::two();
-                if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {  // half-ceiling
+                Object bias = rhs / Int::two;
+                if ((lhs < Int::zero) ^ (rhs < Int::zero)) {  // half-ceiling
                     return reinterpret_steal<Quotient>(
                         op::floordiv<Object>(lhs + bias, rhs).release()
                     );
@@ -972,7 +972,7 @@ public:
 
         template <typename O>
         static auto py_round(const O& obj) {
-            if (obj > Int::zero()) {
+            if (obj > Int::zero) {
                 return HalfFloor::py_round(obj);
             } else {
                 return HalfCeiling::py_round(obj);
@@ -1017,13 +1017,13 @@ public:
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
-                Object a {rhs > Int::zero()};
-                Object b {lhs > Int::zero()};
+                Object a {rhs > Int::zero};
+                Object b {lhs > Int::zero};
                 Object numerator = lhs;
                 if (a == b) {  // NOTE: branches are faster than writing more Python
-                    numerator += op::floordiv<Object>(rhs + a, Int::two());
+                    numerator += op::floordiv<Object>(rhs + a, Int::two);
                 } else {
-                    numerator += op::floordiv<Object>(rhs + ~a, Int::two());
+                    numerator += op::floordiv<Object>(rhs + ~a, Int::two);
                 }
                 return reinterpret_steal<Quotient>(
                     op::floordiv<Object>(numerator, rhs).release()
@@ -1031,13 +1031,13 @@ public:
 
             } else if (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
-                    Object a {rhs > Int::zero()};
-                    Object b {lhs > Int::zero()};
+                    Object a {rhs > Int::zero};
+                    Object b {lhs > Int::zero};
                     Object numerator = lhs;
                     if (a == b) {  // NOTE: branches are faster than writing more Python
-                        numerator += op::floordiv<Object>(rhs + a, Int::two());
+                        numerator += op::floordiv<Object>(rhs + a, Int::two);
                     } else {
-                        numerator += op::floordiv<Object>(rhs + ~a, Int::two());
+                        numerator += op::floordiv<Object>(rhs + ~a, Int::two);
                     }
                     return reinterpret_steal<Quotient>(
                         op::floordiv<Object>(numerator, rhs).release()
@@ -1045,8 +1045,8 @@ public:
                 }
 
                 // half-floor where operands are different signs, half-ceiling otherwise
-                Object bias = rhs / Int::two();
-                if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {  // half-floor
+                Object bias = rhs / Int::two;
+                if ((lhs < Int::zero) ^ (rhs < Int::zero)) {  // half-floor
                     return reinterpret_steal<Quotient>(
                         -op::floordiv<Object>(-lhs + bias, rhs).release()
                     );
@@ -1058,8 +1058,8 @@ public:
 
             } else {
                 // half-floor where operands are different signs, half-ceiling otherwise
-                Object bias = rhs / Int::two();
-                if ((lhs < Int::zero()) ^ (rhs < Int::zero())) {  // half-floor
+                Object bias = rhs / Int::two;
+                if ((lhs < Int::zero) ^ (rhs < Int::zero)) {  // half-floor
                     return reinterpret_steal<Quotient>(
                         -op::floordiv<Object>(-lhs + bias, rhs).release()
                     );
@@ -1073,7 +1073,7 @@ public:
 
         template <typename O>
         static auto py_round(const O& obj) {
-            if (obj > Int::zero()) {
+            if (obj > Int::zero) {
                 return HalfCeiling::py_round(obj);
             } else {
                 return HalfFloor::py_round(obj);
@@ -1130,12 +1130,12 @@ public:
         template <typename Quotient, typename L, typename R>
         static auto py_div(const Object& lhs, const Object& rhs) {
             if constexpr (impl::int_like<L> && impl::int_like<R>) {
-                Object a {rhs > Int::zero()};
+                Object a {rhs > Int::zero};
                 Object numerator = lhs;
-                if (op::floordiv<Object>(lhs, rhs) % Int::two()) {
-                    numerator += op::floordiv<Object>(rhs + a, Int::two());
+                if (op::floordiv<Object>(lhs, rhs) % Int::two) {
+                    numerator += op::floordiv<Object>(rhs + a, Int::two);
                 } else {
-                    numerator += op::floordiv<Object>(rhs + ~a, Int::two());
+                    numerator += op::floordiv<Object>(rhs + ~a, Int::two);
                 }
                 return reinterpret_steal<Quotient>(
                     op::floordiv<Object>(numerator, rhs).release()
@@ -1143,12 +1143,12 @@ public:
 
             } else if (std::same_as<L, Object> || std::same_as<R, Object>) {
                 if (PyLong_Check(lhs.ptr()) && PyLong_Check(rhs.ptr())) {
-                    Object a {rhs > Int::zero()};
+                    Object a {rhs > Int::zero};
                     Object numerator = lhs;
-                    if (op::floordiv<Object>(lhs, rhs) % Int::two()) {
-                        numerator += op::floordiv<Object>(rhs + a, Int::two());
+                    if (op::floordiv<Object>(lhs, rhs) % Int::two) {
+                        numerator += op::floordiv<Object>(rhs + a, Int::two);
                     } else {
-                        numerator += op::floordiv<Object>(rhs + ~a, Int::two());
+                        numerator += op::floordiv<Object>(rhs + ~a, Int::two);
                     }
                     return reinterpret_steal<Quotient>(
                         op::floordiv<Object>(numerator, rhs).release()
@@ -1156,8 +1156,8 @@ public:
                 }
 
                 // half-ceiling where the quotient would be odd, half-floor otherwise
-                Object bias = rhs / Int::two();
-                if (op::floordiv<Object>(lhs, rhs) % Int::two()) {  // half-ceiling
+                Object bias = rhs / Int::two;
+                if (op::floordiv<Object>(lhs, rhs) % Int::two) {  // half-ceiling
                     return reinterpret_steal<Quotient>(
                         op::floordiv<Object>(lhs + bias, rhs).release()
                     );
@@ -1169,8 +1169,8 @@ public:
 
             } else {
                 // half-ceiling where the quotient would be odd, half-floor otherwise
-                Object bias = rhs / Int::two();
-                if (op::floordiv<Object>(lhs, rhs) % Int::two()) {  // half-ceiling
+                Object bias = rhs / Int::two;
+                if (op::floordiv<Object>(lhs, rhs) % Int::two) {  // half-ceiling
                     return reinterpret_steal<Quotient>(
                         op::floordiv<Object>(lhs + bias, rhs).release()
                     );
@@ -1243,7 +1243,7 @@ public:
 /* Divide the left and right operands according to the specified rounding rule. */
 template <typename L, typename R, typename Mode = Round::Floor>
     requires (impl::div_mode<L, R, Mode>)
-auto div(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
+[[nodiscard]] auto div(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
         return div(lhs.value(), rhs);
     } else if constexpr (impl::proxy_like<R>) {
@@ -1257,7 +1257,7 @@ auto div(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
 /* Divide the left and right operands according to the specified rounding rule. */
 template <typename L, typename R, typename Mode = Round::Floor>
     requires (impl::mod_mode<L, R, Mode>)
-auto mod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
+[[nodiscard]] auto mod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
         return mod(lhs.value(), rhs);
     } else if constexpr (impl::proxy_like<R>) {
@@ -1271,7 +1271,7 @@ auto mod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
 /* Divide the left and right operands according to the specified rounding rule. */
 template <typename L, typename R, typename Mode = Round::Floor>
     requires (impl::divmod_mode<L, R, Mode>)
-auto divmod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
+[[nodiscard]] auto divmod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
         return divmod(lhs.value(), rhs);
     } else if constexpr (impl::proxy_like<R>) {
@@ -1287,7 +1287,7 @@ rule.  Positive digits count to the right of the decimal point, while negative v
 count to the left. */
 template <typename O, typename Mode = Round::HalfEven>
     requires (impl::round_mode<O, Mode>)
-auto round(const O& obj, int digits = 0, const Mode& mode = Round::HALF_EVEN) {
+[[nodiscard]] auto round(const O& obj, int digits = 0, const Mode& mode = Round::HALF_EVEN) {
     if constexpr (impl::proxy_like<O>) {
         return round(obj.value(), digits, mode);
     } else {

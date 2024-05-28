@@ -29,12 +29,12 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         return impl::type_like<T>;
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
             return typecheck<T>();
         } else if constexpr (typecheck<T>()) {
@@ -83,7 +83,7 @@ public:
 
     /* Get the Python type of a registered pybind11 extension type. */
     template <typename T>
-    static Type of() {
+    [[nodiscard]] static Type of() {
         return reinterpret_steal<Type>(pybind11::type::of<T>().release());
     }
 
@@ -92,7 +92,7 @@ public:
         /* Get the module that the type is defined in.  Can throw if called on a
         static type rather than a heap type (one that was created using
         PyType_FromModuleAndSpec() or higher). */
-        auto module_() const {
+        [[nodiscard]] auto module_() const {
             PyObject* result = PyType_GetModule(self());
             if (result == nullptr) {
                 Exception::from_python();
@@ -105,177 +105,177 @@ public:
     #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
 
         /* Get the type's qualified name. */
-        Str qualname() const;
+        [[nodiscard]] Str qualname() const;
 
     #endif
 
     /* Get type's tp_name slot. */
-    auto name() const noexcept {
+    [[nodiscard]] auto name() const noexcept {
         return self()->tp_name;
     }
 
     /* Get the type's tp_basicsize slot. */
-    auto basicsize() const noexcept {
+    [[nodiscard]] auto basicsize() const noexcept {
         return self()->tp_basicsize;
     }
 
     /* Get the type's tp_itemsize slot. */
-    auto itemsize() const noexcept {
+    [[nodiscard]] auto itemsize() const noexcept {
         return self()->tp_itemsize;
     }
 
     /* Get the type's tp_dealloc slot. */
-    auto dealloc() const noexcept {
+    [[nodiscard]] auto dealloc() const noexcept {
         return self()->tp_dealloc;
     }
 
     /* Get the type's tp_as_async slot. */
-    auto as_async() const noexcept {
+    [[nodiscard]] auto as_async() const noexcept {
         return self()->tp_as_async;
     }
 
     /* Get the type's tp_repr slot. */
-    auto repr() const noexcept {
+    [[nodiscard]] auto repr() const noexcept {
         return self()->tp_repr;
     }
 
     /* Get the type's tp_as_number slot. */
-    auto as_number() const noexcept {
+    [[nodiscard]] auto as_number() const noexcept {
         return self()->tp_as_number;
     }
 
     /* Get the type's tp_as_sequence slot. */
-    auto as_sequence() const noexcept {
+    [[nodiscard]] auto as_sequence() const noexcept {
         return self()->tp_as_sequence;
     }
 
     /* Get the type's tp_as_mapping slot. */
-    auto as_mapping() const noexcept {
+    [[nodiscard]] auto as_mapping() const noexcept {
         return self()->tp_as_mapping;
     }
 
     /* Get the type's tp_hash slot. */
-    auto hash() const noexcept {
+    [[nodiscard]] auto hash() const noexcept {
         return self()->tp_hash;
     }
 
     /* Get the type's tp_call slot. */
-    auto call() const noexcept {
+    [[nodiscard]] auto call() const noexcept {
         return self()->tp_call;
     }
 
     /* Get the type's tp_str slot. */
-    auto str() const noexcept {
+    [[nodiscard]] auto str() const noexcept {
         return self()->tp_str;
     }
 
     /* Get the type's tp_getattro slot. */
-    auto getattro() const noexcept {
+    [[nodiscard]] auto getattro() const noexcept {
         return self()->tp_getattro;
     }
 
     /* Get the type's tp_setattro slot. */
-    auto setattro() const noexcept {
+    [[nodiscard]] auto setattro() const noexcept {
         return self()->tp_setattro;
     }
 
     /* Get the type's tp_as_buffer slot. */
-    auto as_buffer() const noexcept {
+    [[nodiscard]] auto as_buffer() const noexcept {
         return self()->tp_as_buffer;
     }
 
     /* Get the type's tp_flags slot. */
-    auto flags() const noexcept {
+    [[nodiscard]] auto flags() const noexcept {
         return self()->tp_flags;
     }
 
     /* Get the type's tp_doc slot. */
-    auto doc() const noexcept {
+    [[nodiscard]] auto doc() const noexcept {
         return self()->tp_doc;
     }
 
     /* Get the type's tp_traverse slot. */
-    auto traverse() const noexcept {
+    [[nodiscard]] auto traverse() const noexcept {
         return self()->tp_traverse;
     }
 
     /* Get the type's tp_clear slot. */
-    auto clear() const noexcept {
+    [[nodiscard]] auto clear() const noexcept {
         return self()->tp_clear;
     }
 
     /* Get the type's tp_richcompare slot. */
-    auto richcompare() const noexcept {
+    [[nodiscard]] auto richcompare() const noexcept {
         return self()->tp_richcompare;
     }
 
     /* Get the type's tp_iter slot. */
-    auto iter() const noexcept {
+    [[nodiscard]] auto iter() const noexcept {
         return self()->tp_iter;
     }
 
     /* Get the type's tp_iternext slot. */
-    auto iternext() const noexcept {
+    [[nodiscard]] auto iternext() const noexcept {
         return self()->tp_iternext;
     }
 
     /* Get the type's tp_methods slot. */
-    auto methods() const noexcept {
+    [[nodiscard]] auto methods() const noexcept {
         return self()->tp_methods;
     }
 
     /* Get the type's tp_members slot. */
-    auto members() const noexcept {
+    [[nodiscard]] auto members() const noexcept {
         return self()->tp_members;
     }
 
     /* Get the type's tp_getset slot. */
-    auto getset() const noexcept {
+    [[nodiscard]] auto getset() const noexcept {
         return self()->tp_getset;
     }
 
     /* Get the type's tp_base slot. */
-    auto base() const noexcept {
+    [[nodiscard]] auto base() const noexcept {
         return reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(self()->tp_base));
     }
 
     /* Get the type's tp_dict slot. */
-    auto dict() const noexcept {
+    [[nodiscard]] auto dict() const noexcept {
         return reinterpret_borrow<Dict<Str, Object>>(self()->tp_dict);
     }
 
     /* Get the type's tp_descr_get slot. */
-    auto descr_get() const noexcept {
+    [[nodiscard]] auto descr_get() const noexcept {
         return self()->tp_descr_get;
     }
 
     /* Get the type's tp_descr_set slot. */
-    auto descr_set() const noexcept {
+    [[nodiscard]] auto descr_set() const noexcept {
         return self()->tp_descr_set;
     }
 
     /* Get the type's tp_bases slot. */
-    auto bases() const noexcept {
+    [[nodiscard]] auto bases() const noexcept {
         return reinterpret_borrow<Tuple<Type>>(self()->tp_bases);
     }
 
     /* Get the type's tp_mro slot. */
-    auto mro() const noexcept {
+    [[nodiscard]] auto mro() const noexcept {
         return reinterpret_borrow<Tuple<Type>>(self()->tp_mro);
     }
 
     /* Get the type's tp_finalize slot. */
-    auto finalize() const noexcept {
+    [[nodiscard]] auto finalize() const noexcept {
         return self()->tp_finalize;
     }
 
     /* Get the type's tp_vectorcall slot. */
-    auto vectorcall() const noexcept {
+    [[nodiscard]] auto vectorcall() const noexcept {
         return self()->tp_vectorcall;
     }
 
     /* Get the type's tp_vectorcall_offset slot. */
-    auto vectorcall_offset() const noexcept {
+    [[nodiscard]] auto vectorcall_offset() const noexcept {
         return self()->tp_vectorcall_offset;
     }
 
@@ -298,12 +298,12 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         return std::derived_from<T, Super>;
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
             return typecheck<T>();
 

@@ -146,7 +146,7 @@ public:
     // TODO: use decay_t in all Object::check<T>(); methods
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         using U = std::decay_t<T>;
         if constexpr (!impl::tuple_like<U>) {
             return false;
@@ -162,7 +162,7 @@ public:
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if (impl::cpp_like<T>) {
             return typecheck<T>();
 
@@ -463,12 +463,12 @@ public:
     /////////////////////////
 
     /* Get the underlying PyObject* array. */
-    PyObject** DATA() const noexcept {
+    [[nodiscard]] PyObject** DATA() const noexcept {
         return PySequence_Fast_ITEMS(this->ptr());
     }
 
     /* Directly access an item without bounds checking or constructing a proxy. */
-    value_type GET_ITEM(Py_ssize_t index) const {
+    [[nodiscard]] value_type GET_ITEM(Py_ssize_t index) const {
         return reinterpret_borrow<value_type>(PyTuple_GET_ITEM(this->ptr(), index));
     }
 
@@ -481,7 +481,7 @@ public:
 
     /* Equivalent to Python `tuple.count(value)`, but also takes optional start/stop
     indices similar to `tuple.index()`. */
-    size_t count(
+    [[nodiscard]] Py_ssize_t count(
         const value_type& value,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -507,7 +507,7 @@ public:
     }
 
     /* Equivalent to Python `tuple.index(value[, start[, stop]])`. */
-    size_t index(
+    [[nodiscard]] Py_ssize_t index(
         const value_type& value,
         Py_ssize_t start = 0,
         Py_ssize_t stop = -1
@@ -536,14 +536,14 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    friend Tuple operator+(
+    [[nodiscard]] friend Tuple operator+(
         const Tuple& self,
         const std::initializer_list<value_type>& items
     ) {
         return self.concat(items);
     }
 
-    friend Tuple operator+(
+    [[nodiscard]] friend Tuple operator+(
         const std::initializer_list<value_type>& items,
         const Tuple& self
     ) {

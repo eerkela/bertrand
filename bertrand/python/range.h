@@ -100,7 +100,7 @@ public:
     {}
 
     /* Default constructor.  Initializes to an empty range. */
-    Range() : Range(Int::zero()) {}
+    Range() : Range(Int::zero) {}
 
     /* Explicitly construct a range from 0 to the given stop index (exclusive). */
     explicit Range(const Int& stop) :
@@ -133,53 +133,60 @@ public:
     ////////////////////////////////
 
     /* Get the number of occurrences of a given number within the range. */
-    size_t count(Py_ssize_t value) const {
-        Py_ssize_t result = PySequence_Count(this->ptr(), Int(value).ptr());
-        if (result == -1) {
-            Exception::from_python();
+    [[nodiscard]] Py_ssize_t count(
+        Py_ssize_t value,
+        Py_ssize_t start = 0,
+        Py_ssize_t stop = -1
+    ) const {
+        if (start != 0 || stop != -1) {
+            PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
+            if (slice == nullptr) {
+                Exception::from_python();
+            }
+            Py_ssize_t result = PySequence_Count(slice, Int(value).ptr());
+            Py_DECREF(slice);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            Py_ssize_t result = PySequence_Count(this->ptr(), Int(value).ptr());
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
         }
-        return static_cast<size_t>(result);
-    }
 
-    /* Get the number of occurrences of a given number within the range. */
-    size_t count(Py_ssize_t value, Py_ssize_t start, Py_ssize_t stop = -1) const {
-        PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
-        if (slice == nullptr) {
-            Exception::from_python();
-        }
-        Py_ssize_t result = PySequence_Count(slice, Int(value).ptr());
-        Py_DECREF(slice);
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return static_cast<size_t>(result);
-    }
-
-    /* Get the index of a given number within the range. */
-    Py_ssize_t index(Py_ssize_t value) const {
-        Py_ssize_t result = PySequence_Index(this->ptr(), Int(value).ptr());
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
     }
 
     /* Get the index of a given number within the range. */
-    Py_ssize_t index(Py_ssize_t value, Py_ssize_t start, Py_ssize_t stop = -1) const {
-        PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
-        if (slice == nullptr) {
-            Exception::from_python();
+    [[nodiscard]] Py_ssize_t index(
+        Py_ssize_t value,
+        Py_ssize_t start = 0,
+        Py_ssize_t stop = -1
+    ) const {
+        if (start != 0 || stop != -1) {
+            PyObject* slice = PySequence_GetSlice(this->ptr(), start, stop);
+            if (slice == nullptr) {
+                Exception::from_python();
+            }
+            Py_ssize_t result = PySequence_Index(slice, Int(value).ptr());
+            Py_DECREF(slice);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            Py_ssize_t result = PySequence_Index(this->ptr(), Int(value).ptr());
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
         }
-        Py_ssize_t result = PySequence_Index(slice, Int(value).ptr());
-        Py_DECREF(slice);
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
     }
 
     /* Get the start index of the Range sequence. */
-    Py_ssize_t start() const {
+    [[nodiscard]] Py_ssize_t start() const {
         Py_ssize_t result = PyLong_AsSsize_t(attr<"start">()->ptr());
         if (result == -1 && PyErr_Occurred()) {
             Exception::from_python();
@@ -188,7 +195,7 @@ public:
     }
 
     /* Get the stop index of the Range sequence. */
-    Py_ssize_t stop() const {
+    [[nodiscard]] Py_ssize_t stop() const {
         Py_ssize_t result = PyLong_AsSsize_t(attr<"stop">()->ptr());
         if (result == -1 && PyErr_Occurred()) {
             Exception::from_python();
@@ -197,7 +204,7 @@ public:
     }
 
     /* Get the step size of the Range sequence. */
-    Py_ssize_t step() const {
+    [[nodiscard]] Py_ssize_t step() const {
         Py_ssize_t result = PyLong_AsSsize_t(attr<"step">()->ptr());
         if (result == -1 && PyErr_Occurred()) {
             Exception::from_python();

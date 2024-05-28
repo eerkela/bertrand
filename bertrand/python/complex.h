@@ -30,12 +30,12 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         return impl::complex_like<T>;
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
             return typecheck<T>();
         } else if constexpr (typecheck<T>()) {
@@ -128,17 +128,17 @@ public:
     ////////////////////////////////
 
     /* Get the real part of the Complex number. */
-    double real() const noexcept {
+    [[nodiscard]] double real() const noexcept {
         return PyComplex_RealAsDouble(this->ptr());
     }
 
     /* Get the imaginary part of the Complex number. */
-    double imag() const noexcept {
+    [[nodiscard]] double imag() const noexcept {
         return PyComplex_ImagAsDouble(this->ptr());
     }
 
     /* Get the magnitude of the Complex number. */
-    Complex conjugate() const {
+    [[nodiscard]] Complex conjugate() const {
         Py_complex complex = PyComplex_AsCComplex(this->ptr());
         if (complex.real == -1.0 && PyErr_Occurred()) {
             Exception::from_python();

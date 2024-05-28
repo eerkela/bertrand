@@ -112,7 +112,7 @@ public:
     using const_reverse_iterator = impl::Iterator<impl::GenericIter<const key_type>>;
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         if constexpr (std::derived_from<std::decay_t<T>, impl::KeyTag>) {
             return mapping_type::template typecheck<typename std::decay_t<T>::mapping_type>();
         } else {
@@ -121,7 +121,7 @@ public:
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
             return typecheck<T>();
 
@@ -167,21 +167,21 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `dict.keys().mapping`. */
-    MappingProxy<mapping_type> mapping() const;
+    [[nodiscard]] MappingProxy<mapping_type> mapping() const;
 
     /* Equivalent to Python `dict.keys().isdisjoint(other)`. */
     template <impl::is_iterable T>
         requires (std::convertible_to<impl::iter_type<T>, key_type>)
-    bool isdisjoint(const T& other) const;
+    [[nodiscard]] bool isdisjoint(const T& other) const;
 
     /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
-    bool isdisjoint(const std::initializer_list<key_type>& other) const;
+    [[nodiscard]] bool isdisjoint(const std::initializer_list<key_type>& other) const;
 
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
 
-    friend Set<key_type> operator|(
+    [[nodiscard]] friend Set<key_type> operator|(
         const KeyView& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -192,7 +192,7 @@ public:
         return reinterpret_steal<Set<key_type>>(result);
     }
 
-    friend Set<key_type> operator&(
+    [[nodiscard]] friend Set<key_type> operator&(
         const KeyView& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -203,7 +203,7 @@ public:
         return reinterpret_steal<Set<key_type>>(result);
     }
 
-    friend Set<key_type> operator-(
+    [[nodiscard]] friend Set<key_type> operator-(
         const KeyView& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -214,7 +214,7 @@ public:
         return reinterpret_steal<Set<key_type>>(result);
     }
 
-    friend Set<key_type> operator^(
+    [[nodiscard]] friend Set<key_type> operator^(
         const KeyView& self,
         const std::initializer_list<key_type>& other
     ) {
@@ -285,7 +285,7 @@ public:
     using const_reverse_iterator = impl::Iterator<impl::GenericIter<const value_type>>;
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         if constexpr (std::derived_from<std::decay_t<T>, impl::ValueTag>) {
             return mapping_type::template typecheck<typename std::decay_t<T>::mapping_type>();
         } else {
@@ -294,7 +294,7 @@ public:
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
             return typecheck<T>();
 
@@ -340,7 +340,7 @@ public:
     ///////////////////////////////
 
     /* Equivalent to Python `dict.values().mapping`. */
-    MappingProxy<mapping_type> mapping() const;
+    [[nodiscard]] MappingProxy<mapping_type> mapping() const;
 
 };
 
@@ -414,7 +414,7 @@ public:
     using const_reverse_iterator = impl::Iterator<impl::GenericIter<const_pair>>;
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         if constexpr (std::derived_from<std::decay_t<T>, impl::ItemTag>) {
             return mapping_type::template typecheck<typename std::decay_t<T>::mapping_type>();
         } else {
@@ -423,7 +423,7 @@ public:
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
             return typecheck<T>();
 
@@ -469,7 +469,7 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `dict.items().mapping`. */
-    MappingProxy<mapping_type> mapping() const;
+    [[nodiscard]] MappingProxy<mapping_type> mapping() const;
 
 };
 
@@ -653,7 +653,7 @@ public:
     // we should probably follow the same convention.
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         using U = std::decay_t<T>;
         if constexpr (!impl::dict_like<U>) {
             return false;
@@ -680,7 +680,7 @@ public:
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
             return typecheck<T>();
 
@@ -857,7 +857,7 @@ public:
     }
 
     /* Equivalent to Python `dict.copy()`. */
-    Dict copy() const {
+    [[nodiscard]] Dict copy() const {
         PyObject* result = PyDict_Copy(this->ptr());
         if (result == nullptr) {
             Exception::from_python();
@@ -868,7 +868,7 @@ public:
     /* Equivalent to Python `dict.fromkeys(keys, value)`. */
     template <impl::is_iterable T>
         requires (std::convertible_to<impl::iter_type<T>, key_type>)
-    static Dict fromkeys(const T& keys, const value_type& value) {
+    [[nodiscard]] static Dict fromkeys(const T& keys, const value_type& value) {
         PyObject* result = PyDict_New();
         if (result == nullptr) {
             Exception::from_python();
@@ -891,7 +891,7 @@ public:
     }
 
     /* Equivalent to Python `dict.fromkeys(<braced initializer list>, value)`. */
-    Dict fromkeys(
+    [[nodiscard]] static Dict fromkeys(
         const std::initializer_list<key_type>& keys,
         const value_type& value
     ) {
@@ -917,7 +917,7 @@ public:
     }
 
     /* Equivalent to Python `dict.get(key)`.  Returns nullopt if the key is not found. */
-    std::optional<value_type> get(const key_type& key) const {
+    [[nodiscard]] std::optional<value_type> get(const key_type& key) const {
         PyObject* result = PyDict_GetItemWithError(this->ptr(), key.ptr());
         if (result == nullptr) {
             if (PyErr_Occurred()) {
@@ -929,7 +929,7 @@ public:
     }
 
     /* Equivalent to Python `dict.get(key, default_value)`. */
-    value_type get(const key_type& key, const value_type& default_value) const {
+    [[nodiscard]] value_type get(const key_type& key, const value_type& default_value) const {
         PyObject* result = PyDict_GetItemWithError(this->ptr(), key.ptr());
         if (result == nullptr) {
             if (PyErr_Occurred()) {
@@ -985,8 +985,6 @@ public:
         }
         return reinterpret_steal<value_type>(result);
     }
-
-
 
     /* Equivalent to Python `dict.update(items)`. */
     void update(const Dict& items) {
@@ -1055,19 +1053,19 @@ public:
     /////////////////////
 
     /* Equivalent to Python `dict.keys()`. */
-    KeyView<Dict> keys() const;
+    [[nodiscard]] KeyView<Dict> keys() const;
 
     /* Equivalent to Python `dict.values()`. */
-    ValueView<Dict> values() const;
+    [[nodiscard]] ValueView<Dict> values() const;
 
     /* Equivalent to Python `dict.items()`. */
-    ItemView<Dict> items() const;
+    [[nodiscard]] ItemView<Dict> items() const;
 
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
 
-    friend Dict operator|(
+    [[nodiscard]] friend Dict operator|(
         const Dict& self,
         const std::initializer_list<std::pair<key_type, value_type>>& other
     ) {
@@ -1220,7 +1218,7 @@ public:
     using value_type = typename Map::value_type;
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         if constexpr (std::derived_from<std::decay_t<T>, impl::MappingProxyTag>) {
             return mapping_type::template typecheck<typename std::decay_t<T>::mapping_type>();
         } else {
@@ -1229,7 +1227,7 @@ public:
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
             return typecheck<T>();
 
@@ -1288,32 +1286,32 @@ public:
     ////////////////////////////////
 
     /* Equivalent to Python `mappingproxy.copy()`. */
-    auto copy() const {
+    [[nodiscard]] auto copy() const {
         return unwrap().copy();
     }
 
     /* Equivalent to Python `mappingproxy.get(key)`. */
-    auto get(const key_type& key) const {
+    [[nodiscard]] auto get(const key_type& key) const {
         return unwrap().get(key);
     }
 
     /* Equivalent to Python `mappingproxy.get(key, default)`. */
-    auto get(const key_type& key, const value_type& default_value) const {
+    [[nodiscard]] auto get(const key_type& key, const value_type& default_value) const {
         return unwrap().get(key, default_value);
     }
 
     /* Equivalent to Python `mappingproxy.keys()`. */
-    auto keys() const {
+    [[nodiscard]] auto keys() const {
         return unwrap().keys();
     }
 
     /* Equivalent to Python `mappingproxy.values()`. */
-    auto values() const {
+    [[nodiscard]] auto values() const {
         return unwrap().values();
     }
 
     /* Equivalent to Python `mappingproxy.items()`. */
-    auto items() const {
+    [[nodiscard]] auto items() const {
         return unwrap().items();
     }
 
@@ -1321,7 +1319,7 @@ public:
     ////    OPERATORS    ////
     /////////////////////////
 
-    friend mapping_type operator|(
+    [[nodiscard]] friend mapping_type operator|(
         const MappingProxy& self,
         const std::initializer_list<std::pair<key_type, value_type>>& other
     ) {
@@ -1332,19 +1330,19 @@ public:
 
 
 template <typename Map>
-MappingProxy<Map> KeyView<Map>::mapping() const {
+[[nodiscard]] MappingProxy<Map> KeyView<Map>::mapping() const {
     return attr<"mapping">();
 }
 
 
 template <typename Map>
-MappingProxy<Map> ValueView<Map>::mapping() const {
+[[nodiscard]] MappingProxy<Map> ValueView<Map>::mapping() const {
     return attr<"mapping">();
 }
 
 
 template <typename Map>
-MappingProxy<Map> ItemView<Map>::mapping() const {
+[[nodiscard]] MappingProxy<Map> ItemView<Map>::mapping() const {
     return attr<"mapping">();
 }
 

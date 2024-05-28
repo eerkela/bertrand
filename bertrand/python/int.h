@@ -77,12 +77,12 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         return impl::int_like<T>;
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if constexpr (impl::cpp_like<T>) {
             return typecheck<T>();
         } else if constexpr (typecheck<T>()) {
@@ -208,25 +208,20 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
-    /* Get a static reference to the zero singleton. */
-    static const Int& zero() {
-        static const Int zero = 0;
-        return zero;
-    }
-
-    /* Get a static reference to the one singleton. */
-    static const Int& one() {
-        static const Int one = 1;
-        return one;
-    }
-
-    /* Get a static reference to the two singleton. */
-    static const Int& two() {
-        static const Int two = 2;
-        return two;
-    }
+    static const Int neg_two;
+    static const Int neg_one;
+    static const Int zero;
+    static const Int one;
+    static const Int two;
 
 };
+
+
+inline const Int Int::neg_two = -2;
+inline const Int Int::neg_one = -1;
+inline const Int Int::zero = 0;
+inline const Int Int::one = 1;
+inline const Int Int::two = 2;
 
 
 }  // namespace py
