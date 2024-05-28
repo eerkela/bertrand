@@ -129,17 +129,8 @@ public:
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "capitalize", Args...>)
-    [[nodiscard]] decltype(auto) capitalize(this const Self& self, Args&&... args) {
-        return impl::call_method<"capitalize">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "center", Args...>)
-    [[nodiscard]] decltype(auto) center(this const Self& self, Args&&... args) {
-        return impl::call_method<"center">(self, std::forward<Args>(args)...);
-    }
+    BERTRAND_METHOD(Bytes, [[nodiscard]], capitalize, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], center, const)
 
     [[nodiscard]] Py_ssize_t count(
         const Bytes& sub,
@@ -166,41 +157,12 @@ public:
         }
     }
 
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "decode", Args...>)
-    [[nodiscard]] decltype(auto) decode(this const Self& self, Args&&... args) {
-        return impl::call_method<"decode">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "endswith", Args...>)
-    [[nodiscard]] decltype(auto) endswith(this const Self& self, Args&&... args) {
-        return impl::call_method<"endswith">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "expandtabs", Args...>)
-    [[nodiscard]] decltype(auto) expandtabs(this const Self& self, Args&&... args) {
-        return impl::call_method<"expandtabs">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "find", Args...>)
-    [[nodiscard]] decltype(auto) find(this const Self& self, Args&&... args) {
-        return impl::call_method<"find">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename... Args>
-        requires (impl::invocable<Bytes, "fromhex", Args...>)
-    [[nodiscard]] static decltype(auto) fromhex(Args&&... args) {
-        return impl::call_static<Bytes, "fromhex">(std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "hex", Args...>)
-    [[nodiscard]] decltype(auto) hex(this const Self& self, Args&&... args) {
-        return impl::call_method<"hex">(self, std::forward<Args>(args)...);
-    }
+    BERTRAND_METHOD(Bytes, [[nodiscard]], decode, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], endswith, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], expandtabs, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], find, const)
+    BERTRAND_STATIC_METHOD(Bytes, [[nodiscard]], fromhex)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], hex, const)
 
     [[nodiscard]] Py_ssize_t index(
         const Bytes& sub,
@@ -227,197 +189,38 @@ public:
         }
     }
 
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isalnum", Args...>)
-    [[nodiscard]] decltype(auto) isalnum(this const Self& self, Args&&... args) {
-        return impl::call_method<"isalnum">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isalpha", Args...>)
-    [[nodiscard]] decltype(auto) isalpha(this const Self& self, Args&&... args) {
-        return impl::call_method<"isalpha">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isascii", Args...>)
-    [[nodiscard]] decltype(auto) isascii(this const Self& self, Args&&... args) {
-        return impl::call_method<"isascii">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isdigit", Args...>)
-    [[nodiscard]] decltype(auto) isdigit(this const Self& self, Args&&... args) {
-        return impl::call_method<"isdigit">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "islower", Args...>)
-    [[nodiscard]] decltype(auto) islower(this const Self& self, Args&&... args) {
-        return impl::call_method<"islower">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isspace", Args...>)
-    [[nodiscard]] decltype(auto) isspace(this const Self& self, Args&&... args) {
-        return impl::call_method<"isspace">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "istitle", Args...>)
-    [[nodiscard]] decltype(auto) istitle(this const Self& self, Args&&... args) {
-        return impl::call_method<"istitle">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isupper", Args...>)
-    [[nodiscard]] decltype(auto) isupper(this const Self& self, Args&&... args) {
-        return impl::call_method<"isupper">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "join", Args...>)
-    [[nodiscard]] decltype(auto) join(this const Self& self, Args&&... args) {
-        return impl::call_method<"join">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "ljust", Args...>)
-    [[nodiscard]] decltype(auto) ljust(this const Self& self, Args&&... args) {
-        return impl::call_method<"ljust">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "lower", Args...>)
-    [[nodiscard]] decltype(auto) lower(this const Self& self, Args&&... args) {
-        return impl::call_method<"lower">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "lstrip", Args...>)
-    [[nodiscard]] decltype(auto) lstrip(this const Self& self, Args&&... args) {
-        return impl::call_method<"lstrip">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename... Args>
-        requires (impl::invocable<Bytes, "maketrans", Args...>)
-    [[nodiscard]] static decltype(auto) maketrans(Args&&... args) {
-        return impl::call_static<Bytes, "maketrans">(std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "partition", Args...>)
-    [[nodiscard]] decltype(auto) partition(this const Self& self, Args&&... args) {
-        return impl::call_method<"partition">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "removeprefix", Args...>)
-    [[nodiscard]] decltype(auto) removeprefix(this const Self& self, Args&&... args) {
-        return impl::call_method<"removeprefix">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "removesuffix", Args...>)
-    [[nodiscard]] decltype(auto) removesuffix(this const Self& self, Args&&... args) {
-        return impl::call_method<"removesuffix">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "replace", Args...>)
-    [[nodiscard]] decltype(auto) replace(this const Self& self, Args&&... args) {
-        return impl::call_method<"replace">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rfind", Args...>)
-    [[nodiscard]] decltype(auto) rfind(this const Self& self, Args&&... args) {
-        return impl::call_method<"rfind">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rindex", Args...>)
-    [[nodiscard]] decltype(auto) rindex(this const Self& self, Args&&... args) {
-        return impl::call_method<"rindex">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rjust", Args...>)
-    [[nodiscard]] decltype(auto) rjust(this const Self& self, Args&&... args) {
-        return impl::call_method<"rjust">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rpartition", Args...>)
-    [[nodiscard]] decltype(auto) rpartition(this const Self& self, Args&&... args) {
-        return impl::call_method<"rpartition">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rsplit", Args...>)
-    [[nodiscard]] decltype(auto) rsplit(this const Self& self, Args&&... args) {
-        return impl::call_method<"rsplit">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rstrip", Args...>)
-    [[nodiscard]] decltype(auto) rstrip(this const Self& self, Args&&... args) {
-        return impl::call_method<"rstrip">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "split", Args...>)
-    [[nodiscard]] decltype(auto) split(this const Self& self, Args&&... args) {
-        return impl::call_method<"split">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "splitlines", Args...>)
-    [[nodiscard]] decltype(auto) splitlines(this const Self& self, Args&&... args) {
-        return impl::call_method<"splitlines">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "startswith", Args...>)
-    [[nodiscard]] decltype(auto) startswith(this const Self& self, Args&&... args) {
-        return impl::call_method<"startswith">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "strip", Args...>)
-    [[nodiscard]] decltype(auto) strip(this const Self& self, Args&&... args) {
-        return impl::call_method<"strip">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "swapcase", Args...>)
-    [[nodiscard]] decltype(auto) swapcase(this const Self& self, Args&&... args) {
-        return impl::call_method<"swapcase">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "title", Args...>)
-    [[nodiscard]] decltype(auto) title(this const Self& self, Args&&... args) {
-        return impl::call_method<"title">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "translate", Args...>)
-    [[nodiscard]] decltype(auto) translate(this const Self& self, Args&&... args) {
-        return impl::call_method<"translate">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "upper", Args...>)
-    [[nodiscard]] decltype(auto) upper(this const Self& self, Args&&... args) {
-        return impl::call_method<"upper">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "zfill", Args...>)
-    [[nodiscard]] decltype(auto) zfill(this const Self& self, Args&&... args) {
-        return impl::call_method<"zfill">(self, std::forward<Args>(args)...);
-    }
+    BERTRAND_METHOD(Bytes, [[nodiscard]], isalnum, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], isalpha, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], isascii, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], isdigit, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], islower, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], isspace, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], istitle, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], isupper, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], join, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], ljust, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], lower, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], lstrip, const)
+    BERTRAND_STATIC_METHOD(Bytes, [[nodiscard]], maketrans)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], partition, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], removeprefix, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], removesuffix, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], replace, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], rfind, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], rindex, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], rjust, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], rpartition, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], rsplit, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], rstrip, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], split, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], splitlines, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], startswith, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], strip, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], swapcase, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], title, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], translate, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], upper, const)
+    BERTRAND_METHOD(Bytes, [[nodiscard]], zfill, const)
 
 };
 
@@ -430,12 +233,12 @@ public:
     static const Type type;
 
     template <typename T>
-    static consteval bool typecheck() {
+    [[nodiscard]] static consteval bool typecheck() {
         return impl::bytearray_like<T>;
     }
 
     template <typename T>
-    static constexpr bool typecheck(const T& obj) {
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
         if (impl::cpp_like<T>) {
             return typecheck<T>();
         } else if constexpr (typecheck<T>()) {
@@ -533,17 +336,8 @@ public:
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "capitalize", Args...>)
-    [[nodiscard]] decltype(auto) capitalize(this const Self& self, Args&&... args) {
-        return impl::call_method<"capitalize">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "center", Args...>)
-    [[nodiscard]] decltype(auto) center(this const Self& self, Args&&... args) {
-        return impl::call_method<"center">(self, std::forward<Args>(args)...);
-    }
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], capitalize, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], center, const)
 
     [[nodiscard]] Py_ssize_t count(
         const ByteArray& sub,
@@ -570,41 +364,12 @@ public:
         }
     }
 
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "decode", Args...>)
-    [[nodiscard]] decltype(auto) decode(this const Self& self, Args&&... args) {
-        return impl::call_method<"decode">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "endswith", Args...>)
-    [[nodiscard]] decltype(auto) endswith(this const Self& self, Args&&... args) {
-        return impl::call_method<"endswith">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "expandtabs", Args...>)
-    [[nodiscard]] decltype(auto) expandtabs(this const Self& self, Args&&... args) {
-        return impl::call_method<"expandtabs">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "find", Args...>)
-    [[nodiscard]] decltype(auto) find(this const Self& self, Args&&... args) {
-        return impl::call_method<"find">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename... Args>
-        requires (impl::invocable<ByteArray, "fromhex", Args...>)
-    [[nodiscard]] static decltype(auto) fromhex(Args&&... args) {
-        return impl::call_static<ByteArray, "fromhex">(std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "hex", Args...>)
-    [[nodiscard]] decltype(auto) hex(this const Self& self, Args&&... args) {
-        return impl::call_method<"hex">(self, std::forward<Args>(args)...);
-    }
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], decode, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], endswith, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], expandtabs, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], find, const)
+    BERTRAND_STATIC_METHOD(ByteArray, [[nodiscard]], fromhex)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], hex, const)
 
     [[nodiscard]] Py_ssize_t index(
         const ByteArray& sub,
@@ -631,197 +396,38 @@ public:
         }
     }
 
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isalnum", Args...>)
-    [[nodiscard]] decltype(auto) isalnum(this const Self& self, Args&&... args) {
-        return impl::call_method<"isalnum">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isalpha", Args...>)
-    [[nodiscard]] decltype(auto) isalpha(this const Self& self, Args&&... args) {
-        return impl::call_method<"isalpha">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isascii", Args...>)
-    [[nodiscard]] decltype(auto) isascii(this const Self& self, Args&&... args) {
-        return impl::call_method<"isascii">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isdigit", Args...>)
-    [[nodiscard]] decltype(auto) isdigit(this const Self& self, Args&&... args) {
-        return impl::call_method<"isdigit">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "islower", Args...>)
-    [[nodiscard]] decltype(auto) islower(this const Self& self, Args&&... args) {
-        return impl::call_method<"islower">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isspace", Args...>)
-    [[nodiscard]] decltype(auto) isspace(this const Self& self, Args&&... args) {
-        return impl::call_method<"isspace">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "istitle", Args...>)
-    [[nodiscard]] decltype(auto) istitle(this const Self& self, Args&&... args) {
-        return impl::call_method<"istitle">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isupper", Args...>)
-    [[nodiscard]] decltype(auto) isupper(this const Self& self, Args&&... args) {
-        return impl::call_method<"isupper">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "join", Args...>)
-    [[nodiscard]] decltype(auto) join(this const Self& self, Args&&... args) {
-        return impl::call_method<"join">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "ljust", Args...>)
-    [[nodiscard]] decltype(auto) ljust(this const Self& self, Args&&... args) {
-        return impl::call_method<"ljust">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "lower", Args...>)
-    [[nodiscard]] decltype(auto) lower(this const Self& self, Args&&... args) {
-        return impl::call_method<"lower">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "lstrip", Args...>)
-    [[nodiscard]] decltype(auto) lstrip(this const Self& self, Args&&... args) {
-        return impl::call_method<"lstrip">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename... Args>
-        requires (impl::invocable<ByteArray, "maketrans", Args...>)
-    [[nodiscard]] static decltype(auto) maketrans(Args&&... args) {
-        return impl::call_static<ByteArray, "maketrans">(std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "partition", Args...>)
-    [[nodiscard]] decltype(auto) partition(this const Self& self, Args&&... args) {
-        return impl::call_method<"partition">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "removeprefix", Args...>)
-    [[nodiscard]] decltype(auto) removeprefix(this const Self& self, Args&&... args) {
-        return impl::call_method<"removeprefix">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "removesuffix", Args...>)
-    [[nodiscard]] decltype(auto) removesuffix(this const Self& self, Args&&... args) {
-        return impl::call_method<"removesuffix">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "replace", Args...>)
-    [[nodiscard]] decltype(auto) replace(this const Self& self, Args&&... args) {
-        return impl::call_method<"replace">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rfind", Args...>)
-    [[nodiscard]] decltype(auto) rfind(this const Self& self, Args&&... args) {
-        return impl::call_method<"rfind">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rindex", Args...>)
-    [[nodiscard]] decltype(auto) rindex(this const Self& self, Args&&... args) {
-        return impl::call_method<"rindex">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rjust", Args...>)
-    [[nodiscard]] decltype(auto) rjust(this const Self& self, Args&&... args) {
-        return impl::call_method<"rjust">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rpartition", Args...>)
-    [[nodiscard]] decltype(auto) rpartition(this const Self& self, Args&&... args) {
-        return impl::call_method<"rpartition">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rsplit", Args...>)
-    [[nodiscard]] decltype(auto) rsplit(this const Self& self, Args&&... args) {
-        return impl::call_method<"rsplit">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rstrip", Args...>)
-    [[nodiscard]] decltype(auto) rstrip(this const Self& self, Args&&... args) {
-        return impl::call_method<"rstrip">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "split", Args...>)
-    [[nodiscard]] decltype(auto) split(this const Self& self, Args&&... args) {
-        return impl::call_method<"split">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "splitlines", Args...>)
-    [[nodiscard]] decltype(auto) splitlines(this const Self& self, Args&&... args) {
-        return impl::call_method<"splitlines">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "startswith", Args...>)
-    [[nodiscard]] decltype(auto) startswith(this const Self& self, Args&&... args) {
-        return impl::call_method<"startswith">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "strip", Args...>)
-    [[nodiscard]] decltype(auto) strip(this const Self& self, Args&&... args) {
-        return impl::call_method<"strip">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "swapcase", Args...>)
-    [[nodiscard]] decltype(auto) swapcase(this const Self& self, Args&&... args) {
-        return impl::call_method<"swapcase">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "title", Args...>)
-    [[nodiscard]] decltype(auto) title(this const Self& self, Args&&... args) {
-        return impl::call_method<"title">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "translate", Args...>)
-    [[nodiscard]] decltype(auto) translate(this const Self& self, Args&&... args) {
-        return impl::call_method<"translate">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "upper", Args...>)
-    [[nodiscard]] decltype(auto) upper(this const Self& self, Args&&... args) {
-        return impl::call_method<"upper">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "zfill", Args...>)
-    [[nodiscard]] decltype(auto) zfill(this const Self& self, Args&&... args) {
-        return impl::call_method<"zfill">(self, std::forward<Args>(args)...);
-    }
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], isalnum, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], isalpha, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], isascii, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], isdigit, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], islower, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], isspace, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], istitle, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], isupper, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], join, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], ljust, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], lower, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], lstrip, const)
+    BERTRAND_STATIC_METHOD(ByteArray, [[nodiscard]], maketrans)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], partition, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], removeprefix, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], removesuffix, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], replace, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], rfind, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], rindex, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], rjust, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], rpartition, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], rsplit, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], rstrip, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], split, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], splitlines, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], startswith, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], strip, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], swapcase, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], title, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], translate, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], upper, const)
+    BERTRAND_METHOD(ByteArray, [[nodiscard]], zfill, const)
 
 };
 

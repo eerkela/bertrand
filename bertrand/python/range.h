@@ -13,39 +13,6 @@ namespace bertrand {
 namespace py {
 
 
-template <std::derived_from<Range> T>
-struct __getattr__<T, "count">                              : Returns<Function<
-    Int(typename Arg<"value", const Int&>::pos)
->> {};
-template <std::derived_from<Range> T>
-struct __getattr__<T, "index">                              : Returns<Function<
-    Int(typename Arg<"value", const Int&>::pos)
->> {};
-template <std::derived_from<Range> T>
-struct __getattr__<T, "start">                              : Returns<Int> {};
-template <std::derived_from<Range> T>
-struct __getattr__<T, "stop">                               : Returns<Int> {};
-template <std::derived_from<Range> T>
-struct __getattr__<T, "step">                               : Returns<Int> {};
-
-template <>
-struct __len__<Range>                                       : Returns<size_t> {};
-template <>
-struct __iter__<Range>                                      : Returns<Int> {};
-template <>
-struct __reversed__<Range>                                  : Returns<Int> {};
-template <>
-struct __contains__<Range, Object>                          : Returns<bool> {};
-template <impl::int_like T>
-struct __contains__<Range, T>                               : Returns<bool> {};
-template <>
-struct __getitem__<Range, Object>                           : Returns<Object> {};
-template <impl::int_like T>
-struct __getitem__<Range, T>                                : Returns<Int> {};
-template <>
-struct __getitem__<Range, Slice>                            : Returns<Range> {};
-
-
 /* Represents a statically-typed Python `range` object in C++. */
 class Range : public Object {
     using Base = Object;
@@ -186,30 +153,18 @@ public:
     }
 
     /* Get the start index of the Range sequence. */
-    [[nodiscard]] Py_ssize_t start() const {
-        Py_ssize_t result = PyLong_AsSsize_t(attr<"start">()->ptr());
-        if (result == -1 && PyErr_Occurred()) {
-            Exception::from_python();
-        }
-        return result;
+    [[nodiscard]] auto start() const {
+        return attr<"start">().value();
     }
 
     /* Get the stop index of the Range sequence. */
-    [[nodiscard]] Py_ssize_t stop() const {
-        Py_ssize_t result = PyLong_AsSsize_t(attr<"stop">()->ptr());
-        if (result == -1 && PyErr_Occurred()) {
-            Exception::from_python();
-        }
-        return result;
+    [[nodiscard]] auto stop() const {
+        return attr<"stop">().value();
     }
 
     /* Get the step size of the Range sequence. */
-    [[nodiscard]] Py_ssize_t step() const {
-        Py_ssize_t result = PyLong_AsSsize_t(attr<"step">()->ptr());
-        if (result == -1 && PyErr_Occurred()) {
-            Exception::from_python();
-        }
-        return result;
+    [[nodiscard]] auto step() const {
+        return attr<"step">().value();
     }
 
 };

@@ -202,7 +202,13 @@ public:
 
     /* Explicitly convert a Python string with an optional base into a py::Int. */
     template <impl::python_like T> requires (impl::str_like<T>)
-    explicit Int(const T& str, int base = 0);
+    explicit Int(const T& str, int base = 0) :
+        Base(PyLong_FromUnicodeObject(str.ptr(), base), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+    }
 
     /////////////////////////////
     ////    C++ INTERFACE    ////

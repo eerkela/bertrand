@@ -190,7 +190,7 @@ void run() {
     // py::print(func2(x = 1, y = 2));
 
 
-    py::Bytes x = "abc";
+    py::Str x = "abc";
     py::print(x.capitalize());
 
 

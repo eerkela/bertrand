@@ -25,20 +25,6 @@ namespace bertrand {
 namespace py {
 
 
-template <std::derived_from<impl::TupleTag> Self>
-struct __getattr__<Self, "count">                               : Returns<Function<
-    Int(typename Arg<"value", const Object&>::pos)
->> {};
-template <std::derived_from<impl::TupleTag> Self>
-struct __getattr__<Self, "index">                               : Returns<Function<
-    Int(
-        typename Arg<"value", const Object&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"stop", const Int&>::pos::opt
-    )
->> {};
-
-
 namespace ops {
 
     template <typename Return, std::derived_from<impl::TupleTag> Self>
@@ -458,12 +444,12 @@ public:
         }
     }
 
-    /////////////////////////
-    ////    INTERFACE    ////
-    /////////////////////////
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
 
     /* Get the underlying PyObject* array. */
-    [[nodiscard]] PyObject** DATA() const noexcept {
+    [[nodiscard]] PyObject** data() const noexcept {
         return PySequence_Fast_ITEMS(this->ptr());
     }
 
@@ -478,6 +464,10 @@ public:
         PyTuple_SET_ITEM(this->ptr(), index, Py_XNewRef(value.ptr()));
         Py_XDECREF(prev);
     }
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
 
     /* Equivalent to Python `tuple.count(value)`, but also takes optional start/stop
     indices similar to `tuple.index()`. */
@@ -567,7 +557,7 @@ protected:
             Exception::from_python();
         }
         try {
-            PyObject** array = DATA();
+            PyObject** array = data();
             Py_ssize_t i = 0;
             while (i < length) {
                 PyTuple_SET_ITEM(result, i, Py_NewRef(array[i]));

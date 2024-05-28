@@ -22,62 +22,6 @@ namespace bertrand {
 namespace py {
 
 
-template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "append">                              : Returns<Function<
-    void(typename Arg<"value", const typename Self::value_type&>::pos)
->> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "extend">                              : Returns<Function<
-    void(typename Arg<"iterable", const Object&>::pos)
->> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "insert">                              : Returns<Function<
-    void(
-        typename Arg<"index", const Int&>::pos,
-        typename Arg<"value", const typename Self::value_type&>::pos
-    )
->> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "copy">                                : Returns<Function<
-    Self()
->> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "count">                               : Returns<Function<
-    Int(typename Arg<"value", const typename Self::value_type&>::pos)
->> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "index">                               : Returns<Function<
-    Int(
-        typename Arg<"value", const typename Self::value_type&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"stop", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "clear">                               : Returns<Function<
-    void()
->> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "remove">                              : Returns<Function<
-    void(typename Arg<"value", const typename Self::value_type&>::pos)
->> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "pop">                                 : Returns<Function<
-    typename Self::value_type(typename Arg<"index", const Int&>::pos::opt)
->> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "reverse">                             : Returns<Function<
-    void()
->> {};
-template <std::derived_from<impl::ListTag> Self>
-struct __getattr__<Self, "sort">                                : Returns<Function<
-    void(
-        typename Arg<"key", const Function<Bool(const typename Self::value_type&)>&>::kw::opt,
-        typename Arg<"reverse", const Bool&>::kw::opt
-    )
->> {};
-
-
 namespace ops {
 
     template <typename Return, std::derived_from<impl::ListTag> Self>
@@ -462,12 +406,12 @@ public:
         }
     }
 
-    /////////////////////////
-    ////    INTERFACE    ////
-    /////////////////////////
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
 
     /* Get the underlying PyObject* array. */
-    [[nodiscard]] PyObject** DATA() const noexcept {
+    [[nodiscard]] PyObject** data() const noexcept {
         return PySequence_Fast_ITEMS(this->ptr());
     }
 
@@ -483,6 +427,10 @@ public:
         Py_XDECREF(prev);
     }
 
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
     /* Equivalent to Python `list.append(value)`. */
     void append(const value_type& value) {
         if (PyList_Append(this->ptr(), value.ptr())) {
@@ -493,7 +441,15 @@ public:
     /* Equivalent to Python `list.extend(items)`. */
     template <impl::is_iterable T>
         requires (std::convertible_to<impl::iter_type<T>, value_type>)
-    void extend(const T& items);
+    void extend(const T& items) {
+        if constexpr (impl::python_like<T>) {
+            impl::call_method<"extend">(*this, items);
+        } else {
+            for (const auto& item : items) {
+                append(item);
+            }
+        }
+    }
 
     /* Equivalent to Python `list.extend(items)`, where items are given as a braced
     initializer list. */
@@ -579,11 +535,8 @@ public:
         }
     }
 
-    /* Equivalent to Python `list.remove(value)`. */
-    void remove(const value_type& value);
-
-    /* Equivalent to Python `list.pop([index])`. */
-    value_type pop(Py_ssize_t index = -1);
+    BERTRAND_METHOD(List, , remove, )
+    BERTRAND_METHOD(List, , pop, )
 
     /* Equivalent to Python `list.reverse()`. */
     void reverse() {
@@ -592,23 +545,7 @@ public:
         }
     }
 
-    // TODO: can potentially unify sort() overloads using optional keyword arguments?
-
-    /* Equivalent to Python `list.sort()`. */
-    void sort() {
-        if (PyList_Sort(this->ptr())) {
-            Exception::from_python();
-        }
-    }
-
-    /* Equivalent to Python `list.sort(reverse=reverse)`. */
-    void sort(const Bool& reverse);
-
-    /* Equivalent to Python `list.sort(key=key[, reverse=reverse])`.  The key function
-    can be given as any C++ function-like object, but users should note that pybind11
-    has a hard time parsing generic arguments, so templates and the `auto` keyword
-    should be avoided. */
-    void sort(const Function<const value_type&>& key, const Bool& reverse = false);
+    BERTRAND_METHOD(List, , sort, )
 
     /////////////////////////
     ////    OPERATORS    ////
@@ -645,7 +582,7 @@ protected:
             Exception::from_python();
         }
         try {
-            PyObject** array = DATA();
+            PyObject** array = data();
             Py_ssize_t i = 0;
             while (i < length) {
                 PyList_SET_ITEM(result, i, Py_NewRef(array[i]));

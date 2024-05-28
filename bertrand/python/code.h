@@ -10,6 +10,7 @@
 #include "common.h"
 #include "dict.h"
 #include "str.h"
+#include "bytes.h"
 #include "tuple.h"
 #include "list.h"
 #include "type.h"
@@ -32,52 +33,6 @@ namespace py {
 ////////////////////
 ////    CODE    ////
 ////////////////////
-
-
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_name">                                : Returns<Str> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_qualname">                            : Returns<Str> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_argcount">                            : Returns<Int> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_posonlyargcount">                     : Returns<Int> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_kwonlyargcount">                      : Returns<Int> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_nlocals">                             : Returns<Int> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_varnames">                            : Returns<Tuple<Str>> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_cellvars">                            : Returns<Tuple<Str>> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_freevars">                            : Returns<Tuple<Str>> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_code">                                : Returns<Bytes> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_consts">                              : Returns<Tuple<Object>> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_names">                               : Returns<Tuple<Str>> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_filename">                            : Returns<Str> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_firstlineno">                         : Returns<Int> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_stacksize">                           : Returns<Int> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_flags">                               : Returns<Int> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_positions">                           : Returns<Function<
-    Object()
->> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "co_lines">                               : Returns<Function<
-    Object()
->> {};
-template <std::derived_from<Code> T>
-struct __getattr__<T, "replace">                                : Returns<Function<
-    Object(typename Arg<"kwargs", const Object&>::kwargs)
->> {};
 
 
 /* A new subclass of pybind11::object that represents a compiled Python code object,
@@ -435,21 +390,21 @@ public:
 
     /* Get a tuple containing the names of the local variables in the function,
     starting with parameter names. */
-    [[nodiscard]] Tuple<Str> varnames() const {
-        return attr<"co_varnames">();
+    [[nodiscard]] auto varnames() const {
+        return attr<"co_varnames">().value();
     }
 
     /* Get a tuple containing the names of local variables that are referenced by
     nested functions within this function (i.e. those that are stored in a
     PyCell). */
-    [[nodiscard]] Tuple<Str> cellvars() const {
-        return attr<"co_cellvars">();
+    [[nodiscard]] auto cellvars() const {
+        return attr<"co_cellvars">().value();
     }
 
     /* Get a tuple containing the names of free variables in the function (i.e.
     those that are not stored in a PyCell). */
-    [[nodiscard]] Tuple<Str> freevars() const {
-        return attr<"co_freevars">();
+    [[nodiscard]] auto freevars() const {
+        return attr<"co_freevars">().value();
     }
 
     /* Get the required stack space for the code object. */
@@ -459,7 +414,9 @@ public:
 
     /* Get the bytecode buffer representing the sequence of instructions in the
     function. */
-    [[nodiscard]] Bytes bytecode() const;
+    [[nodiscard]] Bytes bytecode() const {
+        return attr<"co_code">().value();
+    }
 
     /* Get a tuple containing the literals used by the bytecode in the function. */
     [[nodiscard]] Tuple<Object> consts() const {
@@ -482,42 +439,6 @@ public:
 /////////////////////
 ////    FRAME    ////
 /////////////////////
-
-
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_back">                                 : Returns<Frame> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_code">                                 : Returns<Code> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_locals">                               : Returns<Dict<Str, Object>> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_globals">                              : Returns<Dict<Str, Object>> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_builtins">                             : Returns<Dict<Str, Object>> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_lasti">                                : Returns<Int> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_trace">                                : Returns<Object> {};
-template <std::derived_from<Frame> T>
-struct __setattr__<T, "f_trace", Object>                        : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __delattr__<T, "f_trace">                                : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_trace_lines">                          : Returns<Bool> {};
-template <std::derived_from<Frame> T>
-struct __setattr__<T, "f_trace_lines", Bool>                    : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_trace_opcodes">                        : Returns<Bool> {};
-template <std::derived_from<Frame> T>
-struct __setattr__<T, "f_trace_opcodes", Bool>                  : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "f_lineno">                               : Returns<Bool> {};
-template <std::derived_from<Frame> T>
-struct __setattr__<T, "f_lineno", Int>                          : Returns<void> {};
-template <std::derived_from<Frame> T>
-struct __getattr__<T, "clear">                                  : Returns<Function<
-    void()
->> {};
 
 
 /* Represents a statically-typed Python frame object in C++.  These are the same frames
@@ -790,7 +711,7 @@ public:
 
 //     /* Get the underlying function. */
 //     [[nodiscard]] Function function() const {
-//         return reinterpret_steal<Function>(Object(attr<"__func__">()).release());
+//         return reinterpret_steal<Function>(attr<"__func__">()->release());
 //     }
 
 // };
@@ -868,7 +789,7 @@ public:
 
 //     /* Get the underlying function. */
 //     [[nodiscard]] Function function() const {
-//         return reinterpret_steal<Function>(Object(attr<"__func__">()).release());
+//         return reinterpret_steal<Function>(attr<"__func__">()->release());
 //     }
 
 // };
@@ -969,17 +890,17 @@ public:
 
 //     /* Get the function being used as a getter. */
 //     [[nodiscard]] Function fget() const {
-//         return reinterpret_steal<Function>(Object(attr<"fget">()).release());
+//         return reinterpret_steal<Function>(attr<"fget">()->release());
 //     }
 
 //     /* Get the function being used as a setter. */
 //     [[nodiscard]] Function fset() const {
-//         return reinterpret_steal<Function>(Object(attr<"fset">()).release());
+//         return reinterpret_steal<Function>(attr<"fset">()->release());
 //     }
 
 //     /* Get the function being used as a deleter. */
 //     [[nodiscard]] Function fdel() const {
-//         return reinterpret_steal<Function>(Object(attr<"fdel">()).release());
+//         return reinterpret_steal<Function>(attr<"fdel">()->release());
 //     }
 
 // };

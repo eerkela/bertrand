@@ -20,257 +20,6 @@ namespace bertrand {
 namespace py {
 
 
-template <std::derived_from<Str> T>
-struct __getattr__<T, "capitalize">                             : Returns<Function<
-    T()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "casefold">                               : Returns<Function<
-    T()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "center">                                 : Returns<Function<
-    T(
-        typename Arg<"width", const Int&>::pos,
-        typename Arg<"fillchar", const Str&>::pos::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "copy">                                   : Returns<Function<
-    T()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "count">                                  : Returns<Function<
-    Int(
-        typename Arg<"sub", const Str&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"stop", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "encode">                                 : Returns<Function<
-    Bytes(
-        typename Arg<"encoding", const Str&>::opt,
-        typename Arg<"errors", const Str&>::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "endswith">                               : Returns<Function<
-    Bool(
-        typename Arg<"suffix", const Str&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"stop", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "expandtabs">                             : Returns<Function<
-    T(typename Arg<"tabsize", const Int&>::opt)
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "find">                                   : Returns<Function<
-    Int(
-        typename Arg<"sub", const Str&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"stop", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "format">                                 : Returns<Function<
-    T(
-        typename Arg<"args", const Object&>::args,
-        typename Arg<"kwargs", const Object&>::kwargs
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "format_map">                             : Returns<Function<
-    T(typename Arg<"mapping", const Object&>::pos)
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "index">                                  : Returns<Function<
-    Int(
-        typename Arg<"sub", const Str&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"stop", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "isalnum">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "isalpha">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "isascii">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "isdecimal">                              : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "isdigit">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "isidentifier">                           : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "islower">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "isnumeric">                              : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "isprintable">                            : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "isspace">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "istitle">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "isupper">                                : Returns<Function<
-    Bool()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "join">                                   : Returns<Function<
-    T(typename Arg<"iterable", const Object&>::pos)
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "ljust">                                  : Returns<Function<
-    T(
-        typename Arg<"width", const Int&>::pos,
-        typename Arg<"fillchar", const Str&>::pos::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "lower">                                  : Returns<Function<
-    T()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "lstrip">                                 : Returns<Function<
-    T(typename Arg<"chars", const Str&>::opt)
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "maketrans">                              : Returns<Function<
-    Dict<T, T>(
-        typename Arg<"x", const Object&>::pos,
-        typename Arg<"y", const Object&>::pos::opt,
-        typename Arg<"z", const Object&>::pos::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "partition">                              : Returns<Function<
-    Tuple<T>(typename Arg<"sep", const Str&>::pos)
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "removeprefix">                           : Returns<Function<
-    T(typename Arg<"prefix", const Str&>::pos)
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "removesuffix">                           : Returns<Function<
-    T(typename Arg<"suffix", const Str&>::pos)
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "replace">                                : Returns<Function<
-    T(
-        typename Arg<"old", const Str&>::pos,
-        typename Arg<"new", const Str&>::pos,
-        typename Arg<"count", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "rfind">                                  : Returns<Function<
-    Int(
-        typename Arg<"sub", const Str&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"stop", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "rindex">                                 : Returns<Function<
-    Int(
-        typename Arg<"sub", const Str&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"stop", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "rjust">                                  : Returns<Function<
-    T(
-        typename Arg<"width", const Int&>::pos,
-        typename Arg<"fillchar", const Str&>::pos::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "rpartition">                             : Returns<Function<
-    Tuple<T>(typename Arg<"sep", const Str&>::pos)
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "rsplit">                                 : Returns<Function<
-    List<T>(
-        typename Arg<"sep", const Str&>::opt,
-        typename Arg<"maxsplit", const Int&>::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "rstrip">                                 : Returns<Function<
-    T(typename Arg<"chars", const Str&>::opt)
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "split">                                  : Returns<Function<
-    List<T>(
-        typename Arg<"sep", const Str&>::opt,
-        typename Arg<"maxsplit", const Int&>::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "splitlines">                             : Returns<Function<
-    List<T>(typename Arg<"keepends", const Bool&>::opt)
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "startswith">                             : Returns<Function<
-    Bool(
-        typename Arg<"prefix", const Str&>::pos,
-        typename Arg<"start", const Int&>::pos::opt,
-        typename Arg<"end", const Int&>::pos::opt
-    )
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "strip">                                  : Returns<Function<
-    T(typename Arg<"chars", const Str&>::opt)
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "swapcase">                               : Returns<Function<
-    T()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "title">                                  : Returns<Function<
-    T()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "translate">                              : Returns<Function<
-    T(typename Arg<"table", const Dict<Str, Str>&>::pos)
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "upper">                                  : Returns<Function<
-    T()
->> {};
-template <std::derived_from<Str> T>
-struct __getattr__<T, "zfill">                                  : Returns<Function<
-    T(typename Arg<"width", const Int&>::pos)
->> {};
-
-
 /* Represents a statically-typed Python string in C++. */
 class Str : public Object {
     using Base = Object;
@@ -529,23 +278,9 @@ public:
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "capitalize", Args...>)
-    [[nodiscard]] decltype(auto) capitalize(this const Self& self, Args&&... args) {
-        return impl::call_method<"capitalize">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "casefold", Args...>)
-    [[nodiscard]] decltype(auto) casefold(this const Self& self, Args&&... args) {
-        return impl::call_method<"casefold">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "center", Args...>)
-    [[nodiscard]] decltype(auto) center(this const Self& self, Args&&... args) {
-        return impl::call_method<"center">(self, std::forward<Args>(args)...);
-    }
+    BERTRAND_METHOD(Str, [[nodiscard]], capitalize, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], casefold, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], center, const)
 
     [[nodiscard]] size_t count(
         const Str& sub,
@@ -564,11 +299,7 @@ public:
         return static_cast<size_t>(result);
     }
 
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "encode", Args...>)
-    [[nodiscard]] decltype(auto) encode(this const Self& self, Args&&... args) {
-        return impl::call_method<"encode">(self, std::forward<Args>(args)...);
-    }
+    BERTRAND_METHOD(Str, [[nodiscard]], encode, const)
 
     [[nodiscard]] bool endswith(
         const Str& suffix,
@@ -588,11 +319,7 @@ public:
         return result;
     }
 
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "expandtabs", Args...>)
-    [[nodiscard]] decltype(auto) expandtabs(this const Self& self, Args&&... args) {
-        return impl::call_method<"expandtabs">(self, std::forward<Args>(args)...);
-    }
+    BERTRAND_METHOD(Str, [[nodiscard]], expandtabs, const)
 
     [[nodiscard]] Py_ssize_t find(
         const Str& sub,
@@ -616,17 +343,8 @@ public:
         return PyUnicode_FindChar(this->ptr(), ch, start, stop, 1);
     }
 
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "format", Args...>)
-    [[nodiscard]] decltype(auto) format(this const Self& self, Args&&... args) {
-        return impl::call_method<"format">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "format_map", Args...>)
-    [[nodiscard]] decltype(auto) format_map(this const Self& self, Args&&... args) {
-        return impl::call_method<"format_map">(self, std::forward<Args>(args)...);
-    }
+    BERTRAND_METHOD(Str, [[nodiscard]], format, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], format_map, const)
 
     [[nodiscard]] Py_ssize_t index(
         const Str& sub,
@@ -664,77 +382,18 @@ public:
         return result;
     }
 
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isalnum", Args...>)
-    [[nodiscard]] decltype(auto) isalnum(this const Self& self, Args&&... args) {
-        return impl::call_method<"isalnum">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isalpha", Args...>)
-    [[nodiscard]] decltype(auto) isalpha(this const Self& self, Args&&... args) {
-        return impl::call_method<"isalpha">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isascii", Args...>)
-    [[nodiscard]] decltype(auto) isascii(this const Self& self, Args&&... args) {
-        return impl::call_method<"isascii">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isdecimal", Args...>)
-    [[nodiscard]] decltype(auto) isdecimal(this const Self& self, Args&&... args) {
-        return impl::call_method<"isdecimal">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isdigit", Args...>)
-    [[nodiscard]] decltype(auto) isdigit(this const Self& self, Args&&... args) {
-        return impl::call_method<"isdigit">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isidentifier", Args...>)
-    [[nodiscard]] decltype(auto) isidentifier(this const Self& self, Args&&... args) {
-        return impl::call_method<"isidentifier">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "islower", Args...>)
-    [[nodiscard]] decltype(auto) islower(this const Self& self, Args&&... args) {
-        return impl::call_method<"islower">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isnumeric", Args...>)
-    [[nodiscard]] decltype(auto) isnumeric(this const Self& self, Args&&... args) {
-        return impl::call_method<"isnumeric">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isprintable", Args...>)
-    [[nodiscard]] decltype(auto) isprintable(this const Self& self, Args&&... args) {
-        return impl::call_method<"isprintable">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isspace", Args...>)
-    [[nodiscard]] decltype(auto) isspace(this const Self& self, Args&&... args) {
-        return impl::call_method<"isspace">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "istitle", Args...>)
-    [[nodiscard]] decltype(auto) istitle(this const Self& self, Args&&... args) {
-        return impl::call_method<"istitle">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "isupper", Args...>)
-    [[nodiscard]] decltype(auto) isupper(this const Self& self, Args&&... args) {
-        return impl::call_method<"isupper">(self, std::forward<Args>(args)...);
-    }
+    BERTRAND_METHOD(Str, [[nodiscard]], isalnum, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], isalpha, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], isascii, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], isdecimal, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], isdigit, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], isidentifier, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], islower, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], isnumeric, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], isprintable, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], isspace, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], istitle, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], isupper, const)
 
     template <impl::is_iterable T>
     [[nodiscard]] Str join(const T& iterable) const {
@@ -752,47 +411,13 @@ public:
         return join(py::List(iterable));
     }
 
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "ljust", Args...>)
-    [[nodiscard]] decltype(auto) ljust(this const Self& self, Args&&... args) {
-        return impl::call_method<"ljust">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "lower", Args...>)
-    [[nodiscard]] decltype(auto) lower(this const Self& self, Args&&... args) {
-        return impl::call_method<"lower">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "lstrip", Args...>)
-    [[nodiscard]] decltype(auto) lstrip(this const Self& self, Args&&... args) {
-        return impl::call_method<"lstrip">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename... Args>
-        requires (impl::invocable<Str, "maketrans", Args...>)
-    [[nodiscard]] static decltype(auto) maketrans(Args&&... args) {
-        return impl::call_static<Str, "maketrans">(std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "partition", Args...>)
-    [[nodiscard]] decltype(auto) partition(this const Self& self, Args&&... args) {
-        return impl::call_method<"partition">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "removeprefix", Args...>)
-    [[nodiscard]] decltype(auto) removeprefix(this const Self& self, Args&&... args) {
-        return impl::call_method<"removeprefix">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "removesuffix", Args...>)
-    [[nodiscard]] decltype(auto) removesuffix(this const Self& self, Args&&... args) {
-        return impl::call_method<"removesuffix">(self, std::forward<Args>(args)...);
-    }
+    BERTRAND_METHOD(Str, [[nodiscard]], ljust, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], lower, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], lstrip, const)
+    BERTRAND_STATIC_METHOD(Str, [[nodiscard]], maketrans)
+    BERTRAND_METHOD(Str, [[nodiscard]], partition, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], removeprefix, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], removesuffix, const)
 
     [[nodiscard]] Str replace(const Str& sub, const Str& repl, Py_ssize_t maxcount = -1) const {
         PyObject* result = PyUnicode_Replace(
@@ -865,29 +490,10 @@ public:
         return result;
     }
 
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rjust", Args...>)
-    [[nodiscard]] decltype(auto) rjust(this const Self& self, Args&&... args) {
-        return impl::call_method<"rjust">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rpartition", Args...>)
-    [[nodiscard]] decltype(auto) rpartition(this const Self& self, Args&&... args) {
-        return impl::call_method<"rpartition">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rsplit", Args...>)
-    [[nodiscard]] decltype(auto) rsplit(this const Self& self, Args&&... args) {
-        return impl::call_method<"rsplit">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "rstrip", Args...>)
-    [[nodiscard]] decltype(auto) rstrip(this const Self& self, Args&&... args) {
-        return impl::call_method<"rstrip">(self, std::forward<Args>(args)...);
-    }
+    BERTRAND_METHOD(Str, [[nodiscard]], rjust, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], rpartition, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], rsplit, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], rstrip, const)
 
     [[nodiscard]] List<Str> split() const {
         PyObject* result = PyUnicode_Split(this->ptr(), nullptr, -1);
@@ -931,41 +537,12 @@ public:
         return result;
     }
 
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "strip", Args...>)
-    [[nodiscard]] decltype(auto) strip(this const Self& self, Args&&... args) {
-        return impl::call_method<"strip">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "swapcase", Args...>)
-    [[nodiscard]] decltype(auto) swapcase(this const Self& self, Args&&... args) {
-        return impl::call_method<"swapcase">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "title", Args...>)
-    [[nodiscard]] decltype(auto) title(this const Self& self, Args&&... args) {
-        return impl::call_method<"title">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "translate", Args...>)
-    [[nodiscard]] decltype(auto) translate(this const Self& self, Args&&... args) {
-        return impl::call_method<"translate">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "upper", Args...>)
-    [[nodiscard]] decltype(auto) upper(this const Self& self, Args&&... args) {
-        return impl::call_method<"upper">(self, std::forward<Args>(args)...);
-    }
-
-    template <typename Self, typename... Args>
-        requires (impl::invocable<Self, "zfill", Args...>)
-    [[nodiscard]] decltype(auto) zfill(this const Self& self, Args&&... args) {
-        return impl::call_method<"zfill">(self, std::forward<Args>(args)...);
-    }
+    BERTRAND_METHOD(Str, [[nodiscard]], strip, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], swapcase, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], title, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], translate, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], upper, const)
+    BERTRAND_METHOD(Str, [[nodiscard]], zfill, const)
 
 };
 

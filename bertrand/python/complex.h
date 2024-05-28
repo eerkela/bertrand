@@ -12,16 +12,6 @@ namespace bertrand {
 namespace py {
 
 
-template <std::derived_from<Complex> T>
-struct __getattr__<T, "conjugate">                              : Returns<Function<
-    Complex()
->> {};
-template <std::derived_from<Complex> T>
-struct __getattr__<T, "real">                                   : Returns<Float> {};
-template <std::derived_from<Complex> T>
-struct __getattr__<T, "imag">                                   : Returns<Float> {};
-
-
 /* Represents a statically-typed Python complex number in C++. */
 class Complex : public Object {
     using Base = Object;

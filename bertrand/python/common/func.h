@@ -2925,6 +2925,32 @@ namespace impl {
         }
     }
 
+    /* A convenience macro that is meant to be invoked in the body of a py::Object
+    subclass, which generates a thin wrapper that forwards to the named method using
+    the argument conventions defined in its __getattr__ specialization. */
+    #define BERTRAND_METHOD(type, attributes, name, qualifiers) \
+        template <typename... Args> \
+            requires (impl::invocable<type, BERTRAND_STRINGIFY(name), Args...>) \
+        attributes decltype(auto) name(Args&&... args) qualifiers { \
+            return impl::call_method<BERTRAND_STRINGIFY(name)>( \
+                *this, \
+                std::forward<Args>(args)... \
+            ); \
+        }
+
+    /* A convenience macro that is meant to be invoked in the body of a py::Object
+    subclass, which generates a thin wrapper that forwards to the named class or
+    static method using the argument conventions defined in its __getattr__
+    specialization. */
+    #define BERTRAND_STATIC_METHOD(type, attributes, name) \
+        template <typename... Args> \
+            requires (impl::invocable<type, BERTRAND_STRINGIFY(name), Args...>) \
+        attributes static decltype(auto) name(Args&&... args) { \
+            return impl::call_static<type, BERTRAND_STRINGIFY(name)>( \
+                std::forward<Args>(args)... \
+            ); \
+        }
+
 }
 
 

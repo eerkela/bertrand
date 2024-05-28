@@ -55,12 +55,7 @@ namespace impl {
 ////////////////////
 
 
-template <std::derived_from<impl::KeyTag> Self>
-struct __getattr__<Self, "mapping">                             : Returns<MappingProxy<typename Self::mapping_type>> {};
-template <std::derived_from<impl::KeyTag> Self>
-struct __getattr__<Self, "isdisjoint">                          : Returns<Function<
-    Bool(typename Arg<"other", const Object&>::pos)
->> {};
+
 
 
 namespace ops {
@@ -160,22 +155,28 @@ public:
     KeyView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a key view on an existing dictionary. */
-    explicit KeyView(const Map& dict);
+    explicit KeyView(const Map& dict) :
+        Base(impl::call_method<"keys">(dict).release(), stolen_t{})
+    {}
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
     /* Equivalent to Python `dict.keys().mapping`. */
-    [[nodiscard]] MappingProxy<mapping_type> mapping() const;
+    [[nodiscard]] auto mapping() const;
 
     /* Equivalent to Python `dict.keys().isdisjoint(other)`. */
     template <impl::is_iterable T>
         requires (std::convertible_to<impl::iter_type<T>, key_type>)
-    [[nodiscard]] bool isdisjoint(const T& other) const;
+    [[nodiscard]] bool isdisjoint(const T& other) const {
+        return impl::call_method<"isdisjoint">(*this, other);
+    }
 
     /* Equivalent to Python `dict.keys().isdisjoint(<braced initializer list>)`. */
-    [[nodiscard]] bool isdisjoint(const std::initializer_list<key_type>& other) const;
+    [[nodiscard]] bool isdisjoint(const std::initializer_list<key_type>& other) const {
+        return impl::call_method<"isdisjoint">(*this, other);
+    }
 
     /////////////////////////
     ////    OPERATORS    ////
@@ -233,8 +234,6 @@ public:
 //////////////////////
 
 
-template <std::derived_from<impl::ValueTag> Self>
-struct __getattr__<Self, "mapping">                             : Returns<MappingProxy<typename Self::mapping_type>> {};
 
 
 namespace ops {
@@ -333,14 +332,16 @@ public:
     ValueView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create a values view on an existing dictionary. */
-    explicit ValueView(const Map& dict);
+    explicit ValueView(const Map& dict) :
+        Base(impl::call_method<"values">(dict).release(), stolen_t{})
+    {}
 
     ///////////////////////////////
     ////   PYTHON INTERFACE    ////
     ///////////////////////////////
 
     /* Equivalent to Python `dict.values().mapping`. */
-    [[nodiscard]] MappingProxy<mapping_type> mapping() const;
+    [[nodiscard]] auto mapping() const;
 
 };
 
@@ -350,8 +351,6 @@ public:
 /////////////////////
 
 
-template <std::derived_from<impl::ItemTag> Self>
-struct __getattr__<Self, "mapping">                             : Returns<MappingProxy<typename Self::mapping_type>> {};
 
 
 namespace ops {
@@ -462,14 +461,16 @@ public:
     ItemView(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly create an items view on an existing dictionary. */
-    explicit ItemView(const Map& dict);
+    explicit ItemView(const Map& dict) :
+        Base(impl::call_method<"items">(dict).release(), stolen_t{})
+    {}
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
     /* Equivalent to Python `dict.items().mapping`. */
-    [[nodiscard]] MappingProxy<mapping_type> mapping() const;
+    [[nodiscard]] auto mapping() const;
 
 };
 
@@ -477,67 +478,6 @@ public:
 ////////////////////
 ////    DICT    ////
 ////////////////////
-
-
-template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "fromkeys">                        : Returns<Function<
-    Self(
-        typename Arg<"keys", const Object&>::pos,
-        typename Arg<"value", const Object&>::pos::opt
-    )
->> {};
-template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "copy">                            : Returns<Function<
-    Self()
->> {};
-template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "clear">                           : Returns<Function<
-    void()
->> {};
-template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "get">                             : Returns<Function<
-    typename Self::value_type(
-        typename Arg<"key", const Object&>::pos,
-        typename Arg<"default", const Object&>::pos::opt
-    )
->> {};
-template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "pop">                             : Returns<Function<
-    typename Self::value_type(
-        typename Arg<"key", const Object&>::pos,
-        typename Arg<"default", const Object&>::pos::opt
-    )
->> {};
-template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "popitem">                         : Returns<Function<
-    Tuple<Object>()  // TODO: return a struct with defined key and value types instead
->> {};
-template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "setdefault">                      : Returns<Function<
-    typename Self::value_type(
-        typename Arg<"key", const Object&>::pos,
-        typename Arg<"default", const Object&>::pos::opt
-    )
->> {};
-template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "update">                          : Returns<Function<
-    void(
-        typename Arg<"other", const Object&>::pos,
-        typename Arg<"kwargs", const Object&>::kwargs
-    )
->> {};
-template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "keys">                            : Returns<Function<
-    KeyView<Self>()
->> {};
-template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "values">                          : Returns<Function<
-    ValueView<Self>()
->> {};
-template <std::derived_from<impl::DictTag> Self>
-struct __getattr__<Self, "items">                           : Returns<Function<
-    ItemView<Self>()
->> {};
 
 
 namespace ops {
@@ -971,7 +911,9 @@ public:
     }
 
     /* Equivalent to Python `dict.popitem()`. */
-    value_type popitem();
+    value_type popitem() {
+        return impl::call_method<"popitem">(*this);
+    }
 
     /* Equivalent to Python `dict.setdefault(key, default_value)`. */
     value_type setdefault(const key_type& key, const value_type& default_value) {
@@ -1053,13 +995,19 @@ public:
     /////////////////////
 
     /* Equivalent to Python `dict.keys()`. */
-    [[nodiscard]] KeyView<Dict> keys() const;
+    [[nodiscard]] auto keys() const {
+        return KeyView(*this);
+    }
 
     /* Equivalent to Python `dict.values()`. */
-    [[nodiscard]] ValueView<Dict> values() const;
+    [[nodiscard]] auto values() const {
+        return ValueView(*this);
+    }
 
     /* Equivalent to Python `dict.items()`. */
-    [[nodiscard]] ItemView<Dict> items() const;
+    [[nodiscard]] auto items() const {
+        return ItemView(*this);
+    }
 
     /////////////////////////
     ////    OPERATORS    ////
@@ -1088,31 +1036,6 @@ public:
 ////////////////////////////
 ////    MAPPINGPROXY    ////
 ////////////////////////////
-
-
-template <std::derived_from<impl::MappingProxyTag> Self>
-struct __getattr__<Self, "copy">                                : Returns<Function<
-    typename Self::mapping_type()
->> {};
-template <std::derived_from<impl::MappingProxyTag> Self>
-struct __getattr__<Self, "get">                                 : Returns<Function<
-    typename Self::value_type(
-        typename Arg<"key", const Object&>::pos,
-        typename Arg<"default", const Object&>::pos::opt
-    )
->> {};
-template <std::derived_from<impl::MappingProxyTag> Self>
-struct __getattr__<Self, "keys">                                : Returns<Function<
-    KeyView<typename Self::mapping_type>()
->> {};
-template <std::derived_from<impl::MappingProxyTag> Self>
-struct __getattr__<Self, "values">                              : Returns<Function<
-    ValueView<typename Self::mapping_type>()
->> {};
-template <std::derived_from<impl::MappingProxyTag> Self>
-struct __getattr__<Self, "items">                               : Returns<Function<
-    ItemView<typename Self::mapping_type>()
->> {};
 
 
 namespace ops {
@@ -1330,20 +1253,20 @@ public:
 
 
 template <typename Map>
-[[nodiscard]] MappingProxy<Map> KeyView<Map>::mapping() const {
-    return attr<"mapping">();
+[[nodiscard]] auto KeyView<Map>::mapping() const {
+    return attr<"mapping">().value();
 }
 
 
 template <typename Map>
-[[nodiscard]] MappingProxy<Map> ValueView<Map>::mapping() const {
-    return attr<"mapping">();
+[[nodiscard]] auto ValueView<Map>::mapping() const {
+    return attr<"mapping">().value();
 }
 
 
 template <typename Map>
-[[nodiscard]] MappingProxy<Map> ItemView<Map>::mapping() const {
-    return attr<"mapping">();
+[[nodiscard]] auto ItemView<Map>::mapping() const {
+    return attr<"mapping">().value();
 }
 
 

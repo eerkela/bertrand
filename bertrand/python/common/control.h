@@ -53,8 +53,8 @@ template <typename R, typename C, typename... A>
 struct __as_object__<R(C::*)(A...) const volatile noexcept> : Returns<Function<R(A...)>> {};
 template <typename R, typename... A>
 struct __as_object__<std::function<R(A...)>>                : Returns<Function<R(A...)>> {};
-// template <std::derived_from<pybind11::function> T>
-// struct __as_object__<T>                                  : Returns<Function<>>> {};
+template <std::derived_from<pybind11::function> T>
+struct __as_object__<T>                                     : Returns<Function<>> {};
 template <>
 struct __as_object__<std::nullptr_t>                        : Returns<NoneType> {};
 template <>
@@ -2014,24 +2014,6 @@ template <StaticStr Name>
 struct __delattr__<Object, Name>                            : Returns<void> {};
 
 
-template <std::derived_from<impl::FunctionTag> Self>
-struct __getattr__<Self, "__func__">                        : Returns<Function<
-    Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)
->> {};
-template <std::derived_from<impl::FunctionTag> Self>
-struct __getattr__<Self, "__code__">                        : Returns<Code> {};
-template <std::derived_from<impl::FunctionTag> Self>
-struct __getattr__<Self, "__globals__">                     : Returns<Dict<Str, Object>> {};
-template <std::derived_from<impl::FunctionTag> Self>
-struct __getattr__<Self, "__closure__">                     : Returns<Tuple<Object>> {};
-template <std::derived_from<impl::FunctionTag> Self>
-struct __getattr__<Self, "__defaults__">                    : Returns<Tuple<Object>> {};
-template <std::derived_from<impl::FunctionTag> Self>
-struct __getattr__<Self, "__kwdefaults__">                  : Returns<Dict<Str, Object>> {};
-template <std::derived_from<impl::FunctionTag> Self>
-struct __getattr__<Self, "__annotations__">                 : Returns<Dict<Str, Object>> {};
-
-
 template <std::derived_from<Slice> Self>
 struct __getattr__<Self, "indices">                             : Returns<Function<
     Tuple<Int>(Arg<"length", const Int&>)
@@ -2068,19 +2050,339 @@ template <StaticStr Name>
 struct __delattr__<Super, Name>                             : Returns<void> {};
 
 
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__func__">                        : Returns<Function<
+    Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)
+>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__code__">                        : Returns<Code> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__globals__">                     : Returns<Dict<Str, Object>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__closure__">                     : Returns<Tuple<Object>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__defaults__">                    : Returns<Tuple<Object>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__kwdefaults__">                  : Returns<Dict<Str, Object>> {};
+template <std::derived_from<impl::FunctionTag> Self>
+struct __getattr__<Self, "__annotations__">                 : Returns<Dict<Str, Object>> {};
 
 
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_name">                         : Returns<Str> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_qualname">                     : Returns<Str> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_argcount">                     : Returns<Int> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_posonlyargcount">              : Returns<Int> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_kwonlyargcount">               : Returns<Int> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_nlocals">                      : Returns<Int> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_varnames">                     : Returns<Tuple<Str>> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_cellvars">                     : Returns<Tuple<Str>> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_freevars">                     : Returns<Tuple<Str>> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_code">                         : Returns<Bytes> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_consts">                       : Returns<Tuple<Object>> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_names">                        : Returns<Tuple<Str>> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_filename">                     : Returns<Str> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_firstlineno">                  : Returns<Int> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_stacksize">                    : Returns<Int> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_flags">                        : Returns<Int> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_positions">                    : Returns<Function<Object()>> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "co_lines">                        : Returns<Function<Object()>> {};
+template <std::derived_from<Code> Self>
+struct __getattr__<Self, "replace">                         : Returns<Function<
+    Object(typename Arg<"kwargs", const Object&>::kwargs)
+>> {};
 
-// TODO: others, in logical order
+
+template <std::derived_from<Frame> Self>
+struct __getattr__<Self, "f_back">                          : Returns<Frame> {};
+template <std::derived_from<Frame> Self>
+struct __getattr__<Self, "f_code">                          : Returns<Code> {};
+template <std::derived_from<Frame> Self>
+struct __getattr__<Self, "f_locals">                        : Returns<Dict<Str, Object>> {};
+template <std::derived_from<Frame> Self>
+struct __getattr__<Self, "f_globals">                       : Returns<Dict<Str, Object>> {};
+template <std::derived_from<Frame> Self>
+struct __getattr__<Self, "f_builtins">                      : Returns<Dict<Str, Object>> {};
+template <std::derived_from<Frame> Self>
+struct __getattr__<Self, "f_lasti">                         : Returns<Int> {};
+template <std::derived_from<Frame> Self>
+struct __getattr__<Self, "f_trace">                         : Returns<Object> {};
+template <std::derived_from<Frame> Self, std::convertible_to<Object> Value>
+struct __setattr__<Self, "f_trace", Value>                  : Returns<void> {};
+template <std::derived_from<Frame> Self>
+struct __delattr__<Self, "f_trace">                         : Returns<void> {};
+template <std::derived_from<Frame> Self>
+struct __getattr__<Self, "f_trace_lines">                   : Returns<Bool> {};
+template <std::derived_from<Frame> Self, impl::bool_like Value>
+struct __setattr__<Self, "f_trace_lines", Value>            : Returns<void> {};
+template <std::derived_from<Frame> Self>
+struct __getattr__<Self, "f_trace_opcodes">                 : Returns<Bool> {};
+template <std::derived_from<Frame> Self, impl::bool_like Value>
+struct __setattr__<Self, "f_trace_opcodes", Value>          : Returns<void> {};
+template <std::derived_from<Frame> Self>
+struct __getattr__<Self, "f_lineno">                        : Returns<Bool> {};
+template <std::derived_from<Frame> Self, impl::int_like Value>
+struct __setattr__<Self, "f_lineno", Value>                 : Returns<void> {};
+template <std::derived_from<Frame> Self>
+struct __getattr__<Self, "clear">                           : Returns<Function<void()>> {};
 
 
+template <std::derived_from<Complex> Self>
+struct __getattr__<Self, "conjugate">                       : Returns<Function<Complex()>> {};
+template <std::derived_from<Complex> Self>
+struct __getattr__<Self, "real">                            : Returns<Float> {};
+template <std::derived_from<Complex> Self>
+struct __getattr__<Self, "imag">                            : Returns<Float> {};
 
+
+template <std::derived_from<Range> Self>
+struct __getattr__<Self, "count">                           : Returns<Function<
+    Int(typename Arg<"value", const Int&>::pos)
+>> {};
+template <std::derived_from<Range> Self>
+struct __getattr__<Self, "index">                           : Returns<Function<
+    Int(typename Arg<"value", const Int&>::pos)
+>> {};
+template <std::derived_from<Range> Self>
+struct __getattr__<Self, "start">                           : Returns<Int> {};
+template <std::derived_from<Range> Self>
+struct __getattr__<Self, "stop">                            : Returns<Int> {};
+template <std::derived_from<Range> Self>
+struct __getattr__<Self, "step">                            : Returns<Int> {};
+
+
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "capitalize">                      : Returns<Function<Str()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "casefold">                        : Returns<Function<Str()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "center">                          : Returns<Function<
+    Str(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillchar", const Str&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "copy">                            : Returns<Function<Str()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "count">                           : Returns<Function<
+    Int(
+        typename Arg<"sub", const Str&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "encode">                          : Returns<Function<
+    Bytes(
+        typename Arg<"encoding", const Str&>::opt,
+        typename Arg<"errors", const Str&>::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "endswith">                        : Returns<Function<
+    Bool(
+        typename Arg<"suffix", const Str&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "expandtabs">                      : Returns<Function<
+    Str(typename Arg<"tabsize", const Int&>::opt)
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "find">                            : Returns<Function<
+    Int(
+        typename Arg<"sub", const Str&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "format">                          : Returns<Function<
+    Str(
+        typename Arg<"args", const Object&>::args,
+        typename Arg<"kwargs", const Object&>::kwargs
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "format_map">                      : Returns<Function<
+    Str(typename Arg<"mapping", const Object&>::pos)
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "index">                           : Returns<Function<
+    Int(
+        typename Arg<"sub", const Str&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "isalnum">                         : Returns<Function<Bool()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "isalpha">                         : Returns<Function<Bool()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "isascii">                         : Returns<Function<Bool()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "isdecimal">                       : Returns<Function<Bool()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "isdigit">                         : Returns<Function<Bool()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "isidentifier">                    : Returns<Function<Bool()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "islower">                         : Returns<Function<Bool()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "isnumeric">                       : Returns<Function<Bool()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "isprintable">                     : Returns<Function<Bool()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "isspace">                         : Returns<Function<Bool()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "istitle">                         : Returns<Function<Bool()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "isupper">                         : Returns<Function<Bool()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "join">                            : Returns<Function<
+    Str(typename Arg<"iterable", const Object&>::pos)
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "ljust">                           : Returns<Function<
+    Str(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillchar", const Str&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "lower">                           : Returns<Function<Str()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "lstrip">                          : Returns<Function<
+    Str(typename Arg<"chars", const Str&>::opt)
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "maketrans">                       : Returns<Function<
+    Dict<Str, Str>(
+        typename Arg<"x", const Object&>::pos,
+        typename Arg<"y", const Object&>::pos::opt,
+        typename Arg<"z", const Object&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "partition">                       : Returns<Function<
+    Tuple<Str>(typename Arg<"sep", const Str&>::pos)
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "removeprefix">                    : Returns<Function<
+    Str(typename Arg<"prefix", const Str&>::pos)
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "removesuffix">                    : Returns<Function<
+    Str(typename Arg<"suffix", const Str&>::pos)
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "replace">                         : Returns<Function<
+    Str(
+        typename Arg<"old", const Str&>::pos,
+        typename Arg<"new", const Str&>::pos,
+        typename Arg<"count", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "rfind">                           : Returns<Function<
+    Int(
+        typename Arg<"sub", const Str&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "rindex">                          : Returns<Function<
+    Int(
+        typename Arg<"sub", const Str&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "rjust">                           : Returns<Function<
+    Str(
+        typename Arg<"width", const Int&>::pos,
+        typename Arg<"fillchar", const Str&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "rpartition">                      : Returns<Function<
+    Tuple<Str>(typename Arg<"sep", const Str&>::pos)
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "rsplit">                          : Returns<Function<
+    List<Str>(
+        typename Arg<"sep", const Str&>::opt,
+        typename Arg<"maxsplit", const Int&>::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "rstrip">                          : Returns<Function<
+    Str(typename Arg<"chars", const Str&>::opt)
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "split">                           : Returns<Function<
+    List<Str>(
+        typename Arg<"sep", const Str&>::opt,
+        typename Arg<"maxsplit", const Int&>::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "splitlines">                      : Returns<Function<
+    List<Str>(typename Arg<"keepends", const Bool&>::opt)
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "startswith">                      : Returns<Function<
+    Bool(
+        typename Arg<"prefix", const Str&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"end", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "strip">                           : Returns<Function<
+    Str(typename Arg<"chars", const Str&>::opt)
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "swapcase">                        : Returns<Function<Str()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "title">                           : Returns<Function<Str()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "translate">                       : Returns<Function<
+    Str(typename Arg<"table", const Dict<Str, Str>&>::pos)
+>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "upper">                           : Returns<Function<Str()>> {};
+template <std::derived_from<Str> Self>
+struct __getattr__<Self, "zfill">                           : Returns<Function<
+    Str(typename Arg<"width", const Int&>::pos)
+>> {};
 
 
 template <std::derived_from<Bytes> Self>
-struct __getattr__<Self, "capitalize">                      : Returns<Function<
-    Bytes()
->> {};
+struct __getattr__<Self, "capitalize">                      : Returns<Function<Bytes()>> {};
 template <std::derived_from<Bytes> Self>
 struct __getattr__<Self, "center">                          : Returns<Function<
     Bytes(
@@ -2143,37 +2445,21 @@ struct __getattr__<Self, "index">                           : Returns<Function<
     )
 >> {};
 template <std::derived_from<Bytes> Self>
-struct __getattr__<Self, "isalnum">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "isalnum">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<Bytes> Self>
-struct __getattr__<Self, "isalpha">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "isalpha">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<Bytes> Self>
-struct __getattr__<Self, "isascii">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "isascii">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<Bytes> Self>
-struct __getattr__<Self, "isdigit">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "isdigit">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<Bytes> Self>
-struct __getattr__<Self, "islower">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "islower">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<Bytes> Self>
-struct __getattr__<Self, "isspace">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "isspace">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<Bytes> Self>
-struct __getattr__<Self, "istitle">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "istitle">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<Bytes> Self>
-struct __getattr__<Self, "isupper">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "isupper">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<Bytes> Self>
 struct __getattr__<Self, "join">                            : Returns<Function<
     Bytes(typename Arg<"iterable", const Object&>::pos)
@@ -2186,9 +2472,7 @@ struct __getattr__<Self, "ljust">                           : Returns<Function<
     )
 >> {};
 template <std::derived_from<Bytes> Self>
-struct __getattr__<Self, "lower">                           : Returns<Function<
-    Bytes()
->> {};
+struct __getattr__<Self, "lower">                           : Returns<Function<Bytes()>> {};
 template <std::derived_from<Bytes> Self>
 struct __getattr__<Self, "lstrip">                          : Returns<Function<
     Bytes(typename Arg<"chars", const Bytes&>::opt)
@@ -2282,13 +2566,9 @@ struct __getattr__<Self, "strip">                           : Returns<Function<
     Bytes(typename Arg<"chars", const Bytes&>::opt)
 >> {};
 template <std::derived_from<Bytes> Self>
-struct __getattr__<Self, "swapcase">                        : Returns<Function<
-    Bytes()
->> {};
+struct __getattr__<Self, "swapcase">                        : Returns<Function<Bytes()>> {};
 template <std::derived_from<Bytes> Self>
-struct __getattr__<Self, "title">                           : Returns<Function<
-    Bytes()
->> {};
+struct __getattr__<Self, "title">                           : Returns<Function<Bytes()>> {};
 template <std::derived_from<Bytes> Self>
 struct __getattr__<Self, "translate">                       : Returns<Function<
     Bytes(
@@ -2297,9 +2577,7 @@ struct __getattr__<Self, "translate">                       : Returns<Function<
     )
 >> {};
 template <std::derived_from<Bytes> Self>
-struct __getattr__<Self, "upper">                           : Returns<Function<
-    Bytes()
->> {};
+struct __getattr__<Self, "upper">                           : Returns<Function<Bytes()>> {};
 template <std::derived_from<Bytes> Self>
 struct __getattr__<Self, "zfill">                           : Returns<Function<
     Bytes(typename Arg<"width", const Int&>::pos)
@@ -2372,37 +2650,21 @@ struct __getattr__<Self, "index">                           : Returns<Function<
     )
 >> {};
 template <std::derived_from<ByteArray> Self>
-struct __getattr__<Self, "isalnum">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "isalnum">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<ByteArray> Self>
-struct __getattr__<Self, "isalpha">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "isalpha">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<ByteArray> Self>
-struct __getattr__<Self, "isascii">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "isascii">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<ByteArray> Self>
-struct __getattr__<Self, "isdigit">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "isdigit">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<ByteArray> Self>
-struct __getattr__<Self, "islower">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "islower">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<ByteArray> Self>
-struct __getattr__<Self, "isspace">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "isspace">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<ByteArray> Self>
-struct __getattr__<Self, "istitle">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "istitle">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<ByteArray> Self>
-struct __getattr__<Self, "isupper">                         : Returns<Function<
-    Bool()
->> {};
+struct __getattr__<Self, "isupper">                         : Returns<Function<Bool()>> {};
 template <std::derived_from<ByteArray> Self>
 struct __getattr__<Self, "join">                            : Returns<Function<
     ByteArray(typename Arg<"iterable", const Object&>::pos)
@@ -2415,9 +2677,7 @@ struct __getattr__<Self, "ljust">                           : Returns<Function<
     )
 >> {};
 template <std::derived_from<ByteArray> Self>
-struct __getattr__<Self, "lower">                           : Returns<Function<
-    ByteArray()
->> {};
+struct __getattr__<Self, "lower">                           : Returns<Function<ByteArray()>> {};
 template <std::derived_from<ByteArray> Self>
 struct __getattr__<Self, "lstrip">                          : Returns<Function<
     ByteArray(typename Arg<"chars", const ByteArray&>::opt)
@@ -2511,13 +2771,9 @@ struct __getattr__<Self, "strip">                           : Returns<Function<
     ByteArray(typename Arg<"chars", const ByteArray&>::opt)
 >> {};
 template <std::derived_from<ByteArray> Self>
-struct __getattr__<Self, "swapcase">                        : Returns<Function<
-    ByteArray()
->> {};
+struct __getattr__<Self, "swapcase">                        : Returns<Function<ByteArray()>> {};
 template <std::derived_from<ByteArray> Self>
-struct __getattr__<Self, "title">                           : Returns<Function<
-    ByteArray()
->> {};
+struct __getattr__<Self, "title">                           : Returns<Function<ByteArray()>> {};
 template <std::derived_from<ByteArray> Self>
 struct __getattr__<Self, "translate">                       : Returns<Function<
     ByteArray(
@@ -2526,22 +2782,283 @@ struct __getattr__<Self, "translate">                       : Returns<Function<
     )
 >> {};
 template <std::derived_from<ByteArray> Self>
-struct __getattr__<Self, "upper">                           : Returns<Function<
-    ByteArray()
->> {};
+struct __getattr__<Self, "upper">                           : Returns<Function<ByteArray()>> {};
 template <std::derived_from<ByteArray> Self>
 struct __getattr__<Self, "zfill">                           : Returns<Function<
     ByteArray(typename Arg<"width", const Int&>::pos)
 >> {};
 
 
+template <std::derived_from<impl::TupleTag> Self>
+struct __getattr__<Self, "count">                           : Returns<Function<
+    Int(typename Arg<"value", const Object&>::pos)
+>> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __getattr__<Self, "index">                           : Returns<Function<
+    Int(
+        typename Arg<"value", const Object&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
 
 
+template <std::derived_from<impl::ListTag> Self>
+struct __getattr__<Self, "append">                          : Returns<Function<
+    void(typename Arg<"value", const typename Self::value_type&>::pos)
+>> {};
+template <std::derived_from<impl::ListTag> Self>
+struct __getattr__<Self, "extend">                          : Returns<Function<
+    void(typename Arg<"iterable", const Object&>::pos)
+>> {};
+template <std::derived_from<impl::ListTag> Self>
+struct __getattr__<Self, "insert">                          : Returns<Function<
+    void(
+        typename Arg<"index", const Int&>::pos,
+        typename Arg<"value", const typename Self::value_type&>::pos
+    )
+>> {};
+template <std::derived_from<impl::ListTag> Self>
+struct __getattr__<Self, "copy">                            : Returns<Function<
+    List<typename Self::value_type>()
+>> {};
+template <std::derived_from<impl::ListTag> Self>
+struct __getattr__<Self, "count">                           : Returns<Function<
+    Int(typename Arg<"value", const typename Self::value_type&>::pos)
+>> {};
+template <std::derived_from<impl::ListTag> Self>
+struct __getattr__<Self, "index">                           : Returns<Function<
+    Int(
+        typename Arg<"value", const typename Self::value_type&>::pos,
+        typename Arg<"start", const Int&>::pos::opt,
+        typename Arg<"stop", const Int&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::ListTag> Self>
+struct __getattr__<Self, "clear">                           : Returns<Function<void()>> {};
+template <std::derived_from<impl::ListTag> Self>
+struct __getattr__<Self, "remove">                          : Returns<Function<
+    void(typename Arg<"value", const typename Self::value_type&>::pos)
+>> {};
+template <std::derived_from<impl::ListTag> Self>
+struct __getattr__<Self, "pop">                             : Returns<Function<
+    typename Self::value_type(typename Arg<"index", const Int&>::pos::opt)
+>> {};
+template <std::derived_from<impl::ListTag> Self>
+struct __getattr__<Self, "reverse">                         : Returns<Function<void()>> {};
+template <std::derived_from<impl::ListTag> Self>
+struct __getattr__<Self, "sort">                            : Returns<Function<
+    void(
+        typename Arg<"key", const Function<Bool(const typename Self::value_type&)>&>::kw::opt,
+        typename Arg<"reverse", const Bool&>::kw::opt
+    )
+>> {};
 
 
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "add">                             : Returns<Function<
+    void(typename Arg<"value", const typename Self::key_type&>::pos)
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "remove">                          : Returns<Function<
+    void(typename Arg<"value", const typename Self::key_type&>::pos)
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "discard">                         : Returns<Function<
+    void(typename Arg<"value", const typename Self::key_type&>::pos)
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "pop">                             : Returns<Function<
+    typename Self::key_type()
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "clear">                           : Returns<Function<
+    void()
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "copy">                            : Returns<Function<
+    Set<typename Self::key_type>()
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "isdisjoint">                      : Returns<Function<
+    Bool(typename Arg<"other", const Object&>::pos)
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "issubset">                        : Returns<Function<
+    Bool(typename Arg<"other", const Object&>::pos)
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "issuperset">                      : Returns<Function<
+    Bool(typename Arg<"other", const Object&>::pos)
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "union">                           : Returns<Function<
+    Set<typename Self::key_type>(typename Arg<"others", const Object&>::args)
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "update">                          : Returns<Function<
+    void(typename Arg<"others", const Object&>::args)
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "intersection">                    : Returns<Function<
+    Set<typename Self::key_type>(typename Arg<"others", const Object&>::args)
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "intersection_update">             : Returns<Function<
+    void(typename Arg<"others", const Object&>::args)
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "difference">                      : Returns<Function<
+    Set<typename Self::key_type>(typename Arg<"others", const Object&>::args)
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "difference_update">               : Returns<Function<
+    void(typename Arg<"others", const Object&>::args)
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "symmetric_difference">            : Returns<Function<
+    Set<typename Self::key_type>(typename Arg<"other", const Object&>::pos)
+>> {};
+template <std::derived_from<impl::SetTag> Self>
+struct __getattr__<Self, "symmetric_difference_update">     : Returns<Function<
+    void(typename Arg<"other", const Object&>::pos)
+>> {};
 
 
+template <std::derived_from<impl::FrozenSetTag> Self>
+struct __getattr__<Self, "copy">                            : Returns<Function<
+    FrozenSet<typename Self::key_type>()
+>> {};
+template <std::derived_from<impl::FrozenSetTag> Self>
+struct __getattr__<Self, "isdisjoint">                      : Returns<Function<
+    Bool(typename Arg<"other", const Self&>::pos)
+>> {};
+template <std::derived_from<impl::FrozenSetTag> Self>
+struct __getattr__<Self, "issubset">                        : Returns<Function<
+    Bool(typename Arg<"other", const Self&>::pos)
+>> {};
+template <std::derived_from<impl::FrozenSetTag> Self>
+struct __getattr__<Self, "issuperset">                      : Returns<Function<
+    Bool(typename Arg<"other", const Self&>::pos)
+>> {};
+template <std::derived_from<impl::FrozenSetTag> Self>
+struct __getattr__<Self, "union">                           : Returns<Function<
+    FrozenSet<typename Self::key_type>(typename Arg<"others", const Object&>::args)
+>> {};
+template <std::derived_from<impl::FrozenSetTag> Self>
+struct __getattr__<Self, "intersection">                    : Returns<Function<
+    FrozenSet<typename Self::key_type>(typename Arg<"others", const Object&>::args)
+>> {};
+template <std::derived_from<impl::FrozenSetTag> Self>
+struct __getattr__<Self, "difference">                      : Returns<Function<
+    FrozenSet<typename Self::key_type>(typename Arg<"others", const Object&>::args)
+>> {};
+template <std::derived_from<impl::FrozenSetTag> Self>
+struct __getattr__<Self, "symmetric_difference">            : Returns<Function<
+    FrozenSet<typename Self::key_type>(typename Arg<"other", const Object&>::pos)
+>> {};
 
+
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "fromkeys">                        : Returns<Function<
+    Dict<typename Self::key_type, typename Self::value_type>(
+        typename Arg<"keys", const Object&>::pos,
+        typename Arg<"value", const Object&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "copy">                            : Returns<Function<
+    Dict<typename Self::key_type, typename Self::value_type>()
+>> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "clear">                           : Returns<Function<
+    void()
+>> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "get">                             : Returns<Function<
+    typename Self::value_type(
+        typename Arg<"key", const Object&>::pos,
+        typename Arg<"default", const Object&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "pop">                             : Returns<Function<
+    typename Self::value_type(
+        typename Arg<"key", const Object&>::pos,
+        typename Arg<"default", const Object&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "popitem">                         : Returns<Function<
+    Tuple<Object>()  // TODO: return a struct with defined key and value types instead
+>> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "setdefault">                      : Returns<Function<
+    typename Self::value_type(
+        typename Arg<"key", const Object&>::pos,
+        typename Arg<"default", const Object&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "update">                          : Returns<Function<
+    void(
+        typename Arg<"other", const Object&>::pos,
+        typename Arg<"kwargs", const Object&>::kwargs
+    )
+>> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "keys">                            : Returns<Function<KeyView<Self>()>> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "values">                          : Returns<Function<ValueView<Self>()>> {};
+template <std::derived_from<impl::DictTag> Self>
+struct __getattr__<Self, "items">                           : Returns<Function<ItemView<Self>()>> {};
+
+
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __getattr__<Self, "copy">                            : Returns<Function<
+    typename Self::mapping_type()
+>> {};
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __getattr__<Self, "get">                             : Returns<Function<
+    typename Self::value_type(
+        typename Arg<"key", const Object&>::pos,
+        typename Arg<"default", const Object&>::pos::opt
+    )
+>> {};
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __getattr__<Self, "keys">                            : Returns<Function<
+    KeyView<typename Self::mapping_type>()
+>> {};
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __getattr__<Self, "values">                          : Returns<Function<
+    ValueView<typename Self::mapping_type>()
+>> {};
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __getattr__<Self, "items">                           : Returns<Function<
+    ItemView<typename Self::mapping_type>()
+>> {};
+
+
+template <std::derived_from<impl::KeyTag> Self>
+struct __getattr__<Self, "mapping">                         : Returns<
+    MappingProxy<typename Self::mapping_type>
+> {};
+template <std::derived_from<impl::KeyTag> Self>
+struct __getattr__<Self, "isdisjoint">                      : Returns<Function<
+    Bool(typename Arg<"other", const Object&>::pos)
+>> {};
+
+
+template <std::derived_from<impl::ValueTag> Self>
+struct __getattr__<Self, "mapping">                         : Returns<
+    MappingProxy<typename Self::mapping_type>
+> {};
+
+
+template <std::derived_from<impl::ItemTag> Self>
+struct __getattr__<Self, "mapping">                         : Returns<
+    MappingProxy<typename Self::mapping_type>
+> {};
 
 
 template <impl::proxy_like Self, impl::not_proxy_like Key>
