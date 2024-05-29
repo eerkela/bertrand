@@ -22,76 +22,6 @@ namespace bertrand {
 namespace py {
 
 
-namespace ops {
-
-    template <typename Return, std::derived_from<impl::ListTag> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            return PyList_GET_SIZE(self.ptr());
-        }
-    };
-
-    template <typename Return, std::derived_from<impl::ListTag> Self>
-    struct begin<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::Iterator<impl::ListIter<Return>>(self, 0);
-        }
-    };
-
-    template <typename Return, std::derived_from<impl::ListTag> Self>
-    struct end<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::Iterator<impl::ListIter<Return>>(PyList_GET_SIZE(self.ptr()));
-        }
-    };
-
-    template <typename Return, std::derived_from<impl::ListTag> Self>
-    struct rbegin<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::ReverseIterator<impl::ListIter<Return>>(
-                self,
-                PyList_GET_SIZE(self.ptr()) - 1
-            );
-        }
-    };
-
-    template <typename Return, std::derived_from<impl::ListTag> Self>
-    struct rend<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::ReverseIterator<impl::ListIter<Return>>(-1);
-        }
-    };
-
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, impl::ListTag> || std::derived_from<R, impl::ListTag>)
-    struct add<Return, L, R> : sequence::add<Return, L, R> {};
-
-    template <typename Return, std::derived_from<impl::ListTag> L, typename R>
-    struct iadd<Return, L, R> : sequence::iadd<Return, L, R> {};
-
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, impl::ListTag> || std::derived_from<R, impl::ListTag>)
-    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
-
-    template <typename Return, std::derived_from<impl::ListTag> L, typename R>
-    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
-
-}
-
-
-template <typename T>
-List(const std::initializer_list<T>&) -> List<impl::as_object_t<T>>;
-template <impl::is_iterable T>
-List(T) -> List<impl::as_object_t<impl::iter_type<T>>>;
-template <typename T, typename... Args>
-    requires (!impl::is_iterable<T> && !impl::str_like<T>)
-List(T, Args...) -> List<Object>;
-template <impl::str_like T>
-List(T) -> List<Str>;
-template <size_t N>
-List(const char(&)[N]) -> List<Str>;
-
-
 /* Represents a statically-typed Python list in C++. */
 template <typename Val>
 class List : public Object, public impl::ListTag {
@@ -124,12 +54,12 @@ public:
 
     template <typename T>
     [[nodiscard]] static consteval bool typecheck() {
-        if constexpr (!impl::list_like<std::decay_t<T>>) {
+        if constexpr (!impl::list_like<T>) {
             return false;
-        } else if constexpr (impl::pybind11_like<std::decay_t<T>>) {
+        } else if constexpr (impl::pybind11_like<T>) {
             return generic;
-        } else if constexpr (impl::is_iterable<std::decay_t<T>>) {
-            return check_value_type<impl::iter_type<std::decay_t<T>>>;
+        } else if constexpr (impl::is_iterable<T>) {
+            return check_value_type<impl::iter_type<T>>;
         } else {
             return false;
         }
@@ -179,20 +109,27 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    List(Handle h, const borrowed_t& t) : Base(h, t) {}
-    List(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <typename Policy>
-    List(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<List>(accessor).release(), stolen_t{})
-    {}
-
     /* Default constructor.  Initializes to an empty list. */
     List() : Base(PyList_New(0), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
     }
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
+    List(Handle h, const borrowed_t& t) : Base(h, t) {}
+    List(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    /* Copy/move constructors from equivalent pybind11 types or other lists with a
+    narrower value type. */
+    template <impl::python_like T> requires (typecheck<T>())
+    List(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Unwrap a pybind11 accessor into a py::List. */
+    template <typename Policy>
+    List(const pybind11::detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<List>(accessor).release(), stolen_t{})
+    {}
 
     /* Pack the contents of a braced initializer list into a new Python list. */
     List(const std::initializer_list<value_type>& contents) :
@@ -211,11 +148,6 @@ public:
             throw;
         }
     }
-
-    /* Copy/move constructors from equivalent pybind11 types or other lists with a
-    narrower value type. */
-    template <impl::python_like T> requires (typecheck<T>())
-    List(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly unpack a generic Python container into a py::List. */
     template <impl::python_like T> requires (!impl::list_like<T> && impl::is_iterable<T>)
@@ -599,6 +531,76 @@ protected:
     }
 
 };
+
+
+template <typename T>
+List(const std::initializer_list<T>&) -> List<impl::as_object_t<T>>;
+template <impl::is_iterable T>
+List(T) -> List<impl::as_object_t<impl::iter_type<T>>>;
+template <typename T, typename... Args>
+    requires (!impl::is_iterable<T> && !impl::str_like<T>)
+List(T, Args...) -> List<Object>;
+template <impl::str_like T>
+List(T) -> List<Str>;
+template <size_t N>
+List(const char(&)[N]) -> List<Str>;
+
+
+namespace ops {
+
+    template <typename Return, std::derived_from<impl::ListTag> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            return PyList_GET_SIZE(self.ptr());
+        }
+    };
+
+    template <typename Return, std::derived_from<impl::ListTag> Self>
+    struct begin<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::ListIter<Return>>(self, 0);
+        }
+    };
+
+    template <typename Return, std::derived_from<impl::ListTag> Self>
+    struct end<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::ListIter<Return>>(PyList_GET_SIZE(self.ptr()));
+        }
+    };
+
+    template <typename Return, std::derived_from<impl::ListTag> Self>
+    struct rbegin<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::ListIter<Return>>(
+                self,
+                PyList_GET_SIZE(self.ptr()) - 1
+            );
+        }
+    };
+
+    template <typename Return, std::derived_from<impl::ListTag> Self>
+    struct rend<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::ListIter<Return>>(-1);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, impl::ListTag> || std::derived_from<R, impl::ListTag>)
+    struct add<Return, L, R> : sequence::add<Return, L, R> {};
+
+    template <typename Return, std::derived_from<impl::ListTag> L, typename R>
+    struct iadd<Return, L, R> : sequence::iadd<Return, L, R> {};
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, impl::ListTag> || std::derived_from<R, impl::ListTag>)
+    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
+
+    template <typename Return, std::derived_from<impl::ListTag> L, typename R>
+    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
+
+}
 
 
 }  // namespace py

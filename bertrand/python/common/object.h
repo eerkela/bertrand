@@ -212,7 +212,7 @@ public:
     [[nodiscard]] Handle release() {
         PyObject* temp = m_ptr;
         m_ptr = nullptr;
-        return Handle(temp);
+        return temp;
     }
 
     /* Check for exact pointer identity. */
@@ -261,16 +261,17 @@ public:
     /* Call operator.  This can be enabled for specific argument signatures and return
     types via the __call__ control struct, enabling static type safety for Python
     functions in C++. */
-    template <typename Self, typename... Args> requires (__call__<Self, Args...>::enable)
-    auto operator()(this const Self& self, Args&&... args) {
-        using Return = typename __call__<Self, Args...>::Return;
+    template <typename Self, typename... Args>
+        requires (__call__<std::decay_t<Self>, Args...>::enable)
+    auto operator()(this Self&& self, Args&&... args) {
+        using Return = typename __call__<std::decay_t<Self>, Args...>::Return;
         static_assert(
             std::is_void_v<Return> || std::derived_from<Return, Object>,
             "Call operator must return either void or a py::Object subclass.  "
             "Check your specialization of __call__ for the given arguments and "
             "ensure that it is derived from py::Object."
         );
-        return ops::call<Return, Self, Args...>::operator()(
+        return ops::call<Return, std::decay_t<Self>, Args...>::operator()(
             self, std::forward<Args>(args)...
         );
     }

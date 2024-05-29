@@ -55,19 +55,22 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
+    /* Default constructor.  Initializes to an empty range. */
+    Range() : Range(Int::zero) {}
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
     Range(Handle h, const borrowed_t& t) : Base(h, t) {}
     Range(Handle h, const stolen_t& t) : Base(h, t) {}
 
+    /* Convert an equivalent pybind11 type into a py::Range object. */
     template <impl::pybind11_like T> requires (typecheck<T>())
     Range(T&& other) : Base(std::forward<T>(other)) {}
 
+    /* Unwrap a pybind11 accessor into a py::Range object. */
     template <typename Policy>
     Range(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Range>(accessor).release(), stolen_t{})
     {}
-
-    /* Default constructor.  Initializes to an empty range. */
-    Range() : Range(Int::zero) {}
 
     /* Explicitly construct a range from 0 to the given stop index (exclusive). */
     explicit Range(const Int& stop) :

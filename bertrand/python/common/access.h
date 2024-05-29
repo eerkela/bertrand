@@ -26,19 +26,19 @@ forwards its interface using pointer semantics. */
 template <typename Obj, typename Derived>
 class Proxy : public ProxyTag {
 public:
-    using Wrapped = Obj;
+    using type = Obj;
 
 protected:
-    alignas (Wrapped) mutable unsigned char buffer[sizeof(Wrapped)];
+    alignas (type) mutable unsigned char buffer[sizeof(type)];
     mutable bool initialized;
 
 private:
 
-    Wrapped& get_value() {
+    type& get_value() {
         return static_cast<Derived&>(*this).value();
     }
 
-    const Wrapped& get_value() const {
+    const type& get_value() const {
         return static_cast<const Derived&>(*this).value();
     }
 
@@ -52,19 +52,19 @@ public:
     Proxy() : initialized(false) {}
 
     /* Forwarding copy constructor for wrapped object. */
-    Proxy(const Wrapped& other) : initialized(true) {
-        new (buffer) Wrapped(other);
+    Proxy(const type& other) : initialized(true) {
+        new (buffer) type(other);
     }
 
     /* Forwarding move constructor for wrapped object. */
-    Proxy(Wrapped&& other) : initialized(true) {
-        new (buffer) Wrapped(std::move(other));
+    Proxy(type&& other) : initialized(true) {
+        new (buffer) type(std::move(other));
     }
 
     /* Copy constructor for proxy. */
     Proxy(const Proxy& other) : initialized(other.initialized) {
         if (initialized) {
-            new (buffer) Wrapped(reinterpret_cast<Wrapped&>(other.buffer));
+            new (buffer) type(reinterpret_cast<type&>(other.buffer));
         }
     }
 
@@ -72,27 +72,27 @@ public:
     Proxy(Proxy&& other) : initialized(other.initialized) {
         if (initialized) {
             other.initialized = false;
-            new (buffer) Wrapped(std::move(reinterpret_cast<Wrapped&>(other.buffer)));
+            new (buffer) type(std::move(reinterpret_cast<type&>(other.buffer)));
         }
     }
 
     /* Forwarding copy assignment for wrapped object. */
-    Proxy& operator=(const Wrapped& other) {
+    Proxy& operator=(const type& other) {
         if (initialized) {
-            reinterpret_cast<Wrapped&>(buffer) = other;
+            reinterpret_cast<type&>(buffer) = other;
         } else {
-            new (buffer) Wrapped(other);
+            new (buffer) type(other);
             initialized = true;
         }
         return *this;
     }
 
     /* Forwarding move assignment for wrapped object. */
-    Proxy& operator=(Wrapped&& other) {
+    Proxy& operator=(type&& other) {
         if (initialized) {
-            reinterpret_cast<Wrapped&>(buffer) = std::move(other);
+            reinterpret_cast<type&>(buffer) = std::move(other);
         } else {
-            new (buffer) Wrapped(std::move(other));
+            new (buffer) type(std::move(other));
             initialized = true;
         }
         return *this;
@@ -103,10 +103,10 @@ public:
         if (&other != this) {
             if (initialized) {
                 initialized = false;
-                reinterpret_cast<Wrapped&>(buffer).~Wrapped();
+                reinterpret_cast<type&>(buffer).~type();
             }
             if (other.initialized) {
-                new (buffer) Wrapped(reinterpret_cast<Wrapped&>(other.buffer));
+                new (buffer) type(reinterpret_cast<type&>(other.buffer));
                 initialized = true;
             }
         }
@@ -118,12 +118,12 @@ public:
         if (&other != this) {
             if (initialized) {
                 initialized = false;
-                reinterpret_cast<Wrapped&>(buffer).~Wrapped();
+                reinterpret_cast<type&>(buffer).~type();
             }
             if (other.initialized) {
                 other.initialized = false;
-                new (buffer) Wrapped(
-                    std::move(reinterpret_cast<Wrapped&>(other.buffer))
+                new (buffer) type(
+                    std::move(reinterpret_cast<type&>(other.buffer))
                 );
                 initialized = true;
             }
@@ -134,7 +134,7 @@ public:
     /* Destructor.  Can be avoided by manually clearing the initialized flag. */
     ~Proxy() {
         if (initialized) {
-            reinterpret_cast<Wrapped&>(buffer).~Wrapped();
+            reinterpret_cast<type&>(buffer).~type();
         }
     }
 
@@ -146,24 +146,24 @@ public:
         return initialized;
     }
 
-    [[nodiscard]] Wrapped& value() {
+    [[nodiscard]] type& value() {
         if (!initialized) {
             throw ValueError(
                 "attempt to dereference an uninitialized accessor.  Either the "
                 "accessor was moved from or not properly constructed to begin with."
             );
         }
-        return reinterpret_cast<Wrapped&>(buffer);
+        return reinterpret_cast<type&>(buffer);
     }
 
-    [[nodiscard]] const Wrapped& value() const {
+    [[nodiscard]] const type& value() const {
         if (!initialized) {
             throw ValueError(
                 "attempt to dereference an uninitialized accessor.  Either the "
                 "accessor was moved from or not properly constructed to begin with."
             );
         }
-        return reinterpret_cast<const Wrapped&>(buffer);
+        return reinterpret_cast<const type&>(buffer);
     }
 
     ////////////////////////////////////
@@ -176,32 +176,32 @@ public:
 
     // all attributes of wrapped type are forwarded using the arrow operator.  Just
     // replace all instances of `.` with `->`
-    [[nodiscard]] Wrapped* operator->() {
+    [[nodiscard]] type* operator->() {
         return &get_value();
     };
 
-    [[nodiscard]] const Wrapped* operator->() const {
+    [[nodiscard]] const type* operator->() const {
         return &get_value();
     };
 
     // TODO: make sure that converting proxy to wrapped object does not create a copy.
     // -> This matters when modifying kwonly defaults in func.h
 
-    [[nodiscard]] operator Wrapped&() {
+    [[nodiscard]] operator type&() {
         return get_value();
     }
 
-    [[nodiscard]] operator const Wrapped&() const {
+    [[nodiscard]] operator const type&() const {
         return get_value();
     }
 
     template <typename T>
-        requires (!std::same_as<Wrapped, T> && std::convertible_to<Wrapped, T>)
+        requires (!std::same_as<type, T> && std::convertible_to<type, T>)
     [[nodiscard]] operator T() const {
         return implicit_cast<T>(get_value());
     }
 
-    template <typename T> requires (!std::convertible_to<Wrapped, T>)
+    template <typename T> requires (!std::convertible_to<type, T>)
     [[nodiscard]] explicit operator T() const {
         return static_cast<T>(get_value());
     }
@@ -220,7 +220,7 @@ public:
         return get_value()[std::forward<T>(key)];
     }
 
-    template <typename T = Wrapped> requires (__getitem__<T, Slice>::enable)
+    template <typename T = type> requires (__getitem__<T, Slice>::enable)
     auto operator[](const std::initializer_list<impl::SliceInitializer>& slice) const;
 
     template <typename T>
@@ -243,16 +243,16 @@ compile-time error. */
 template <typename Obj, StaticStr name> requires (__getattr__<Obj, name>::enable)
 class Attr : public Proxy<typename __getattr__<Obj, name>::Return, Attr<Obj, name>> {
 public:
-    using Wrapped = typename __getattr__<Obj, name>::Return;
+    using type = typename __getattr__<Obj, name>::Return;
     static_assert(
-        std::derived_from<Wrapped, Object>,
+        std::derived_from<type, Object>,
         "Attribute accessor must return a py::Object subclass.  Check your "
         "specialization of __getattr__ for this type and ensure the Return type is "
         "set to a subclass of py::Object."
     );
 
 private:
-    using Base = Proxy<Wrapped, Attr>;
+    using Base = Proxy<type, Attr>;
     Object obj;
 
     void get_attr() const {
@@ -266,7 +266,7 @@ private:
         if (result == nullptr) {
             Exception::from_python();
         }
-        new (Base::buffer) Wrapped(reinterpret_steal<Wrapped>(result));
+        new (Base::buffer) type(reinterpret_steal<type>(result));
         Base::initialized = true;
     }
 
@@ -300,18 +300,18 @@ public:
      *      py::Int i = reinterpret_steal<py::Int>(obj.attr<"some_int">().release());
      */
 
-    [[nodiscard]] Wrapped& value() {
+    [[nodiscard]] type& value() {
         if (!Base::initialized) {
             get_attr();
         }
-        return reinterpret_cast<Wrapped&>(Base::buffer);
+        return reinterpret_cast<type&>(Base::buffer);
     }
 
-    [[nodiscard]] const Wrapped& value() const {
+    [[nodiscard]] const type& value() const {
         if (!Base::initialized) {
             get_attr();
         }
-        return reinterpret_cast<Wrapped&>(Base::buffer);
+        return reinterpret_cast<type&>(Base::buffer);
     }
 
     /* Similarly, assigning to a pybind11 wrapper corresponds to a Python
@@ -335,9 +335,9 @@ public:
         if constexpr (proxy_like<T>) {
             *this = value.value();
         } else {
-            new (Base::buffer) Wrapped(std::forward<T>(value));
+            new (Base::buffer) type(std::forward<T>(value));
             Base::initialized = true;
-            PyObject* value_ptr = reinterpret_cast<Wrapped&>(Base::buffer).ptr();
+            PyObject* value_ptr = reinterpret_cast<type&>(Base::buffer).ptr();
             if (PyObject_SetAttr(obj.ptr(), TemplateString<name>::ptr, value_ptr)) {
                 Exception::from_python();
             }
@@ -366,7 +366,7 @@ public:
             Exception::from_python();
         }
         if (Base::initialized) {
-            reinterpret_cast<Wrapped&>(Base::buffer).~Wrapped();
+            reinterpret_cast<type&>(Base::buffer).~type();
             Base::initialized = false;
         }
     }
@@ -497,16 +497,16 @@ a corresponding return type to which the proxy can be converted. */
 template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
 class Item : public Proxy<typename __getitem__<Obj, Key>::Return, Item<Obj, Key>> {
 public:
-    using Wrapped = typename __getitem__<Obj, Key>::Return;
+    using type = typename __getitem__<Obj, Key>::Return;
     static_assert(
-        std::derived_from<Wrapped, Object>,
+        std::derived_from<type, Object>,
         "index operator must return a subclass of py::Object.  Check your "
         "specialization of __getitem__ for these types and ensure the Return "
         "type is set to a subclass of py::Object."
     );
 
 private:
-    using Base = Proxy<Wrapped, Item>;
+    using Base = Proxy<type, Item>;
     ItemPolicy<Obj, Key> policy;
 
 public:
@@ -536,20 +536,20 @@ public:
      *      py::Int item = list[{1, 3}];  // compile error, List is not convertible to Int
      */
 
-    [[nodiscard]] Wrapped& value() {
+    [[nodiscard]] type& value() {
         if (!Base::initialized) {
-            new (Base::buffer) Wrapped(reinterpret_steal<Wrapped>(policy.get()));
+            new (Base::buffer) type(reinterpret_steal<type>(policy.get()));
             Base::initialized = true;
         }
-        return reinterpret_cast<Wrapped&>(Base::buffer);
+        return reinterpret_cast<type&>(Base::buffer);
     }
 
-    [[nodiscard]] const Wrapped& value() const {
+    [[nodiscard]] const type& value() const {
         if (!Base::initialized) {
-            new (Base::buffer) Wrapped(reinterpret_steal<Wrapped>(policy.get()));
+            new (Base::buffer) type(reinterpret_steal<type>(policy.get()));
             Base::initialized = true;
         }
-        return reinterpret_cast<Wrapped&>(Base::buffer);
+        return reinterpret_cast<type&>(Base::buffer);
     }
 
     /* Similarly, assigning to a pybind11 wrapper corresponds to a Python
@@ -582,9 +582,9 @@ public:
         if constexpr (proxy_like<T>) {
             *this = value.value();
         } else {
-            new (Base::buffer) Wrapped(std::forward<T>(value));
+            new (Base::buffer) type(std::forward<T>(value));
             Base::initialized = true;
-            policy.set(reinterpret_cast<Wrapped&>(Base::buffer).ptr());
+            policy.set(reinterpret_cast<type&>(Base::buffer).ptr());
         }
         return *this;
     }
@@ -619,7 +619,7 @@ public:
         );
         policy.del();
         if (Base::initialized) {
-            reinterpret_cast<Wrapped&>(Base::buffer).~Wrapped();
+            reinterpret_cast<type&>(Base::buffer).~type();
             Base::initialized = false;
         }
     }

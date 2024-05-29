@@ -41,19 +41,34 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
+    /* Default constructor.  Initializes to 0+0j. */
+    Complex() : Base(PyComplex_FromDoubles(0.0, 0.0), stolen_t{}) {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+    }
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
     Complex(Handle h, const borrowed_t& t) : Base(h, t) {}
     Complex(Handle h, const stolen_t& t) : Base(h, t) {}
 
+    /* Convert an equivalent pybind11 type into a py::Complex. */
     template <impl::pybind11_like T> requires (typecheck<T>())
     Complex(T&& other) : Base(std::forward<T>(other)) {}
 
+    /* Unwrap a pybind11 accessor into a py::Complex. */
     template <typename Policy>
     Complex(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Complex>(accessor).release(), stolen_t{})
     {}
 
-    /* Default constructor.  Initializes to 0+0j. */
-    Complex() : Base(PyComplex_FromDoubles(0.0, 0.0), stolen_t{}) {
+    /* Implicitly convert any C++ type that implements `.real()` and `.imag()` into
+    a py::Complex object. */
+    template <impl::cpp_like T> requires (impl::complex_like<T>)
+    Complex(const T& value) : Base(
+        PyComplex_FromDoubles(value.real(), value.imag()),
+        stolen_t{}
+    ) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -73,18 +88,6 @@ public:
     explicit Complex(double real, double imag) :
         Base(PyComplex_FromDoubles(real, imag), stolen_t{})
     {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Implicitly convert any C++ type that implements `.real()` and `.imag()` into
-    a py::Complex object. */
-    template <impl::cpp_like T> requires (impl::complex_like<T>)
-    Complex(const T& value) : Base(
-        PyComplex_FromDoubles(value.real(), value.imag()),
-        stolen_t{}
-    ) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }

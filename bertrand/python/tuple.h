@@ -8,16 +8,6 @@
 #include "common.h"
 
 
-// TODO: py::Struct replaces py::namedtuple
-
-// TODO: when implementing py::Struct:
-
-// template <std::derived_from<Object>... Args>
-// struct Struct : public Tuple<
-//     std::conditional_t<impl::homogenous<Args...>, impl::first<Args...>, Object>
-// > {
-
-
 // TODO: support py::deque?
 
 
@@ -25,61 +15,9 @@ namespace bertrand {
 namespace py {
 
 
-namespace ops {
-
-    template <typename Return, std::derived_from<impl::TupleTag> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            return PyTuple_GET_SIZE(self.ptr());
-        }
-    };
-
-    template <typename Return, std::derived_from<impl::TupleTag> Self>
-    struct begin<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::Iterator<impl::TupleIter<Return>>(self, 0);
-        }
-    };
-
-    template <typename Return, std::derived_from<impl::TupleTag> Self>
-    struct end<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::Iterator<impl::TupleIter<Return>>(PyTuple_GET_SIZE(self.ptr()));
-        }
-    };
-
-    template <typename Return, std::derived_from<impl::TupleTag> Self>
-    struct rbegin<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::ReverseIterator<impl::TupleIter<Return>>(
-                self,
-                PyTuple_GET_SIZE(self.ptr()) - 1
-            );
-        }
-    };
-
-    template <typename Return, std::derived_from<impl::TupleTag> Self>
-    struct rend<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::ReverseIterator<impl::TupleIter<Return>>(-1);
-        }
-    };
-
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, impl::TupleTag> || std::derived_from<R, impl::TupleTag>)
-    struct add<Return, L, R> : sequence::add<Return, L, R> {};
-
-    template <typename Return, std::derived_from<impl::TupleTag> L, typename R>
-    struct iadd<Return, L, R> : sequence::iadd<Return, L, R> {};
-
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, impl::TupleTag> || std::derived_from<R, impl::TupleTag>)
-    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
-
-    template <typename Return, std::derived_from<impl::TupleTag> L, typename R>
-    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
-
-}
+/////////////////////
+////    TUPLE    ////
+/////////////////////
 
 
 /* Represents a statically-typed Python tuple in C++. */
@@ -98,18 +36,18 @@ class Tuple : public Object, public impl::TupleTag {
         std::derived_from<T, Val> : std::convertible_to<T, Val>;
 
     template <typename T>
-    struct std_tuple_check {
+    struct stl_check {
         static constexpr bool match = false;
     };
 
     template <typename First, typename Second>
-    struct std_tuple_check<std::pair<First, Second>> {
+    struct stl_check<std::pair<First, Second>> {
         static constexpr bool match = true;
         static constexpr bool value = check_value_type<First> && check_value_type<Second>;
     };
 
     template <typename... Args>
-    struct std_tuple_check<std::tuple<Args...>> {
+    struct stl_check<std::tuple<Args...>> {
         static constexpr bool match = true;
         static constexpr bool value = (check_value_type<Args> && ...);
     };
@@ -133,15 +71,14 @@ public:
 
     template <typename T>
     [[nodiscard]] static consteval bool typecheck() {
-        using U = std::decay_t<T>;
-        if constexpr (!impl::tuple_like<U>) {
+        if constexpr (!impl::tuple_like<T>) {
             return false;
-        } else if constexpr (impl::pybind11_like<U>) {
+        } else if constexpr (impl::pybind11_like<T>) {
             return generic;
-        } else if constexpr (impl::is_iterable<U>) {
-            return check_value_type<impl::iter_type<U>>;
-        } else if constexpr (std_tuple_check<U>::match) {
-            return std_tuple_check<U>::value;
+        } else if constexpr (impl::is_iterable<T>) {
+            return check_value_type<impl::iter_type<T>>;
+        } else if constexpr (stl_check<std::decay_t<T>>::match) {
+            return stl_check<std::decay_t<T>>::value;
         } else {
             return false;
         }
@@ -191,20 +128,27 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    Tuple(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Tuple(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <typename Policy>
-    Tuple(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Tuple>(accessor).release(), stolen_t{})
-    {}
-
     /* Default constructor.  Initializes to an empty tuple. */
     Tuple() : Base(PyTuple_New(0), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
     }
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
+    Tuple(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Tuple(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    /* Copy/move constructors from equivalent pybind11 types or other tuples with a
+    narrower value type. */
+    template <impl::python_like T> requires (typecheck<T>())
+    Tuple(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Unwrap a pybind11 accessor into a py::Tuple. */
+    template <typename Policy>
+    Tuple(const pybind11::detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Tuple>(accessor).release(), stolen_t{})
+    {}
 
     /* Pack the contents of a braced initializer into a new Python tuple. */
     Tuple(const std::initializer_list<value_type>& contents) :
@@ -223,11 +167,6 @@ public:
             throw;
         }
     }
-
-    /* Copy/move constructors from equivalent pybind11 types or other tuples with a
-    narrower value type. */
-    template <impl::python_like T> requires (typecheck<T>())
-    Tuple(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly unpack a generic Python container into a py::Tuple. */
     template <impl::python_like T> requires (!impl::tuple_like<T> && impl::is_iterable<T>)
@@ -587,6 +526,164 @@ template <impl::str_like T>
 Tuple(T) -> Tuple<Str>;
 template <size_t N>
 Tuple(const char(&)[N]) -> Tuple<Str>;
+
+
+namespace ops {
+
+    template <typename Return, std::derived_from<impl::TupleTag> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            return PyTuple_GET_SIZE(self.ptr());
+        }
+    };
+
+    template <typename Return, std::derived_from<impl::TupleTag> Self>
+    struct begin<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::TupleIter<Return>>(self, 0);
+        }
+    };
+
+    template <typename Return, std::derived_from<impl::TupleTag> Self>
+    struct end<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::Iterator<impl::TupleIter<Return>>(PyTuple_GET_SIZE(self.ptr()));
+        }
+    };
+
+    template <typename Return, std::derived_from<impl::TupleTag> Self>
+    struct rbegin<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::TupleIter<Return>>(
+                self,
+                PyTuple_GET_SIZE(self.ptr()) - 1
+            );
+        }
+    };
+
+    template <typename Return, std::derived_from<impl::TupleTag> Self>
+    struct rend<Return, Self> {
+        static auto operator()(const Self& self) {
+            return impl::ReverseIterator<impl::TupleIter<Return>>(-1);
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, impl::TupleTag> || std::derived_from<R, impl::TupleTag>)
+    struct add<Return, L, R> : sequence::add<Return, L, R> {};
+
+    template <typename Return, std::derived_from<impl::TupleTag> L, typename R>
+    struct iadd<Return, L, R> : sequence::iadd<Return, L, R> {};
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, impl::TupleTag> || std::derived_from<R, impl::TupleTag>)
+    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
+
+    template <typename Return, std::derived_from<impl::TupleTag> L, typename R>
+    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
+
+}
+
+
+///////////////////////////////////
+////    STRUCTURED BINDINGS    ////
+///////////////////////////////////
+
+
+namespace impl {
+
+    template <typename T>
+    concept field_like =
+        std::same_as<T, std::decay_t<T>> &&
+        std::derived_from<T, impl::ArgTag> &&
+        T::is_positional &&
+        T::is_keyword &&
+        !T::is_optional &&
+        !T::is_variadic &&
+        std::same_as<typename T::type, std::decay_t<typename T::type>> &&
+        std::derived_from<typename T::type, Object>;
+
+    template <typename... Ts>
+    static constexpr bool fields_are_homogenous = true;
+    template <typename T1, typename T2, typename... Ts>
+    static constexpr bool fields_are_homogenous<T1, T2, Ts...> =
+        std::same_as<typename T1::type, typename T2::type> &&
+        fields_are_homogenous<T2, Ts...>;
+
+    template <typename... Ts>
+    static constexpr bool field_names_are_unique = true;
+    template <typename T, typename... Ts>
+    static constexpr bool field_names_are_unique<T, Ts...> =
+        ((T::name != Ts::name) && ...) && field_names_are_unique<Ts...>;
+
+    template <typename... Ts>
+    struct get_first_field { using type = Object; };
+    template <typename T, typename... Ts>
+    struct get_first_field<T, Ts...> { using type = typename T::type; };
+
+    template <typename... Fields>
+    using field_type = std::conditional_t<
+        fields_are_homogenous<Fields...>,
+        typename get_first_field<Fields...>::type,
+        Object
+    >;
+
+}
+
+
+/* A subclass of Tuple that can represent mixed types.  These are semantically
+equivalent to collections.namedtuple instances in Python, except that attributes are
+mutable by default, similar to std::pair and std::tuple.  They can also be used as
+structured bindings. */
+template <impl::field_like... Fields>
+    requires (sizeof...(Fields) > 0 && impl::field_names_are_unique<Fields...>)
+class Struct : public Tuple<impl::field_type<Fields...>> {
+    using field_type = impl::field_type<Fields...>;
+    using Base = Tuple<field_type>;
+
+
+
+public:
+    using impl::TupleTag::type;
+
+    using size_type = size_t;
+    using difference_type = std::ptrdiff_t;
+    using value_type = field_type;
+    using pointer = value_type*;
+    using reference = value_type&;
+    using const_pointer = const value_type*;
+    using const_reference = const value_type&;
+    using iterator = impl::Iterator<impl::TupleIter<value_type>>;
+    using const_iterator = impl::Iterator<impl::TupleIter<const value_type>>;
+    using reverse_iterator = impl::ReverseIterator<impl::TupleIter<value_type>>;
+    using const_reverse_iterator = impl::ReverseIterator<impl::TupleIter<const value_type>>;
+
+    template <typename T>
+    [[nodiscard]] static consteval bool typecheck() {
+        return false;  // TODO: implement
+    }
+
+    template <typename T>
+    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
+        return false;  // TODO: implement
+    }
+
+    ////////////////////////////
+    ////    CONSTRUCTORS    ////
+    ////////////////////////////
+
+    // TODO: requires all fields to be default-constructible
+
+    /* Default constructor.  Default-initializes all fields. */
+    Struct() : Base() {}
+
+
+    // TODO: this should represent a namedtuple at the python level?
+    // -> namedtuples are immutable, so setattr won't work as expected.  Probably I
+    // should reimplement it myself or specialize Attr<> accordingly.
+
+
+};
 
 
 }  // namespace py

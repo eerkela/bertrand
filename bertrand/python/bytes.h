@@ -18,6 +18,11 @@ namespace bertrand {
 namespace py {
 
 
+/////////////////////
+////    BYTES    ////
+/////////////////////
+
+
 /* Represents a statically-typed Python `bytes` object in C++. */
 class Bytes : public Object {
     using Base = Object;
@@ -50,20 +55,33 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
+    /* Default constructor.  Initializes to an uninitialized string with the given
+    size, defaulting to zero. */
+    Bytes(size_t size = 0) :
+        Base(PyBytes_FromStringAndSize(nullptr, size), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+    }
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
     Bytes(Handle h, const borrowed_t& t) : Base(h, t) {}
     Bytes(Handle h, const stolen_t& t) : Base(h, t) {}
 
+    /* Convert an equivalent pybind11 type into a py::Bytes. */
     template <impl::pybind11_like T> requires (typecheck<T>())
     Bytes(T&& other) : Base(std::forward<T>(other)) {}
 
+    /* Unwrap a pybind11 accessor into a py::Bytes. */
     template <typename Policy>
     Bytes(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Bytes>(accessor).release(), stolen_t{})
     {}
 
-    /* Default constructor.  Initializes to an empty string with zero bytes. */
-    Bytes(size_t size = 0) :
-        Base(PyBytes_FromStringAndSize(nullptr, size), stolen_t{})
+    /* Implicitly convert a raw sequence of bytes into a py::Bytes object. */
+    Bytes(const void* data, size_t size) :
+        Base(PyBytes_FromStringAndSize(static_cast<const char*>(data), size), stolen_t{})
     {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -77,15 +95,6 @@ public:
     template <size_t N>
     Bytes(const char (&string)[N]) :
         Base(PyBytes_FromStringAndSize(string, N - 1), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Implicitly convert a raw sequence of bytes into a py::Bytes object. */
-    Bytes(const void* data, size_t size) :
-        Base(PyBytes_FromStringAndSize(static_cast<const char*>(data), size), stolen_t{})
     {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -225,6 +234,57 @@ public:
 };
 
 
+namespace ops {
+
+    template <typename Return, std::derived_from<Bytes> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            return PyBytes_GET_SIZE(self.ptr());
+        }
+    };
+
+    template <typename Return, std::derived_from<Bytes> L, typename R>
+    struct iadd<Return, L, R> {
+        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
+            PyObject* result = lhs.ptr();
+            PyBytes_Concat(&result, Bytes(rhs).ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, Bytes> || std::derived_from<R, Bytes>)
+    struct add<Return, L, R> {
+        static Return operator()(const auto& lhs, const auto& rhs) {
+            if constexpr (std::derived_from<L, Bytes>) {
+                Return result = lhs.copy();
+                iadd<Return, L, R>::operator()(result, rhs);
+                return result;
+            } else {
+                Return result = rhs.copy();
+                iadd<Return, L, R>::operator()(result, lhs);
+                return result;
+            }
+        }
+    };
+
+    template <typename Return, typename L, typename R>
+        requires (std::derived_from<L, Bytes> || std::derived_from<R, Bytes>)
+    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
+
+    template <typename Return, std::derived_from<Bytes> L, typename R>
+    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
+
+}
+
+
+/////////////////////////
+////    BYTEARRAY    ////
+/////////////////////////
+
+
 /* Represents a statically-typed Python `bytearray` in C++. */
 class ByteArray : public Object {
     using Base = Object;
@@ -254,20 +314,34 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
+    /* Default constructor.  Initializes to an uninitialized string with the given
+    size, defaulting to zero. */
+    ByteArray(size_t size = 0) : Base(
+        PyByteArray_FromStringAndSize(nullptr, size),
+        stolen_t{}
+    ) {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+    }
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
     ByteArray(Handle h, const borrowed_t& t) : Base(h, t) {}
     ByteArray(Handle h, const stolen_t& t) : Base(h, t) {}
 
+    /* Convert an equivalent pybind11 type into a py::ByteArray. */
     template <impl::pybind11_like T> requires (typecheck<T>())
     ByteArray(T&& other) : Base(std::forward<T>(other)) {}
 
+    /* Unwrap a pybind11 accessor into a py::ByteArray. */
     template <typename Policy>
     ByteArray(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<ByteArray>(accessor).release(), stolen_t{})
     {}
 
-    /* Default constructor.  Initializes to an empty string with zero bytes. */
-    ByteArray(size_t size = 0) : Base(
-        PyByteArray_FromStringAndSize(nullptr, size),
+    /* Implicitly convert a raw sequence of bytes into a py::ByteArray object. */
+    ByteArray(const void* data, size_t size) : Base(
+        PyByteArray_FromStringAndSize(static_cast<const char*>(data), size),
         stolen_t{}
     ) {
         if (m_ptr == nullptr) {
@@ -282,16 +356,6 @@ public:
     template <size_t N>
     ByteArray(const char (&string)[N]) : Base(
         PyByteArray_FromStringAndSize(string, N - 1),
-        stolen_t{}
-    ) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Implicitly convert a raw sequence of bytes into a py::ByteArray object. */
-    ByteArray(const void* data, size_t size) : Base(
-        PyByteArray_FromStringAndSize(static_cast<const char*>(data), size),
         stolen_t{}
     ) {
         if (m_ptr == nullptr) {
@@ -433,47 +497,6 @@ public:
 
 
 namespace ops {
-
-    template <typename Return, std::derived_from<Bytes> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            return PyBytes_GET_SIZE(self.ptr());
-        }
-    };
-
-    template <typename Return, std::derived_from<Bytes> L, typename R>
-    struct iadd<Return, L, R> {
-        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
-            PyObject* result = lhs.ptr();
-            PyBytes_Concat(&result, Bytes(rhs).ptr());
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-        }
-    };
-
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, Bytes> || std::derived_from<R, Bytes>)
-    struct add<Return, L, R> {
-        static Return operator()(const auto& lhs, const auto& rhs) {
-            if constexpr (std::derived_from<L, Bytes>) {
-                Return result = lhs.copy();
-                iadd<Return, L, R>::operator()(result, rhs);
-                return result;
-            } else {
-                Return result = rhs.copy();
-                iadd<Return, L, R>::operator()(result, lhs);
-                return result;
-            }
-        }
-    };
-
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, Bytes> || std::derived_from<R, Bytes>)
-    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
-
-    template <typename Return, std::derived_from<Bytes> L, typename R>
-    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
 
     template <typename Return, std::derived_from<ByteArray> Self>
     struct len<Return, Self> {

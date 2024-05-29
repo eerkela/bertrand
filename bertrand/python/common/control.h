@@ -22,7 +22,7 @@ namespace impl {
     template <typename T>
     struct unwrap_proxy_helper { using type = T; };
     template <proxy_like T>
-    struct unwrap_proxy_helper<T> { using type = typename T::Wrapped; };
+    struct unwrap_proxy_helper<T> { using type = typename T::type; };
     template <typename T>
     using unwrap_proxy = typename unwrap_proxy_helper<T>::type;
 
@@ -644,7 +644,7 @@ struct __implicit_cast__<Self, T> {
         Py_ssize_t pos = 0;
         while (PyDict_Next(self.ptr(), &pos, &k, &v)) {
             auto key = reinterpret_borrow<typename Self::key_type>(k);
-            auto value = reinterpret_borrow<typename Self::value_type>(v);
+            auto value = reinterpret_borrow<typename Self::mapped_type>(v);
             result[impl::implicit_cast<typename T::key_type>(key)] =
                 impl::implicit_cast<typename T::mapped_type>(value);
         }
@@ -2144,6 +2144,70 @@ template <std::derived_from<Frame> Self>
 struct __getattr__<Self, "clear">                           : Returns<Function<void()>> {};
 
 
+template <std::derived_from<Bool> Self>
+struct __getattr__<Self, "bit_length">                      : Returns<Function<Int()>> {};
+template <std::derived_from<Bool> Self>
+struct __getattr__<Self, "bit_count">                       : Returns<Function<Int()>> {};
+template <std::derived_from<Bool> Self>
+struct __getattr__<Self, "to_bytes">                        : Returns<Function<
+    Bytes(
+        typename Arg<"length", const Int&>::opt,
+        typename Arg<"byteorder", const Str&>::opt,
+        typename Arg<"signed", const Bool&>::kw::opt
+    )
+>> {};
+template <std::derived_from<Bool> Self>
+struct __getattr__<Self, "from_bytes">                      : Returns<Function<
+    Int(
+        typename Arg<"bytes", const Bytes&>::pos,
+        typename Arg<"byteorder", const Str&>::opt,
+        typename Arg<"signed", const Bool&>::kw::opt
+    )
+>> {};
+template <std::derived_from<Bool> Self>
+struct __getattr__<Self, "as_integer_ratio">                : Returns<Function<Tuple<Int>()>> {};
+template <std::derived_from<Bool> Self>
+struct __getattr__<Self, "is_integer">                      : Returns<Function<Bool()>> {};
+
+
+template <std::derived_from<Int> Self>
+struct __getattr__<Self, "bit_length">                      : Returns<Function<Int()>> {};
+template <std::derived_from<Int> Self>
+struct __getattr__<Self, "bit_count">                       : Returns<Function<Int()>> {};
+template <std::derived_from<Int> Self>
+struct __getattr__<Self, "to_bytes">                        : Returns<Function<
+    Bytes(
+        typename Arg<"length", const Int&>::opt,
+        typename Arg<"byteorder", const Str&>::opt,
+        typename Arg<"signed", const Bool&>::kw::opt
+    )
+>> {};
+template <std::derived_from<Int> Self>
+struct __getattr__<Self, "from_bytes">                      : Returns<Function<
+    Int(
+        typename Arg<"bytes", const Bytes&>::pos,
+        typename Arg<"byteorder", const Str&>::opt,
+        typename Arg<"signed", const Bool&>::kw::opt
+    )
+>> {};
+template <std::derived_from<Int> Self>
+struct __getattr__<Self, "as_integer_ratio">                : Returns<Function<Tuple<Int>()>> {};
+template <std::derived_from<Int> Self>
+struct __getattr__<Self, "is_integer">                      : Returns<Function<Bool()>> {};
+
+
+template <std::derived_from<Float> Self>
+struct __getattr__<Self, "as_integer_ratio">                : Returns<Function<Tuple<Int>()>> {};
+template <std::derived_from<Float> Self>
+struct __getattr__<Self, "is_integer">                      : Returns<Function<Bool()>> {};
+template <std::derived_from<Float> Self>
+struct __getattr__<Self, "hex">                             : Returns<Function<Str()>> {};
+template <std::derived_from<Float> Self>
+struct __getattr__<Self, "fromhex">                         : Returns<Function<
+    Float(typename Arg<"s", const Str&>::pos)
+>> {};
+
+
 template <std::derived_from<Complex> Self>
 struct __getattr__<Self, "conjugate">                       : Returns<Function<Complex()>> {};
 template <std::derived_from<Complex> Self>
@@ -2803,6 +2867,22 @@ struct __getattr__<Self, "index">                           : Returns<Function<
 >> {};
 
 
+// TODO: disable count() and index() for Structs?  At least, not via attr<>.
+
+
+// template <std::derived_from<impl::StructTag> Self, StaticStr Name>
+//     requires (Self::has_name<Name>)
+// struct __getattr__<Self, Name>                               : Returns<
+//     typename Self::template get_type<Name>
+// > {};
+template <std::derived_from<impl::TupleTag> Self>
+    requires (std::derived_from<Self, impl::StructTag>)
+struct __getattr__<Self, "count">                           : Disable {};
+template <std::derived_from<impl::TupleTag> Self>
+    requires (std::derived_from<Self, impl::StructTag>)
+struct __getattr__<Self, "index">                           : Disable {};
+
+
 template <std::derived_from<impl::ListTag> Self>
 struct __getattr__<Self, "append">                          : Returns<Function<
     void(typename Arg<"value", const typename Self::value_type&>::pos)
@@ -2961,14 +3041,14 @@ struct __getattr__<Self, "symmetric_difference">            : Returns<Function<
 
 template <std::derived_from<impl::DictTag> Self>
 struct __getattr__<Self, "fromkeys">                        : Returns<Function<
-    Dict<typename Self::key_type, typename Self::value_type>(
+    Dict<typename Self::key_type, typename Self::mapped_type>(
         typename Arg<"keys", const Object&>::pos,
         typename Arg<"value", const Object&>::pos::opt
     )
 >> {};
 template <std::derived_from<impl::DictTag> Self>
 struct __getattr__<Self, "copy">                            : Returns<Function<
-    Dict<typename Self::key_type, typename Self::value_type>()
+    Dict<typename Self::key_type, typename Self::mapped_type>()
 >> {};
 template <std::derived_from<impl::DictTag> Self>
 struct __getattr__<Self, "clear">                           : Returns<Function<
@@ -2976,14 +3056,14 @@ struct __getattr__<Self, "clear">                           : Returns<Function<
 >> {};
 template <std::derived_from<impl::DictTag> Self>
 struct __getattr__<Self, "get">                             : Returns<Function<
-    typename Self::value_type(
+    typename Self::mapped_type(
         typename Arg<"key", const Object&>::pos,
         typename Arg<"default", const Object&>::pos::opt
     )
 >> {};
 template <std::derived_from<impl::DictTag> Self>
 struct __getattr__<Self, "pop">                             : Returns<Function<
-    typename Self::value_type(
+    typename Self::mapped_type(
         typename Arg<"key", const Object&>::pos,
         typename Arg<"default", const Object&>::pos::opt
     )
@@ -2994,7 +3074,7 @@ struct __getattr__<Self, "popitem">                         : Returns<Function<
 >> {};
 template <std::derived_from<impl::DictTag> Self>
 struct __getattr__<Self, "setdefault">                      : Returns<Function<
-    typename Self::value_type(
+    typename Self::mapped_type(
         typename Arg<"key", const Object&>::pos,
         typename Arg<"default", const Object&>::pos::opt
     )
@@ -3020,7 +3100,7 @@ struct __getattr__<Self, "copy">                            : Returns<Function<
 >> {};
 template <std::derived_from<impl::MappingProxyTag> Self>
 struct __getattr__<Self, "get">                             : Returns<Function<
-    typename Self::value_type(
+    typename Self::mapped_type(
         typename Arg<"key", const Object&>::pos,
         typename Arg<"default", const Object&>::pos::opt
     )
@@ -3101,12 +3181,12 @@ template <
     std::derived_from<impl::DictTag> Self,
     std::convertible_to<typename Self::key_type> Key
 >
-struct __getitem__<Self, Key>                               : Returns<typename Self::value_type> {};
+struct __getitem__<Self, Key>                               : Returns<typename Self::mapped_type> {};
 template <
     std::derived_from<impl::MappingProxyTag> Self,
     std::convertible_to<typename Self::key_type> Key
 >
-struct __getitem__<Self, Key>                               : Returns<typename Self::value_type> {};
+struct __getitem__<Self, Key>                               : Returns<typename Self::mapped_type> {};
 
 
 template <impl::proxy_like Self, impl::not_proxy_like Key, impl::not_proxy_like Value>
@@ -3141,7 +3221,7 @@ struct __setitem__<Self, Slice, Value>                      : Returns<void> {};
 template <
     std::derived_from<impl::DictTag> Self,
     std::convertible_to<typename Self::key_type> Key,
-    std::convertible_to<typename Self::value_type> Value
+    std::convertible_to<typename Self::mapped_type> Value
 >
 struct __setitem__<Self, Key, Value>                        : Returns<void> {};
 
@@ -3298,7 +3378,7 @@ struct __iter__<Self>                                       : Returns<typename S
 template <std::derived_from<impl::ValueTag> Self>
 struct __iter__<Self>                                       : Returns<typename Self::value_type> {};
 template <std::derived_from<impl::ItemTag> Self>
-struct __iter__<Self>                                       : Returns<std::pair<typename Self::key_type, typename Self::value_type>> {};
+struct __iter__<Self>                                       : Returns<std::pair<typename Self::key_type, typename Self::mapped_type>> {};
 template <std::derived_from<impl::DictTag> Self>
 struct __iter__<Self>                                       : Returns<typename Self::key_type> {};
 template <std::derived_from<impl::MappingProxyTag> Self>
@@ -3336,7 +3416,7 @@ struct __reversed__<Self>                                   : Returns<typename S
 template <std::derived_from<impl::ValueTag> Self>
 struct __reversed__<Self>                                   : Returns<typename Self::value_type> {};
 template <std::derived_from<impl::ItemTag> Self>
-struct __reversed__<Self>                                   : Returns<std::pair<typename Self::key_type, typename Self::value_type>> {};
+struct __reversed__<Self>                                   : Returns<std::pair<typename Self::key_type, typename Self::mapped_type>> {};
 template <std::derived_from<impl::DictTag> Self>
 struct __reversed__<Self>                                   : Returns<typename Self::key_type> {};
 template <std::derived_from<impl::MappingProxyTag> Self>
@@ -3398,6 +3478,16 @@ struct __hash__<Self>                                       : Returns<size_t> {}
 template <std::derived_from<Str> Self>
 struct __hash__<Self>                                       : Returns<size_t> {};
 template <std::derived_from<Bytes> Self>
+struct __hash__<Self>                                       : Returns<size_t> {};
+template <std::derived_from<Date> Self>
+struct __hash__<Self>                                       : Returns<size_t> {};
+template <std::derived_from<Time> Self>
+struct __hash__<Self>                                       : Returns<size_t> {};
+template <std::derived_from<Timedelta> Self>
+struct __hash__<Self>                                       : Returns<size_t> {};
+template <std::derived_from<Datetime> Self>
+struct __hash__<Self>                                       : Returns<size_t> {};
+template <std::derived_from<Timezone> Self>
 struct __hash__<Self>                                       : Returns<size_t> {};
 template <std::derived_from<impl::TupleTag> Self>
 struct __hash__<Self>                                       : Returns<size_t> {};
@@ -4924,21 +5014,21 @@ template <typename L, std::derived_from<impl::KeyTag> R>
     requires (std::convertible_to<L, Set<typename R::key_type>>)
 struct __or__<L, R>                                         : Returns<Set<typename R::key_type>> {};
 template <std::derived_from<impl::DictTag> L, std::convertible_to<L> R>
-struct __or__<L, R>                                         : Returns<Dict<typename L::key_type, typename L::value_type>> {};
+struct __or__<L, R>                                         : Returns<Dict<typename L::key_type, typename L::mapped_type>> {};
 template <typename L, std::derived_from<impl::DictTag> R>
     requires (!std::convertible_to<R, L> && std::convertible_to<L, R>)
-struct __or__<L, R>                                         : Returns<Dict<typename R::key_type, typename R::value_type>> {};
+struct __or__<L, R>                                         : Returns<Dict<typename R::key_type, typename R::mapped_type>> {};
 template <std::derived_from<impl::MappingProxyTag> L, std::convertible_to<L> R>
-struct __or__<L, R>                                         : Returns<Dict<typename L::key_type, typename L::value_type>> {};
+struct __or__<L, R>                                         : Returns<Dict<typename L::key_type, typename L::mapped_type>> {};
 template <typename L, std::derived_from<impl::MappingProxyTag> R>
     requires (!std::convertible_to<R, L> && std::convertible_to<L, R>)
-struct __or__<L, R>                                         : Returns<Dict<typename R::key_type, typename R::value_type>> {};
+struct __or__<L, R>                                         : Returns<Dict<typename R::key_type, typename R::mapped_type>> {};
 template <std::derived_from<impl::MappingProxyTag> L, typename R>
-    requires (std::convertible_to<R, Dict<typename L::key_type, typename L::value_type>>)
-struct __or__<L, R>                                         : Returns<Dict<typename L::key_type, typename L::value_type>> {};
+    requires (std::convertible_to<R, Dict<typename L::key_type, typename L::mapped_type>>)
+struct __or__<L, R>                                         : Returns<Dict<typename L::key_type, typename L::mapped_type>> {};
 template <typename L, std::derived_from<impl::MappingProxyTag> R>
-    requires (std::convertible_to<L, Dict<typename R::key_type, typename R::value_type>>)
-struct __or__<L, R>                                         : Returns<Dict<typename R::key_type, typename R::value_type>> {};
+    requires (std::convertible_to<L, Dict<typename R::key_type, typename R::mapped_type>>)
+struct __or__<L, R>                                         : Returns<Dict<typename R::key_type, typename R::mapped_type>> {};
 
 
 template <impl::proxy_like L, impl::not_proxy_like R>
@@ -4962,7 +5052,7 @@ struct __ior__<L, R>                                        : Returns<Set<typena
 template <std::derived_from<impl::FrozenSetTag> L, std::convertible_to<L> R>
 struct __ior__<L, R>                                        : Returns<FrozenSet<typename L::key_type>&> {};
 template <std::derived_from<impl::DictTag> L, std::convertible_to<L> R>
-struct __ior__<L, R>                                        : Returns<Dict<typename L::key_type, typename L::value_type>&> {};
+struct __ior__<L, R>                                        : Returns<Dict<typename L::key_type, typename L::mapped_type>&> {};
 
 
 template <impl::proxy_like L, impl::not_proxy_like R>

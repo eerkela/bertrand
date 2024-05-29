@@ -49,23 +49,26 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    Str(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Str(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Str(T&& other) : Base(std::forward<T>(other)) {}
-
-    template <typename Policy>
-    Str(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Str>(accessor).release(), stolen_t{})
-    {}
-
     /* Default constructor.  Initializes to empty string. */
     Str() : Base(PyUnicode_FromStringAndSize("", 0), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
     }
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
+    Str(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Str(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    /* Convert an equivalent pybind11 type into a py::Str. */
+    template <impl::pybind11_like T> requires (typecheck<T>())
+    Str(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Unwrap a pybind11 accessor into a py::Str. */
+    template <typename Policy>
+    Str(const pybind11::detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Str>(accessor).release(), stolen_t{})
+    {}
 
     /* Implicitly convert a string literal into a py::Str object. */
     template <size_t N>
@@ -85,8 +88,6 @@ public:
             Exception::from_python();
         }
     }
-
-    // TODO: this causes an ambiguity when converting from Object to Str
 
     /* Implicitly convert a C++ std::string into a py::Str object. */
     template <impl::cpp_like T>
@@ -132,7 +133,7 @@ public:
             !std::convertible_to<T, std::string> &&
             !std::convertible_to<T, std::string_view>
         )
-    explicit Str(const T& obj) : Base(PyObject_Str(Object(obj).ptr()), stolen_t{}) {
+    explicit Str(const T& obj) : Base(PyObject_Str(as_object(obj).ptr()), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -399,7 +400,7 @@ public:
     [[nodiscard]] Str join(const T& iterable) const {
         PyObject* result = PyUnicode_Join(
             this->ptr(),
-            Object(iterable).ptr()
+            as_object(iterable).ptr()
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -415,7 +416,15 @@ public:
     BERTRAND_METHOD(Str, [[nodiscard]], lower, const)
     BERTRAND_METHOD(Str, [[nodiscard]], lstrip, const)
     BERTRAND_STATIC_METHOD(Str, [[nodiscard]], maketrans)
-    BERTRAND_METHOD(Str, [[nodiscard]], partition, const)
+
+    [[nodiscard]] Tuple<Str> partition(const Str& sep) const {
+        PyObject* result = PyUnicode_Partition(this->ptr(), sep.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Tuple<Str>>(result);
+    }
+
     BERTRAND_METHOD(Str, [[nodiscard]], removeprefix, const)
     BERTRAND_METHOD(Str, [[nodiscard]], removesuffix, const)
 
@@ -491,8 +500,31 @@ public:
     }
 
     BERTRAND_METHOD(Str, [[nodiscard]], rjust, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], rpartition, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], rsplit, const)
+
+    [[nodiscard]] Tuple<Str> rpartition(const Str& sep) const {
+        PyObject* result = PyUnicode_RPartition(this->ptr(), sep.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Tuple<Str>>(result);
+    }
+
+    [[nodiscard]] List<Str> rsplit() const {
+        PyObject* result = PyUnicode_RSplit(this->ptr(), nullptr, -1);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<List<Str>>(result);
+    }
+
+    [[nodiscard]] List<Str> rsplit(const Str& sep, Py_ssize_t maxsplit = -1) const {
+        PyObject* result = PyUnicode_RSplit(this->ptr(), sep.ptr(), maxsplit);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<List<Str>>(result);
+    }
+
     BERTRAND_METHOD(Str, [[nodiscard]], rstrip, const)
 
     [[nodiscard]] List<Str> split() const {

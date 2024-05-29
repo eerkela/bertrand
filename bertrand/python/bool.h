@@ -41,19 +41,22 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
+    /* Default constructor.  Initializes to False. */
+    Bool() : Base(Py_False, borrowed_t{}) {}
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
     Bool(Handle h, const borrowed_t& t) : Base(h, t) {}
     Bool(Handle h, const stolen_t& t) : Base(h, t) {}
 
+    /* Convert an equivalent pybind11 type into a py::Bool. */
     template <impl::pybind11_like T> requires (typecheck<T>())
     Bool(T&& other) : Base(std::forward<T>(other)) {}
 
+    /* Unwrap a pybind11 accessor into a py::Bool. */
     template <typename Policy>
     Bool(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Bool>(accessor).release(), stolen_t{})
     {}
-
-    /* Default constructor.  Initializes to False. */
-    Bool() : Base(Py_False, borrowed_t{}) {}
 
     /* Implicitly convert C++ booleans into py::Bool. */
     template <impl::cpp_like T> requires (impl::bool_like<T>)
@@ -106,6 +109,17 @@ public:
     /* Explicitly convert a C string into a py::Bool. */
     template <std::same_as<const char*> T>
     explicit Bool(T str) : Bool(std::strcmp(str, "") != 0) {}
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    BERTRAND_METHOD(Int, [[nodiscard]], bit_length, const)
+    BERTRAND_METHOD(Int, [[nodiscard]], bit_count, const)
+    BERTRAND_METHOD(Int, [[nodiscard]], to_bytes, const)
+    BERTRAND_STATIC_METHOD(Int, [[nodiscard]], from_bytes)
+    BERTRAND_METHOD(Int, [[nodiscard]], as_integer_ratio, const)
+    BERTRAND_METHOD(Int, [[nodiscard]], is_integer, const)
 
 };
 

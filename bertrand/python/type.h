@@ -50,19 +50,22 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
+    /* Default constructor.  Initializes to the built-in type metaclass. */
+    Type() : Base((PyObject*) &PyType_Type, borrowed_t{}) {}
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
     Type(Handle h, const borrowed_t& t) : Base(h, t) {}
     Type(Handle h, const stolen_t& t) : Base(h, t) {}
 
+    /* Convert an equivalent pybind11 type into a py::Type. */
     template <impl::pybind11_like T> requires (typecheck<T>())
     Type(T&& other) : Base(std::forward<T>(other)) {}
 
+    /* Unwrap a pybind11 accessor into a py::Type. */
     template <typename Policy>
     Type(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Type>(accessor).release(), stolen_t{})
     {}
-
-    /* Default constructor.  Initializes to the built-in type metaclass. */
-    Type() : Base((PyObject*) &PyType_Type, borrowed_t{}) {}
 
     /* Explicitly detect the type of an arbitrary Python object. */
     template <impl::python_like T>
@@ -332,17 +335,6 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    Super(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Super(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Super(T&& other) : Base(std::forward<T>(other)) {}
-
-    template <typename Policy>
-    Super(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Super>(accessor).release(), stolen_t{})
-    {}
-
     /* Default constructor.  Equivalent to Python `super()` with no arguments, which
     uses the calling context's inheritance hierarchy. */
     Super() : Base(
@@ -354,8 +346,21 @@ public:
         }
     }
 
-    /* Explicit constructor.  Equivalent to Python `super(type, self)` with 2
-    arguments. */
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
+    Super(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Super(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    /* Convert an equivalent pybind11 type into a py::Super. */
+    template <impl::pybind11_like T> requires (typecheck<T>())
+    Super(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Unwrap a pybind11 accessor into a py::Super. */
+    template <typename Policy>
+    Super(const pybind11::detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Super>(accessor).release(), stolen_t{})
+    {}
+
+    /* Equivalent to Python `super(type, self)` with 2 arguments. */
     explicit Super(const Type& type, const Handle& self) :
         Base(PyObject_CallFunctionObjArgs(
             reinterpret_cast<PyObject*>(&PySuper_Type),

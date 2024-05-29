@@ -163,9 +163,9 @@ void run() {
     //     return x - y;
     // };
 
-    // constexpr auto x = py::arg_<"x">;
-    // constexpr auto y = py::arg_<"y">;
-    // // constexpr auto z = py::arg_<"z">;
+    // constexpr auto x = py::arg<"x">;
+    // constexpr auto y = py::arg<"y">;
+    // // constexpr auto z = py::arg<"z">;
 
     // py::Function func("subtract", lambda, y = 2, x = 1);
 
@@ -182,32 +182,36 @@ void run() {
 
 
 
-
     // py::Function func2 = [](py::Arg<"x", int> x, py::Arg<"y", int> y) {
     //     return x + y;
     // };
 
-    // py::print(func2(x = 1, y = 2));
+    // py::print(func2(py::arg<"x"> = 1, py::arg<"y"> = 2));
 
 
-    py::Str x = "abc";
-    py::print(x.capitalize());
+    // TODO: keyword constructor causes a segfault
+
+    // auto d = py::Dict(py::arg<"x"> = 2);
+    // py::print(d);
 
 
 
+    auto d2 = py::Dict{std::pair{"a", 1}, {"b", 2}};
+    py::print(typeid(decltype(d2)).name());
 
 
 
+    // std::unordered_map d3{{"a", 1}};
 
 
 
     // auto lambda = [](
     //     py::Arg<"x", const std::string&>::opt x
     // ) {
-    //     return x.value;
+    //     return x.value();
     // };
 
-    // constexpr auto x = py::arg_<"x">;
+    // constexpr auto x = py::arg<"x">;
 
     // py::Function func("test", lambda, x = "hello");
 
@@ -226,13 +230,13 @@ void run() {
     //         py::Arg<"z", std::string>::kw::opt z,
     //         py::Arg<"kwargs", int>::kwargs kwargs
     //     ) {
-    //         return py::List(args.value);
+    //         return py::List(args.value());
     //     },
     //     "xyz"
     // );
 
-    // py::print(variadic("abc", "def", 1, 2, 3, py::arg_<"key"> = 2));
-    // py::print(variadic("abc", py::arg_<"x"> = "xyz", py::arg_<"z"> = 2));
+    // py::print(variadic("abc", "def", 1, 2, 3, py::arg<"key"> = 2));
+    // py::print(variadic("abc", py::arg<"x"> = "xyz", py::arg<"z"> = 2));
 
 
 
@@ -985,13 +989,13 @@ void run() {
 static const py::Function func(
     "example",
     [](
-        py::Arg<"x", const int&>::opt x,
-        py::Arg<"y", const int&>::opt y
+        py::Arg<"x", int>::opt x,
+        py::Arg<"y", int>::opt y
     ) {
-        return x.value - y.value;
+        return x.value() - y.value();
     },
-    py::arg_<"x"> = 1,
-    py::arg_<"y"> = 2
+    py::arg<"x"> = 1,
+    py::arg<"y"> = 2
 );
 
 

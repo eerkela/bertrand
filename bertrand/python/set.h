@@ -20,42 +20,6 @@ namespace py {
 ///////////////////
 
 
-namespace ops {
-
-    template <typename Return, std::derived_from<impl::SetTag> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            return PySet_GET_SIZE(self.ptr());
-        }
-    };
-
-    template <typename Return, std::derived_from<impl::SetTag> Self, typename Key>
-    struct contains<Return, Self, Key> {
-        static bool operator()(const Self& self, const impl::as_object_t<Key>& key) {
-            int result = PySet_Contains(self.ptr(), key.ptr());
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-        }
-    };
-
-}
-
-
-template <typename T>
-Set(const std::initializer_list<T>&) -> Set<impl::as_object_t<T>>;
-template <impl::is_iterable T>
-Set(T) -> Set<impl::as_object_t<impl::iter_type<T>>>;
-template <typename T, typename... Args>
-    requires (!impl::is_iterable<T> && !impl::str_like<T>)
-Set(T, Args...) -> Set<Object>;
-template <impl::str_like T>
-Set(T) -> Set<Str>;
-template <size_t N>
-Set(const char(&)[N]) -> Set<Str>;
-
-
 /* Represents a statically-typed Python set in C++. */
 template <typename Key>
 class Set : public Object, public impl::SetTag {
@@ -92,12 +56,12 @@ public:
 
     template <typename T>
     [[nodiscard]] static consteval bool typecheck() {
-        if constexpr (!impl::set_like<std::decay_t<T>>) {
+        if constexpr (!impl::set_like<T>) {
             return false;
-        } else if constexpr (impl::pybind11_like<std::decay_t<T>>) {
+        } else if constexpr (impl::pybind11_like<T>) {
             return generic;
-        } else if constexpr (impl::is_iterable<std::decay_t<T>>) {
-            return check_key_type<impl::iter_type<std::decay_t<T>>>;
+        } else if constexpr (impl::is_iterable<T>) {
+            return check_key_type<impl::iter_type<T>>;
         } else {
             return false;
         }
@@ -147,20 +111,27 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    Set(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Set(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <typename Policy>
-    Set(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Set>(accessor).release(), stolen_t{})
-    {}
-
     /* Default constructor.  Initializes to an empty set. */
     Set() : Base(PySet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
     }
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
+    Set(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Set(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    /* Copy/move constructors from equivalent pybind11 types or other sets with a
+    narrower key type. */
+    template <impl::python_like T> requires (typecheck<T>())
+    Set(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Unwrap a pybind11 accessor into a py::Set. */
+    template <typename Policy>
+    Set(const pybind11::detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Set>(accessor).release(), stolen_t{})
+    {}
 
     /* Pack the contents of a braced initializer list into a new Python set. */
     Set(const std::initializer_list<key_type>& contents) :
@@ -180,11 +151,6 @@ public:
             throw;
         }
     }
-
-    /* Copy/move constructors from equivalent pybind11 types or other sets with a
-    narrower key type. */
-    template <impl::python_like T> requires (typecheck<T>())
-    Set(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly unpack an arbitrary Python container into a new py::Set. */
     template <impl::python_like T> requires (!impl::set_like<T> && impl::is_iterable<T>)
@@ -691,21 +657,29 @@ public:
 };
 
 
-/////////////////////////
-////    FROZENSET    ////
-/////////////////////////
+template <typename T>
+Set(const std::initializer_list<T>&) -> Set<impl::as_object_t<T>>;
+template <impl::is_iterable T>
+Set(T) -> Set<impl::as_object_t<impl::iter_type<T>>>;
+template <typename T, typename... Args>
+    requires (!impl::is_iterable<T> && !impl::str_like<T>)
+Set(T, Args...) -> Set<Object>;
+template <impl::str_like T>
+Set(T) -> Set<Str>;
+template <size_t N>
+Set(const char(&)[N]) -> Set<Str>;
 
 
 namespace ops {
 
-    template <typename Return, std::derived_from<impl::FrozenSetTag> Self>
+    template <typename Return, std::derived_from<impl::SetTag> Self>
     struct len<Return, Self> {
         static size_t operator()(const Self& self) {
             return PySet_GET_SIZE(self.ptr());
         }
     };
 
-    template <typename Return, std::derived_from<impl::FrozenSetTag> Self, typename Key>
+    template <typename Return, std::derived_from<impl::SetTag> Self, typename Key>
     struct contains<Return, Self, Key> {
         static bool operator()(const Self& self, const impl::as_object_t<Key>& key) {
             int result = PySet_Contains(self.ptr(), key.ptr());
@@ -719,17 +693,9 @@ namespace ops {
 }
 
 
-template <typename T>
-FrozenSet(const std::initializer_list<T>&) -> FrozenSet<impl::as_object_t<T>>;
-template <impl::is_iterable T>
-FrozenSet(T) -> FrozenSet<impl::as_object_t<impl::iter_type<T>>>;
-template <typename T, typename... Args>
-    requires (!impl::is_iterable<T> && !impl::str_like<T>)
-FrozenSet(T, Args...) -> FrozenSet<Object>;
-template <impl::str_like T>
-FrozenSet(T) -> FrozenSet<Str>;
-template <size_t N>
-FrozenSet(const char(&)[N]) -> FrozenSet<Str>;
+/////////////////////////
+////    FROZENSET    ////
+/////////////////////////
 
 
 /* Represents a statically-typed Python `frozenset` object in C++. */
@@ -768,12 +734,12 @@ public:
 
     template <typename T>
     [[nodiscard]] static consteval bool typecheck() {
-        if constexpr (!impl::frozenset_like<std::decay_t<T>>) {
+        if constexpr (!impl::frozenset_like<T>) {
             return false;
-        } else if constexpr (impl::pybind11_like<std::decay_t<T>>) {
+        } else if constexpr (impl::pybind11_like<T>) {
             return generic;
-        } else if constexpr (impl::is_iterable<std::decay_t<T>>) {
-            return check_key_type<impl::iter_type<std::decay_t<T>>>;
+        } else if constexpr (impl::is_iterable<T>) {
+            return check_key_type<impl::iter_type<T>>;
         } else {
             return false;
         }
@@ -823,20 +789,27 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    FrozenSet(Handle h, const borrowed_t& t) : Base(h, t) {}
-    FrozenSet(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <typename Policy>
-    FrozenSet(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<FrozenSet>(accessor).release(), stolen_t{})
-    {}
-
     /* Default constructor.  Initializes to an empty set. */
     FrozenSet() : Base(PyFrozenSet_New(nullptr), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
     }
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
+    FrozenSet(Handle h, const borrowed_t& t) : Base(h, t) {}
+    FrozenSet(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    /* Copy/move constructors from equivalent pybind11 types or other frozensets with
+    a narrower key type. */
+    template <impl::python_like T> requires (typecheck<T>())
+    FrozenSet(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Unwrap a pybind11 accessor into a py::FrozenSet. */
+    template <typename Policy>
+    FrozenSet(const pybind11::detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<FrozenSet>(accessor).release(), stolen_t{})
+    {}
 
     /* Pack the contents of a braced initializer list into a new Python frozenset. */
     FrozenSet(const std::initializer_list<key_type>& contents) :
@@ -856,11 +829,6 @@ public:
             throw;
         }
     }
-
-    /* Copy/move constructors from equivalent pybind11 types or other frozensets with
-    a narrower key type. */
-    template <impl::python_like T> requires (typecheck<T>())
-    FrozenSet(T&& other) : Base(std::forward<T>(other)) {}
 
     /* Explicitly unpack an arbitrary Python container into a new py::FrozenSet. */
     template <impl::python_like T> requires (!impl::frozenset_like<T> && impl::is_iterable<T>)
@@ -1270,6 +1238,42 @@ public:
     }
 
 };
+
+
+template <typename T>
+FrozenSet(const std::initializer_list<T>&) -> FrozenSet<impl::as_object_t<T>>;
+template <impl::is_iterable T>
+FrozenSet(T) -> FrozenSet<impl::as_object_t<impl::iter_type<T>>>;
+template <typename T, typename... Args>
+    requires (!impl::is_iterable<T> && !impl::str_like<T>)
+FrozenSet(T, Args...) -> FrozenSet<Object>;
+template <impl::str_like T>
+FrozenSet(T) -> FrozenSet<Str>;
+template <size_t N>
+FrozenSet(const char(&)[N]) -> FrozenSet<Str>;
+
+
+namespace ops {
+
+    template <typename Return, std::derived_from<impl::FrozenSetTag> Self>
+    struct len<Return, Self> {
+        static size_t operator()(const Self& self) {
+            return PySet_GET_SIZE(self.ptr());
+        }
+    };
+
+    template <typename Return, std::derived_from<impl::FrozenSetTag> Self, typename Key>
+    struct contains<Return, Self, Key> {
+        static bool operator()(const Self& self, const impl::as_object_t<Key>& key) {
+            int result = PySet_Contains(self.ptr(), key.ptr());
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    };
+
+}
 
 
 }  // namespace py

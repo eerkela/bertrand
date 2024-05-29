@@ -591,6 +591,14 @@ namespace impl {
 }
 
 
+/* Issue a Python assertion from C++. */
+inline void assert_(bool condition, std::string message = "") {
+    if (!condition) {
+        throw AssertionError(message);
+    }
+}
+
+
 /* An equivalent for std::visit, which applies one of a selection of functions
 depending on the runtime type of a generic Python object.
 

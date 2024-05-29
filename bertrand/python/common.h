@@ -11,7 +11,7 @@
 #include "common/ops.h"
 #include "common/object.h"
 #include "common/func.h"
-#include "common/accessor.h"
+#include "common/access.h"
 #include "common/iter.h"
 #include "common/control.h"
 
@@ -200,7 +200,7 @@ namespace impl {
     struct SliceInitializer {
         Object value;
         template <typename T>
-            requires (impl::int_like<std::decay_t<T>> || impl::none_like<std::decay_t<T>>)
+            requires (impl::int_like<T> || impl::none_like<T>)
         SliceInitializer(T&& value) : value(std::forward<T>(value)) {}
     };
 
@@ -237,22 +237,45 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    Slice(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Slice(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Slice(T&& other) : Base(std::forward<T>(other)) {}
-
-    template <typename Policy>
-    Slice(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Slice>(accessor).release(), stolen_t{})
-    {}
-
     /* Default constructor.  Initializes to all Nones. */
     Slice() : Base(
         PySlice_New(nullptr, nullptr, nullptr),
         stolen_t{}
     ) {
+        if (m_ptr == nullptr) {
+            Exception::from_python();
+        }
+    }
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
+    Slice(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Slice(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    /* Convert an equivalent pybind11 type into a py::Slice. */
+    template <impl::pybind11_like T> requires (typecheck<T>())
+    Slice(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Unwrap a pybind11 accessor into a py::Slice. */
+    template <typename Policy>
+    Slice(const pybind11::detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Slice>(accessor).release(), stolen_t{})
+    {}
+
+    /* Initializer list constructor.  Unlike the other constructors (which can accept
+    any kind of object), this syntax is restricted only to integers, py::None, and
+    std::nullopt. */
+    Slice(const std::initializer_list<impl::SliceInitializer>& indices) :
+        Base(nullptr, stolen_t{})
+    {
+        if (indices.size() > 3) {
+            throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
+        }
+        size_t i = 0;
+        std::array<Object, 3> params {None, None, None};
+        for (const impl::SliceInitializer& item : indices) {
+            params[i++] = item.value;
+        }
+        m_ptr = PySlice_New(params[0].ptr(), params[1].ptr(), params[2].ptr());
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -285,26 +308,6 @@ public:
         PySlice_New(start.ptr(), stop.ptr(), step.ptr()),
         stolen_t{}
     ) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Initializer list constructor.  Unlike the other constructors (which can accept
-    any kind of object), this syntax is restricted only to integers, py::None, and
-    std::nullopt. */
-    Slice(const std::initializer_list<impl::SliceInitializer>& indices) :
-        Base(nullptr, stolen_t{})
-    {
-        if (indices.size() > 3) {
-            throw ValueError("slices must be of the form {[start[, stop[, step]]]}");
-        }
-        size_t i = 0;
-        std::array<Object, 3> params {None, None, None};
-        for (const impl::SliceInitializer& item : indices) {
-            params[i++] = item.value;
-        }
-        m_ptr = PySlice_New(params[0].ptr(), params[1].ptr(), params[2].ptr());
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -475,7 +478,7 @@ public:
     //      [](py::Arg<"a", int> a, py::Arg<"b", int>::opt b) {
     //          return a.value + b.value;
     //      },
-    //      py::arg_<"b"> = 2
+    //      py::arg<"b"> = 2
     //  );
 
     // TODO: there may be no need to have a special case for overloading, either.  This
@@ -621,9 +624,9 @@ auto ops::rend<Return, Self>::operator()(const Self& self) {
 }
 
 
-template <typename Obj, typename Wrapped>
+template <typename Obj, typename T>
 template <typename Self> requires (__getitem__<Self, Slice>::enable)
-auto impl::Proxy<Obj, Wrapped>::operator[](
+auto impl::Proxy<Obj, T>::operator[](
     const std::initializer_list<impl::SliceInitializer>& slice
 ) const {
     return get_value()[slice];

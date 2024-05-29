@@ -41,23 +41,26 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    Float(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Float(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Float(T&& other) : Base(std::forward<T>(other)) {}
-
-    template <typename Policy>
-    Float(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Float>(accessor).release(), stolen_t{})
-    {}
-
     /* Default constructor.  Initializes to 0.0. */
     Float() : Base(PyFloat_FromDouble(0.0), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
     }
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
+    Float(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Float(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    /* Convert equivalent pybind11 types to a py::Float. */
+    template <impl::pybind11_like T> requires (typecheck<T>())
+    Float(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Unwrap a pybind11 accessor into a py::Float. */
+    template <typename Policy>
+    Float(const pybind11::detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Float>(accessor).release(), stolen_t{})
+    {}
 
     /* Trigger implicit conversions to double. */
     template <impl::cpp_like T> requires (impl::float_like<T>)
@@ -112,6 +115,15 @@ public:
     static const Float zero;
     static const Float half;
     static const Float one;
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    BERTRAND_METHOD(Float, [[nodiscard]], as_integer_ratio, const)
+    BERTRAND_METHOD(Float, [[nodiscard]], is_integer, const)
+    BERTRAND_METHOD(Float, [[nodiscard]], hex, const)
+    BERTRAND_STATIC_METHOD(Float, [[nodiscard]], fromhex)
 
 };
 

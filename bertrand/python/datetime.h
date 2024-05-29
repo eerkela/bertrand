@@ -23,75 +23,45 @@ namespace bertrand {
 namespace py {
 
 
-// TODO: all attr() calls should use a static name for performance
-
-
-
 // TODO: should probably just only build timedeltas from C++ integers, not python ones.
 // That way we only have to maintain one path, and implicit conversions should just
 // work as expected.  Test that when this module builds.
 
 
-
 namespace impl {
 
     /* Import Python's datetime API at the C level. */
-    static const bool DATETIME_IMPORTED = []() -> bool {
+    static const bool DATETIME_IMPORTED = [] -> bool {
         if (Py_IsInitialized()) {
             PyDateTime_IMPORT;
         }
         return PyDateTimeAPI != nullptr;
     }();
 
-    static const Static<Module> dateutil_parser = py::import("dateutil.parser");
-    static const Static<Module> tzlocal = py::import("tzlocal");
-    static const Static<Module> zoneinfo = py::import("zoneinfo");
-    static const Static<Type> PyZoneInfo_Type = zoneinfo->attr("ZoneInfo");
+    static const Module dateutil_parser = import<"dateutil.parser">();
+    static const Module tzlocal = import<"tzlocal">();
+    static const Module zoneinfo = import<"zoneinfo">();
+    static const Type PyZoneInfo_Type = zoneinfo.attr<"ZoneInfo">();
 
-    static const Static<Type> PyDelta_Type = []() {
-        if (DATETIME_IMPORTED) {
-            return Static<Type>(reinterpret_borrow<Type>(
-                reinterpret_cast<PyObject*>(PyDateTimeAPI->DeltaType)
-            ));
-        }
-        return Static<Type>::alloc();
-    }();
+    static const Type PyDelta_Type = reinterpret_borrow<Type>(DATETIME_IMPORTED ?
+        reinterpret_cast<PyObject*>(PyDateTimeAPI->DeltaType) : nullptr
+    );
 
-    static const Static<Type> PyTZInfo_Type = []() {
-        if (DATETIME_IMPORTED) {
-            return Static<Type>(reinterpret_borrow<Type>(
-                reinterpret_cast<PyObject*>(PyDateTimeAPI->TZInfoType)
-            ));
-        }
-        return Static<Type>::alloc();
-    }();
+    static const Type PyTZInfo_Type = reinterpret_borrow<Type>(DATETIME_IMPORTED ?
+        reinterpret_cast<PyObject*>(PyDateTimeAPI->TZInfoType) : nullptr
+    );
 
-    static const Static<Type> PyDate_Type = []() {
-        if (DATETIME_IMPORTED) {
-            return Static<Type>(reinterpret_borrow<Type>(
-                reinterpret_cast<PyObject*>(PyDateTimeAPI->DateType)
-            ));
-        }
-        return Static<Type>::alloc();
-    }();
+    static const Type PyDate_Type = reinterpret_borrow<Type>(DATETIME_IMPORTED ?
+        reinterpret_cast<PyObject*>(PyDateTimeAPI->DateType) : nullptr
+    );
 
-    static const Static<Type> PyTime_Type = []() {
-        if (DATETIME_IMPORTED) {
-            return Static<Type>(reinterpret_borrow<Type>(
-                reinterpret_cast<PyObject*>(PyDateTimeAPI->TimeType)
-            ));
-        }
-        return Static<Type>::alloc();
-    }();
+    static const Type PyTime_Type = reinterpret_borrow<Type>(DATETIME_IMPORTED ?
+        reinterpret_cast<PyObject*>(PyDateTimeAPI->TimeType) : nullptr
+    );
 
-    static const Static<Type> PyDateTime_Type = []() {
-        if (DATETIME_IMPORTED) {
-            return Static<Type>(reinterpret_borrow<Type>(
-                reinterpret_cast<PyObject*>(PyDateTimeAPI->DateTimeType)
-            ));
-        }
-        return Static<Type>::alloc();
-    }();
+    static const Type PyDateTime_Type = reinterpret_borrow<Type>(DATETIME_IMPORTED ?
+        reinterpret_cast<PyObject*>(PyDateTimeAPI->DateTimeType) : nullptr
+    );
 
     /* Enumerated tags holding numeric conversions for datetime and timedelta types. */
     class TimeUnits {
@@ -111,7 +81,7 @@ namespace impl {
             inline static PyObject* timedelta_from_DSU(int d, int s, int us) {
                 PyObject* result = PyDelta_FromDSU(d, s, us);
                 if (result == nullptr) {
-                    throw error_already_set();
+                    Exception::from_python();
                 }
                 return result;
             }
@@ -471,28 +441,27 @@ namespace impl {
     or ISO clock format ("01:22:00", "1:22", "00:01:22:00.000"), with precision up to
     years and months and down to nanoseconds. */
     class TimeParser {
-        using sv = std::string_view;
 
         // capture groups for natural text
-        static constexpr sv td_Y = R"((?P<Y>[\d.]+)(y(ear|r)?s?))";
-        static constexpr sv td_M = R"((?P<M>[\d.]+)((month|mnth|mth|mo)s?))";
-        static constexpr sv td_W = R"((?P<W>[\d.]+)(w(eek|k)?s?))";
-        static constexpr sv td_D = R"((?P<D>[\d.]+)(d(ay|y)?s?))";
-        static constexpr sv td_h = R"((?P<h>[\d.]+)(h(our|r)?s?))";
-        static constexpr sv td_m = R"((?P<m>[\d.]+)(minutes?|mins?|m(?!s)))";
-        static constexpr sv td_s = R"((?P<s>[\d.]+)(s(econd|ec)?s?))";
-        static constexpr sv td_ms = R"((?P<ms>[\d.]+)((millisecond|millisec|msec|mil)s?|ms))";
-        static constexpr sv td_us = R"((?P<us>[\d.]+)((microsecond|microsec|micro)s?|u(sec)?s?))";
-        static constexpr sv td_ns = R"((?P<ns>[\d.]+)(n(anosecond|anosec|ano|second|sec)s?))";
+        static constexpr StaticStr td_Y = R"((?P<Y>[\d.]+)(y(ear|r)?s?))";
+        static constexpr StaticStr td_M = R"((?P<M>[\d.]+)((month|mnth|mth|mo)s?))";
+        static constexpr StaticStr td_W = R"((?P<W>[\d.]+)(w(eek|k)?s?))";
+        static constexpr StaticStr td_D = R"((?P<D>[\d.]+)(d(ay|y)?s?))";
+        static constexpr StaticStr td_h = R"((?P<h>[\d.]+)(h(our|r)?s?))";
+        static constexpr StaticStr td_m = R"((?P<m>[\d.]+)(minutes?|mins?|m(?!s)))";
+        static constexpr StaticStr td_s = R"((?P<s>[\d.]+)(s(econd|ec)?s?))";
+        static constexpr StaticStr td_ms = R"((?P<ms>[\d.]+)((millisecond|millisec|msec|mil)s?|ms))";
+        static constexpr StaticStr td_us = R"((?P<us>[\d.]+)((microsecond|microsec|micro)s?|u(sec)?s?))";
+        static constexpr StaticStr td_ns = R"((?P<ns>[\d.]+)(n(anosecond|anosec|ano|second|sec)s?))";
 
         // capture groups for clock format
-        static constexpr sv td_day_clock =
+        static constexpr StaticStr td_day_clock =
             R"((?P<D>\d+):(?P<h>\d{1,2}):(?P<m>\d{1,2}):(?P<s>\d{1,2}(\.\d+)?))";
-        static constexpr sv td_hour_clock =
+        static constexpr StaticStr td_hour_clock =
             R"((?P<h>\d+):(?P<m>\d{1,2}):(?P<s>\d{1,2}(\.\d+)?))";
-        static constexpr sv td_minute_clock =
+        static constexpr StaticStr td_minute_clock =
             R"((?P<m>\d{1,2}):(?P<s>\d{1,2}(\.\d+)?))";
-        static constexpr sv td_second_clock =
+        static constexpr StaticStr td_second_clock =
             R"(:(?P<s>\d{1,2}(\.\d+)?))";
 
         // match an optional, comma-separated pattern
@@ -699,13 +668,13 @@ namespace impl {
 
     };
 
-}  // namespace impl
+}
 
 
 /* New subclass of pybind11::object that represents a datetime.timedelta object at the
 Python level. */
-class Timedelta : public impl::Ops {
-    using Base = impl::Ops;
+class Timedelta : public Object {
+    using Base = Object;
 
 public:
     static Type type;
@@ -717,8 +686,6 @@ public:
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_STRICT(Base, Timedelta, PyDelta_Check)
 
     /* Default constructor.  Initializes to an empty delta. */
     Timedelta() : Timedelta(0, 0, 0) {}
@@ -974,8 +941,6 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    BERTRAND_OBJECT_STRICT(Base, Timezone, PyTZInfo_Check)
-
     /* Default constructor.  Initializes to the system's local timezone. */
     Timezone() : Base(local().ptr(), borrowed_t{}) {}
 
@@ -1043,8 +1008,6 @@ public:
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_STRICT(Base, Date, PyDate_Check)
 
     /* Default constructor.  Initializes to the current system date. */
     Date() : Base(impl::PyDate_Type->attr("today")().release(), stolen_t{}) {}
@@ -1246,8 +1209,6 @@ public:
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_STRICT(Base, Time, PyTime_Check)
 
     /* Default constructor.  Initializes to the current system time, in its local
     timezone. */
@@ -1483,8 +1444,6 @@ public:
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
-
-    BERTRAND_OBJECT_STRICT(Base, Datetime, PyDateTime_Check)
 
     /* Default constructor.  Initializes to the current system time with local
     timezone. */
@@ -1879,13 +1838,6 @@ public:
 
 }  // namespace py
 }  // namespace bertrand
-
-
-BERTRAND_STD_HASH(bertrand::py::Date)
-BERTRAND_STD_HASH(bertrand::py::Datetime)
-BERTRAND_STD_HASH(bertrand::py::Time)
-BERTRAND_STD_HASH(bertrand::py::Timedelta)
-BERTRAND_STD_HASH(bertrand::py::Timezone)
 
 
 #endif  // BERTRAND_PYTHON_DATETIME_H

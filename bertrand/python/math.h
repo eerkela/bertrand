@@ -6,7 +6,6 @@
 #define BERTRAND_PYTHON_MATH_H
 
 #include <cmath>
-#include <type_traits>
 
 #include "common.h"
 #include "int.h"

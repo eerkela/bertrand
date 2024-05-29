@@ -267,12 +267,15 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
     Code(Handle h, const borrowed_t& t) : Base(h, t) {}
     Code(Handle h, const stolen_t& t) : Base(h, t) {}
 
+    /* Convert an equivalent pybind11 type into a py::Code object. */
     template <impl::pybind11_like T> requires (typecheck<T>())
     Code(T&& other) : Base(std::forward<T>(other)) {}
 
+    /* Unwrap a pybind11 accessor into a py::Code object. */
     template <typename Policy>
     Code(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Code>(accessor).release(), stolen_t{})
@@ -476,27 +479,39 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
+    /* Default constructor.  Skip backward a given number of frames on construction,
+    defaulting to the current execution frame. */
+    Frame(size_t skip = 0) :
+        Base(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{})
+    {
+        if (m_ptr == nullptr) {
+            throw RuntimeError("no frame is currently executing");
+        }
+        for (size_t i = 0; i < skip; ++i) {
+            m_ptr = reinterpret_cast<PyObject*>(PyFrame_GetBack(self()));
+            if (m_ptr == nullptr) {
+                throw IndexError("frame index out of range");
+            }
+        }
+    }
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
     Frame(Handle h, const borrowed_t& t) : Base(h, t) {}
     Frame(Handle h, const stolen_t& t) : Base(h, t) {}
 
+    /* Convert an equivalent pybind11 type into a py::Frame object. */
     template <impl::pybind11_like T> requires (typecheck<T>())
     Frame(T&& other) : Base(std::forward<T>(other)) {}
 
+    /* Unwrap a pybind11 accessor into a py::Frame object. */
     template <typename Policy>
     Frame(const pybind11::detail::accessor<Policy>& accessor) :
         Base(Base::from_pybind11_accessor<Frame>(accessor).release(), stolen_t{})
     {}
 
-    /* Default constructor.  Initializes to the current execution frame. */
-    Frame() : Base(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            throw RuntimeError("no frame is currently executing");
-        }
-    }
-
     /* Construct an empty frame from a function name, file name, and line number.  This
     is primarily used to represent C++ contexts in Python exception tracebacks, etc. */
-    Frame(
+    explicit Frame(
         const char* funcname,
         const char* filename,
         int lineno,
@@ -513,7 +528,7 @@ public:
     ) {}
 
     /* Construct an empty frame from a cpptrace::stacktrace_frame object. */
-    Frame(
+    explicit Frame(
         const cpptrace::stacktrace_frame& frame,
         PyThreadState* thread_state = nullptr
     ) : Base(
@@ -523,21 +538,6 @@ public:
         ).to_python()),
         borrowed_t{}
     ) {}
-
-    /* Skip backward a number of frames on construction. */
-    explicit Frame(size_t skip) :
-        Base(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            throw RuntimeError("no frame is currently executing");
-        }
-        for (size_t i = 0; i < skip; ++i) {
-            m_ptr = reinterpret_cast<PyObject*>(PyFrame_GetBack(self()));
-            if (m_ptr == nullptr) {
-                throw IndexError("frame index out of range");
-            }
-        }
-    }
 
     /////////////////////////////
     ////    C++ INTERFACE    ////

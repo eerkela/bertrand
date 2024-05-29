@@ -98,23 +98,26 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    Int(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Int(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Int(T&& other) : Base(std::forward<T>(other)) {}
-
-    template <typename Policy>
-    Int(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Int>(accessor).release(), stolen_t{})
-    {}
-
     /* Default constructor.  Initializes to 0. */
     Int() : Base(PyLong_FromLong(0), stolen_t{}) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
     }
+
+    /* Reinterpret_borrow/reinterpret_steal constructors. */
+    Int(Handle h, const borrowed_t& t) : Base(h, t) {}
+    Int(Handle h, const stolen_t& t) : Base(h, t) {}
+
+    /* Convert an equivalent pybind11 type into a py::Int. */
+    template <impl::pybind11_like T> requires (typecheck<T>())
+    Int(T&& other) : Base(std::forward<T>(other)) {}
+
+    /* Unwrap a pybind11 accessor into a py::Int. */
+    template <typename Policy>
+    Int(const pybind11::detail::accessor<Policy>& accessor) :
+        Base(Base::from_pybind11_accessor<Int>(accessor).release(), stolen_t{})
+    {}
 
     /* Implicitly promote Python booleans to py::Int. */
     template <impl::python_like T> requires (impl::bool_like<T>)
@@ -125,7 +128,7 @@ public:
     }
 
     /* Implicitly convert C++ booleans and integers to py::Int. */
-    template <typename T> requires (std::integral<T>)
+    template <std::integral T>
     Int(const T& value) : Base(nullptr, stolen_t{}) {
         if constexpr (sizeof(T) <= sizeof(long)) {
             if constexpr (std::signed_integral<T>) {
@@ -219,6 +222,17 @@ public:
     static const Int zero;
     static const Int one;
     static const Int two;
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    BERTRAND_METHOD(Int, [[nodiscard]], bit_length, const)
+    BERTRAND_METHOD(Int, [[nodiscard]], bit_count, const)
+    BERTRAND_METHOD(Int, [[nodiscard]], to_bytes, const)
+    BERTRAND_STATIC_METHOD(Int, [[nodiscard]], from_bytes)
+    BERTRAND_METHOD(Int, [[nodiscard]], as_integer_ratio, const)
+    BERTRAND_METHOD(Int, [[nodiscard]], is_integer, const)
 
 };
 

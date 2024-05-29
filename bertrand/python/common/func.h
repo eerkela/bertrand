@@ -20,6 +20,9 @@
 #endif
 
 
+// TODO: not sure if Arg.value() is being used correctly everywhere.
+
+
 namespace bertrand {
 namespace py {
 
@@ -218,7 +221,7 @@ wrapper around it) with `py::Arg` tags.  For instance:
 Note that the annotations themselves are implicitly convertible to the underlying
 argument types, so they should be acceptable as inputs to most functions without any
 additional syntax.  If necessary, they can be explicitly dereferenced through the `*`
-and `->` operators, or by accessing their `.value` member directly, which comprises
+and `->` operators, or by accessing their `.value()` method directly, which comprises
 their entire interface.  Also note that for each argument marked as `::optional`, we
 must provide a default value within the function's constructor, which will be
 substituted whenever we call the function without specifying that argument.
@@ -358,6 +361,30 @@ protected:
             (Inspect<T>::name == name) ? 0 : 1 + index_helper<name, Ts...>;
 
         template <typename... Ts>
+        static constexpr size_t opt_index_helper = 0;
+        template <typename T, typename... Ts>
+        static constexpr size_t opt_index_helper<T, Ts...> =
+            Inspect<T>::opt ? 0 : 1 + opt_index_helper<Ts...>;
+
+        template <size_t I, typename... Ts>
+        static constexpr size_t opt_count_helper = I;
+        template <size_t I, typename T, typename... Ts>
+        static constexpr size_t opt_count_helper<I, T, Ts...> =
+            opt_count_helper<I + Inspect<T>::opt, Ts...>;
+
+        template <size_t I, typename... Ts>
+        static constexpr size_t pos_count_helper = 0;
+        template <size_t I, typename T, typename... Ts>
+        static constexpr size_t pos_count_helper<I, T, Ts...> =
+            pos_count_helper<I + Inspect<T>::pos, Ts...>;
+
+        template <size_t I, typename... Ts>
+        static constexpr size_t pos_opt_count_helper = 0;
+        template <size_t I, typename T, typename... Ts>
+        static constexpr size_t pos_opt_count_helper<I, T, Ts...> =
+            pos_opt_count_helper<I + (Inspect<T>::pos && Inspect<T>::opt), Ts...>;
+
+        template <typename... Ts>
         static constexpr size_t kw_index_helper = 0;
         template <typename T, typename... Ts>
         static constexpr size_t kw_index_helper<T, Ts...> =
@@ -381,17 +408,11 @@ protected:
         static constexpr size_t kw_only_count_helper<I, T, Ts...> =
             kw_only_count_helper<I + Inspect<T>::kw_only, Ts...>;
 
-        template <typename... Ts>
-        static constexpr size_t opt_index_helper = 0;
-        template <typename T, typename... Ts>
-        static constexpr size_t opt_index_helper<T, Ts...> =
-            Inspect<T>::opt ? 0 : 1 + opt_index_helper<Ts...>;
-
         template <size_t I, typename... Ts>
-        static constexpr size_t opt_count_helper = I;
+        static constexpr size_t kw_only_opt_count_helper = 0;
         template <size_t I, typename T, typename... Ts>
-        static constexpr size_t opt_count_helper<I, T, Ts...> =
-            opt_count_helper<I + Inspect<T>::opt, Ts...>;
+        static constexpr size_t kw_only_opt_count_helper<I, T, Ts...> =
+            kw_only_opt_count_helper<I + (Inspect<T>::kw_only && Inspect<T>::opt), Ts...>;
 
         template <typename... Ts>
         static constexpr size_t args_index_helper = 0;
@@ -419,6 +440,17 @@ protected:
         template <StaticStr name>
         static constexpr bool contains = index<name> != size;
 
+        /* Get the index of the first optional argument, or `size` if no optional
+        arguments are present. */
+        static constexpr size_t opt_index = opt_index_helper<Args...>;
+        static constexpr size_t opt_count = opt_count_helper<0, Args...>;
+        static constexpr bool has_opt = opt_index != size;
+
+        /* Get the number of positional-only arguments. */
+        static constexpr size_t pos_count = pos_count_helper<0, Args...>;
+        static constexpr size_t pos_opt_count = pos_opt_count_helper<0, Args...>;
+        static constexpr bool has_pos = pos_count > 0;
+
         /* Get the index of the first keyword argument, or `size` if no keywords are
         present. */
         static constexpr size_t kw_index = kw_index_helper<Args...>;
@@ -429,13 +461,8 @@ protected:
         keyword-only arguments are present. */
         static constexpr size_t kw_only_index = kw_only_index_helper<Args...>;
         static constexpr size_t kw_only_count = kw_only_count_helper<0, Args...>;
+        static constexpr size_t kw_only_opt_count = kw_only_opt_count_helper<0, Args...>;
         static constexpr bool has_kw_only = kw_only_index != size;
-
-        /* Get the index of the first optional argument, or `size` if no optional
-        arguments are present. */
-        static constexpr size_t opt_index = opt_index_helper<Args...>;
-        static constexpr size_t opt_count = opt_count_helper<0, Args...>;
-        static constexpr bool has_opt = opt_index != size;
 
         /* Get the index of the first variadic positional argument, or `size` if
         variadic positional arguments are not allowed. */
@@ -627,7 +654,7 @@ protected:
                     using D = std::tuple_element<I, tuple>::type;
                     return get_arg<source::template index<D::name>>(
                         std::forward<Source>(values)...
-                    ).value;
+                    ).value();
                 }
             }
 
@@ -819,7 +846,7 @@ protected:
                         return false;
                     }
                 } else if constexpr (!target::has_kwargs) {
-                    using type = Inspect<T<target::kwargs_idx>>::type;
+                    using type = Inspect<T<target::kwargs_index>>::type;
                     if constexpr (!std::convertible_to<S<J>, type>) {
                         return false;
                     }
@@ -2010,6 +2037,46 @@ protected:
     }
 
 public:
+    using ReturnType = Return;
+    using ArgTypes = std::tuple<typename Inspect<Target>::type...>;
+    using Annotations = std::tuple<Target...>;
+    using Defaults = DefaultValues;
+
+    /* Template constraint that evaluates to true if this function can be called with
+    the templated argument types. */
+    template <typename... Source>
+    static constexpr bool invocable = Arguments<Source...>::enable;
+
+    /* The total number of arguments that the function accepts, not including variadic
+    positional or keyword arguments. */
+    static constexpr size_t argcount =
+        target::size - target::has_args - target::has_kwargs;
+
+    /* The total number of optional arguments that the function accepts, not including
+    variadic positional or keyword arguments. */
+    static constexpr size_t opt_argcount = target::opt_count;
+
+    /* The number of positional-only arguments that the function accepts, not including
+    variadic positional arguments. */
+    static constexpr size_t posonly_argcount = target::pos_count;
+
+    /* The number of optional positional-only arguments that the function accepts, not
+    including variadic positional arguments. */
+    static constexpr size_t posonly_opt_argcount = target::pos_opt_count;
+
+    /* The number of keyword-only arguments that the function accepts, not including
+    variadic keyword arguments. */
+    static constexpr size_t kwonly_argcount = target::kw_only_count;
+
+    /* The number of optional keyword-only arguments that the function accepts, not
+    including variadic keyword arguments. */
+    static constexpr size_t kwonly_opt_argcount = target::kw_only_opt_count;
+
+    /* Indicates whether the function accepts variadic positional arguments. */
+    static constexpr bool has_args = target::has_args;
+
+    /* Indicates whether the function accepts variadic keyword arguments. */
+    static constexpr bool has_kwargs = target::has_kwargs;
 
     // TODO: if default specialization is given, typecheck<> should be fully generic, right?
     // typecheck<T>() should check impl::is_callable_any<T>;
@@ -2036,72 +2103,36 @@ public:
         }
     }
 
-    // TODO: add metadata related to the function signature, including both annotated
-    // and unannotated versions?
-
-    using ReturnType = Return;
-
-    /* Type of the special tuple that holds default values for this function. */
-    using Defaults = DefaultValues;
-
-    /* Template constraint that evaluates to true if this function can be called with
-    the templated argument types. */
-    template <typename... Source>
-    static constexpr bool invocable = Arguments<Source...>::enable;
-
-    /* The total number of arguments that the function accepts, not including variadic
-    positional or keyword arguments. */
-    static constexpr size_t argcount =
-        target::size - target::has_args - target::has_kwargs;
-
-    /* The total number of optional arguments that the function accepts, not including
-    variadic positional or keyword arguments. */
-    static constexpr size_t opt_argcount = target::opt_count;
-
-    /* The number of positional-only arguments that the function accepts, not including
-    variadic positional arguments. */
-    static constexpr size_t posonly_argcount =
-        target::kw_index - target::has_args - (!target::has_kw && target::has_kwargs);
-
-    /* The number of optional positional-only arguments that the function accepts, not
-    including variadic positional arguments. */
-    // static constexpr size_t opt_posonly_argcount = ???
-
-    /* The number of keyword-only arguments that the function accepts, not including
-    variadic keyword arguments. */
-    static constexpr size_t kwonly_argcount =
-        target::size - target::kw_index - (target::has_kw && target::has_kwargs);
-
-    /* The number of optional keyword-only arguments that the function accepts, not
-    including variadic keyword arguments. */
-    // static constexpr size_t opt_kwonly_argcount = target::kw_opt_count;
-
-    /* Indicates whether the function accepts variadic positional arguments. */
-    static constexpr bool has_varargs = target::has_args;
-
-    /* Indicates whether the function accepts variadic keyword arguments. */
-    static constexpr bool has_varkwargs = target::has_kwargs;
-
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
+    /* Copy/move constructors.  Passes a shared_ptr reference to the capsule in tandem
+    with the PyObject* pointer. */
+    Function(const Function& other) : Base(other), contents(other.contents) {}
+    Function(Function&& other) : Base(std::move(other)), contents(std::move(other.contents)) {}
+
+    /* Reinterpret_borrow constructor.  Attempts to unpack the argument's capsule if it
+    represents a py::Function instance. */
     Function(Handle h, const borrowed_t& t) :
         Base(h, t), contents(Capsule::from_python(h.ptr()))
     {}
 
+    /* Reinterpret_steal constructor.  Attempts to unpack the argument's capsule if it
+    represents a py::Function instance. */
     Function(Handle h, const stolen_t& t) :
         Base(h, t), contents(Capsule::from_python(h.ptr()))
     {}
 
-    Function(const Function& other) : Base(other), contents(other.contents) {}
-    Function(Function&& other) : Base(std::move(other.contents)) {}
-
+    /* Convert an equivalent pybind11 type into a py::Function.  Attempts to unpack the
+    argument's capsule if it represents a py::Function instance. */
     template <impl::pybind11_like T> requires (typecheck<T>())
     Function(T&& other) : Base(std::forward<T>(other)) {
         contents = Capsule::from_python(m_ptr);
     }
 
+    /* Construct a py::Function from a pybind11 accessor.  Attempts to unpack the
+    argument's capsule if it represents a py::Function instance. */
     template <typename Policy>
     Function(const pybind11::detail::accessor<Policy>& accessor) : Base(accessor) {
         contents = Capsule::from_python(m_ptr);
@@ -2183,9 +2214,9 @@ public:
         }
     }
 
-    /////////////////////////
-    ////    INTERFACE    ////
-    /////////////////////////
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
 
     /* Call an external Python function that matches the target signature using
     Python-style arguments.  The optional `R` template parameter specifies a specific
@@ -2218,7 +2249,7 @@ public:
                         result = PyObject_CallOneArg(
                             func.ptr(),
                             as_object(
-                                get_arg<0>(std::forward<Source>(args)...).value
+                                get_arg<0>(std::forward<Source>(args)...).value()
                             ).ptr()
                         );
                     } else {
@@ -2526,6 +2557,13 @@ public:
         }
     }
 
+    // TODO: bring down Signature::has_keyword() and provide a compile-time equivalent
+    // -> it can be overloaded for StaticStr and marked as consteval.
+
+
+    // default<I>() returns a reference to the default value of the I-th argument
+    // default<name>() returns a reference to the default value of the named argument
+
     /* Get the name of the wrapped function. */
     [[nodiscard]] std::string name() const {
         if (contents != nullptr) {
@@ -2570,8 +2608,6 @@ public:
     /* Get the line number where the function was defined, or nullopt if it was
     defined from C/C++. */
     [[nodiscard]] std::optional<size_t> lineno() const;
-
-
 
     // /* Get a read-only dictionary mapping argument names to their default values. */
     // [[nodiscard]] MappingProxy<Dict<Str, Object>> defaults() const {

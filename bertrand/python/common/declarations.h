@@ -65,7 +65,6 @@ namespace py {
 using pybind11::init;
 using pybind11::init_alias;
 using pybind11::implicitly_convertible;
-using pybind11::args_are_all_keyword_or_ds;  // TODO: superceded by new call syntax
 using pybind11::initialize_interpreter;
 using pybind11::scoped_interpreter;
 // PYBIND11_MODULE                      <- macros don't respect namespaces
@@ -104,15 +103,19 @@ using pybind11::module_local;
 using pybind11::arithmetic;
 using pybind11::prepend;
 using pybind11::call_guard;
-using pybind11::arg;  // TODO: superceded by Arg<>
-using pybind11::arg_v;  // TODO: superceded by Arg<>
-using pybind11::kw_only;  // TODO: superceded by Arg<>
-using pybind11::pos_only;  // TODO: superceded by Arg<>
 
 
 ////////////////////////////////////
 ////    ARGUMENT ANNOTATIONS    ////
 ////////////////////////////////////
+
+
+// TODO: variadic arguments currently don't work with references.  Need to use a
+// std::reference_wrapper<> for these cases.
+
+// TODO: need to implement unpacking proxies for the dereference operator.  Single
+// unpacking requires the object to be iterable, and double unpacking requires it to
+// be a mapping.  In fact, it needs to be specifically indexable with a string.
 
 
 namespace impl {
@@ -126,7 +129,10 @@ template <StaticStr Name, typename T>
 class Arg : public impl::ArgTag {
 
     template <bool positional, bool keyword>
-    struct Optional : public impl::ArgTag {
+    class Optional : public impl::ArgTag {
+        T m_value;
+
+    public:
         using type = T;
         static constexpr StaticStr name = Name;
         static constexpr bool is_positional = positional;
@@ -134,22 +140,29 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = true;
         static constexpr bool is_variadic = false;
 
-        T value;
-
         template <std::convertible_to<T> V>
-        Optional(V&& value) : value(std::forward<V>(value)) {}
-        Optional(const Arg& other) : value(other.value) {}
-        Optional(Arg&& other) : value(std::move(other.value)) {}
+        Optional(V&& value) : m_value(std::forward<V>(value)) {}
+        Optional(const Arg& other) : m_value(other.m_value) {}
+        Optional(Arg&& other) : m_value(std::move(other.m_value)) {}
 
-        operator std::remove_reference_t<T>&() & { return value; }
-        operator std::remove_reference_t<T>&&() && { return std::move(value); }
-        operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
-            return value;
+        [[nodiscard]] std::remove_reference_t<T>& value() & { return m_value; }
+        [[nodiscard]] std::remove_reference_t<T>&& value() && { return std::move(m_value); }
+        [[nodiscard]] const std::remove_const_t<std::remove_reference_t<T>>& value() const & {
+            return m_value;
+        }
+
+        [[nodiscard]] operator std::remove_reference_t<T>&() & { return m_value; }
+        [[nodiscard]] operator std::remove_reference_t<T>&&() && { return std::move(m_value); }
+        [[nodiscard]] operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
+            return m_value;
         }
     };
 
     template <bool optional>
-    struct Positional : public impl::ArgTag {
+    class Positional : public impl::ArgTag {
+        T m_value;
+
+    public:
         using type = T;
         using opt = Optional<true, false>;
         static constexpr StaticStr name = Name;
@@ -158,22 +171,29 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = optional;
         static constexpr bool is_variadic = false;
 
-        T value;
-
         template <std::convertible_to<T> V>
-        Positional(V&& value) : value(std::forward<V>(value)) {}
-        Positional(const Arg& other) : value(other.m_value) {}
-        Positional(Arg&& other) : value(std::move(other.m_value)) {}
+        Positional(V&& value) : m_value(std::forward<V>(value)) {}
+        Positional(const Arg& other) : m_value(other.m_value) {}
+        Positional(Arg&& other) : m_value(std::move(other.m_value)) {}
 
-        operator std::remove_reference_t<T>&() & { return value; }
-        operator std::remove_reference_t<T>&&() && { return std::move(value); }
-        operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
-            return value;
+        [[nodiscard]] std::remove_reference_t<T>& value() & { return m_value; }
+        [[nodiscard]] std::remove_reference_t<T>&& value() && { return std::move(m_value); }
+        [[nodiscard]] const std::remove_const_t<std::remove_reference_t<T>>& value() const & {
+            return m_value;
+        }
+
+        [[nodiscard]] operator std::remove_reference_t<T>&() & { return m_value; }
+        [[nodiscard]] operator std::remove_reference_t<T>&&() && { return std::move(m_value); }
+        [[nodiscard]] operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
+            return m_value;
         }
     };
 
     template <bool optional>
-    struct Keyword : public impl::ArgTag {
+    class Keyword : public impl::ArgTag {
+        T m_value;
+
+    public:
         using type = T;
         using opt = Optional<false, true>;
         static constexpr StaticStr name = Name;
@@ -182,21 +202,28 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = optional;
         static constexpr bool is_variadic = false;
 
-        T value;
-
         template <std::convertible_to<T> V>
-        Keyword(V&& value) : value(std::forward<V>(value)) {}
-        Keyword(const Arg& other) : value(other.m_value) {}
-        Keyword(Arg&& other) : value(std::move(other.m_value)) {}
+        Keyword(V&& value) : m_value(std::forward<V>(value)) {}
+        Keyword(const Arg& other) : m_value(other.m_value) {}
+        Keyword(Arg&& other) : m_value(std::move(other.m_value)) {}
 
-        operator std::remove_reference_t<T>&() & { return value; }
-        operator std::remove_reference_t<T>&&() && { return std::move(value); }
-        operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
-            return value;
+        [[nodiscard]] std::remove_reference_t<T>& value() & { return m_value; }
+        [[nodiscard]] std::remove_reference_t<T>&& value() && { return std::move(m_value); }
+        [[nodiscard]] const std::remove_const_t<std::remove_reference_t<T>>& value() const & {
+            return m_value;
+        }
+
+        [[nodiscard]] operator std::remove_reference_t<T>&() & { return m_value; }
+        [[nodiscard]] operator std::remove_reference_t<T>&&() && { return std::move(m_value); }
+        [[nodiscard]] operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
+            return m_value;
         }
     };
 
-    struct Args : public impl::ArgTag {
+    class Args : public impl::ArgTag {
+        std::vector<T> m_value;
+
+    public:
         using type = T;
         static constexpr StaticStr name = Name;
         static constexpr bool is_positional = true;
@@ -204,42 +231,49 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = false;
         static constexpr bool is_variadic = true;
 
-        std::vector<T> value;
-
         Args() = default;
-        Args(const std::vector<T>& value) : value(value) {}
-        Args(std::vector<T>&& value) : value(std::move(value)) {}
+        Args(const std::vector<T>& value) : m_value(value) {}
+        Args(std::vector<T>&& value) : m_value(std::move(value)) {}
         template <std::convertible_to<T> V>
         Args(const std::vector<V>& value) {
-            this->value.reserve(value.size());
+            m_value.reserve(value.size());
             for (const auto& item : value) {
-                this->value.push_back(item);
+                m_value.push_back(item);
             }
         }
-        Args(const Args& other) : value(other.value) {}
-        Args(Args&& other) : value(std::move(other.value)) {}
+        Args(const Args& other) : m_value(other.m_value) {}
+        Args(Args&& other) : m_value(std::move(other.m_value)) {}
 
-        operator std::vector<T>&() & { return value; }
-        operator std::vector<T>&&() && { return std::move(value); }
-        operator const std::vector<T>&() const & { return value; }
+        [[nodiscard]] std::vector<T>& value() & { return m_value; }
+        [[nodiscard]] std::vector<T>&& value() && { return std::move(m_value); }
+        [[nodiscard]] const std::vector<T>& value() const & { return m_value; }
 
-        auto begin() const { return value.begin(); }
-        auto cbegin() const { return value.cbegin(); }
-        auto end() const { return value.end(); }
-        auto cend() const { return value.cend(); }
-        auto rbegin() const { return value.rbegin(); }
-        auto crbegin() const { return value.crbegin(); }
-        auto rend() const { return value.rend(); }
-        auto crend() const { return value.crend(); }
-        constexpr auto size() const { return value.size(); }
-        constexpr auto empty() const { return value.empty(); }
-        constexpr auto data() const { return value.data(); }
-        constexpr decltype(auto) front() const { return value.front(); }
-        constexpr decltype(auto) back() const { return value.back(); }
-        constexpr decltype(auto) operator[](size_t index) const { return value.at(index); } 
+        [[nodiscard]] operator std::vector<T>&() & { return m_value; }
+        [[nodiscard]] operator std::vector<T>&&() && { return std::move(m_value); }
+        [[nodiscard]] operator const std::vector<T>&() const & { return m_value; }
+
+        [[nodiscard]] auto begin() const { return m_value.begin(); }
+        [[nodiscard]] auto cbegin() const { return m_value.cbegin(); }
+        [[nodiscard]] auto end() const { return m_value.end(); }
+        [[nodiscard]] auto cend() const { return m_value.cend(); }
+        [[nodiscard]] auto rbegin() const { return m_value.rbegin(); }
+        [[nodiscard]] auto crbegin() const { return m_value.crbegin(); }
+        [[nodiscard]] auto rend() const { return m_value.rend(); }
+        [[nodiscard]] auto crend() const { return m_value.crend(); }
+        [[nodiscard]] constexpr auto size() const { return m_value.size(); }
+        [[nodiscard]] constexpr auto empty() const { return m_value.empty(); }
+        [[nodiscard]] constexpr auto data() const { return m_value.data(); }
+        [[nodiscard]] constexpr decltype(auto) front() const { return m_value.front(); }
+        [[nodiscard]] constexpr decltype(auto) back() const { return m_value.back(); }
+        [[nodiscard]] constexpr decltype(auto) operator[](size_t index) const {
+            return m_value.at(index);
+        } 
     };
 
-    struct Kwargs : public impl::ArgTag {
+    class Kwargs : public impl::ArgTag {
+        std::unordered_map<std::string, T> m_value;
+
+    public:
         using type = T;
         static constexpr StaticStr name = Name;
         static constexpr bool is_positional = false;
@@ -247,36 +281,60 @@ class Arg : public impl::ArgTag {
         static constexpr bool is_optional = false;
         static constexpr bool is_variadic = true;
 
-        std::unordered_map<std::string, T> value;
-
         Kwargs();
-        Kwargs(const std::unordered_map<std::string, T>& value) : value(value) {}
-        Kwargs(std::unordered_map<std::string, T>&& value) : value(std::move(value)) {}
+        Kwargs(const std::unordered_map<std::string, T>& value) : m_value(value) {}
+        Kwargs(std::unordered_map<std::string, T>&& value) : m_value(std::move(value)) {}
         template <std::convertible_to<T> V>
         Kwargs(const std::unordered_map<std::string, V>& value) {
-            this->value.reserve(value.size());
+            m_value.reserve(value.size());
             for (const auto& [k, v] : value) {
-                this->value.emplace(k, v);
+                m_value.emplace(k, v);
             }
         }
-        Kwargs(const Kwargs& other) : value(other.value) {}
-        Kwargs(Kwargs&& other) : value(std::move(other.value)) {}
+        Kwargs(const Kwargs& other) : m_value(other.m_value) {}
+        Kwargs(Kwargs&& other) : m_value(std::move(other.m_value)) {}
 
-        operator std::unordered_map<std::string, T>&() & { return value; }
-        operator std::unordered_map<std::string, T>&&() && { return std::move(value); }
-        operator const std::unordered_map<std::string, T>&() const & { return value; }
+        [[nodiscard]] std::unordered_map<std::string, T>& value() & {
+            return m_value;
+        }
+        [[nodiscard]] std::unordered_map<std::string, T>&& value() && {
+            return std::move(m_value);
+        }
+        [[nodiscard]] const std::unordered_map<std::string, T>& value() const & {
+            return m_value;
+        }
 
-        auto begin() const { return value.begin(); }
-        auto cbegin() const { return value.cbegin(); }
-        auto end() const { return value.end(); }
-        auto cend() const { return value.cend(); }
-        constexpr auto size() const { return value.size(); }
-        constexpr bool empty() const { return value.empty(); }
-        constexpr bool contains(const std::string& key) const { return value.contains(key); }
-        constexpr auto count(const std::string& key) const { return value.count(key); }
-        decltype(auto) find(const std::string& key) const { return value.find(key); }
-        decltype(auto) operator[](const std::string& key) const { return value.at(key); }
+        [[nodiscard]] operator std::unordered_map<std::string, T>&() & {
+            return m_value;
+        }
+        [[nodiscard]] operator std::unordered_map<std::string, T>&&() && {
+            return std::move(m_value);
+        }
+        [[nodiscard]] operator const std::unordered_map<std::string, T>&() const & {
+            return m_value;
+        }
+
+        [[nodiscard]] auto begin() const { return m_value.begin(); }
+        [[nodiscard]] auto cbegin() const { return m_value.cbegin(); }
+        [[nodiscard]] auto end() const { return m_value.end(); }
+        [[nodiscard]] auto cend() const { return m_value.cend(); }
+        [[nodiscard]] constexpr auto size() const { return m_value.size(); }
+        [[nodiscard]] constexpr bool empty() const { return m_value.empty(); }
+        [[nodiscard]] constexpr bool contains(const std::string& key) const {
+            return m_value.contains(key);
+        }
+        [[nodiscard]] constexpr auto count(const std::string& key) const {
+            return m_value.count(key);
+        }
+        [[nodiscard]] decltype(auto) find(const std::string& key) const {
+            return m_value.find(key);
+        }
+        [[nodiscard]] decltype(auto) operator[](const std::string& key) const {
+            return m_value.at(key);
+        }
     };
+
+    T m_value;
 
 public:
     static_assert(Name != "", "Argument name cannot be an empty string.");
@@ -293,17 +351,21 @@ public:
     static constexpr bool is_optional = false;
     static constexpr bool is_variadic = false;
 
-    T value;
-
     template <std::convertible_to<T> V>
-    Arg(V&& value) : value(std::forward<V>(value)) {}
-    Arg(const Arg& other) : value(other.value) {}
-    Arg(Arg&& other) : value(std::move(other.value)) {}
+    Arg(V&& value) : m_value(std::forward<V>(value)) {}
+    Arg(const Arg& other) : m_value(other.m_value) {}
+    Arg(Arg&& other) : m_value(std::move(other.m_value)) {}
 
-    operator std::remove_reference_t<T>&() & { return value; }
-    operator std::remove_reference_t<T>&&() && { return std::move(value); }
-    operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
-        return value;
+    [[nodiscard]] std::remove_reference_t<T>& value() & { return m_value; }
+    [[nodiscard]] std::remove_reference_t<T>&& value() && { return std::move(m_value); }
+    [[nodiscard]] const std::remove_const_t<std::remove_reference_t<T>>& value() const & {
+        return m_value;
+    }
+
+    [[nodiscard]] operator std::remove_reference_t<T>&() & { return m_value; }
+    [[nodiscard]] operator std::remove_reference_t<T>&&() && { return std::move(m_value); }
+    [[nodiscard]] operator const std::remove_const_t<std::remove_reference_t<T>>&() const & {
+        return m_value;
     }
 };
 
@@ -321,12 +383,54 @@ namespace impl {
         }
     };
 
+    /* A special proxy for an iterable container that unpacks it into a sequence of
+    positional arguments that can be used to invoke a py::Function. */
+    template <typename Sequence>
+    struct UnpackPositional : public ArgTag {
+        Sequence& container;
+
+        // TODO: set flags so that this is recognized as an ::args type
+
+        UnpackPositional(Sequence& container) : container(container) {}
+
+        auto size() const { return std::size(container); }
+        auto begin() { return std::begin(container); }
+        auto begin() const { return std::begin(container); }
+        auto cbegin() const { return std::cbegin(container); }
+        auto end() { return std::end(container); }
+        auto end() const { return std::end(container); }
+        auto cend() const { return std::cend(container); }
+
+    };
+
+    /* A special proxy for a mapping that unpacks it into a sequence of keyword
+    arguments that can be used to invoke a py::Function. */
+    template <typename Mapping>
+    struct UnpackKeyword : public ArgTag {
+        Mapping& container;
+
+        // TODO: set flags so that this is recognized as a ::kwargs type
+
+        UnpackKeyword(Mapping& container) : container(container) {}
+
+        auto size() const { return std::size(container); }
+        auto begin() { return std::begin(container); }
+        auto begin() const { return std::begin(container); }
+        auto cbegin() const { return std::cbegin(container); }
+        auto end() { return std::end(container); }
+        auto end() const { return std::end(container); }
+        auto cend() const { return std::cend(container); }
+
+        // TODO: index by string
+
+    };
+
 }
 
 
 /* Compile-time factory for `UnboundArgument` tags. */
 template <StaticStr name>
-static constexpr impl::UnboundArg<name> arg_ {};
+static constexpr impl::UnboundArg<name> arg {};
 
 
 ///////////////////////////////
@@ -393,6 +497,7 @@ namespace impl {
     struct ProxyTag {};
     struct FunctionTag { static const Type type; };
     struct TupleTag { static const Type type; };
+    struct StructTag : public TupleTag {};
     struct ListTag { static const Type type; };
     struct SetTag { static const Type type; };
     struct FrozenSetTag { static const Type type; };
@@ -409,6 +514,12 @@ namespace impl {
 ///////////////////////////////
 
 
+/* Base class for disabled control structures. */
+struct Disable {
+    static constexpr bool enable = false;
+};
+
+
 /* Base class for enabled control structures.  Encodes the return type as a template
 parameter. */
 template <typename T>
@@ -419,109 +530,109 @@ struct Returns {
 
 
 template <typename T>
-struct __as_object__                        : Returns<Object> {};  // enabled by default
+struct __as_object__                                        : Returns<Object> {};
 template <typename Self, typename T>
-struct __implicit_cast__                    { static constexpr bool enable = false; };
+struct __implicit_cast__                                    : Disable {};
 template <typename Self, typename T>
-struct __explicit_cast__                    : Returns<T> {  // enabled by default
+struct __explicit_cast__                                    : Returns<T> {
     static T operator()(const Self& self);  // falls back to pybind11::cast
 };
 template <typename Self, typename... Args>
-struct __call__                             { static constexpr bool enable = false; };
+struct __call__                                             : Disable {};
 template <typename Self, StaticStr Name>
-struct __getattr__                          { static constexpr bool enable = false; };
+struct __getattr__                                          : Disable {};
 template <typename Self, StaticStr Name, typename Value>
-struct __setattr__                          { static constexpr bool enable = false; };
+struct __setattr__                                          : Disable {};
 template <typename Self, StaticStr Name>
-struct __delattr__                          { static constexpr bool enable = false; };
+struct __delattr__                                          : Disable {};
 template <typename Self, typename Key>
-struct __getitem__                          { static constexpr bool enable = false; };
+struct __getitem__                                          : Disable {};
 template <typename Self, typename Key, typename Value>
-struct __setitem__                          { static constexpr bool enable = false; };
+struct __setitem__                                          : Disable {};
 template <typename Self, typename Key>
-struct __delitem__                          { static constexpr bool enable = false; };
+struct __delitem__                                          : Disable {};
 template <typename Self>
-struct __len__                              { static constexpr bool enable = false; };
+struct __len__                                              : Disable {};
 template <typename Self>
-struct __iter__                             { static constexpr bool enable = false; };
+struct __iter__                                             : Disable {};
 template <typename Self>
-struct __reversed__                         { static constexpr bool enable = false; };
+struct __reversed__                                         : Disable {};
 template <typename Self, typename Key>
-struct __contains__                         { static constexpr bool enable = false; };
+struct __contains__                                         : Disable {};
 template <typename Self>
-struct __hash__                             { static constexpr bool enable = false; };
+struct __hash__                                             : Disable {};
 template <typename Self>
-struct __abs__                              { static constexpr bool enable = false; };
+struct __abs__                                              : Disable {};
 template <typename Self>
-struct __invert__                           { static constexpr bool enable = false; };
+struct __invert__                                           : Disable {};
 template <typename Self>
-struct __pos__                              { static constexpr bool enable = false; };
+struct __pos__                                              : Disable {};
 template <typename Self>
-struct __neg__                              { static constexpr bool enable = false; };
+struct __neg__                                              : Disable {};
 template <typename Self>
-struct __increment__                        { static constexpr bool enable = false; };
+struct __increment__                                        : Disable {};
 template <typename Self>
-struct __decrement__                        { static constexpr bool enable = false; };
+struct __decrement__                                        : Disable {};
 template <typename L, typename R>
-struct __lt__                               { static constexpr bool enable = false; };
+struct __lt__                                               : Disable {};
 template <typename L, typename R>
-struct __le__                               { static constexpr bool enable = false; };
+struct __le__                                               : Disable {};
 template <typename L, typename R>
-struct __eq__                               { static constexpr bool enable = false; };
+struct __eq__                                               : Disable {};
 template <typename L, typename R>
-struct __ne__                               { static constexpr bool enable = false; };
+struct __ne__                                               : Disable {};
 template <typename L, typename R>
-struct __ge__                               { static constexpr bool enable = false; };
+struct __ge__                                               : Disable {};
 template <typename L, typename R>
-struct __gt__                               { static constexpr bool enable = false; };
+struct __gt__                                               : Disable {};
 template <typename L, typename R>
-struct __add__                              { static constexpr bool enable = false; };
+struct __add__                                              : Disable {};
 template <typename L, typename R>
-struct __iadd__                             { static constexpr bool enable = false; };
+struct __iadd__                                             : Disable {};
 template <typename L, typename R>
-struct __sub__                              { static constexpr bool enable = false; };
+struct __sub__                                              : Disable {};
 template <typename L, typename R>
-struct __isub__                             { static constexpr bool enable = false; };
+struct __isub__                                             : Disable {};
 template <typename L, typename R>
-struct __mul__                              { static constexpr bool enable = false; };
+struct __mul__                                              : Disable {};
 template <typename L, typename R>
-struct __imul__                             { static constexpr bool enable = false; };
+struct __imul__                                             : Disable {};
 template <typename L, typename R>
-struct __truediv__                          { static constexpr bool enable = false; };
+struct __truediv__                                          : Disable {};
 template <typename L, typename R>
-struct __itruediv__                         { static constexpr bool enable = false; };
+struct __itruediv__                                         : Disable {};
 template <typename L, typename R>
-struct __floordiv__                         { static constexpr bool enable = false; };
+struct __floordiv__                                         : Disable {};
 template <typename L, typename R>
-struct __ifloordiv__                        { static constexpr bool enable = false; };
+struct __ifloordiv__                                        : Disable {};
 template <typename L, typename R>
-struct __mod__                              { static constexpr bool enable = false; };
+struct __mod__                                              : Disable {};
 template <typename L, typename R>
-struct __imod__                             { static constexpr bool enable = false; };
+struct __imod__                                             : Disable {};
 template <typename L, typename R>
-struct __pow__                              { static constexpr bool enable = false; };
+struct __pow__                                              : Disable {};
 template <typename L, typename R>
-struct __ipow__                             { static constexpr bool enable = false; };
+struct __ipow__                                             : Disable {};
 template <typename L, typename R>
-struct __lshift__                           { static constexpr bool enable = false; };
+struct __lshift__                                           : Disable {};
 template <typename L, typename R>
-struct __ilshift__                          { static constexpr bool enable = false; };
+struct __ilshift__                                          : Disable {};
 template <typename L, typename R>
-struct __rshift__                           { static constexpr bool enable = false; };
+struct __rshift__                                           : Disable {};
 template <typename L, typename R>
-struct __irshift__                          { static constexpr bool enable = false; };
+struct __irshift__                                          : Disable {};
 template <typename L, typename R>
-struct __and__                              { static constexpr bool enable = false; };
+struct __and__                                              : Disable {};
 template <typename L, typename R>
-struct __iand__                             { static constexpr bool enable = false; };
+struct __iand__                                             : Disable {};
 template <typename L, typename R>
-struct __or__                               { static constexpr bool enable = false; };
+struct __or__                                               : Disable {};
 template <typename L, typename R>
-struct __ior__                              { static constexpr bool enable = false; };
+struct __ior__                                              : Disable {};
 template <typename L, typename R>
-struct __xor__                              { static constexpr bool enable = false; };
+struct __xor__                                              : Disable {};
 template <typename L, typename R>
-struct __ixor__                             { static constexpr bool enable = false; };
+struct __ixor__                                             : Disable {};
 
 
 /////////////////////////
@@ -555,7 +666,7 @@ namespace impl {
     );  // NOTE: string will be garbage collected at shutdown
 
     template <typename T>
-    using as_object_t = __as_object__<std::remove_cvref_t<T>>::Return;
+    using as_object_t = __as_object__<std::decay_t<T>>::Return;
 
     template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
     class Item;
@@ -590,86 +701,95 @@ namespace impl {
 namespace impl {
 
     template <typename From, typename To>
-    concept has_conversion_operator = requires(const From& from) {
+    concept has_conversion_operator = requires(From&& from) {
         from.operator To();
     };
 
     template <typename From, typename To>
-    concept explicitly_convertible_to = requires(const From& from) {
-        static_cast<To>(from);
+    concept explicitly_convertible_to = requires(From&& from) {
+        static_cast<To>(std::forward<From>(from));
     };
 
     template <typename T>
-    concept is_iterable = requires(T t) {
-        { std::begin(t) } -> std::input_or_output_iterator;
-        { std::end(t) } -> std::input_or_output_iterator;
+    concept is_iterable = requires(T&& t) {
+        { std::begin(std::forward<T>(t)) } -> std::input_or_output_iterator;
+        { std::end(std::forward<T>(t)) } -> std::input_or_output_iterator;
     };
 
     template <typename T>
-    concept is_reverse_iterable = requires(const T& t) {
-        { std::rbegin(t) } -> std::input_or_output_iterator;
-        { std::rend(t) } -> std::input_or_output_iterator;
+    concept is_reverse_iterable = requires(T&& t) {
+        { std::rbegin(std::forward<T>(t)) } -> std::input_or_output_iterator;
+        { std::rend(std::forward<T>(t)) } -> std::input_or_output_iterator;
     };
 
     template <typename T>
-    concept iterator_like = requires(T it, T end) {
-        { *it } -> std::convertible_to<typename T::value_type>;
-        { ++it } -> std::same_as<T&>;
-        { it++ } -> std::same_as<T>;
-        { it == end } -> std::convertible_to<bool>;
-        { it != end } -> std::convertible_to<bool>;
+    concept iterator_like = requires(T&& it, T&& end) {
+        { *std::forward<T>(it) } -> std::convertible_to<typename std::decay_t<T>::value_type>;
+        { ++std::forward<T>(it) } -> std::same_as<std::remove_reference_t<T>&>;
+        { std::forward<T>(it)++ } -> std::same_as<std::remove_reference_t<T>>;
+        { std::forward<T>(it) == std::forward<T>(end) } -> std::convertible_to<bool>;
+        { std::forward<T>(it) != std::forward<T>(end) } -> std::convertible_to<bool>;
     };
 
     template <typename T>
-    concept has_size = requires(const T& t) {
-        { std::size(t) } -> std::convertible_to<size_t>;
+    concept has_size = requires(T&& t) {
+        { std::size(std::forward<T>(t)) } -> std::convertible_to<size_t>;
     };
 
     template <typename T>
-    concept sequence_like = is_iterable<T> && has_size<T> && requires(const T& t) {
-        { t[0] };
+    concept sequence_like = is_iterable<T> && has_size<T> && requires(T&& t) {
+        { std::forward<T>(t)[0] } -> std::convertible_to<iter_type<T>>;
     };
 
     template <typename T>
-    concept has_empty = requires(const T& t) {
-        { t.empty() } -> std::convertible_to<bool>;
+    concept mapping_like = requires(T&& t) {
+        typename std::decay_t<T>::key_type;
+        typename std::decay_t<T>::mapped_type;
+        { std::forward<T>(t)[std::declval<typename std::decay_t<T>::key_type>()] } ->
+            std::convertible_to<typename std::decay_t<T>::mapped_type>;
     };
 
     template <typename T>
-    concept has_reserve = requires(T& t, size_t n) {
-        { t.reserve(n) } -> std::same_as<void>;
+    concept has_empty = requires(T&& t) {
+        { std::forward<T>(t).empty() } -> std::convertible_to<bool>;
+    };
+
+    template <typename T>
+    concept has_reserve = requires(T&& t, size_t n) {
+        { std::forward<T>(t).reserve(n) } -> std::same_as<void>;
     };
 
     template <typename T, typename Key>
-    concept has_contains = requires(const T& t, const Key& key) {
-        { t.contains(key) } -> std::convertible_to<bool>;
+    concept has_contains = requires(T&& t, Key&& key) {
+        { std::forward<T>(t).contains(std::forward<Key>(key)) } -> std::convertible_to<bool>;
     };
 
     template <typename T, typename Key>
-    concept supports_lookup = requires(T t, const Key& key) {
-        { t[key] };
-    } && !std::integral<T> && !std::is_pointer_v<T>;
+    concept supports_lookup = !std::is_pointer_v<T> && !std::integral<std::decay_t<T>> &&
+        requires(T&& t, Key&& key) {
+            { std::forward<T>(t)[std::forward<Key>(key)] };
+        };
 
     template <typename T, typename Key, typename Value>
-    concept lookup_yields = requires(T t, const Key& key, const Value& value) {
-        { t[key] } -> std::convertible_to<Value>;
+    concept lookup_yields = requires(T&& t, Key&& key) {
+        { std::forward<T>(t)[std::forward<Key>(key)] } -> std::convertible_to<Value>;
     };
 
     template <typename T>
-    concept pair_like = requires(const T& t) {
-        { t.first } -> std::same_as<typename T::first_type>;
-        { t.second } -> std::same_as<typename T::second_type>;
+    concept pair_like = requires(T&& t) {
+        { std::forward<T>(t).first } -> std::same_as<typename std::decay_t<T>::first_type>;
+        { std::forward<T>(t).second } -> std::same_as<typename std::decay_t<T>::second_type>;
     };
 
     template <typename T>
-    concept complex_like = requires(const T& t) {
-        { t.real() } -> std::convertible_to<double>;
-        { t.imag() } -> std::convertible_to<double>;
+    concept complex_like = requires(T&& t) {
+        { std::forward<T>(t).real() } -> std::convertible_to<double>;
+        { std::forward<T>(t).imag() } -> std::convertible_to<double>;
     };
 
     template <typename T>
-    concept string_literal = requires(const T& t) {
-        { []<size_t N>(const char(&)[N]){}(t) } -> std::same_as<void>;
+    concept string_literal = requires(T&& t) {
+        { []<size_t N>(const char(&)[N]){}(std::forward<T>(t)) };
     };
 
     // NOTE: decay is necessary to treat `const char[N]` like `const char*`
@@ -679,18 +799,18 @@ namespace impl {
     };
 
     template <typename T>
-    concept has_abs = requires(const T& t) {
-        { std::abs(t) };
+    concept has_abs = requires(T&& t) {
+        { std::abs(std::forward<T>(t)) };
     };
 
     template <typename T>
-    concept has_to_string = requires(const T& t) {
-        { std::to_string(t) } -> std::convertible_to<std::string>;
+    concept has_to_string = requires(T&& t) {
+        { std::to_string(std::forward<T>(t)) } -> std::convertible_to<std::string>;
     };
 
     template <typename T>
-    concept has_stream_insertion = requires(std::ostream& os, const T& t) {
-        { os << t } -> std::convertible_to<std::ostream&>;
+    concept has_stream_insertion = requires(std::ostream& os, T&& t) {
+        { os << std::forward<T>(t) } -> std::convertible_to<std::ostream&>;
     };
 
     template <typename T>
@@ -703,71 +823,71 @@ namespace impl {
         has_call_operator<T>;
 
     template <typename T>
-    concept proxy_like = std::derived_from<std::remove_cvref_t<T>, ProxyTag>;
+    concept proxy_like = std::derived_from<std::decay_t<T>, ProxyTag>;
 
     template <typename T>
     concept not_proxy_like = !proxy_like<T>;
 
     template <typename T>
-    concept pybind11_like = pybind11::detail::is_pyobject<std::remove_cvref_t<T>>::value;
+    concept pybind11_like = pybind11::detail::is_pyobject<std::decay_t<T>>::value;
 
     template <typename T>
     concept python_like = (
-        pybind11_like<std::remove_cvref_t<T>> ||
-        std::derived_from<std::remove_cvref_t<T>, Object>
+        pybind11_like<std::decay_t<T>> ||
+        std::derived_from<std::decay_t<T>, Object>
     );
 
     template <typename T>
     concept is_object_exact = (
-        std::same_as<std::remove_cvref_t<T>, Object> ||
-        std::same_as<std::remove_cvref_t<T>, pybind11::object>
+        std::same_as<std::decay_t<T>, Object> ||
+        std::same_as<std::decay_t<T>, pybind11::object>
     );
 
     template <typename... Ts>
-    concept any_are_python_like = (std::derived_from<std::remove_cvref_t<Ts>, Object> || ...);
+    concept any_are_python_like = (std::derived_from<std::decay_t<Ts>, Object> || ...);
 
     template <typename T>
     concept cpp_like = !python_like<T>;
 
     template <typename L, typename R>
     struct lt_comparable {
-        static constexpr bool value = requires(const L& a, const R& b) {
-            { a < b } -> std::convertible_to<bool>;
+        static constexpr bool value = requires(L&& a, R&& b) {
+            { std::forward<L>(a) < std::forward<R>(b) } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
     struct le_comparable {
-        static constexpr bool value = requires(const L& a, const R& b) {
-            { a <= b } -> std::convertible_to<bool>;
+        static constexpr bool value = requires(L&& a, R&& b) {
+            { std::forward<L>(a) <= std::forward<R>(b) } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
     struct eq_comparable {
-        static constexpr bool value = requires(const L& a, const R& b) {
-            { a == b } -> std::convertible_to<bool>;
+        static constexpr bool value = requires(L&& a, R&& b) {
+            { std::forward<L>(a) == std::forward<R>(b) } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
     struct ne_comparable {
-        static constexpr bool value = requires(const L& a, const R& b) {
-            { a != b } -> std::convertible_to<bool>;
+        static constexpr bool value = requires(L&& a, R&& b) {
+            { std::forward<L>(a) != std::forward<R>(b) } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
     struct ge_comparable {
-        static constexpr bool value = requires(const L& a, const R& b) {
-            { a >= b } -> std::convertible_to<bool>;
+        static constexpr bool value = requires(L&& a, R&& b) {
+            { std::forward<L>(a) >= std::forward<R>(b) } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
     struct gt_comparable {
-        static constexpr bool value = requires(const L& a, const R& b) {
-            { a > b } -> std::convertible_to<bool>;
+        static constexpr bool value = requires(L&& a, R&& b) {
+            { std::forward<L>(a) > std::forward<R>(b) } -> std::convertible_to<bool>;
         };
     };
 
@@ -797,15 +917,15 @@ namespace impl {
 
     template <typename T>
     concept bytes_like = (
-        string_literal<std::remove_cvref_t<T>> ||
-        std::same_as<std::remove_cvref_t<T>, void*> ||
+        string_literal<std::decay_t<T>> ||
+        std::same_as<std::decay_t<T>, void*> ||
         std::derived_from<as_object_t<T>, Bytes>
     );
 
     template <typename T>
     concept bytearray_like = (
-        string_literal<std::remove_cvref_t<T>> ||
-        std::same_as<std::remove_cvref_t<T>, void*> ||
+        string_literal<std::decay_t<T>> ||
+        std::same_as<std::decay_t<T>, void*> ||
         std::derived_from<as_object_t<T>, ByteArray>
     );
 

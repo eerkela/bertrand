@@ -10,7 +10,7 @@
 #include "ops.h"
 #include "object.h"
 #include "func.h"
-#include "accessor.h"
+#include "access.h"
 
 
 namespace bertrand {
