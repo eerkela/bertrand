@@ -50,6 +50,7 @@ namespace impl {
 template <typename Map>
 class KeyView : public Object, public impl::KeyTag {
     using Base = Object;
+    using Self = KeyView;
     static_assert(
         std::derived_from<Map, impl::DictTag>,
         "py::KeyView mapping type must be derived from py::Dict."
@@ -228,6 +229,7 @@ namespace ops {
 template <typename Map>
 class ValueView : public Object, public impl::ValueTag {
     using Base = Object;
+    using Self = ValueView;
     static_assert(
         std::derived_from<Map, impl::DictTag>,
         "py::ValueView mapping type must be derived from py::Dict."
@@ -346,6 +348,7 @@ namespace ops {
 template <typename Map>
 class ItemView : public Object, public impl::ItemTag {
     using Base = Object;
+    using Self = ItemView;
     static_assert(
         std::derived_from<Map, impl::DictTag>,
         "py::ItemView mapping type must be derived from py::Dict."
@@ -474,6 +477,7 @@ namespace ops {
 template <typename Key, typename Value>
 class Dict : public Object, public impl::DictTag {
     using Base = Object;
+    using Self = Dict;
     static_assert(
         std::derived_from<Key, Object>,
         "py::Dict key type must be derived from py::Object."
@@ -993,6 +997,25 @@ template <typename... Args>
 Dict(Args&&...) -> Dict<Str, Object>;
 
 
+template <std::derived_from<impl::DictTag> From, impl::cpp_like To>
+    requires (impl::dict_like<To>)
+struct __cast__<From, To> {
+    static auto operator()(const From& self) {
+        To result;
+        PyObject* k;
+        PyObject* v;
+        Py_ssize_t pos = 0;
+        while (PyDict_Next(self.ptr(), &pos, &k, &v)) {
+            auto key = reinterpret_borrow<typename From::key_type>(k);
+            auto value = reinterpret_borrow<typename From::mapped_type>(v);
+            result[impl::implicit_cast<typename To::key_type>(key)] =
+                impl::implicit_cast<typename To::mapped_type>(value);
+        }
+        return result;
+    }
+};
+
+
 namespace ops {
 
     template <typename Return, std::derived_from<impl::DictTag> Self>
@@ -1039,6 +1062,7 @@ namespace ops {
 template <typename Map>
 class MappingProxy : public Object, public impl::MappingProxyTag {
     using Base = Object;
+    using Self = MappingProxy;
     static_assert(
         std::derived_from<Map, Object>,
         "py::MappingProxy mapping type must be derived from py::Object."
@@ -1182,7 +1206,7 @@ namespace ops {
             PyObject* dict = reinterpret_cast<PyObject*>(
                 reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
             );
-            return len<Return, typename Self::mapping_type>::operator()(
+            return len<Return, typename Self::mapping_type>{}(
                 reinterpret_borrow<typename Self::mapping_type>(dict)
             );
         }
@@ -1194,7 +1218,7 @@ namespace ops {
             PyObject* dict = reinterpret_cast<PyObject*>(
                 reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
             );
-            return begin<Return, typename Self::mapping_type>::operator()(
+            return begin<Return, typename Self::mapping_type>{}(
                 reinterpret_borrow<typename Self::mapping_type>(dict)
             );
         };
@@ -1206,7 +1230,7 @@ namespace ops {
             PyObject* dict = reinterpret_cast<PyObject*>(
                 reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
             );
-            return end<Return, typename Self::mapping_type>::operator()(
+            return end<Return, typename Self::mapping_type>{}(
                 reinterpret_borrow<typename Self::mapping_type>(dict)
             );
         };
@@ -1218,7 +1242,7 @@ namespace ops {
             PyObject* dict = reinterpret_cast<PyObject*>(
                 reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
             );
-            return rbegin<Return, typename Self::mapping_type>::operator()(
+            return rbegin<Return, typename Self::mapping_type>{}(
                 reinterpret_borrow<typename Self::mapping_type>(dict)
             );
         };
@@ -1230,7 +1254,7 @@ namespace ops {
             PyObject* dict = reinterpret_cast<PyObject*>(
                 reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
             );
-            return rend<Return, typename Self::mapping_type>::operator()(
+            return rend<Return, typename Self::mapping_type>{}(
                 reinterpret_borrow<typename Self::mapping_type>(dict)
             );
         };
@@ -1242,7 +1266,7 @@ namespace ops {
             PyObject* dict = reinterpret_cast<PyObject*>(
                 reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
             );
-            return contains<Return, typename Self::mapping_type, Key>::operator()(
+            return contains<Return, typename Self::mapping_type, Key>{}(
                 reinterpret_borrow<typename Self::mapping_type>(dict),
                 key
             );

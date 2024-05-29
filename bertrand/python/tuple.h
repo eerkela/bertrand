@@ -24,6 +24,7 @@ namespace py {
 template <typename Val>
 class Tuple : public Object, public impl::TupleTag {
     using Base = Object;
+    using Self = Tuple;
     static_assert(
         std::derived_from<Val, Object>,
         "py::Tuple can only contain types derived from py::Object."
@@ -528,6 +529,131 @@ template <size_t N>
 Tuple(const char(&)[N]) -> Tuple<Str>;
 
 
+template <std::derived_from<impl::TupleTag> From, impl::tuple_like To>
+    requires (impl::pybind11_like<To> && !From::template typecheck<To>())
+struct __cast__<From, To> : Returns<To> {
+    static To operator()(const From& from) {
+        return reinterpret_borrow<To>(from.ptr());
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> From, typename First, typename Second>
+    requires (
+        std::convertible_to<typename From::value_type, First> &&
+        std::convertible_to<typename From::value_type, Second>
+    )
+struct __cast__<From, std::pair<First, Second>> : Returns<std::pair<First, Second>> {
+    static std::pair<First, Second> operator()(const From& from) {
+        if (from.size() != 2) {
+            throw IndexError(
+                "conversion to std::pair requires tuple of size 2, not " +
+                std::to_string(from.size())
+            );
+        }
+        return {
+            impl::implicit_cast<First>(from.GET_ITEM(0)),
+            impl::implicit_cast<Second>(from.GET_ITEM(1))
+        };
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> From, typename... Args>
+    requires (std::convertible_to<typename From::value_type, Args> && ...)
+struct __cast__<From, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
+    static std::tuple<Args...> operator()(const From& from) {
+        if (from.size() != sizeof...(Args)) {
+            throw IndexError(
+                "conversion to std::tuple requires tuple of size " +
+                std::to_string(sizeof...(Args)) + ", not " +
+                std::to_string(from.size())
+            );
+        }
+        return [&from]<size_t... N>(std::index_sequence<N...>) {
+            return std::make_tuple(
+                impl::implicit_cast<Args>(from.GET_ITEM(N))...
+            );
+        }(std::index_sequence_for<Args...>{});
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> From, typename T, size_t N>
+    requires (std::convertible_to<typename From::value_type, T>)
+struct __cast__<From, std::array<T, N>> : Returns<std::array<T, N>> {
+    static auto operator()(const From& from) {
+        if (N != from.size()) {
+            throw IndexError(
+                "conversion to std::array requires tuple of size " +
+                std::to_string(N) + ", not " + std::to_string(from.size())
+            );
+        }
+        std::array<T, N> result;
+        for (size_t i = 0; i < N; ++i) {
+            result[i] = impl::implicit_cast<T>(from.GET_ITEM(i));
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> From, typename T, typename... Args>
+    requires (std::convertible_to<typename From::value_type, T>)
+struct __cast__<From, std::vector<T, Args...>> : Returns<std::vector<T, Args...>> {
+    static auto operator()(const From& from) {
+        std::vector<T, Args...> result;
+        result.reserve(from.size());
+        for (const auto& item : from) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> From, typename T, typename... Args>
+    requires (std::convertible_to<typename From::value_type, T>)
+struct __cast__<From, std::list<T, Args...>> : Returns<std::list<T, Args...>> {
+    static auto operator()(const From& from) {
+        std::list<T, Args...> result;
+        for (const auto& item : from) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> From, typename T, typename... Args>
+    requires (std::convertible_to<typename From::value_type, T>)
+struct __cast__<From, std::forward_list<T, Args...>> : Returns<std::forward_list<T, Args...>> {
+    static auto operator()(const From& from) {
+        std::forward_list<T, Args...> result;
+        auto it = from.rbegin();
+        auto end = from.rend();
+        while (it != end) {
+            result.push_front(impl::implicit_cast<T>(*it));
+            ++it;
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> From, typename T, typename... Args>
+    requires (std::convertible_to<typename From::value_type, T>)
+struct __cast__<From, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> {
+    static auto operator()(const From& from) {
+        std::deque<T, Args...> result;
+        for (const auto& item : from) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
+
+
 namespace ops {
 
     template <typename Return, std::derived_from<impl::TupleTag> Self>
@@ -640,7 +766,7 @@ template <impl::field_like... Fields>
 class Struct : public Tuple<impl::field_type<Fields...>> {
     using field_type = impl::field_type<Fields...>;
     using Base = Tuple<field_type>;
-
+    using Self = Struct;
 
 
 public:

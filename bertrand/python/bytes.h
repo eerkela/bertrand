@@ -26,6 +26,7 @@ namespace py {
 /* Represents a statically-typed Python `bytes` object in C++. */
 class Bytes : public Object {
     using Base = Object;
+    using Self = Bytes;
 
 public:
     static const Type type;
@@ -138,8 +139,8 @@ public:
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    BERTRAND_METHOD(Bytes, [[nodiscard]], capitalize, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], center, const)
+    BERTRAND_METHOD([[nodiscard]], capitalize, const)
+    BERTRAND_METHOD([[nodiscard]], center, const)
 
     [[nodiscard]] Py_ssize_t count(
         const Bytes& sub,
@@ -166,12 +167,12 @@ public:
         }
     }
 
-    BERTRAND_METHOD(Bytes, [[nodiscard]], decode, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], endswith, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], expandtabs, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], find, const)
-    BERTRAND_STATIC_METHOD(Bytes, [[nodiscard]], fromhex)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], hex, const)
+    BERTRAND_METHOD([[nodiscard]], decode, const)
+    BERTRAND_METHOD([[nodiscard]], endswith, const)
+    BERTRAND_METHOD([[nodiscard]], expandtabs, const)
+    BERTRAND_METHOD([[nodiscard]], find, const)
+    BERTRAND_STATIC_METHOD([[nodiscard]], fromhex)
+    BERTRAND_METHOD([[nodiscard]], hex, const)
 
     [[nodiscard]] Py_ssize_t index(
         const Bytes& sub,
@@ -198,38 +199,38 @@ public:
         }
     }
 
-    BERTRAND_METHOD(Bytes, [[nodiscard]], isalnum, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], isalpha, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], isascii, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], isdigit, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], islower, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], isspace, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], istitle, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], isupper, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], join, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], ljust, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], lower, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], lstrip, const)
-    BERTRAND_STATIC_METHOD(Bytes, [[nodiscard]], maketrans)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], partition, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], removeprefix, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], removesuffix, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], replace, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], rfind, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], rindex, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], rjust, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], rpartition, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], rsplit, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], rstrip, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], split, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], splitlines, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], startswith, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], strip, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], swapcase, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], title, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], translate, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], upper, const)
-    BERTRAND_METHOD(Bytes, [[nodiscard]], zfill, const)
+    BERTRAND_METHOD([[nodiscard]], isalnum, const)
+    BERTRAND_METHOD([[nodiscard]], isalpha, const)
+    BERTRAND_METHOD([[nodiscard]], isascii, const)
+    BERTRAND_METHOD([[nodiscard]], isdigit, const)
+    BERTRAND_METHOD([[nodiscard]], islower, const)
+    BERTRAND_METHOD([[nodiscard]], isspace, const)
+    BERTRAND_METHOD([[nodiscard]], istitle, const)
+    BERTRAND_METHOD([[nodiscard]], isupper, const)
+    BERTRAND_METHOD([[nodiscard]], join, const)
+    BERTRAND_METHOD([[nodiscard]], ljust, const)
+    BERTRAND_METHOD([[nodiscard]], lower, const)
+    BERTRAND_METHOD([[nodiscard]], lstrip, const)
+    BERTRAND_STATIC_METHOD([[nodiscard]], maketrans)
+    BERTRAND_METHOD([[nodiscard]], partition, const)
+    BERTRAND_METHOD([[nodiscard]], removeprefix, const)
+    BERTRAND_METHOD([[nodiscard]], removesuffix, const)
+    BERTRAND_METHOD([[nodiscard]], replace, const)
+    BERTRAND_METHOD([[nodiscard]], rfind, const)
+    BERTRAND_METHOD([[nodiscard]], rindex, const)
+    BERTRAND_METHOD([[nodiscard]], rjust, const)
+    BERTRAND_METHOD([[nodiscard]], rpartition, const)
+    BERTRAND_METHOD([[nodiscard]], rsplit, const)
+    BERTRAND_METHOD([[nodiscard]], rstrip, const)
+    BERTRAND_METHOD([[nodiscard]], split, const)
+    BERTRAND_METHOD([[nodiscard]], splitlines, const)
+    BERTRAND_METHOD([[nodiscard]], startswith, const)
+    BERTRAND_METHOD([[nodiscard]], strip, const)
+    BERTRAND_METHOD([[nodiscard]], swapcase, const)
+    BERTRAND_METHOD([[nodiscard]], title, const)
+    BERTRAND_METHOD([[nodiscard]], translate, const)
+    BERTRAND_METHOD([[nodiscard]], upper, const)
+    BERTRAND_METHOD([[nodiscard]], zfill, const)
 
 };
 
@@ -260,11 +261,11 @@ namespace ops {
         static Return operator()(const auto& lhs, const auto& rhs) {
             if constexpr (std::derived_from<L, Bytes>) {
                 Return result = lhs.copy();
-                iadd<Return, L, R>::operator()(result, rhs);
+                iadd<Return, L, R>{}(result, rhs);
                 return result;
             } else {
                 Return result = rhs.copy();
-                iadd<Return, L, R>::operator()(result, lhs);
+                iadd<Return, L, R>{}(result, lhs);
                 return result;
             }
         }
@@ -288,6 +289,7 @@ namespace ops {
 /* Represents a statically-typed Python `bytearray` in C++. */
 class ByteArray : public Object {
     using Base = Object;
+    using Self = ByteArray;
 
 public:
     static const Type type;
@@ -400,8 +402,8 @@ public:
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], capitalize, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], center, const)
+    BERTRAND_METHOD([[nodiscard]], capitalize, const)
+    BERTRAND_METHOD([[nodiscard]], center, const)
 
     [[nodiscard]] Py_ssize_t count(
         const ByteArray& sub,
@@ -428,12 +430,12 @@ public:
         }
     }
 
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], decode, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], endswith, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], expandtabs, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], find, const)
-    BERTRAND_STATIC_METHOD(ByteArray, [[nodiscard]], fromhex)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], hex, const)
+    BERTRAND_METHOD([[nodiscard]], decode, const)
+    BERTRAND_METHOD([[nodiscard]], endswith, const)
+    BERTRAND_METHOD([[nodiscard]], expandtabs, const)
+    BERTRAND_METHOD([[nodiscard]], find, const)
+    BERTRAND_STATIC_METHOD([[nodiscard]], fromhex)
+    BERTRAND_METHOD([[nodiscard]], hex, const)
 
     [[nodiscard]] Py_ssize_t index(
         const ByteArray& sub,
@@ -460,38 +462,38 @@ public:
         }
     }
 
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], isalnum, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], isalpha, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], isascii, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], isdigit, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], islower, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], isspace, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], istitle, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], isupper, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], join, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], ljust, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], lower, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], lstrip, const)
-    BERTRAND_STATIC_METHOD(ByteArray, [[nodiscard]], maketrans)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], partition, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], removeprefix, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], removesuffix, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], replace, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], rfind, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], rindex, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], rjust, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], rpartition, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], rsplit, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], rstrip, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], split, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], splitlines, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], startswith, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], strip, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], swapcase, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], title, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], translate, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], upper, const)
-    BERTRAND_METHOD(ByteArray, [[nodiscard]], zfill, const)
+    BERTRAND_METHOD([[nodiscard]], isalnum, const)
+    BERTRAND_METHOD([[nodiscard]], isalpha, const)
+    BERTRAND_METHOD([[nodiscard]], isascii, const)
+    BERTRAND_METHOD([[nodiscard]], isdigit, const)
+    BERTRAND_METHOD([[nodiscard]], islower, const)
+    BERTRAND_METHOD([[nodiscard]], isspace, const)
+    BERTRAND_METHOD([[nodiscard]], istitle, const)
+    BERTRAND_METHOD([[nodiscard]], isupper, const)
+    BERTRAND_METHOD([[nodiscard]], join, const)
+    BERTRAND_METHOD([[nodiscard]], ljust, const)
+    BERTRAND_METHOD([[nodiscard]], lower, const)
+    BERTRAND_METHOD([[nodiscard]], lstrip, const)
+    BERTRAND_STATIC_METHOD([[nodiscard]], maketrans)
+    BERTRAND_METHOD([[nodiscard]], partition, const)
+    BERTRAND_METHOD([[nodiscard]], removeprefix, const)
+    BERTRAND_METHOD([[nodiscard]], removesuffix, const)
+    BERTRAND_METHOD([[nodiscard]], replace, const)
+    BERTRAND_METHOD([[nodiscard]], rfind, const)
+    BERTRAND_METHOD([[nodiscard]], rindex, const)
+    BERTRAND_METHOD([[nodiscard]], rjust, const)
+    BERTRAND_METHOD([[nodiscard]], rpartition, const)
+    BERTRAND_METHOD([[nodiscard]], rsplit, const)
+    BERTRAND_METHOD([[nodiscard]], rstrip, const)
+    BERTRAND_METHOD([[nodiscard]], split, const)
+    BERTRAND_METHOD([[nodiscard]], splitlines, const)
+    BERTRAND_METHOD([[nodiscard]], startswith, const)
+    BERTRAND_METHOD([[nodiscard]], strip, const)
+    BERTRAND_METHOD([[nodiscard]], swapcase, const)
+    BERTRAND_METHOD([[nodiscard]], title, const)
+    BERTRAND_METHOD([[nodiscard]], translate, const)
+    BERTRAND_METHOD([[nodiscard]], upper, const)
+    BERTRAND_METHOD([[nodiscard]], zfill, const)
 
 };
 
@@ -520,7 +522,7 @@ namespace ops {
     template <typename Return, std::derived_from<ByteArray> L, typename R>
     struct iadd<Return, L, R> {
         static void operator()(L& lhs, const auto& rhs) {
-            lhs = add<Return, L, R>::operator()(lhs, rhs);
+            lhs = add<Return, L, R>{}(lhs, rhs);
         }
     };
 

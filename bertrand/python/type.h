@@ -20,6 +20,7 @@ created on the fly by invoking the `type` metaclass directly, using an optional 
 bases, and namespace. */
 class Type : public Object {
     using Base = Object;
+    using Self = Type;
 
     PyTypeObject* self() const noexcept {
         return reinterpret_cast<PyTypeObject*>(m_ptr);
@@ -296,6 +297,7 @@ public:
 /* Represents a statically-typed Python `super` object in C++. */
 class Super : public Object {
     using Base = Object;
+    using Self = Super;
 
 public:
     static const Type type;

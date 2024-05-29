@@ -24,6 +24,7 @@ namespace py {
 template <typename Key>
 class Set : public Object, public impl::SetTag {
     using Base = Object;
+    using Self = Set;
     static_assert(
         std::derived_from<Key, Object>,
         "py::Set can only contain types derived from py::Object."
@@ -670,6 +671,19 @@ template <size_t N>
 Set(const char(&)[N]) -> Set<Str>;
 
 
+template <std::derived_from<impl::SetTag> From, impl::cpp_like To>
+    requires (impl::anyset_like<To>)
+struct __cast__<From, To> : Returns<To> {
+    static auto operator()(const From& from) {
+        To result;
+        for (const auto& item : from) {
+            result.insert(static_cast<typename To::value_type>(item));
+        }
+        return result;
+    }
+};
+
+
 namespace ops {
 
     template <typename Return, std::derived_from<impl::SetTag> Self>
@@ -702,6 +716,7 @@ namespace ops {
 template <typename Key>
 class FrozenSet : public Object, public impl::FrozenSetTag {
     using Base = Object;
+    using Self = FrozenSet;
     static_assert(
         std::derived_from<Key, Object>,
         "py::FrozenSet can only contain types derived from py::Object."
@@ -1251,6 +1266,19 @@ template <impl::str_like T>
 FrozenSet(T) -> FrozenSet<Str>;
 template <size_t N>
 FrozenSet(const char(&)[N]) -> FrozenSet<Str>;
+
+
+template <std::derived_from<impl::FrozenSetTag> From, impl::cpp_like To>
+    requires (impl::anyset_like<To>)
+struct __cast__<From, To> : Returns<To> {
+    static auto operator()(const From& from) {
+        To result;
+        for (const auto& item : from) {
+            result.insert(static_cast<typename To::value_type>(item));
+        }
+        return result;
+    }
+};
 
 
 namespace ops {

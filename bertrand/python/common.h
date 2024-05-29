@@ -28,6 +28,7 @@ namespace py {
 /* Represents the type of Python's `None` singleton in C++. */
 class NoneType : public Object {
     using Base = Object;
+    using Self = NoneType;
 
 public:
     static const Type type;
@@ -76,6 +77,7 @@ public:
 /* Represents the type of Python's `NotImplemented` singleton in C++. */
 class NotImplementedType : public Object {
     using Base = Object;
+    using Self = NotImplementedType;
 
 public:
     static const Type type;
@@ -134,6 +136,7 @@ public:
 /* Represents the type of Python's `Ellipsis` singleton in C++. */
 class EllipsisType : public Object {
     using Base = Object;
+    using Self = EllipsisType;
 
 public:
     static const Type type;
@@ -211,6 +214,7 @@ namespace impl {
 stop, and step values do not strictly need to be integers. */
 class Slice : public Object {
     using Base = Object;
+    using Self = Slice;
 
 public:
     static const Type type;
@@ -378,6 +382,7 @@ public:
 /* Represents an imported Python module in C++. */
 class Module : public Object {
     using Base = Object;
+    using Self = Module;
 
 public:
     static const Type type;
@@ -587,10 +592,7 @@ auto Object::operator[](
     const std::initializer_list<impl::SliceInitializer>& slice
 ) {
     using Return = typename __getitem__<Self, Slice>::Return;
-    return ops::getitem<Return, Self, Slice>::operator()(
-        self,
-        Slice(slice)
-    );
+    return ops::getitem<Return, Self, Slice>{}(self, Slice(slice));
 }
 
 

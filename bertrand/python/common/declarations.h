@@ -531,12 +531,18 @@ struct Returns {
 
 template <typename T>
 struct __as_object__                                        : Returns<Object> {};
-template <typename Self, typename T>
-struct __implicit_cast__                                    : Disable {};
-template <typename Self, typename T>
-struct __explicit_cast__                                    : Returns<T> {
-    static T operator()(const Self& self);  // falls back to pybind11::cast
-};
+template <typename Derived, typename Base>
+struct __isinstance__                                       : Disable {};
+template <typename Derived, typename Base>
+struct __issubclass__                                       : Disable {};
+template <typename Self, typename... Args>
+struct __init__                                             : Disable {};
+template <typename Self, typename... Args>
+struct __explicit_init__                                    : Disable {};
+template <typename From, typename To>
+struct __cast__                                             : Disable {};
+template <typename From, typename To>
+struct __explicit_cast__                                    : Disable {};
 template <typename Self, typename... Args>
 struct __call__                                             : Disable {};
 template <typename Self, StaticStr Name>
@@ -1079,12 +1085,47 @@ namespace impl {
 
 
 /////////////////////////
+////    UTILITIES    ////
+/////////////////////////
+
+
+namespace impl {
+
+    template <typename T>
+    struct unwrap_proxy_helper { using type = T; };
+    template <proxy_like T>
+    struct unwrap_proxy_helper<T> { using type = typename T::type; };
+    template <typename T>
+    using unwrap_proxy = typename unwrap_proxy_helper<T>::type;
+
+}
+
+
+/////////////////////////
 ////    FUNCTIONS    ////
 /////////////////////////
 
 
+/* Borrow a reference to a raw Python handle. */
+template <std::derived_from<pybind11::object> T>
+[[nodiscard]] T reinterpret_borrow(Handle obj) {
+    return pybind11::reinterpret_borrow<T>(obj);
+}
+
+
+/* Borrow a reference to a raw Python handle. */
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_borrow(Handle obj);
+
+
+/* Steal a reference to a raw Python handle. */
+template <std::derived_from<pybind11::object> T>
+[[nodiscard]] T reinterpret_steal(Handle obj) {
+    return pybind11::reinterpret_steal<T>(obj);
+}
+
+
+/* Steal a reference to a raw Python handle. */
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_steal(Handle obj);
 

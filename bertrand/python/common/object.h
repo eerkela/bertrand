@@ -29,6 +29,39 @@ namespace impl {
         return TypeError(msg.str());
     }
 
+    #define BERTRAND_INIT(cls)                                                          \
+        cls(::bertrand::py::Handle h, borrowed_t t) : Base(h, t) {}                     \
+        cls(::bertrand::py::Handle h, stolen_t t) : Base(h, t) {}                       \
+                                                                                        \
+        template <typename... Args>                                                     \
+            requires (                                                                  \
+                std::is_invocable_r_v<                                                  \
+                    cls,                                                                \
+                    ::bertrand::py::__init__<cls, std::decay_t<Args>...>,               \
+                    Args...                                                             \
+                >                                                                       \
+            )                                                                           \
+        cls(Args&&... args) : Base(                                                     \
+            ::bertrand::py::__init__<cls, std::decay_t<Args>...>{}(                     \
+                std::forward<Args>(args)...                                             \
+            )                                                                           \
+        ) {}                                                                            \
+                                                                                        \
+        template <typename... Args>                                                     \
+            requires (                                                                  \
+                !::bertrand::py::__init__<cls, std::decay_t<Args>...>::enable &&        \
+                std::is_invocable_r_v<                                                  \
+                    cls,                                                                \
+                    ::bertrand::py::__explicit_init__<cls, std::decay_t<Args>...>,      \
+                    Args...                                                             \
+                >                                                                       \
+            )                                                                           \
+        explicit cls(Args&&... args) : Base(                                            \
+            ::bertrand::py::__explicit_init__<cls, std::decay_t<Args>...>{}(            \
+                std::forward<Args>(args)...                                             \
+            )                                                                           \
+        ) {}
+
 }
 
 
@@ -237,14 +270,14 @@ public:
     }
 
     /* Implicit conversion operator.  Implicit conversions can be registered for any
-    type via the __implicit_cast__ control struct.  Further implicit conversions should not be
+    type via the __cast__ control struct.  Further implicit conversions should not be
     implemented, as it can lead to template ambiguities and unexpected behavior.
     Ambiguities can still arise via the control struct, but they are more predictable
     and avoidable. */
     template <typename Self, typename T>
-        requires (__implicit_cast__<Self, T>::enable)
+        requires (__cast__<Self, T>::enable)
     [[nodiscard]] operator T(this const Self& self) {
-        return __implicit_cast__<Self, T>::operator()(self);
+        return __cast__<Self, T>{}(self);
     }
 
     /* Explicit conversion operator.  This defers to implicit conversions where
@@ -253,9 +286,9 @@ public:
     `pybind11::cast<T>()` and replaces it with the native `static_cast<T>()` and
     implicit conversions instead.  */
     template <typename Self, typename T>
-        requires (!__implicit_cast__<Self, T>::enable /* && __explicit_cast__<Self, T>::enable */)  // TODO: checking explicit_cast causes errors
+        requires (!__cast__<Self, T>::enable /* && __explicit_cast__<Self, T>::enable */)  // TODO: checking explicit_cast causes errors
     [[nodiscard]] explicit operator T(this const Self& self) {
-        return __explicit_cast__<Self, T>::operator()(self);
+        return __explicit_cast__<Self, T>{}(self);
     }
 
     /* Call operator.  This can be enabled for specific argument signatures and return
@@ -271,7 +304,7 @@ public:
             "Check your specialization of __call__ for the given arguments and "
             "ensure that it is derived from py::Object."
         );
-        return ops::call<Return, std::decay_t<Self>, Args...>::operator()(
+        return ops::call<Return, std::decay_t<Self>, Args...>{}(
             self, std::forward<Args>(args)...
         );
     }
@@ -279,12 +312,12 @@ public:
     /* Index operator.  Specific key and element types can be controlled via the
     __getitem__, __setitem__, and __delitem__ control structs. */
     template <typename Self, typename Key> requires (__getitem__<Self, Key>::enable)
-    [[nodiscard]] auto operator[](this const Self& self, const Key& key) {
+    auto operator[](this const Self& self, const Key& key) {
         using Return = typename __getitem__<Self, Key>::Return;
         if constexpr (impl::proxy_like<Key>) {
             return self[key.value()];
         } else {
-            return ops::getitem<Return, Self, Key>::operator()(self, key);
+            return ops::getitem<Return, Self, Key>{}(self, key);
         }
     }
 
@@ -292,7 +325,7 @@ public:
     py::Slice operand, allowing users to specify slices using a condensed initializer
     list. */
     template <typename Self> requires (__getitem__<Self, Slice>::enable)
-    [[nodiscard]] auto operator[](
+    auto operator[](
         this const Self& self,
         const std::initializer_list<impl::SliceInitializer>& slice
     );
@@ -313,7 +346,7 @@ public:
         if constexpr (impl::proxy_like<Key>) {
             return self.contains(key.value());
         } else {
-            return ops::contains<Return, Self, Key>::operator()(self, key);
+            return ops::contains<Return, Self, Key>{}(self, key);
         }
     }
 
@@ -328,7 +361,7 @@ public:
             "containers.  Check your specialization of __len__ for these types "
             "and ensure the Return type is set to size_t."
         );
-        return ops::len<Return, Self>::operator()(self);
+        return ops::len<Return, Self>{}(self);
     }
 
     /* Begin iteration operator.  Both this and the end iteration operator are
@@ -343,7 +376,7 @@ public:
             "specialization of __iter__ for this types and ensure the Return type "
             "is a subclass of py::Object."
         );
-        return ops::begin<Return, Self>::operator()(self);
+        return ops::begin<Return, Self>{}(self);
     }
 
     /* Const iteration operator.  Python has no distinction between mutable and
@@ -365,7 +398,7 @@ public:
             "specialization of __iter__ for this types and ensure the Return type "
             "is a subclass of py::Object."
         );
-        return ops::end<Return, Self>::operator()(self);
+        return ops::end<Return, Self>{}(self);
     }
 
     /* Const end operator.  Similar to `cbegin()`, this is identical to `end()`. */
@@ -386,7 +419,7 @@ public:
             "specialization of __reversed__ for this types and ensure the Return "
             "type is a subclass of py::Object."
         );
-        return ops::rbegin<Return, Self>::operator()(self);
+        return ops::rbegin<Return, Self>{}(self);
     }
 
     /* Const reverse iteration operator.  Python has no distinction between mutable
@@ -408,7 +441,7 @@ public:
             "specialization of __reversed__ for this types and ensure the Return "
             "type is a subclass of py::Object."
         );
-        return ops::rend<Return, Self>::operator()(self);
+        return ops::rend<Return, Self>{}(self);
     }
 
     /* Const reverse end operator.  Similar to `crbegin()`, this is identical to
@@ -421,32 +454,224 @@ public:
 };
 
 
-/* Borrow a reference to a raw Python handle. */
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_borrow(Handle obj) {
     return T(obj, Object::borrowed_t{});
 }
 
 
-/* Borrow a reference to a raw Python handle. */
-template <std::derived_from<pybind11::object> T>
-[[nodiscard]] T reinterpret_borrow(Handle obj) {
-    return pybind11::reinterpret_borrow<T>(obj);
-}
-
-
-/* Steal a reference to a raw Python handle. */
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_steal(Handle obj) {
     return T(obj, Object::stolen_t{});
 }
 
 
-/* Steal a reference to a raw Python handle. */
-template <std::derived_from<pybind11::object> T>
-[[nodiscard]] T reinterpret_steal(Handle obj) {
-    return pybind11::reinterpret_steal<T>(obj);
-}
+template <typename T, std::derived_from<Object> Self>
+struct __issubclass__<T, Self> : Returns<bool> {
+    static consteval bool operator()() {
+        return std::derived_from<T, Self>;
+    }
+    static constexpr bool operator()(const T& obj) {
+        return operator()();
+    }
+};
+
+
+template <typename T>
+struct __issubclass__<T, Object> : Returns<bool> {
+    static consteval bool operator()() {
+        return std::derived_from<T, Object> || std::derived_from<T, pybind11::object>;
+    }
+    static constexpr bool operator()(const T& obj) {
+        return operator()();
+    }
+    static bool operator()(const T& obj, const Object& cls) {
+        int result = PyObject_IsSubclass(
+            as_object(obj).ptr(),
+            cls.ptr()
+        );
+        if (result == -1) {
+            Exception::from_python();
+        }
+        return result;
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Object> : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        return issubclass<Object>(obj);
+    }
+    static bool operator()(const T& obj, const Object& cls) {
+        int result = PyObject_IsInstance(
+            as_object(obj).ptr(),
+            cls.ptr()
+        );
+        if (result == -1) {
+            Exception::from_python();
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<Object> Self, impl::pybind11_like T>
+    requires (issubclass<T, Self>())
+struct __init__<Self, T> : Returns<Self> {
+    static auto operator()(const T& other) {
+        return reinterpret_borrow<Self>(other.ptr());
+    }
+    static auto operator()(T&& other) {
+        return reinterpret_steal<Self>(other.release().ptr());
+    }
+};
+
+
+template <std::derived_from<Object> Self, typename Policy>
+struct __init__<Self, pybind11::detail::accessor<Policy>> : Returns<Self> {
+    static auto operator()(const pybind11::detail::accessor<Policy>& accessor) {
+        pybind11::object obj(accessor);
+        if (isinstance<Self>(obj)) {
+            return reinterpret_steal<Self>(obj.release().ptr());
+        } else {
+            throw impl::noconvert<Self>(obj.ptr());
+        }
+    }
+};
+
+
+template <impl::cpp_like T>
+struct __init__<Object, T> : Returns<Object> {
+    static auto operator()(const T& value) {
+        try {
+            return reinterpret_steal<Object>(pybind11::cast(value).release());
+        } catch (...) {
+            Exception::from_pybind11();
+        }
+    }
+};
+
+
+template <std::derived_from<Object> From>
+struct __cast__<From, pybind11::handle> : Returns<pybind11::handle> {
+    static pybind11::handle operator()(const From& from) {
+        return from.ptr();
+    }
+};
+
+
+template <std::derived_from<Object> From>
+struct __cast__<From, pybind11::object> : Returns<pybind11::object> {
+    static auto operator()(const From& from) {
+        return pybind11::reinterpret_borrow<pybind11::object>(from.ptr());
+    }
+    static auto operator()(From&& from) {
+        return pybind11::reinterpret_steal<pybind11::object>(from.release().ptr());
+    }
+};
+
+
+template <std::derived_from<Object> From, impl::pybind11_like To>
+    requires (
+        !std::same_as<To, pybind11::handle> &&
+        !std::same_as<To, pybind11::object> &&
+        From::template typecheck<To>()
+        // issubclass<To, From>()
+    )
+struct __cast__<From, To> : Returns<To> {
+    static auto operator()(const From& from) {
+        return pybind11::reinterpret_borrow<To>(from.ptr());
+    }
+    static auto operator()(From&& from) {
+        return pybind11::reinterpret_steal<To>(from.release().ptr());
+    }
+};
+
+
+template <std::derived_from<Object> From, std::derived_from<From> To>
+struct __cast__<From, To> : Returns<To> {
+    static auto operator()(const From& from) {
+        if (isinstance<To>(from)) {
+            return reinterpret_borrow<To>(from.ptr());
+        } else {
+            throw impl::noconvert<To>(from.ptr());
+        }
+    }
+    static auto operator()(From&& from) {
+        if (isinstance<To>(from)) {
+            return reinterpret_steal<To>(from.release().ptr());
+        } else {
+            throw impl::noconvert<To>(from.ptr());
+        }
+    }
+};
+
+
+template <std::derived_from<Object> From, impl::proxy_like To>
+    requires (__cast__<From, impl::unwrap_proxy<To>>::enable)
+struct __cast__<From, To> : Returns<To> {
+    static auto operator()(const From& from) {
+        return To(impl::implicit_cast<impl::unwrap_proxy<To>>(from));
+    }
+};
+
+
+template <impl::not_proxy_like To>
+    requires (
+        !std::is_pointer_v<To> &&
+        !std::is_reference_v<To> &&
+        !std::same_as<To, pybind11::handle> &&
+        !std::derived_from<To, pybind11::object> &&
+        !std::derived_from<To, pybind11::arg> &&
+        !std::derived_from<To, Object>  // TODO: all internal objects should inherit from a shared tag
+    )
+struct __cast__<Object, To> : Returns<To> {
+    static auto operator()(const Object& self) {
+        try {
+            return Handle(self.ptr()).template cast<To>();
+        } catch (...) {
+            Exception::from_pybind11();
+        }
+    }
+};
+
+
+
+// TODO: default explicit conversion to integer, float, complex, void*, etc. ??
+
+
+
+template <std::derived_from<Object> From, typename To>
+struct __explicit_cast__<From, To> : Returns<To> {
+    static auto operator()(const From& from) {
+        try {
+            return Handle(from.ptr()).template cast<To>();
+        } catch (...) {
+            Exception::from_pybind11();
+        }
+    }
+};
+
+
+template <std::derived_from<Object> From> 
+struct __explicit_cast__<From, std::string> : Returns<std::string> {
+    static auto operator()(const From& from) {
+        PyObject* str = PyObject_Str(from.ptr());
+        if (str == nullptr) {
+            Exception::from_python();
+        }
+        Py_ssize_t size;
+        const char* data = PyUnicode_AsUTF8AndSize(str, &size);
+        if (data == nullptr) {
+            Py_DECREF(str);
+            Exception::from_python();
+        }
+        std::string result(data, size);
+        Py_DECREF(str);
+        return result;
+    }
+};
 
 
 }  // namespace py

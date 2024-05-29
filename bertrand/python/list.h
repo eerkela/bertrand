@@ -26,6 +26,7 @@ namespace py {
 template <typename Val>
 class List : public Object, public impl::ListTag {
     using Base = Object;
+    using Self = List;
     static_assert(
         std::derived_from<Val, Object>,
         "py::List can only contain types derived from py::Object."
@@ -467,8 +468,8 @@ public:
         }
     }
 
-    BERTRAND_METHOD(List, , remove, )
-    BERTRAND_METHOD(List, , pop, )
+    BERTRAND_METHOD(, remove, )
+    BERTRAND_METHOD(, pop, )
 
     /* Equivalent to Python `list.reverse()`. */
     void reverse() {
@@ -477,7 +478,7 @@ public:
         }
     }
 
-    BERTRAND_METHOD(List, , sort, )
+    BERTRAND_METHOD(, sort, )
 
     /////////////////////////
     ////    OPERATORS    ////
@@ -544,6 +545,131 @@ template <impl::str_like T>
 List(T) -> List<Str>;
 template <size_t N>
 List(const char(&)[N]) -> List<Str>;
+
+
+template <std::derived_from<impl::ListTag> From, impl::list_like To>
+    requires (impl::pybind11_like<To> && !From::template typecheck<To>())
+struct __cast__<From, To> : Returns<To> {
+    static auto operator()(const From& from) {
+        return reinterpret_borrow<To>(from.ptr());
+    }
+};
+
+
+template <std::derived_from<impl::ListTag> From, typename First, typename Second>
+    requires (
+        std::convertible_to<typename From::value_type, First> &&
+        std::convertible_to<typename From::value_type, Second>
+    )
+struct __cast__<From, std::pair<First, Second>> : Returns<std::pair<First, Second>> {
+    static std::pair<First, Second> operator()(const From& from) {
+        if (from.size() != 2) {
+            throw IndexError(
+                "conversion to std::pair requires list of size 2, not "
+                + std::to_string(from.size())
+            );
+        }
+        return {
+            impl::implicit_cast<First>(from.GET_ITEM(0)),
+            impl::implicit_cast<Second>(from.GET_ITEM(1))
+        };
+    }
+};
+
+
+template <std::derived_from<impl::ListTag> From, typename... Args>
+    requires (std::convertible_to<typename From::value_type, Args> && ...)
+struct __cast__<From, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
+    static std::tuple<Args...> operator()(const From& from) {
+        if (from.size() != sizeof...(Args)) {
+            throw IndexError(
+                "conversion to std::tuple requires list of size " +
+                std::to_string(sizeof...(Args)) + ", not " +
+                std::to_string(from.size())
+            );
+        }
+        return [&from]<size_t... N>(std::index_sequence<N...>) {
+            return std::make_tuple(
+                impl::implicit_cast<Args>(from.GET_ITEM(N))...
+            );
+        }(std::index_sequence_for<Args...>{});
+    }
+};
+
+
+template <std::derived_from<impl::ListTag> From, typename T, size_t N>
+    requires (std::convertible_to<typename From::value_type, T>)
+struct __cast__<From, std::array<T, N>> : Returns<std::array<T, N>> {
+    static auto operator()(const From& from) {
+        if (N != from.size()) {
+            throw IndexError(
+                "conversion to std::array requires list of size " +
+                std::to_string(N) + ", not " + std::to_string(from.size())
+            );
+        }
+        std::array<T, N> result;
+        for (size_t i = 0; i < N; ++i) {
+            result[i] = impl::implicit_cast<T>(from.GET_ITEM(i));
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<impl::ListTag> From, typename T, typename... Args>
+    requires (std::convertible_to<typename From::value_type, T>)
+struct __cast__<From, std::vector<T, Args...>> : Returns<std::vector<T, Args...>> {
+    static auto operator()(const From& from) {
+        std::vector<T, Args...> result;
+        result.reserve(from.size());
+        for (const auto& item : from) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<impl::ListTag> From, typename T, typename... Args>
+    requires (std::convertible_to<typename From::value_type, T>)
+struct __cast__<From, std::list<T, Args...>> : Returns<std::list<T, Args...>> {
+    static auto operator()(const From& from) {
+        std::list<T, Args...> result;
+        for (const auto& item : from) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<impl::ListTag> From, typename T, typename... Args>
+    requires (std::convertible_to<typename From::value_type, T>)
+struct __cast__<From, std::forward_list<T, Args...>> : Returns<std::forward_list<T, Args...>> {
+    static auto operator()(const From& from) {
+        std::forward_list<T, Args...> result;
+        auto it = from.rbegin();
+        auto end = from.rend();
+        while (it != end) {
+            result.push_front(impl::implicit_cast<T>(*it));
+            ++it;
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<impl::ListTag> From, typename T, typename... Args>
+    requires (std::convertible_to<typename From::value_type, T>)
+struct __cast__<From, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> {
+    static auto operator()(const From& from) {
+        std::deque<T, Args...> result;
+        for (const auto& item : from) {
+            result.push_back(impl::implicit_cast<T>(item));
+        }
+        return result;
+    }
+};
 
 
 namespace ops {

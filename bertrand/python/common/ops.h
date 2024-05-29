@@ -13,6 +13,30 @@ namespace bertrand {
 namespace py {
 
 
+// template <typename Derived, typename Base>
+// inline constexpr bool __issubclass__<Derived, Base>::operator()(const Derived& obj) {
+//     if constexpr (impl::cpp_like<Derived>) {
+//         return operator()<Derived>();
+
+//     } else if constexpr (operator()<Derived>()) {
+//         return obj.ptr() != nullptr;
+
+//     } else if constexpr (impl::is_object_exact<Derived>) {
+//         if (obj.ptr() == nullptr) {
+//             return false;
+//         }
+//         int result = PyObject_IsInstance(obj.ptr(), Base::type.ptr());
+//         if (result == -1) {
+//             Exception::from_python();
+//         }
+//         return result;
+
+//     } else {
+//         return false;
+//     }
+// }
+
+
 namespace ops {
 
     static const pybind11::int_ one = 1;
@@ -661,6 +685,54 @@ template <typename T> requires (__as_object__<std::decay_t<T>>::enable)
 }
 
 
+/* Equivalent to Python `isinstance(obj, base)`. */
+template <typename Derived, typename Base> requires (
+    std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, const Derived&, const Base&>
+)
+[[nodiscard]] bool isinstance(const Derived& obj, const Base& base) {
+    return __isinstance__<Derived, Base>{}(obj, base);
+}
+
+
+/* Equivalent to Python `isinstance(obj, base)`, except that base is given as a
+template parameter for which __isinstance__ has been specialized. */
+template <typename Base, typename Derived> requires (
+    std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, const Derived&>
+)
+[[nodiscard]] constexpr bool isinstance(const Derived& obj) {
+    return __isinstance__<Derived, Base>{}(obj);
+}
+
+
+/* Equivalent to Python `issubclass(obj, base)`. */
+template <typename Derived, typename Base> requires (
+    std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, const Derived&, const Base&>
+)
+[[nodiscard]] bool issubclass(const Derived& obj, const Base& base) {
+    return __issubclass__<Derived, Base>{}(obj, base);
+}
+
+
+/* Equivalent to Python `issubclass(obj, base)`, except that base is given as a
+template parameter for which __issubclass__ has been specialized. */
+template <typename Base, typename Derived> requires (
+    std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, const Derived&>
+)
+[[nodiscard]] constexpr bool issubclass(const Derived& obj) {
+    return __issubclass__<Derived, Base>{}(obj);
+}
+
+
+/* Equivalent to Python `issubclass(obj, base)`, except that both arguments are given
+as template parameters for which __issubclass__ has been specialized. */
+template <typename Derived, typename Base> requires (
+    std::is_invocable_r_v<bool, __issubclass__<Derived, Base>>
+)
+[[nodiscard]] consteval bool issubclass() {
+    return __issubclass__<Derived, Base>{}();
+}
+
+
 /* Equivalent to Python `print(args...)`. */
 template <typename... Args>
 void print(Args&&... args) {
@@ -804,7 +876,7 @@ template <std::derived_from<Object> Self> requires (__abs__<Self>::enable)
     if constexpr (impl::proxy_like<Self>) {
         return abs(self.value());
     } else {
-        return ops::abs<Return, Self>::operator()(self);
+        return ops::abs<Return, Self>{}(self);
     }
 }
 
@@ -832,7 +904,7 @@ template <typename Base, typename Exp> requires (__pow__<Base, Exp>::enable)
     } else if constexpr (impl::proxy_like<Exp>) {
         return pow(base, exp.value());
     } else {
-        return ops::pow<Return, Base, Exp>::operator()(base, exp);
+        return ops::pow<Return, Base, Exp>{}(base, exp);
     }
 }
 
@@ -878,7 +950,7 @@ template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
     } else if constexpr (impl::proxy_like<Exp>) {
         return pow(base, exp.value(), mod);
     } else {
-        return ops::powmod<Return, Base, Exp, Mod>::operator()(base, exp, mod);
+        return ops::powmod<Return, Base, Exp, Mod>{}(base, exp, mod);
     }
 }
 
@@ -907,7 +979,7 @@ template <std::derived_from<Object> Self> requires (__iter__<Self>::enable)
     if constexpr (impl::proxy_like<Self>) {
         return *self.value();
     } else {
-        return ops::dereference<Self>::operator()(self);
+        return ops::dereference<Self>{}(self);
     }
 }
 
@@ -926,7 +998,7 @@ auto operator~(const Self& self) {
     if constexpr (impl::proxy_like<Self>) {
         return ~self.value();
     } else {
-        return ops::invert<Return, Self>::operator()(self);
+        return ops::invert<Return, Self>{}(self);
     }
 }
 
@@ -945,7 +1017,7 @@ auto operator+(const Self& self) {
     if constexpr (impl::proxy_like<Self>) {
         return +self.value();
     } else {
-        return ops::pos<Return, Self>::operator()(self);
+        return ops::pos<Return, Self>{}(self);
     }
 }
 
@@ -964,7 +1036,7 @@ auto operator-(const Self& self) {
     if constexpr (impl::proxy_like<Self>) {
         return -self.value();
     } else {
-        return ops::neg<Return, Self>::operator()(self);
+        return ops::neg<Return, Self>{}(self);
     }
 }
 
@@ -987,7 +1059,7 @@ Self& operator++(Self& self) {
             impl::python_like<Self>,
             "Increment operator requires a Python object."
         );
-        ops::increment<Return, Self>::operator()(self);
+        ops::increment<Return, Self>{}(self);
     }
     return self;
 }
@@ -1012,7 +1084,7 @@ Self operator++(Self& self, int) {
             impl::python_like<Self>,
             "Increment operator requires a Python object."
         );
-        ops::increment<Return, Self>::operator()(self);
+        ops::increment<Return, Self>{}(self);
     }
     return copy;
 }
@@ -1036,7 +1108,7 @@ Self& operator--(Self& self) {
             impl::python_like<Self>,
             "Decrement operator requires a Python object."
         );
-        ops::decrement<Return, Self>::operator()(self);
+        ops::decrement<Return, Self>{}(self);
     }
     return self;
 }
@@ -1061,7 +1133,7 @@ Self operator--(Self& self, int) {
             impl::python_like<Self>,
             "Decrement operator requires a Python object."
         );
-        ops::decrement<Return, Self>::operator()(self);
+        ops::decrement<Return, Self>{}(self);
     }
     return copy;
 }
@@ -1085,7 +1157,7 @@ auto operator<(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs < rhs.value();
     } else {
-        return ops::lt<Return, L, R>::operator()(lhs, rhs);
+        return ops::lt<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1108,7 +1180,7 @@ auto operator<=(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs <= rhs.value();
     } else {
-        return ops::le<Return, L, R>::operator()(lhs, rhs);
+        return ops::le<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1131,7 +1203,7 @@ auto operator==(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs == rhs.value();
     } else {
-        return ops::eq<Return, L, R>::operator()(lhs, rhs);
+        return ops::eq<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1154,7 +1226,7 @@ auto operator!=(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs != rhs.value();
     } else {
-        return ops::ne<Return, L, R>::operator()(lhs, rhs);
+        return ops::ne<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1177,7 +1249,7 @@ auto operator>=(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs >= rhs.value();
     } else {
-        return ops::ge<Return, L, R>::operator()(lhs, rhs);
+        return ops::ge<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1200,7 +1272,7 @@ auto operator>(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs > rhs.value();
     } else {
-        return ops::gt<Return, L, R>::operator()(lhs, rhs);
+        return ops::gt<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1223,7 +1295,7 @@ auto operator+(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs + rhs.value();
     } else {
-        return ops::add<Return, L, R>::operator()(lhs, rhs);
+        return ops::add<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1248,7 +1320,7 @@ L& operator+=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place addition operator requires a Python object."
         );
-        ops::iadd<Return, L, R>::operator()(lhs, rhs);
+        ops::iadd<Return, L, R>{}(lhs, rhs);
     }
     return lhs;
 }
@@ -1272,7 +1344,7 @@ auto operator-(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs - rhs.value();
     } else {
-        return ops::sub<Return, L, R>::operator()(lhs, rhs);
+        return ops::sub<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1297,7 +1369,7 @@ L& operator-=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place addition operator requires a Python object."
         );
-        ops::isub<Return, L, R>::operator()(lhs, rhs);
+        ops::isub<Return, L, R>{}(lhs, rhs);
     }
     return lhs;
 }
@@ -1321,7 +1393,7 @@ auto operator*(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs * rhs.value();
     } else {
-        return ops::mul<Return, L, R>::operator()(lhs, rhs);
+        return ops::mul<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1346,7 +1418,7 @@ L& operator*=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place multiplication operator requires a Python object."
         );
-        ops::imul<Return, L, R>::operator()(lhs, rhs);
+        ops::imul<Return, L, R>{}(lhs, rhs);
     }
     return lhs;
 }
@@ -1370,7 +1442,7 @@ auto operator/(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs / rhs.value();
     } else {
-        return ops::truediv<Return, L, R>::operator()(lhs, rhs);
+        return ops::truediv<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1395,7 +1467,7 @@ L& operator/=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place true division operator requires a Python object."
         );
-        ops::itruediv<Return, L, R>::operator()(lhs, rhs);
+        ops::itruediv<Return, L, R>{}(lhs, rhs);
     }
     return lhs;
 }
@@ -1419,7 +1491,7 @@ auto operator%(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs % rhs.value();
     } else {
-        return ops::mod<Return, L, R>::operator()(lhs, rhs);
+        return ops::mod<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1444,7 +1516,7 @@ L& operator%=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place modulus operator requires a Python object."
         );
-        ops::imod<Return, L, R>::operator()(lhs, rhs);
+        ops::imod<Return, L, R>{}(lhs, rhs);
     }
     return lhs;
 }
@@ -1476,7 +1548,7 @@ auto operator<<(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs << rhs.value();
     } else {
-        return ops::lshift<Return, L, R>::operator()(lhs, rhs);
+        return ops::lshift<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1526,7 +1598,7 @@ L& operator<<=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place left shift operator requires a Python object."
         );
-        ops::ilshift<Return, L, R>::operator()(lhs, rhs);
+        ops::ilshift<Return, L, R>{}(lhs, rhs);
     }
     return lhs;
 }
@@ -1550,7 +1622,7 @@ auto operator>>(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs >> rhs.value();
     } else {
-        return ops::rshift<Return, L, R>::operator()(lhs, rhs);
+        return ops::rshift<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1575,7 +1647,7 @@ L& operator>>=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place right shift operator requires a Python object."
         );
-        ops::irshift<Return, L, R>::operator()(lhs, rhs);
+        ops::irshift<Return, L, R>{}(lhs, rhs);
     }
     return lhs;
 }
@@ -1599,7 +1671,7 @@ auto operator&(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs & rhs.value();
     } else {
-        return ops::and_<Return, L, R>::operator()(lhs, rhs);
+        return ops::and_<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1624,7 +1696,7 @@ L& operator&=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place bitwise AND operator requires a Python object."
         );
-        ops::iand<Return, L, R>::operator()(lhs, rhs);
+        ops::iand<Return, L, R>{}(lhs, rhs);
     }
     return lhs;
 }
@@ -1656,7 +1728,7 @@ auto operator|(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs | rhs.value();
     } else {
-        return ops::or_<Return, L, R>::operator()(lhs, rhs);
+        return ops::or_<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1694,7 +1766,7 @@ L& operator|=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place bitwise OR operator requires a Python object."
         );
-        ops::ior<Return, L, R>::operator()(lhs, rhs);
+        ops::ior<Return, L, R>{}(lhs, rhs);
     }
     return lhs;
 }
@@ -1718,7 +1790,7 @@ auto operator^(const L& lhs, const R& rhs) {
     } else if constexpr (impl::proxy_like<R>) {
         return lhs ^ rhs.value();
     } else {
-        return ops::xor_<Return, L, R>::operator()(lhs, rhs);
+        return ops::xor_<Return, L, R>{}(lhs, rhs);
     }
 }
 
@@ -1743,7 +1815,7 @@ L& operator^=(L& lhs, const R& rhs) {
             impl::python_like<L>,
             "In-place bitwise XOR operator requires a Python object."
         );
-        ops::ixor<Return, L, R>::operator()(lhs, rhs);
+        ops::ixor<Return, L, R>{}(lhs, rhs);
     }
     return lhs;
 }

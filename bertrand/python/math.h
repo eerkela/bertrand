@@ -228,12 +228,12 @@ class Round {
 
         template <typename Return, typename L, typename R>
         static Return floordiv(const L& lhs, const R& rhs) {
-            return ops::floordiv<Return, L, R>::operator()(lhs, rhs);
+            return ops::floordiv<Return, L, R>{}(lhs, rhs);
         }
 
         template <typename Return, typename L, typename R>
         static Return mod(const L& lhs, const R& rhs) {
-            return ops::mod<Return, L, R>::operator()(lhs, rhs);
+            return ops::mod<Return, L, R>{}(lhs, rhs);
         }
 
     };

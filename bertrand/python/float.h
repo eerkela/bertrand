@@ -15,6 +15,7 @@ namespace py {
 /* Represents a statically-typed Python float in C++. */
 class Float : public Object {
     using Base = Object;
+    using Self = Float;
 
 public:
     static const Type type;
@@ -120,10 +121,10 @@ public:
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    BERTRAND_METHOD(Float, [[nodiscard]], as_integer_ratio, const)
-    BERTRAND_METHOD(Float, [[nodiscard]], is_integer, const)
-    BERTRAND_METHOD(Float, [[nodiscard]], hex, const)
-    BERTRAND_STATIC_METHOD(Float, [[nodiscard]], fromhex)
+    BERTRAND_METHOD([[nodiscard]], as_integer_ratio, const)
+    BERTRAND_METHOD([[nodiscard]], is_integer, const)
+    BERTRAND_METHOD([[nodiscard]], hex, const)
+    BERTRAND_STATIC_METHOD([[nodiscard]], fromhex)
 
 };
 
@@ -133,6 +134,14 @@ inline const Float Float::neg_half = -0.5;
 inline const Float Float::zero = 0.0;
 inline const Float Float::half = 0.5;
 inline const Float Float::one = 1.0;
+
+
+template <std::derived_from<Float> From, std::floating_point To>
+struct __cast__<From, To> : Returns<To> {
+    static To operator()(const From& from) {
+        return PyFloat_AS_DOUBLE(from.ptr());
+    }
+};
 
 
 }  // namespace py

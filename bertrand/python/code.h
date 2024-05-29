@@ -175,6 +175,7 @@ which are compiled once and then cached for repeated use.
 */
 class Code : public Object {
     using Base = Object;
+    using Self = Code;
 
     PyCodeObject* self() const {
         return reinterpret_cast<PyCodeObject*>(this->ptr());
@@ -449,6 +450,7 @@ returned by the `inspect` module and listed in exception tracebacks.  They can b
 to run Python code in an interactive loop via the embedded code object. */
 class Frame : public Object {
     using Base = Object;
+    using Self = Frame;
 
     PyFrameObject* self() const {
         return reinterpret_cast<PyFrameObject*>(this->ptr());
@@ -656,6 +658,7 @@ public:
 // attribute assignment. */
 // class ClassMethod : public Object {
 //     using Base = Object;
+//     using Self = ClassMethod;
 
 // public:
 //     static const Type type;
@@ -734,6 +737,7 @@ public:
 // attribute assignment. */
 // class StaticMethod : public Object {
 //     using Base = Object;
+//     using Self = StaticMethod;
 
 // public:
 //     static const Type type;
@@ -827,6 +831,7 @@ public:
 // assignment. */
 // class Property : public Object {
 //     using Base = Object;
+//     using Self = Property;
 
 // public:
 //     static const Type type;

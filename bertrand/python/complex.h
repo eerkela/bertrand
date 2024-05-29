@@ -15,6 +15,7 @@ namespace py {
 /* Represents a statically-typed Python complex number in C++. */
 class Complex : public Object {
     using Base = Object;
+    using Self = Complex;
 
 public:
     static const Type type;
@@ -139,6 +140,18 @@ public:
         return Complex(complex.real, -complex.imag);
     }
 
+};
+
+
+template <std::derived_from<Complex> From, typename To>
+struct __cast__<From, std::complex<To>> : Returns<std::complex<To>> {
+    static auto operator()(const From& from) {
+        Py_complex complex = PyComplex_AsCComplex(from.ptr());
+        if (complex.real == -1.0 && PyErr_Occurred()) {
+            Exception::from_python();
+        }
+        return std::complex<To>(complex.real, complex.imag);
+    }
 };
 
 

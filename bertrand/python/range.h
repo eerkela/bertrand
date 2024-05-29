@@ -16,6 +16,7 @@ namespace py {
 /* Represents a statically-typed Python `range` object in C++. */
 class Range : public Object {
     using Base = Object;
+    using Self = Range;
 
 public:
     static const Type type;

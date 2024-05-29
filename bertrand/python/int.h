@@ -26,6 +26,7 @@ namespace py {
 /* Represents a statically-typed Python integer in C++. */
 class Int : public Object {
     using Base = Object;
+    using Self = Int;
 
     /* Helper function allows explicit conversion from any C++ type that implements an
     implicit or explicit conversion to an integer. */
@@ -227,12 +228,12 @@ public:
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    BERTRAND_METHOD(Int, [[nodiscard]], bit_length, const)
-    BERTRAND_METHOD(Int, [[nodiscard]], bit_count, const)
-    BERTRAND_METHOD(Int, [[nodiscard]], to_bytes, const)
-    BERTRAND_STATIC_METHOD(Int, [[nodiscard]], from_bytes)
-    BERTRAND_METHOD(Int, [[nodiscard]], as_integer_ratio, const)
-    BERTRAND_METHOD(Int, [[nodiscard]], is_integer, const)
+    BERTRAND_METHOD([[nodiscard]], bit_length, const)
+    BERTRAND_METHOD([[nodiscard]], bit_count, const)
+    BERTRAND_METHOD([[nodiscard]], to_bytes, const)
+    BERTRAND_STATIC_METHOD([[nodiscard]], from_bytes)
+    BERTRAND_METHOD([[nodiscard]], as_integer_ratio, const)
+    BERTRAND_METHOD([[nodiscard]], is_integer, const)
 
 };
 
@@ -242,6 +243,49 @@ inline const Int Int::neg_one = -1;
 inline const Int Int::zero = 0;
 inline const Int Int::one = 1;
 inline const Int Int::two = 2;
+
+
+template <std::derived_from<Int> From, std::integral To>
+struct __cast__<From, To> : Returns<To> {
+    static To operator()(const From& from) {
+        if constexpr (sizeof(To) <= sizeof(long)) {
+            if constexpr (std::signed_integral<To>) {
+                long result = PyLong_AsLong(from.ptr());
+                if (result == -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                return result;
+            } else {
+                unsigned long result = PyLong_AsUnsignedLong(from.ptr());
+                if (result == (unsigned long) -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                return result;
+            }
+        } else {
+            if constexpr (std::signed_integral<To>) {
+                long long result = PyLong_AsLongLong(from.ptr());
+                if (result == -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+            } else {
+                unsigned long long result = PyLong_AsUnsignedLongLong(from.ptr());
+                if (result == (unsigned long long) -1 && PyErr_Occurred()) {
+                    Exception::from_python();
+                }
+                return result;
+            }
+        }
+    }
+};
+
+
+template <std::derived_from<Int> From, std::floating_point To>
+struct __cast__<From, To> : Returns<To> {
+    static To operator()(const From& from) {
+        return PyLong_AsDouble(from.ptr());
+    }
+};
 
 
 }  // namespace py

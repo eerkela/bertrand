@@ -15,6 +15,7 @@ namespace py {
 /* Represents a statically-typed Python boolean in C++. */
 class Bool : public Object {
     using Base = Object;
+    using Self = Bool;
 
 public:
     static const Type type;
@@ -114,13 +115,41 @@ public:
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    BERTRAND_METHOD(Int, [[nodiscard]], bit_length, const)
-    BERTRAND_METHOD(Int, [[nodiscard]], bit_count, const)
-    BERTRAND_METHOD(Int, [[nodiscard]], to_bytes, const)
-    BERTRAND_STATIC_METHOD(Int, [[nodiscard]], from_bytes)
-    BERTRAND_METHOD(Int, [[nodiscard]], as_integer_ratio, const)
-    BERTRAND_METHOD(Int, [[nodiscard]], is_integer, const)
+    BERTRAND_METHOD([[nodiscard]], bit_length, const)
+    BERTRAND_METHOD([[nodiscard]], bit_count, const)
+    BERTRAND_METHOD([[nodiscard]], to_bytes, const)
+    BERTRAND_STATIC_METHOD([[nodiscard]], from_bytes)
+    BERTRAND_METHOD([[nodiscard]], as_integer_ratio, const)
+    BERTRAND_METHOD([[nodiscard]], is_integer, const)
 
+};
+
+
+template <std::derived_from<Bool> From>
+struct __cast__<From, bool> : Returns<bool> {
+    static bool operator()(const From& from) {
+        int result = PyObject_IsTrue(from.ptr());
+        if (result == -1) {
+            Exception::from_python();
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<Bool> From, std::integral To>
+struct __cast__<From, To> : Returns<To> {
+    static To operator()(const From& from) {
+        return impl::implicit_cast<bool>(from);
+    }
+};
+
+
+template <std::derived_from<Bool> From, std::floating_point To>
+struct __cast__<From, To> : Returns<To> {
+    static To operator()(const From& from) {
+        return impl::implicit_cast<bool>(from);
+    }
 };
 
 

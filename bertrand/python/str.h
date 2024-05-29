@@ -23,6 +23,7 @@ namespace py {
 /* Represents a statically-typed Python string in C++. */
 class Str : public Object {
     using Base = Object;
+    using Self = Str;
 
 public:
     static const Type type;
@@ -279,9 +280,9 @@ public:
     ////    PYTHON INTERFACE    ////
     ////////////////////////////////
 
-    BERTRAND_METHOD(Str, [[nodiscard]], capitalize, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], casefold, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], center, const)
+    BERTRAND_METHOD([[nodiscard]], capitalize, const)
+    BERTRAND_METHOD([[nodiscard]], casefold, const)
+    BERTRAND_METHOD([[nodiscard]], center, const)
 
     [[nodiscard]] size_t count(
         const Str& sub,
@@ -300,7 +301,7 @@ public:
         return static_cast<size_t>(result);
     }
 
-    BERTRAND_METHOD(Str, [[nodiscard]], encode, const)
+    BERTRAND_METHOD([[nodiscard]], encode, const)
 
     [[nodiscard]] bool endswith(
         const Str& suffix,
@@ -320,7 +321,7 @@ public:
         return result;
     }
 
-    BERTRAND_METHOD(Str, [[nodiscard]], expandtabs, const)
+    BERTRAND_METHOD([[nodiscard]], expandtabs, const)
 
     [[nodiscard]] Py_ssize_t find(
         const Str& sub,
@@ -344,8 +345,8 @@ public:
         return PyUnicode_FindChar(this->ptr(), ch, start, stop, 1);
     }
 
-    BERTRAND_METHOD(Str, [[nodiscard]], format, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], format_map, const)
+    BERTRAND_METHOD([[nodiscard]], format, const)
+    BERTRAND_METHOD([[nodiscard]], format_map, const)
 
     [[nodiscard]] Py_ssize_t index(
         const Str& sub,
@@ -383,18 +384,18 @@ public:
         return result;
     }
 
-    BERTRAND_METHOD(Str, [[nodiscard]], isalnum, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], isalpha, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], isascii, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], isdecimal, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], isdigit, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], isidentifier, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], islower, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], isnumeric, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], isprintable, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], isspace, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], istitle, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], isupper, const)
+    BERTRAND_METHOD([[nodiscard]], isalnum, const)
+    BERTRAND_METHOD([[nodiscard]], isalpha, const)
+    BERTRAND_METHOD([[nodiscard]], isascii, const)
+    BERTRAND_METHOD([[nodiscard]], isdecimal, const)
+    BERTRAND_METHOD([[nodiscard]], isdigit, const)
+    BERTRAND_METHOD([[nodiscard]], isidentifier, const)
+    BERTRAND_METHOD([[nodiscard]], islower, const)
+    BERTRAND_METHOD([[nodiscard]], isnumeric, const)
+    BERTRAND_METHOD([[nodiscard]], isprintable, const)
+    BERTRAND_METHOD([[nodiscard]], isspace, const)
+    BERTRAND_METHOD([[nodiscard]], istitle, const)
+    BERTRAND_METHOD([[nodiscard]], isupper, const)
 
     template <impl::is_iterable T>
     [[nodiscard]] Str join(const T& iterable) const {
@@ -412,10 +413,10 @@ public:
         return join(py::List(iterable));
     }
 
-    BERTRAND_METHOD(Str, [[nodiscard]], ljust, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], lower, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], lstrip, const)
-    BERTRAND_STATIC_METHOD(Str, [[nodiscard]], maketrans)
+    BERTRAND_METHOD([[nodiscard]], ljust, const)
+    BERTRAND_METHOD([[nodiscard]], lower, const)
+    BERTRAND_METHOD([[nodiscard]], lstrip, const)
+    BERTRAND_STATIC_METHOD([[nodiscard]], maketrans)
 
     [[nodiscard]] Tuple<Str> partition(const Str& sep) const {
         PyObject* result = PyUnicode_Partition(this->ptr(), sep.ptr());
@@ -425,8 +426,8 @@ public:
         return reinterpret_steal<Tuple<Str>>(result);
     }
 
-    BERTRAND_METHOD(Str, [[nodiscard]], removeprefix, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], removesuffix, const)
+    BERTRAND_METHOD([[nodiscard]], removeprefix, const)
+    BERTRAND_METHOD([[nodiscard]], removesuffix, const)
 
     [[nodiscard]] Str replace(const Str& sub, const Str& repl, Py_ssize_t maxcount = -1) const {
         PyObject* result = PyUnicode_Replace(
@@ -499,7 +500,7 @@ public:
         return result;
     }
 
-    BERTRAND_METHOD(Str, [[nodiscard]], rjust, const)
+    BERTRAND_METHOD([[nodiscard]], rjust, const)
 
     [[nodiscard]] Tuple<Str> rpartition(const Str& sep) const {
         PyObject* result = PyUnicode_RPartition(this->ptr(), sep.ptr());
@@ -525,7 +526,7 @@ public:
         return reinterpret_steal<List<Str>>(result);
     }
 
-    BERTRAND_METHOD(Str, [[nodiscard]], rstrip, const)
+    BERTRAND_METHOD([[nodiscard]], rstrip, const)
 
     [[nodiscard]] List<Str> split() const {
         PyObject* result = PyUnicode_Split(this->ptr(), nullptr, -1);
@@ -569,13 +570,26 @@ public:
         return result;
     }
 
-    BERTRAND_METHOD(Str, [[nodiscard]], strip, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], swapcase, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], title, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], translate, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], upper, const)
-    BERTRAND_METHOD(Str, [[nodiscard]], zfill, const)
+    BERTRAND_METHOD([[nodiscard]], strip, const)
+    BERTRAND_METHOD([[nodiscard]], swapcase, const)
+    BERTRAND_METHOD([[nodiscard]], title, const)
+    BERTRAND_METHOD([[nodiscard]], translate, const)
+    BERTRAND_METHOD([[nodiscard]], upper, const)
+    BERTRAND_METHOD([[nodiscard]], zfill, const)
 
+};
+
+
+template <std::derived_from<Str> From>
+struct __cast__<From, std::string> : Returns<std::string> {
+    static std::string operator()(const From& from) {
+        Py_ssize_t length;
+        const char* result = PyUnicode_AsUTF8AndSize(from.ptr(), &length);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return {result, static_cast<size_t>(length)};
+    }
 };
 
 
@@ -615,7 +629,7 @@ namespace ops {
     template <typename Return, std::derived_from<Str> L, typename R>
     struct iadd<Return, L, R> {
         static void operator()(L& lhs, const R& rhs) {
-            lhs = add<Return, L, R>::operator()(lhs, rhs);
+            lhs = add<Return, L, R>{}(lhs, rhs);
         }
     };
 
