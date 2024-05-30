@@ -334,24 +334,6 @@ inline void Function<Return(Target...)>::closure(std::optional<Tuple<Object>> cl
 }
 
 
-inline Type::Type(
-    const Str& name,
-    const Tuple<Type>& bases,
-    const Dict<Str, Object>& dict
-) : Base(PyObject_CallFunctionObjArgs(
-        reinterpret_cast<PyObject*>(&PyType_Type),
-        name.ptr(),
-        bases.ptr(),
-        dict.ptr(),
-        nullptr
-    ), stolen_t{})
-{
-    if (m_ptr == nullptr) {
-        Exception::from_python();
-    }
-}
-
-
 #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
 
     /* Get the type's qualified name. */

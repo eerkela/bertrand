@@ -268,28 +268,27 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    Code(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Code(Handle h, const stolen_t& t) : Base(h, t) {}
+    Code(Handle h, borrowed_t t) : Base(h, t) {}
+    Code(Handle h, stolen_t t) : Base(h, t) {}
 
-    /* Convert an equivalent pybind11 type into a py::Code object. */
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Code(T&& other) : Base(std::forward<T>(other)) {}
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<Code, __init__<Code, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Code, std::remove_cvref_t<Args>...>::enable
+        )
+    Code(Args&&... args) : Base(
+        __init__<Code, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    /* Unwrap a pybind11 accessor into a py::Code object. */
-    template <typename Policy>
-    Code(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Code>(accessor).release(), stolen_t{})
-    {}
-
-    /* Compile a Python source file into an interactive code object. */
-    explicit Code(const char* path) : Base(load(path), stolen_t{}) {}
-
-    /* Compile a Python source file into an interactive code object. */
-    explicit Code(const std::string& path) : Code(path.c_str()) {}
-
-    /* Compile a Python source file into an interactive code object. */
-    explicit Code(const std::string_view& path) : Code(path.data()) {}
+    template <typename... Args>
+        requires (
+            !__init__<Code, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Code, __explicit_init__<Code, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Code, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Code(Args&&... args) : Base(
+        __explicit_init__<Code, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
     /* Parse and compile a source string into a Python code object. */
     [[nodiscard]] static Code compile(const char* source) {
@@ -338,7 +337,7 @@ public:
             Exception::from_python(1);
         }
         Py_DECREF(result);  // always None
-        return std::move(context);
+        return context;
     }
 
     /////////////////////
@@ -440,6 +439,42 @@ public:
 };
 
 
+template <>
+struct __explicit_init__<Code, const char*>                 : Returns<Code> {
+    static PyObject* load(const char* path) {
+        std::ifstream file(path);
+        if (!file.is_open()) {
+            throw FileNotFoundError(std::string("'") + path + "'");
+        }
+        std::istreambuf_iterator<char> begin(file), end;
+        PyObject* result = Py_CompileString(
+            std::string(begin, end).c_str(),
+            path,
+            Py_file_input
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return result;
+    }
+    static auto operator()(const char* path) {
+        return reinterpret_steal<Code>(load(path));
+    }
+};
+template <size_t N>
+struct __explicit_init__<Code, char[N]>                     : Returns<Code> {
+    static auto operator()(const char* path) { return Code(path); }
+};
+template <>
+struct __explicit_init__<Code, std::string>                 : Returns<Code> {
+    static auto operator()(const std::string& path) { return Code(path.c_str()); }
+};
+template <>
+struct __explicit_init__<Code, std::string_view>            : Returns<Code> {
+    static auto operator()(const std::string_view& path) { return Code(path.data()); }
+};
+
+
 /////////////////////
 ////    FRAME    ////
 /////////////////////
@@ -481,64 +516,26 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Default constructor.  Skip backward a given number of frames on construction,
-    defaulting to the current execution frame. */
-    Frame(size_t skip = 0) :
-        Base(reinterpret_cast<PyObject*>(PyEval_GetFrame()), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            throw RuntimeError("no frame is currently executing");
-        }
-        for (size_t i = 0; i < skip; ++i) {
-            m_ptr = reinterpret_cast<PyObject*>(PyFrame_GetBack(self()));
-            if (m_ptr == nullptr) {
-                throw IndexError("frame index out of range");
-            }
-        }
-    }
+    Frame(Handle h, borrowed_t t) : Base(h, t) {}
+    Frame(Handle h, stolen_t t) : Base(h, t) {}
 
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    Frame(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Frame(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    /* Convert an equivalent pybind11 type into a py::Frame object. */
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Frame(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Unwrap a pybind11 accessor into a py::Frame object. */
-    template <typename Policy>
-    Frame(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Frame>(accessor).release(), stolen_t{})
-    {}
-
-    /* Construct an empty frame from a function name, file name, and line number.  This
-    is primarily used to represent C++ contexts in Python exception tracebacks, etc. */
-    explicit Frame(
-        const char* funcname,
-        const char* filename,
-        int lineno,
-        PyThreadState* thread_state = nullptr
-    ) : Base(
-        reinterpret_cast<PyObject*>(impl::StackFrame(
-            funcname,
-            filename,
-            lineno,
-            false,
-            thread_state
-        ).to_python()),
-        borrowed_t{}
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<Frame, __init__<Frame, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Frame, std::remove_cvref_t<Args>...>::enable
+        )
+    Frame(Args&&... args) : Base(
+        __init__<Frame, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
 
-    /* Construct an empty frame from a cpptrace::stacktrace_frame object. */
-    explicit Frame(
-        const cpptrace::stacktrace_frame& frame,
-        PyThreadState* thread_state = nullptr
-    ) : Base(
-        reinterpret_cast<PyObject*>(impl::StackFrame(
-            frame,
-            thread_state
-        ).to_python()),
-        borrowed_t{}
+    template <typename... Args>
+        requires (
+            !__init__<Frame, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Frame, __explicit_init__<Frame, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Frame, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Frame(Args&&... args) : Base(
+        __explicit_init__<Frame, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
 
     /////////////////////////////
@@ -638,6 +635,113 @@ public:
 
     #endif
 
+};
+
+
+template <>
+struct __init__<Frame>                                      : Returns<Frame> {
+    static auto operator()() {
+        PyFrameObject* frame = PyEval_GetFrame();
+        if (frame == nullptr) {
+            throw RuntimeError("no frame is currently executing");
+        }
+        return reinterpret_borrow<Frame>((PyObject*)frame);
+    }
+};
+
+
+template <std::integral T>
+struct __init__<Frame, T>                                    : Returns<Frame> {
+    static auto operator()(int skip) {
+        // TODO: negative indexing should count from least recent frame?
+        if (skip < 0) {
+            throw ValueError("frame index cannot be negative");
+        }
+        PyFrameObject* frame = (PyFrameObject*)Py_XNewRef(PyEval_GetFrame());
+        if (frame == nullptr) {
+            throw RuntimeError("no frame is currently executing");
+        }
+        PyFrameObject* result = frame;
+        for (int i = 0; i < skip; ++i) {
+            PyFrameObject* temp = PyFrame_GetBack(result);
+            Py_DECREF(result);
+            if (temp == nullptr) {
+                throw IndexError("frame index out of range");
+            }
+            result = temp;
+        }
+        return reinterpret_steal<Frame>((PyObject*)result);
+    }
+};
+
+
+template <>
+struct __init__<Frame, cpptrace::stacktrace_frame, PyThreadState*> : Returns<Frame> {
+    static auto operator()(
+        const cpptrace::stacktrace_frame& frame,
+        PyThreadState* thread_state
+    ) {
+        return reinterpret_steal<Frame>(
+            reinterpret_cast<PyObject*>(impl::StackFrame(
+                frame,
+                thread_state
+            ).to_python())
+        );
+    }
+};
+template <>
+struct __init__<Frame, cpptrace::stacktrace_frame>          : Returns<Frame> {
+    static auto operator()(const cpptrace::stacktrace_frame& frame) {
+        return reinterpret_steal<Frame>(
+            reinterpret_cast<PyObject*>(impl::StackFrame(
+                frame,
+                nullptr
+            ).to_python())
+        );
+    }
+};
+
+
+template <
+    std::convertible_to<const char*> File,
+    std::convertible_to<const char*> Func,
+    std::convertible_to<int> Line
+>
+struct __init__<Frame, File, Func, Line, PyThreadState*> : Returns<Frame> {
+    static auto operator()(
+        const char* filename,
+        const char* funcname,
+        int lineno,
+        PyThreadState* thread_state
+    ) {
+        return reinterpret_steal<Frame>(
+            reinterpret_cast<PyObject*>(impl::StackFrame(
+                filename,
+                funcname,
+                lineno,
+                false,
+                thread_state
+            ).to_python())
+        );
+    }
+};
+template <
+    std::convertible_to<const char*> File,
+    std::convertible_to<const char*> Func,
+    std::convertible_to<int> Line
+>
+struct __init__<Frame, File, Func, Line> : Returns<Frame> {
+    static auto operator()(const char* filename, const char* funcname, int lineno) {
+        return reinterpret_steal<Frame>(
+            reinterpret_cast<PyObject*>(impl::StackFrame(
+                filename,
+                funcname,
+                lineno,
+                false,
+                nullptr
+            ).to_python())
+        );
+    }
 };
 
 

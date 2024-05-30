@@ -241,9 +241,9 @@ and __delattr__ control structs.  If no specialization of these control structs
 exist for a given attribute name, then attempting to access it will result in a
 compile-time error. */
 template <typename Obj, StaticStr name> requires (__getattr__<Obj, name>::enable)
-class Attr : public Proxy<typename __getattr__<Obj, name>::Return, Attr<Obj, name>> {
+class Attr : public Proxy<typename __getattr__<Obj, name>::type, Attr<Obj, name>> {
 public:
-    using type = typename __getattr__<Obj, name>::Return;
+    using type = typename __getattr__<Obj, name>::type;
     static_assert(
         std::derived_from<type, Object>,
         "Attribute accessor must return a py::Object subclass.  Check your "
@@ -325,7 +325,7 @@ public:
 
     template <typename T> requires (__setattr__<Obj, name, std::remove_cvref_t<T>>::enable)
     Attr& operator=(T&& value) {
-        using Return = typename __setattr__<Obj, name, std::remove_cvref_t<T>>::Return;
+        using Return = typename __setattr__<Obj, name, std::remove_cvref_t<T>>::type;
         static_assert(
             std::is_void_v<Return>,
             "attribute assignment operator must return void.  Check your "
@@ -355,7 +355,7 @@ public:
 
     template <typename T = Obj> requires (__delattr__<T, name>::enable) 
     void del() {
-        using Return = typename __delattr__<T, name>::Return;
+        using Return = typename __delattr__<T, name>::type;
         static_assert(
             std::is_void_v<Return>,
             "attribute deletion operator must return void.  Check your "
@@ -495,9 +495,9 @@ operator.  This uses the __getitem__, __setitem__, and __delitem__ control struc
 to selectively enable/disable these operations for particular types, and to assign
 a corresponding return type to which the proxy can be converted. */
 template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
-class Item : public Proxy<typename __getitem__<Obj, Key>::Return, Item<Obj, Key>> {
+class Item : public Proxy<typename __getitem__<Obj, Key>::type, Item<Obj, Key>> {
 public:
-    using type = typename __getitem__<Obj, Key>::Return;
+    using type = typename __getitem__<Obj, Key>::type;
     static_assert(
         std::derived_from<type, Object>,
         "index operator must return a subclass of py::Object.  Check your "
@@ -572,7 +572,7 @@ public:
 
     template <typename T> requires (__setitem__<Obj, Key, std::remove_cvref_t<T>>::enable)
     Item& operator=(T&& value) {
-        using Return = typename __setitem__<Obj, Key, std::remove_cvref_t<T>>::Return;
+        using Return = typename __setitem__<Obj, Key, std::remove_cvref_t<T>>::type;
         static_assert(
             std::is_void_v<Return>,
             "index assignment operator must return void.  Check your "
@@ -610,7 +610,7 @@ public:
 
     template <typename T = Obj> requires (__delitem__<T, Key>::enable)
     void del() {
-        using Return = typename __delitem__<T, Key>::Return;
+        using Return = typename __delitem__<T, Key>::type;
         static_assert(
             std::is_void_v<Return>,
             "index deletion operator must return void.  Check your specialization "

@@ -95,7 +95,7 @@ class Round {
 
         template <typename L, typename R> requires (__floordiv__<L, R>::enable)
         static auto div(const L& lhs, const R& rhs) {
-            using Quotient = typename __floordiv__<L, R>::Return;
+            using Quotient = typename __floordiv__<L, R>::type;
             check_floordiv_type<Quotient>();
             return Derived::template py_div<Quotient, L, R>(lhs, rhs);
         }
@@ -110,7 +110,7 @@ class Round {
 
         template <typename L, typename R> requires (__mod__<L, R>::enable)
         static auto mod(const L& lhs, const R& rhs) {
-            using Remainder = typename __mod__<L, R>::Return;
+            using Remainder = typename __mod__<L, R>::type;
             check_mod_type<Remainder>();
             return Derived::template py_mod<Remainder, L, R>(lhs, rhs);
         }
@@ -126,8 +126,8 @@ class Round {
         template <typename L, typename R>
             requires (__floordiv__<L, R>::enable && __mod__<L, R>::enable)
         static auto divmod(const L& lhs, const R& rhs) {
-            using Quotient = typename __floordiv__<L, R>::Return;
-            using Remainder = typename __mod__<L, R>::Return;
+            using Quotient = typename __floordiv__<L, R>::type;
+            using Remainder = typename __mod__<L, R>::type;
             check_floordiv_type<Quotient>();
             check_mod_type<Remainder>();
             return Derived::template py_divmod<Quotient, Remainder, L, R>(lhs, rhs);

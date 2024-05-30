@@ -6,9 +6,9 @@
 #define BERTRAND_PYTHON_TYPE_H
 
 #include "common.h"
+#include "str.h"
 #include "tuple.h"
 #include "dict.h"
-#include "str.h"
 
 
 namespace bertrand {
@@ -51,35 +51,27 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Default constructor.  Initializes to the built-in type metaclass. */
-    Type() : Base((PyObject*) &PyType_Type, borrowed_t{}) {}
+    Type(Handle h, borrowed_t t) : Base(h, t) {}
+    Type(Handle h, stolen_t t) : Base(h, t) {}
 
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    Type(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Type(Handle h, const stolen_t& t) : Base(h, t) {}
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<Type, __init__<Type, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Type, std::remove_cvref_t<Args>...>::enable
+        )
+    Type(Args&&... args) : Base(
+        __init__<Type, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    /* Convert an equivalent pybind11 type into a py::Type. */
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Type(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Unwrap a pybind11 accessor into a py::Type. */
-    template <typename Policy>
-    Type(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Type>(accessor).release(), stolen_t{})
-    {}
-
-    /* Explicitly detect the type of an arbitrary Python object. */
-    template <impl::python_like T>
-    explicit Type(const T& obj) :
-        Base(reinterpret_cast<PyObject*>(Py_TYPE(obj.ptr())), borrowed_t{})
-    {}
-
-    /* Dynamically create a new Python type by calling the type() metaclass. */
-    explicit Type(
-        const Str& name,
-        const Tuple<Type>& bases = {},
-        const Dict<Str, Object>& dict = {}
-    );
+    template <typename... Args>
+        requires (
+            !__init__<Type, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Type, __explicit_init__<Type, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Type, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Type(Args&&... args) : Base(
+        __explicit_init__<Type, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
     /////////////////////////////
     ////    C++ INTERFACE    ////
@@ -294,6 +286,105 @@ public:
 };
 
 
+template <>
+struct __init__<Type>                                       : Returns<Type> {
+    static auto operator()() {
+        return reinterpret_borrow<Type>((PyObject*)&PyType_Type);
+    }
+};
+
+
+template <impl::python_like T>
+struct __explicit_init__<Type, T>                           : Returns<Type> {
+    static auto operator()(const T& obj) {
+        return reinterpret_borrow<Type>((PyObject*)Py_TYPE(obj.ptr()));
+    }
+};
+
+
+
+// TODO: maybe these are a case where I need to place the constructor in the class
+// itself, so that there's no ambiguity about constructing vs converting to a type.
+// -> Or I only expose the 3 argument version and allow conversion from Dict<> to
+// Dict<Str, Object>?
+
+
+template <
+    impl::cpp_like Name,
+    std::convertible_to<Tuple<Type>> Bases,
+    std::convertible_to<Dict<Str, Object>> Namespace
+> requires (std::convertible_to<Name, Str>)
+struct __explicit_init__<Type, Name, Bases, Namespace>      : Returns<Type> {
+    static auto operator()(
+        const Str& name,
+        const Tuple<Type>& bases,
+        const Dict<Str, Object>& dict
+    ) {
+        PyObject* result = PyObject_CallFunctionObjArgs(
+            (PyObject*)&PyType_Type,
+            name.ptr(),
+            bases.ptr(),
+            dict.ptr(),
+            nullptr
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Type>(result);
+    }
+};
+template <impl::cpp_like Name, std::convertible_to<Tuple<Type>> Bases>
+    requires (std::convertible_to<Name, Str>)
+struct __explicit_init__<Type, Name, Bases>                 : Returns<Type> {
+    static auto operator()(const Str& name, const Tuple<Type>& bases) {
+        PyObject* dict = PyDict_New();
+        if (dict == nullptr) {
+            Exception::from_python();
+        }
+        PyObject* result = PyObject_CallFunctionObjArgs(
+            (PyObject*)&PyType_Type,
+            name.ptr(),
+            bases.ptr(),
+            dict,
+            nullptr
+        );
+        if (result == nullptr) {
+            Py_DECREF(dict);
+            Exception::from_python();
+        }
+        return reinterpret_steal<Type>(result);
+    }
+};
+template <impl::cpp_like Name>
+    requires (std::convertible_to<Name, Str>)
+struct __explicit_init__<Type, Name>                        : Returns<Type> {
+    static auto operator()(const Str& name) {
+        PyObject* bases = PyTuple_New(0);
+        if (bases == nullptr) {
+            Exception::from_python();
+        }
+        PyObject* dict = PyDict_New();
+        if (dict == nullptr) {
+            Py_DECREF(bases);
+            Exception::from_python();
+        }
+        PyObject* result = PyObject_CallFunctionObjArgs(
+            (PyObject*)&PyType_Type,
+            name.ptr(),
+            bases,
+            dict,
+            nullptr
+        );
+        if (result == nullptr) {
+            Py_DECREF(bases);
+            Py_DECREF(dict);
+            Exception::from_python();
+        }
+        return reinterpret_steal<Type>(result);
+    }
+};
+
+
 /* Represents a statically-typed Python `super` object in C++. */
 class Super : public Object {
     using Base = Object;
@@ -337,45 +428,57 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Default constructor.  Equivalent to Python `super()` with no arguments, which
-    uses the calling context's inheritance hierarchy. */
-    Super() : Base(
-        PyObject_CallNoArgs(reinterpret_cast<PyObject*>(&PySuper_Type)),
-        stolen_t{}
-    ) {
-        if (m_ptr == nullptr) {
+    Super(Handle h, borrowed_t t) : Base(h, t) {}
+    Super(Handle h, stolen_t t) : Base(h, t) {}
+
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<Super, __init__<Super, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Super, std::remove_cvref_t<Args>...>::enable
+        )
+    Super(Args&&... args) : Base(
+        __init__<Super, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
+
+    template <typename... Args>
+        requires (
+            !__init__<Super, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Super, __explicit_init__<Super, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Super, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Super(Args&&... args) : Base(
+        __explicit_init__<Super, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
+
+};
+
+
+template <>
+struct __init__<Super>                                      : Returns<Super> {
+    static auto operator()() {
+        PyObject* result = PyObject_CallNoArgs((PyObject*)&PySuper_Type);
+        if (result == nullptr) {
             Exception::from_python();
         }
+        return reinterpret_steal<Super>(result);
     }
+};
 
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    Super(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Super(Handle h, const stolen_t& t) : Base(h, t) {}
 
-    /* Convert an equivalent pybind11 type into a py::Super. */
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Super(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Unwrap a pybind11 accessor into a py::Super. */
-    template <typename Policy>
-    Super(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Super>(accessor).release(), stolen_t{})
-    {}
-
-    /* Equivalent to Python `super(type, self)` with 2 arguments. */
-    explicit Super(const Type& type, const Handle& self) :
-        Base(PyObject_CallFunctionObjArgs(
-            reinterpret_cast<PyObject*>(&PySuper_Type),
-            type.ptr(),
+template <std::convertible_to<Type> Base, impl::python_like Self>
+struct __explicit_init__<Super, Base, Self>                  : Returns<Super> {
+    static auto operator()(const Type& base, const Self& self) {
+        PyObject* result = PyObject_CallFunctionObjArgs(
+            (PyObject*)&PySuper_Type,
+            base.ptr(),
             self.ptr(),
             nullptr
-        ), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
+        );
+        if (result == nullptr) {
             Exception::from_python();
         }
+        return reinterpret_steal<Super>(result);
     }
-
 };
 
 

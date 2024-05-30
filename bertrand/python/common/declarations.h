@@ -525,7 +525,7 @@ parameter. */
 template <typename T>
 struct Returns {
     static constexpr bool enable = true;
-    using Return = T;
+    using type = T;
 };
 
 
@@ -672,7 +672,7 @@ namespace impl {
     );  // NOTE: string will be garbage collected at shutdown
 
     template <typename T>
-    using as_object_t = __as_object__<std::remove_cvref_t<T>>::Return;
+    using as_object_t = __as_object__<std::remove_cvref_t<T>>::type;
 
     template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
     class Item;
@@ -901,6 +901,9 @@ namespace impl {
     concept none_like = std::derived_from<as_object_t<T>, NoneType>;
 
     template <typename T>
+    concept notimplemented_like = std::derived_from<as_object_t<T>, NotImplementedType>;
+
+    template <typename T>
     concept ellipsis_like = std::derived_from<as_object_t<T>, EllipsisType>;
 
     template <typename T>
@@ -923,14 +926,14 @@ namespace impl {
 
     template <typename T>
     concept bytes_like = (
-        string_literal<std::decay_t<T>> ||
+        string_literal<T> ||
         std::same_as<std::decay_t<T>, void*> ||
         std::derived_from<as_object_t<T>, Bytes>
     );
 
     template <typename T>
     concept bytearray_like = (
-        string_literal<std::decay_t<T>> ||
+        string_literal<T> ||
         std::same_as<std::decay_t<T>, void*> ||
         std::derived_from<as_object_t<T>, ByteArray>
     );

@@ -130,10 +130,10 @@ struct __as_object__<T>                                     : Returns<Type> {};
 
 template <impl::proxy_like Self, StaticStr Name>
 struct __getattr__<Self, Name> : __getattr__<impl::unwrap_proxy<Self>, Name> {};
-template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__init__")
-struct __getattr__<Self, Name>                              : Returns<Function<
-    void(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)
->> {};
+// template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__init__")
+// struct __getattr__<Self, Name>                              : Returns<Function<
+//     void(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)
+// >> {};
 template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__new__")
 struct __getattr__<Self, Name>                              : Returns<Function<
     Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)
@@ -512,708 +512,708 @@ template <impl::not_proxy_like Self, StaticStr Name, impl::proxy_like Value>
 struct __setattr__<Self, Name, Value> : __setattr__<Self, Name, impl::unwrap_proxy<Value>> {};
 template <impl::proxy_like Self, StaticStr Name, impl::proxy_like Value>
 struct __setattr__<Self, Name, Value> : __setattr__<impl::unwrap_proxy<Self>, Name, impl::unwrap_proxy<Value>> {};
-template <std::derived_from<Object> Self, StaticStr Name, typename Value>
-    requires (
-        Name == "__init__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
-    )
-struct __setattr__<Self, Name, Value>                       : Returns<void> {};
+// template <std::derived_from<Object> Self, StaticStr Name, typename Value>
+//     requires (
+//         Name == "__init__" && __getattr__<Self, Name>::enable &&
+//         std::convertible_to<Value, typename __getattr__<Self, Name>::type>
+//     )
+// struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__new__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__call__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__name__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__qualname__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__module__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__self__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__wrapped__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__repr__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__str__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__bool__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__int__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__index__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__float__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__complex__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__bytes__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__hash__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__slots__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__dict__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__dir__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__doc__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__class__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__bases__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__mro__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__subclasses__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__subclasscheck__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__instancecheck__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__init_subclass__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__class_getitem__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__set_name__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__get__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__set__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__del__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__delete__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__getattribute__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__getattr__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__setattr__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__delattr__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__getitem__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__setitem__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__delitem__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__missing__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__contains__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__enter__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__exit__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__aenter__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__aexit__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__iter__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__next__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__aiter__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__anext__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__reversed__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__len__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__length_hint__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__await__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__buffer__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__release_buffer__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__match_args__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__objclass__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__format__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__type_params__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__weakref__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__abs__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__invert__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__pos__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__neg__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__round__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__trunc__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__floor__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__ceil__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__lt__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__le__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__eq__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__ne__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__ge__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__gt__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__add__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__radd__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__iadd__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__sub__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__rsub__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__isub__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__mul__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__rmul__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__imul__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__matmul__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__rmatmul__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__imatmul__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__truediv__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__rtruediv__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__itruediv__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__floordiv__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__rfloordiv__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__ifloordiv__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__mod__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__rmod__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__imod__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__divmod__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__rdivmod__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__pow__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__rpow__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__ipow__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__lshift__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__rlshift__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__ilshift__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__rshift__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__rrshift__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__irshift__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__and__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__rand__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__iand__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__or__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__ror__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__ior__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__xor__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name, typename Value>
     requires (
         Name == "__rxor__" && __getattr__<Self, Name>::enable &&
-        std::convertible_to<Value, typename __getattr__<Self, Name>::Return>
+        std::convertible_to<Value, typename __getattr__<Self, Name>::type>
     )
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 
 
 template <impl::proxy_like Self, StaticStr Name>
 struct __delattr__<Self, Name> : __delattr__<impl::unwrap_proxy<Self>, Name> {};
-template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__init__")
-struct __delattr__<Self, Name>                              : Returns<void> {};
+// template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__init__")
+// struct __delattr__<Self, Name>                              : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__new__")
 struct __delattr__<Self, Name>                              : Returns<void> {};
 template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__call__")

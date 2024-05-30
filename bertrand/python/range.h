@@ -56,48 +56,27 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Default constructor.  Initializes to an empty range. */
-    Range() : Range(Int::zero) {}
+    Range(Handle h, borrowed_t t) : Base(h, t) {}
+    Range(Handle h, stolen_t t) : Base(h, t) {}
 
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    Range(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Range(Handle h, const stolen_t& t) : Base(h, t) {}
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<Range, __init__<Range, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Range, std::remove_cvref_t<Args>...>::enable
+        )
+    Range(Args&&... args) : Base(
+        __init__<Range, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    /* Convert an equivalent pybind11 type into a py::Range object. */
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Range(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Unwrap a pybind11 accessor into a py::Range object. */
-    template <typename Policy>
-    Range(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Range>(accessor).release(), stolen_t{})
-    {}
-
-    /* Explicitly construct a range from 0 to the given stop index (exclusive). */
-    explicit Range(const Int& stop) :
-        Base(PyObject_CallOneArg((PyObject*) &PyRange_Type, stop.ptr()))
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly construct a range from the given start and stop indices
-    (exclusive), with an optional step size. */
-    explicit Range(const Int& start, const Int& stop, const Int& step = 1) : Base(
-        PyObject_CallFunctionObjArgs(
-            (PyObject*) &PyRange_Type,
-            start.ptr(),
-            stop.ptr(),
-            step.ptr(),
-            nullptr
-        ),
-        stolen_t{}
-    ) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
+    template <typename... Args>
+        requires (
+            !__init__<Range, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Range, __explicit_init__<Range, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Range, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Range(Args&&... args) : Base(
+        __explicit_init__<Range, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
@@ -171,6 +150,49 @@ public:
         return attr<"step">().value();
     }
 
+};
+
+
+template <impl::int_like Start, impl::int_like Stop, impl::int_like Step>
+struct __init__<Range, Start, Stop, Step>                     : Returns<Range> {
+    static auto operator()(const Int& start, const Int& stop, const Int& step) {
+        PyObject* result = PyObject_CallFunctionObjArgs(
+            (PyObject*) &PyRange_Type,
+            start.ptr(),
+            stop.ptr(),
+            step.ptr(),
+            nullptr
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Range>(result);
+    }
+};
+template <impl::int_like Start, impl::int_like Stop>
+struct __init__<Range, Start, Stop>                           : Returns<Range> {
+    static auto operator()(const Int& start, const Int& stop) {
+        return Range(start, stop, Int::one);
+    }
+};
+template <impl::int_like T>
+struct __init__<Range, T>                                   : Returns<Range> {
+    static auto operator()(const Int& stop) {
+        PyObject* result = PyObject_CallOneArg(
+            (PyObject*) &PyRange_Type,
+            stop.ptr()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Range>(result);
+    }
+};
+template <>
+struct __init__<Range>                                      : Returns<Range> {
+    static auto operator()() {
+        return Range(Int::zero);
+    }
 };
 
 

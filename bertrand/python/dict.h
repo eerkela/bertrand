@@ -6,6 +6,7 @@
 #define BERTRAND_PYTHON_DICT_H
 
 #include "common.h"
+#include "list.h"
 #include "set.h"
 
 

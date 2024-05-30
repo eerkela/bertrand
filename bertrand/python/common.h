@@ -51,21 +51,42 @@ public:
         }
     }
 
-    NoneType(Handle h, const borrowed_t& t) : Base(h, t) {}
-    NoneType(Handle h, const stolen_t& t) : Base(h, t) {}
+    NoneType(Handle h, borrowed_t t) : Base(h, t) {}
+    NoneType(Handle h, stolen_t t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    NoneType(T&& other) : Base(std::forward<T>(other)) {}
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<NoneType, __init__<NoneType, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<NoneType, std::remove_cvref_t<Args>...>::enable
+        )
+    NoneType(Args&&... args) : Base(
+        __init__<NoneType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    template <typename Policy>
-    NoneType(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<NoneType>(accessor).release(), stolen_t{})
-    {}
+    template <typename... Args>
+        requires (
+            !__init__<NoneType, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<NoneType, __explicit_init__<NoneType, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<NoneType, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit NoneType(Args&&... args) : Base(
+        __explicit_init__<NoneType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    NoneType() : Base(Py_None, borrowed_t{}) {}
-    NoneType(std::nullptr_t) : Base(Py_None, borrowed_t{}) {}
-    NoneType(std::nullopt_t) : Base(Py_None, borrowed_t{}) {}
+};
 
+
+template <>
+struct __init__<NoneType>                                   : Returns<NoneType> {
+    static auto operator()() {
+        return reinterpret_borrow<NoneType>(Py_None);
+    }
+};
+
+
+template <impl::none_like T>
+struct __init__<NoneType, T>                                : Returns<NoneType> {
+    static NoneType operator()(const T&) { return {}; }
 };
 
 
@@ -113,18 +134,42 @@ public:
         }
     }
 
-    NotImplementedType(Handle h, const borrowed_t& t) : Base(h, t) {}
-    NotImplementedType(Handle h, const stolen_t& t) : Base(h, t) {}
+    NotImplementedType(Handle h, borrowed_t t) : Base(h, t) {}
+    NotImplementedType(Handle h, stolen_t t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    NotImplementedType(T&& other) : Base(std::forward<T>(other)) {}
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<NotImplementedType, __init__<NotImplementedType, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<NotImplementedType, std::remove_cvref_t<Args>...>::enable
+        )
+    NotImplementedType(Args&&... args) : Base(
+        __init__<NotImplementedType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    template <typename Policy>
-    NotImplementedType(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<NotImplementedType>(accessor).release(), stolen_t{})
-    {}
+    template <typename... Args>
+        requires (
+            !__init__<NotImplementedType, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<NotImplementedType, __explicit_init__<NotImplementedType, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<NotImplementedType, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit NotImplementedType(Args&&... args) : Base(
+        __explicit_init__<NotImplementedType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    NotImplementedType() : Base(Py_NotImplemented, borrowed_t{}) {}
+};
+
+
+template <>
+struct __init__<NotImplementedType>                         : Returns<NotImplementedType> {
+    static auto operator()() {
+        return reinterpret_borrow<NotImplementedType>(Py_NotImplemented);
+    }
+};
+
+
+template <impl::notimplemented_like T>
+struct __init__<NotImplementedType, T>                      : Returns<NotImplementedType> {
+    static NotImplementedType operator()(const T&) { return {}; }
 };
 
 
@@ -172,18 +217,42 @@ public:
         }
     }
 
-    EllipsisType(Handle h, const borrowed_t& t) : Base(h, t) {}
-    EllipsisType(Handle h, const stolen_t& t) : Base(h, t) {}
+    EllipsisType(Handle h, borrowed_t t) : Base(h, t) {}
+    EllipsisType(Handle h, stolen_t t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    EllipsisType(T&& other) : Base(std::forward<T>(other)) {}
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<EllipsisType, __init__<EllipsisType, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<EllipsisType, std::remove_cvref_t<Args>...>::enable
+        )
+    EllipsisType(Args&&... args) : Base(
+        __init__<EllipsisType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    template <typename Policy>
-    EllipsisType(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<EllipsisType>(accessor).release(), stolen_t{})
-    {}
+    template <typename... Args>
+        requires (
+            !__init__<EllipsisType, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<EllipsisType, __explicit_init__<EllipsisType, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<EllipsisType, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit EllipsisType(Args&&... args) : Base(
+        __explicit_init__<EllipsisType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    EllipsisType() : Base(Py_Ellipsis, borrowed_t{}) {}
+};
+
+
+template <>
+struct __init__<EllipsisType>                               : Returns<EllipsisType> {
+    static auto operator()() {
+        return reinterpret_borrow<EllipsisType>(Py_Ellipsis);
+    }
+};
+
+
+template <impl::ellipsis_like T>
+struct __init__<EllipsisType, T>                            : Returns<EllipsisType> {
+    static EllipsisType operator()(const T&) { return {}; }
 };
 
 
@@ -241,29 +310,27 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Default constructor.  Initializes to all Nones. */
-    Slice() : Base(
-        PySlice_New(nullptr, nullptr, nullptr),
-        stolen_t{}
-    ) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
+    Slice(Handle h, borrowed_t t) : Base(h, t) {}
+    Slice(Handle h, stolen_t t) : Base(h, t) {}
 
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    Slice(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Slice(Handle h, const stolen_t& t) : Base(h, t) {}
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<Slice, __init__<Slice, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Slice, std::remove_cvref_t<Args>...>::enable
+        )
+    Slice(Args&&... args) : Base(
+        __init__<Slice, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    /* Convert an equivalent pybind11 type into a py::Slice. */
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Slice(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Unwrap a pybind11 accessor into a py::Slice. */
-    template <typename Policy>
-    Slice(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Slice>(accessor).release(), stolen_t{})
-    {}
+    template <typename... Args>
+        requires (
+            !__init__<Slice, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Slice, __explicit_init__<Slice, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Slice, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Slice(Args&&... args) : Base(
+        __explicit_init__<Slice, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
     /* Initializer list constructor.  Unlike the other constructors (which can accept
     any kind of object), this syntax is restricted only to integers, py::None, and
@@ -280,38 +347,6 @@ public:
             params[i++] = item.value;
         }
         m_ptr = PySlice_New(params[0].ptr(), params[1].ptr(), params[2].ptr());
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly construct a slice from a (possibly denormalized) stop object. */
-    explicit Slice(const Object& stop) : Base(
-        PySlice_New(nullptr, stop.ptr(), nullptr),
-        stolen_t{}
-    ) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly construct a slice from (possibly denormalized) start and stop
-    objects. */
-    explicit Slice(const Object& start, const Object& stop) : Base(
-        PySlice_New(start.ptr(), stop.ptr(), nullptr),
-        stolen_t{}
-    ) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly construct a slice from (possibly denormalized) start, stop, and step
-    objects. */
-    explicit Slice(const Object& start, const Object& stop, const Object& step) : Base(
-        PySlice_New(start.ptr(), stop.ptr(), step.ptr()),
-        stolen_t{}
-    ) {
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -374,6 +409,73 @@ public:
 };
 
 
+template <
+    std::convertible_to<Object> Start,
+    std::convertible_to<Object> Stop,
+    std::convertible_to<Object> Step
+>
+struct __explicit_init__<Slice, Start, Stop, Step>           : Returns<Slice> {
+    static auto operator()(const Object& start, const Object& stop, const Object& step) {
+        PyObject* result = PySlice_New(
+            start.ptr(),
+            stop.ptr(),
+            step.ptr()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Slice>(result);
+    }
+};
+
+
+template <
+    std::convertible_to<Object> Start,
+    std::convertible_to<Object> Stop
+>
+struct __explicit_init__<Slice, Start, Stop>                 : Returns<Slice> {
+    static auto operator()(const Object& start, const Object& stop) {
+        PyObject* result = PySlice_New(
+            start.ptr(),
+            stop.ptr(),
+            nullptr
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Slice>(result);
+    }
+};
+
+
+template <std::convertible_to<Object> Stop>
+struct __explicit_init__<Slice, Stop>                        : Returns<Slice> {
+    static auto operator()(const Object& stop) {
+        PyObject* result = PySlice_New(
+            nullptr,
+            stop.ptr(),
+            nullptr
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Slice>(result);
+    }
+};
+
+
+template <>
+struct __init__<Slice>                                      : Returns<Slice> {
+    static auto operator()() {
+        PyObject* result = PySlice_New(nullptr, nullptr, nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Slice>(result);
+    }
+};
+
+
 //////////////////////
 ////    MODULE    ////
 //////////////////////
@@ -409,82 +511,31 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    Module(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Module(Handle h, const stolen_t& t) : Base(h, t) {}
+    Module(Handle h, borrowed_t t) : Base(h, t) {}
+    Module(Handle h, stolen_t t) : Base(h, t) {}
 
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Module(T&& other) : Base(std::forward<T>(other)) {}
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<Module, __init__<Module, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Module, std::remove_cvref_t<Args>...>::enable
+        )
+    Module(Args&&... args) : Base(
+        __init__<Module, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    template <typename Policy>
-    Module(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Module>(accessor).release(), stolen_t{})
-    {}
-
-    /* Default module constructor deleted for clarity. */
-    Module() = delete;
-
-    /* Explicitly create a new module object from a statically-allocated (but
-    uninitialized) PyModuleDef struct. */
-    explicit Module(const char* name, const char* doc, PyModuleDef* def) :
-        Base(nullptr, stolen_t{})
-    {
-        def = new (def) PyModuleDef{
-            /* m_base */ PyModuleDef_HEAD_INIT,
-            /* m_name */ name,
-            /* m_doc */ pybind11::options::show_user_defined_docstrings() ? doc : nullptr,
-            /* m_size */ -1,
-            /* m_methods */ nullptr,
-            /* m_slots */ nullptr,
-            /* m_traverse */ nullptr,
-            /* m_clear */ nullptr,
-            /* m_free */ nullptr
-        };
-        m_ptr = PyModule_Create(def);
-        try {
-            if (m_ptr == nullptr) {
-                if (PyErr_Occurred()) {
-                    Exception::from_python();
-                }
-                pybind11::pybind11_fail(
-                    "Internal error in pybind11::module_::create_extension_module()"
-                );
-            }
-        } catch (...) {
-            Exception::from_pybind11();
-        }
-    }
+    template <typename... Args>
+        requires (
+            !__init__<Module, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Module, __explicit_init__<Module, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Module, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Module(Args&&... args) : Base(
+        __explicit_init__<Module, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
     //////////////////////////////////
     ////    PYBIND11 INTERFACE    ////
     //////////////////////////////////
-
-    // TODO: this can bind a py::Function instead of a pybind11::cpp_function
-    // -> All of the relevant information can be inferred directly from the function
-    // signature using inline annotations.  The docstring can be given immediately after
-    // the function name, like so:
-
-    //  m.def(
-    //      "add",
-    //      R"(
-    //          Adds two numbers.
-    //          
-    //          Parameters
-    //          ----------
-    //          a : int
-    //              The first number.
-    //          b : int
-    //              The second number.
-    //
-    //          Returns
-    //          -------
-    //          int
-    //              The sum of the two numbers.
-    //      )",
-    //      [](py::Arg<"a", int> a, py::Arg<"b", int>::opt b) {
-    //          return a.value + b.value;
-    //      },
-    //      py::arg<"b"> = 2
-    //  );
 
     // TODO: there may be no need to have a special case for overloading, either.  This
     // would just be handled automatically by the modular descriptor objects.  If the
@@ -531,7 +582,6 @@ public:
         }
     }
 
-    /* Reload the module or throw an error. */
     void reload() {
         PyObject *obj = PyImport_ReloadModule(this->ptr());
         if (obj == nullptr) {
@@ -540,6 +590,33 @@ public:
         *this = reinterpret_steal<Module>(obj);
     }
 
+};
+
+
+template <typename T>
+struct __issubclass__<T, Module>                            : Returns<bool> {
+    static consteval bool operator()() {
+        return impl::module_like<T>;
+    }
+    static constexpr bool operator()(const T& obj) {
+        return operator()();
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Module>                            : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Module>();
+        } else if constexpr (issubclass<T, Module>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyModule_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
 };
 
 
@@ -591,7 +668,7 @@ auto Object::operator[](
     this const Self& self,
     const std::initializer_list<impl::SliceInitializer>& slice
 ) {
-    using Return = typename __getitem__<Self, Slice>::Return;
+    using Return = typename __getitem__<Self, Slice>::type;
     return ops::getitem<Return, Self, Slice>{}(self, Slice(slice));
 }
 

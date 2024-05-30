@@ -2043,6 +2043,16 @@ public:
     using Annotations = std::tuple<Target...>;
     using Defaults = DefaultValues;
 
+    /* Instantiate a new function type with the same arguments but a different return
+    type. */
+    template <typename R>
+    using set_return = Function<R(Target...)>;
+
+    /* Instantiate a new function type with the same return type but different
+    argument annotations. */
+    template <typename... Ts>
+    using set_args = Function<Return(Ts...)>;
+
     /* Template constraint that evaluates to true if this function can be called with
     the templated argument types. */
     template <typename... Source>
@@ -2078,6 +2088,7 @@ public:
 
     /* Indicates whether the function accepts variadic keyword arguments. */
     static constexpr bool has_kwargs = target::has_kwargs;
+
 
     // TODO: if default specialization is given, typecheck<> should be fully generic, right?
     // typecheck<T>() should check impl::is_callable_any<T>;
@@ -2915,15 +2926,15 @@ namespace impl {
     template <typename Self, StaticStr Name, typename... Args>
     concept invocable =
         __getattr__<std::decay_t<Self>, Name>::enable &&
-        std::derived_from<typename __getattr__<std::decay_t<Self>, Name>::Return, FunctionTag> &&
-        __getattr__<std::decay_t<Self>, Name>::Return::template invocable<Args...>;
+        std::derived_from<typename __getattr__<std::decay_t<Self>, Name>::type, FunctionTag> &&
+        __getattr__<std::decay_t<Self>, Name>::type::template invocable<Args...>;
 
     /* A convenience function that calls a named method of a Python object using
     C++-style arguments.  Avoids the overhead of creating a temporary Function object. */
     template <StaticStr name, typename Self, typename... Args>
         requires (invocable<std::decay_t<Self>, name, Args...>)
     inline decltype(auto) call_method(Self&& self, Args&&... args) {
-        using Func = __getattr__<std::decay_t<Self>, name>::Return;
+        using Func = __getattr__<std::decay_t<Self>, name>::type;
         auto meth = reinterpret_steal<pybind11::object>(
             PyObject_GetAttr(self.ptr(), TemplateString<name>::ptr)
         );
@@ -2945,7 +2956,7 @@ namespace impl {
     template <typename Self, StaticStr name, typename... Args>
         requires (invocable<std::decay_t<Self>, name, Args...>)
     inline decltype(auto) call_static(Args&&... args) {
-        using Func = __getattr__<std::decay_t<Self>, name>::Return;
+        using Func = __getattr__<std::decay_t<Self>, name>::type;
         auto meth = reinterpret_steal<pybind11::object>(
             PyObject_GetAttr(Self::type.ptr(), TemplateString<name>::ptr)
         );

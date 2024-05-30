@@ -235,12 +235,16 @@ template <>
 struct __explicit_init__<Int, const char*>                  : Returns<Int> {
     static auto operator()(const char* str) { return Int(str, 0); }
 };
+template <size_t N>
+struct __explicit_init__<Int, char[N]>                      : Returns<Int> {
+    static auto operator()(const char* str) { return Int(str, 0); }
+};
 
 
 template <std::integral Base>
 struct __explicit_init__<Int, std::string, Base>             : Returns<Int> {
     static auto operator()(const std::string& str, Base base) {
-        return __explicit_init__<Int, const char*, Base>{}(str.c_str(), base);
+        return Int(str.c_str(), base);
     }
 };
 template <>
@@ -252,7 +256,7 @@ struct __explicit_init__<Int, std::string>                  : Returns<Int> {
 template <std::integral Base>
 struct __explicit_init__<Int, std::string_view, Base>       : Returns<Int> {
     static auto operator()(const std::string_view& str, Base base) {
-        return __explicit_init__<Int, const char*, Base>{}(str.data(), base);
+        return Int(str.data(), base);
     }
 };
 template <>

@@ -70,6 +70,19 @@ namespace impl {
             ::bertrand::py::__explicit_init__<cls, std::remove_cvref_t<Args>...>{}( \
                 std::forward<Args>(args)... \
             ) \
+        ) {} \
+        \
+        template <typename... Args> \
+            requires ( \
+                !::bertrand::py::__init__<cls, std::remove_cvref_t<Args>...>::enable && \
+                !::bertrand::py::__explicit_init__<cls, std::remove_cvref_t<Args>...>::enable && \
+                ::bertrand::py::impl::invocable<cls, "__init__", Args...> \
+            ) \
+        explicit cls(Args&&... args) : Base( \
+            ::bertrand::py::__getattr__<cls, "__init__">::type::template set_return<cls>::invoke_py( \
+                type.ptr(), \
+                std::forward<Args>(args)... \
+            ) \
         ) {}
 
 }
@@ -313,7 +326,7 @@ public:
     template <typename Self, typename... Args>
         requires (__call__<std::remove_cvref_t<Self>, Args...>::enable)
     auto operator()(this Self&& self, Args&&... args) {
-        using Return = typename __call__<std::remove_cvref_t<Self>, Args...>::Return;
+        using Return = typename __call__<std::remove_cvref_t<Self>, Args...>::type;
         static_assert(
             std::is_void_v<Return> || std::derived_from<Return, Object>,
             "Call operator must return either void or a py::Object subclass.  "
@@ -329,7 +342,7 @@ public:
     __getitem__, __setitem__, and __delitem__ control structs. */
     template <typename Self, typename Key> requires (__getitem__<Self, Key>::enable)
     auto operator[](this const Self& self, const Key& key) {
-        using Return = typename __getitem__<Self, Key>::Return;
+        using Return = typename __getitem__<Self, Key>::type;
         if constexpr (impl::proxy_like<Key>) {
             return self[key.value()];
         } else {
@@ -352,7 +365,7 @@ public:
     control struct. */
     template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
     [[nodiscard]] bool contains(this const Self& self, const Key& key) {
-        using Return = typename __contains__<Self, Key>::Return;
+        using Return = typename __contains__<Self, Key>::type;
         static_assert(
             std::same_as<Return, bool>,
             "contains() operator must return a boolean value.  Check your "
@@ -370,7 +383,7 @@ public:
     via the __len__ control struct. */
     template <typename Self> requires (__len__<Self>::enable)
     [[nodiscard]] size_t size(this const Self& self) {
-        using Return = typename __len__<Self>::Return;
+        using Return = typename __len__<Self>::type;
         static_assert(
             std::same_as<Return, size_t>,
             "size() operator must return a size_t for compatibility with C++ "
@@ -385,7 +398,7 @@ public:
     iterator's dereference type. */
     template <typename Self> requires (__iter__<Self>::enable)
     [[nodiscard]] auto begin(this const Self& self) {
-        using Return = typename __iter__<Self>::Return;
+        using Return = typename __iter__<Self>::type;
         static_assert(
             std::derived_from<Return, Object>,
             "iterator must dereference to a subclass of Object.  Check your "
@@ -407,7 +420,7 @@ public:
     __iter__ control struct. */
     template <typename Self> requires (__iter__<Self>::enable)
     [[nodiscard]] auto end(this const Self& self) {
-        using Return = typename __iter__<Self>::Return;
+        using Return = typename __iter__<Self>::type;
         static_assert(
             std::derived_from<Return, Object>,
             "iterator must dereference to a subclass of Object.  Check your "
@@ -428,7 +441,7 @@ public:
     iterator's dereference type. */
     template <typename Self> requires (__reversed__<Self>::enable)
     [[nodiscard]] auto rbegin(this const Self& self) {
-        using Return = typename __reversed__<Self>::Return;
+        using Return = typename __reversed__<Self>::type;
         static_assert(
             std::derived_from<Return, Object>,
             "iterator must dereference to a subclass of Object.  Check your "
@@ -450,7 +463,7 @@ public:
     by the __reversed__ control struct. */
     template <typename Self> requires (__reversed__<Self>::enable)
     [[nodiscard]] auto rend(this const Self& self) {
-        using Return = typename __reversed__<Self>::Return;
+        using Return = typename __reversed__<Self>::type;
         static_assert(
             std::derived_from<Return, Object>,
             "iterator must dereference to a subclass of Object.  Check your "
