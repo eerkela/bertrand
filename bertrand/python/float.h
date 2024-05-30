@@ -6,6 +6,7 @@
 #define BERTRAND_PYTHON_FLOAT_H
 
 #include "common.h"
+#include "str.h"
 
 
 namespace bertrand {
@@ -42,70 +43,36 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Default constructor.  Initializes to 0.0. */
-    Float() : Base(PyFloat_FromDouble(0.0), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
+    Float(Handle h, borrowed_t t) : Base(h, t) {}
+    Float(Handle h, stolen_t t) : Base(h, t) {}
 
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    Float(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Float(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    /* Convert equivalent pybind11 types to a py::Float. */
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Float(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Unwrap a pybind11 accessor into a py::Float. */
-    template <typename Policy>
-    Float(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Float>(accessor).release(), stolen_t{})
-    {}
-
-    /* Trigger implicit conversions to double. */
-    template <impl::cpp_like T> requires (impl::float_like<T>)
-    Float(const T& value) : Base(PyFloat_FromDouble(value), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Construct from C++ integers/booleans. */
-    template <std::integral T>
-    Float(T value) : Base(PyFloat_FromDouble(value), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    // TODO: implicit conversion from Bool, Int
-
-    /* Explicitly convert an arbitrary Python object to py::Float. */
-    template <impl::python_like T> requires (!impl::float_like<T>)
-    explicit Float(const T& value) : Base(PyNumber_Float(value.ptr()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Trigger explicit conversions to double. */
-    template <impl::cpp_like T>
+    template <typename... Args>
         requires (
-            !impl::float_like<T> &&
-            !std::integral<T> &&
-            impl::explicitly_convertible_to<T, double>
+            std::is_invocable_r_v<Float, __init__<Float, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Float, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Float(const T& value) :
-        Base(PyFloat_FromDouble(static_cast<double>(value)), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
+    Float(Args&&... args) : Base(
+        __init__<Float, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    /* Explicitly convert a string into a py::Float. */
-    explicit Float(const Str& str);
+    template <typename... Args>
+        requires (
+            !__init__<Float, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Float, __explicit_init__<Float, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Float, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Float(Args&&... args) : Base(
+        __explicit_init__<Float, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
+
+    ////////////////////////////////
+    ////    PYTHON INTERFACE    ////
+    ////////////////////////////////
+
+    BERTRAND_METHOD([[nodiscard]], as_integer_ratio, const)
+    BERTRAND_METHOD([[nodiscard]], is_integer, const)
+    BERTRAND_METHOD([[nodiscard]], hex, const)
+    BERTRAND_STATIC_METHOD([[nodiscard]], fromhex)
 
     /////////////////////////////
     ////    C++ INTERFACE    ////
@@ -117,23 +84,89 @@ public:
     static const Float half;
     static const Float one;
 
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
-
-    BERTRAND_METHOD([[nodiscard]], as_integer_ratio, const)
-    BERTRAND_METHOD([[nodiscard]], is_integer, const)
-    BERTRAND_METHOD([[nodiscard]], hex, const)
-    BERTRAND_STATIC_METHOD([[nodiscard]], fromhex)
-
 };
 
 
-inline const Float Float::neg_one = -1.0;
-inline const Float Float::neg_half = -0.5;
-inline const Float Float::zero = 0.0;
-inline const Float Float::half = 0.5;
-inline const Float Float::one = 1.0;
+template <>
+struct __init__<Float>                                      : Returns<Float> {
+    static auto operator()() {
+        PyObject* result = PyFloat_FromDouble(0.0);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Float>(result);
+    }
+};
+
+
+template <impl::cpp_like T> requires (std::is_arithmetic_v<T>)
+struct __init__<Float, T>                                   : Returns<Float> {
+    static auto operator()(T value) {
+        PyObject* result = PyFloat_FromDouble(value);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Float>(result);
+    }
+};
+
+
+template <impl::python_like T> requires (impl::bool_like<T> || impl::int_like<T>)
+struct __init__<Float, T>                                   : Returns<Float> {
+    static auto operator()(const T& obj) {
+        PyObject* result = PyNumber_Float(obj.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Float>(result);
+    }
+};
+
+
+template <impl::cpp_like T>
+    requires (
+        !std::is_arithmetic_v<T> &&
+        impl::explicitly_convertible_to<T, double>
+    )
+struct __explicit_init__<Float, T>                          : Returns<Float> {
+    static auto operator()(const T& value) {
+        PyObject* result = PyFloat_FromDouble(static_cast<double>(value));
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Float>(result);
+    }
+};
+
+
+template <std::convertible_to<Str> T>
+struct __explicit_init__<Float, T>                          : Returns<Float> {
+    static auto operator()(const Str& str) {
+        PyObject* result = PyFloat_FromString(str.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Float>(result);
+    }
+};
+
+
+template <impl::python_like T>
+    requires (
+        !impl::bool_like<T> &&
+        !impl::int_like<T> &&
+        !impl::float_like<T> &&
+        !std::convertible_to<T, Str>
+    )
+struct __explicit_init__<Float, T>                          : Returns<Float> {
+    static auto operator()(const T& obj) {
+        PyObject* result = PyNumber_Float(obj.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Float>(result);
+    }
+};
 
 
 template <std::derived_from<Float> From, std::floating_point To>
@@ -142,6 +175,13 @@ struct __cast__<From, To> : Returns<To> {
         return PyFloat_AS_DOUBLE(from.ptr());
     }
 };
+
+
+inline const Float Float::neg_one = -1.0;
+inline const Float Float::neg_half = -0.5;
+inline const Float Float::zero = 0.0;
+inline const Float Float::half = 0.5;
+inline const Float Float::one = 1.0;
 
 
 }  // namespace py

@@ -334,15 +334,6 @@ inline void Function<Return(Target...)>::closure(std::optional<Tuple<Object>> cl
 }
 
 
-inline Float::Float(const Str& str) :
-    Base(PyFloat_FromString(str.ptr()), stolen_t{})
-{
-    if (m_ptr == nullptr) {
-        Exception::from_python();
-    }
-}
-
-
 inline Type::Type(
     const Str& name,
     const Tuple<Type>& bases,
@@ -1148,64 +1139,6 @@ template <typename T>
     } else {
         return reinterpret_cast<void*>(&obj);
     }
-}
-
-
-/* Equivalent to Python `isinstance(derived, base)`, but base is provided as a template
-parameter. */
-template <impl::python_like T>
-[[nodiscard]] inline bool isinstance(const Handle& derived) {
-    static_assert(!std::same_as<T, Handle>, "isinstance<py::Handle>() is not allowed");
-    return T::check_(derived);
-}
-
-
-/* Equivalent to Python `isinstance(derived, base)`. */
-template <typename T>
-    requires (impl::type_like<T> || impl::tuple_like<T> || std::same_as<T, Object>)
-[[nodiscard]] inline bool isinstance(const Handle& derived, const T& base) {
-    int result = PyObject_IsInstance(
-        derived.ptr(),
-        Object(base).ptr()
-    );
-    if (result == -1) {
-        Exception::from_python();
-    }
-    return result;
-}
-
-
-/* Equivalent to Python `issubclass(derived, base)`, but base is provided as a template
-parameter. */
-template <impl::python_like T>
-[[nodiscard]] inline bool issubclass(const Type& derived) {
-    static_assert(!std::same_as<T, Handle>, "issubclass<py::Handle>() is not allowed");
-    static_assert(
-        std::derived_from<T, Object>,
-        "issubclass<T>() requires T to be a subclass of py::Object.  pybind11 types "
-        "do not directly track their associated Python types, so this function is not "
-        "supported for them."
-    );
-    int result = PyObject_IsSubclass(derived.ptr(), T::type.ptr());
-    if (result == -1) {
-        Exception::from_python();
-    }
-    return result;
-}
-
-
-/* Equivalent to Python `issubclass(derived, base)`. */
-template <typename T>
-    requires (impl::type_like<T> || impl::tuple_like<T> || std::same_as<T, Object>)
-[[nodiscard]] inline bool issubclass(const Type& derived, const T& base) {
-    int result = PyObject_IsSubclass(
-        derived.ptr(),
-        Object(base).ptr()
-    );
-    if (result == -1) {
-        Exception::from_python();
-    }
-    return result;
 }
 
 

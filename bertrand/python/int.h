@@ -12,67 +12,10 @@ namespace bertrand {
 namespace py {
 
 
-// TODO: Python ints have extra operations like as_integer_ratio, from_bytes, to_bytes,
-// etc.
-
-
-// TODO: enable __pow__ and overload operator_pow() to account for negative integer
-// exponents.  This just delegates to parent implementation, but sets a different
-// return type before doing so.
-// -> Can't change the return type based on a runtime condition, so this always needs
-// to return a float.
-
-
 /* Represents a statically-typed Python integer in C++. */
 class Int : public Object {
     using Base = Object;
     using Self = Int;
-
-    /* Helper function allows explicit conversion from any C++ type that implements an
-    implicit or explicit conversion to an integer. */
-    template <typename T>
-    static auto trigger_explicit_conversions(const T& value) {
-        if constexpr (impl::explicitly_convertible_to<T, uint64_t>) {
-            return static_cast<uint64_t>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, unsigned long long>) {
-            return static_cast<unsigned long long>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, int64_t>) {
-            return static_cast<int64_t>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, long long>) {
-            return static_cast<long long>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, uint32_t>) {
-            return static_cast<uint32_t>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, unsigned long>) {
-            return static_cast<unsigned long>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, unsigned int>) {
-            return static_cast<unsigned int>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, int32_t>) {
-            return static_cast<int32_t>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, long>) {
-            return static_cast<int>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, int>) {
-            return static_cast<int>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, uint16_t>) {
-            return static_cast<uint16_t>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, unsigned short>) {
-            return static_cast<unsigned short>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, int16_t>) {
-            return static_cast<int16_t>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, short>) {
-            return static_cast<short>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, uint8_t>) {
-            return static_cast<uint8_t>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, unsigned char>) {
-            return static_cast<unsigned char>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, int8_t>) {
-            return static_cast<int8_t>(value);
-        } else if constexpr (impl::explicitly_convertible_to<T, char>) {
-            return static_cast<char>(value);
-        } else {
-            static_assert(impl::explicitly_convertible_to<T, bool>);
-            return static_cast<bool>(value);
-        }
-    }
 
 public:
     static const Type type;
@@ -99,130 +42,27 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Default constructor.  Initializes to 0. */
-    Int() : Base(PyLong_FromLong(0), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
+    Int(Handle h, borrowed_t t) : Base(h, t) {}
+    Int(Handle h, stolen_t t) : Base(h, t) {}
 
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    Int(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Int(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    /* Convert an equivalent pybind11 type into a py::Int. */
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Int(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Unwrap a pybind11 accessor into a py::Int. */
-    template <typename Policy>
-    Int(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Int>(accessor).release(), stolen_t{})
-    {}
-
-    /* Implicitly promote Python booleans to py::Int. */
-    template <impl::python_like T> requires (impl::bool_like<T>)
-    Int(const T& value) : Base(PyNumber_Long(value.ptr()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Implicitly convert C++ booleans and integers to py::Int. */
-    template <std::integral T>
-    Int(const T& value) : Base(nullptr, stolen_t{}) {
-        if constexpr (sizeof(T) <= sizeof(long)) {
-            if constexpr (std::signed_integral<T>) {
-                m_ptr = PyLong_FromLong(value);
-            } else {
-                m_ptr = PyLong_FromUnsignedLong(value);
-            }
-        } else {
-            if constexpr (std::signed_integral<T>) {
-                m_ptr = PyLong_FromLongLong(value);
-            } else {
-                m_ptr = PyLong_FromUnsignedLongLong(value);
-            }
-        }
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly convert a Python float into a py::Int. */
-    template <impl::python_like T> requires (impl::float_like<T>)
-    explicit Int(const T& value) : Base(PyNumber_Long(value.ptr()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly convert a C++ float into a py::Int. */
-    template <impl::cpp_like T> requires (impl::float_like<T>)
-    explicit Int(const T& value) : Base(PyLong_FromDouble(value), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly convert an arbitrary Python object into an integer. */
-    template <impl::python_like T>
+    template <typename... Args>
         requires (
-            !impl::bool_like<T> &&
-            !impl::int_like<T> &&
-            !impl::float_like<T> &&
-            !impl::str_like<T>
+            std::is_invocable_r_v<Int, __init__<Int, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Int, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Int(const T& obj) : Base(PyNumber_Long(obj.ptr()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
+    Int(Args&&... args) : Base(
+        __init__<Int, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    /* Trigger explicit conversion operators to C++ integer types. */
-    template <impl::cpp_like T>
+    template <typename... Args>
         requires (
-            !impl::bool_like<T> &&
-            !impl::int_like<T> &&
-            !impl::float_like<T> &&
-            !impl::str_like<T>
+            !__init__<Int, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Int, __explicit_init__<Int, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Int, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Int(const T& value) : Int(trigger_explicit_conversions(value)) {}
-
-    /* Explicitly convert a string literal with an optional base into a py::Int. */
-    explicit Int(const char* str, int base = 0) :
-        Base(PyLong_FromString(str, nullptr, base), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly convert a std::string with an optional base into a py::Int. */
-    explicit Int(const std::string& str, int base = 0) : Int(str.c_str(), base) {}
-
-    /* Explicitly convert a std::string_view with an optional base into a py::Int. */
-    explicit Int(const std::string_view& str, int base = 0) : Int(str.data(), base) {}
-
-    /* Explicitly convert a Python string with an optional base into a py::Int. */
-    template <impl::python_like T> requires (impl::str_like<T>)
-    explicit Int(const T& str, int base = 0) :
-        Base(PyLong_FromUnicodeObject(str.ptr(), base), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
-
-    static const Int neg_two;
-    static const Int neg_one;
-    static const Int zero;
-    static const Int one;
-    static const Int two;
+    explicit Int(Args&&... args) : Base(
+        __explicit_init__<Int, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
@@ -235,18 +75,223 @@ public:
     BERTRAND_METHOD([[nodiscard]], as_integer_ratio, const)
     BERTRAND_METHOD([[nodiscard]], is_integer, const)
 
+    /////////////////////////////
+    ////    C++ INTERFACE    ////
+    /////////////////////////////
+
+    static const Int neg_two;
+    static const Int neg_one;
+    static const Int zero;
+    static const Int one;
+    static const Int two;
+
 };
 
 
-inline const Int Int::neg_two = -2;
-inline const Int Int::neg_one = -1;
-inline const Int Int::zero = 0;
-inline const Int Int::one = 1;
-inline const Int Int::two = 2;
+template <>
+struct __init__<Int>                                        : Returns<Int> {
+    static auto operator()() {
+        PyObject* result = PyLong_FromLong(0);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Int>(result);
+    }
+};
+
+
+template <std::integral T>
+struct __init__<Int, T>                                     : Returns<Int> {
+    static auto operator()(T value) {
+        PyObject* result;
+        if constexpr (std::signed_integral<T>) {
+            if constexpr (sizeof(T) <= sizeof(long)) {
+                result = PyLong_FromLong(value);
+            } else {
+                result = PyLong_FromLongLong(value);
+            }
+        } else {
+            if constexpr (sizeof(T) <= sizeof(long)) {
+                result = PyLong_FromUnsignedLong(value);
+            } else {
+                result = PyLong_FromUnsignedLongLong(value);
+            }
+        }
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Int>(result);
+    }
+};
+
+
+template <impl::python_like T> requires (impl::bool_like<T>)
+struct __init__<Int, T>                                     : Returns<Int> {
+    static auto operator()(const T& value) {
+        PyObject* result = PyNumber_Long(value.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Int>(result);
+    }
+};
+
+
+template <impl::cpp_like T> requires (impl::float_like<T>)
+struct __explicit_init__<Int, T>                            : Returns<Int> {
+    static auto operator()(T value) {
+        PyObject* result = PyLong_FromDouble(value);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Int>(result);
+    }
+};
+
+
+template <impl::cpp_like T>
+    requires (!impl::float_like<T>) && (
+        impl::explicitly_convertible_to<T, bool> ||
+        impl::explicitly_convertible_to<T, int64_t> ||
+        impl::explicitly_convertible_to<T, int32_t> ||
+        impl::explicitly_convertible_to<T, int16_t> ||
+        impl::explicitly_convertible_to<T, int8_t> ||
+        impl::explicitly_convertible_to<T, long long> ||
+        impl::explicitly_convertible_to<T, long> ||
+        impl::explicitly_convertible_to<T, int> ||
+        impl::explicitly_convertible_to<T, short> ||
+        impl::explicitly_convertible_to<T, char> ||
+        impl::explicitly_convertible_to<T, uint64_t> ||
+        impl::explicitly_convertible_to<T, uint32_t> ||
+        impl::explicitly_convertible_to<T, uint16_t> ||
+        impl::explicitly_convertible_to<T, uint8_t> ||
+        impl::explicitly_convertible_to<T, unsigned long long> ||
+        impl::explicitly_convertible_to<T, unsigned long> ||
+        impl::explicitly_convertible_to<T, unsigned int> ||
+        impl::explicitly_convertible_to<T, unsigned short> ||
+        impl::explicitly_convertible_to<T, unsigned char>
+    )
+struct __explicit_init__<Int, T>                            : Returns<Int> {
+    template <typename U>
+    static auto forward(U value) { return __init__<Int, U>{}(value); }
+    static auto operator()(const T& value) {
+        // NOTE: start with largest types to preserve as much precision as possible
+        if constexpr (impl::explicitly_convertible_to<T, uint64_t>) {
+            return forward(static_cast<uint64_t>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, unsigned long long>) {
+            return forward(static_cast<unsigned long long>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, int64_t>) {
+            return forward(static_cast<int64_t>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, long long>) {
+            return forward(static_cast<long long>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, uint32_t>) {
+            return forward(static_cast<uint32_t>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, unsigned long>) {
+            return forward(static_cast<unsigned long>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, unsigned int>) {
+            return forward(static_cast<unsigned int>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, int32_t>) {
+            return forward(static_cast<int32_t>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, long>) {
+            return forward(static_cast<int>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, int>) {
+            return forward(static_cast<int>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, uint16_t>) {
+            return forward(static_cast<uint16_t>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, unsigned short>) {
+            return forward(static_cast<unsigned short>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, int16_t>) {
+            return forward(static_cast<int16_t>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, short>) {
+            return forward(static_cast<short>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, uint8_t>) {
+            return forward(static_cast<uint8_t>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, unsigned char>) {
+            return forward(static_cast<unsigned char>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, int8_t>) {
+            return forward(static_cast<int8_t>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, char>) {
+            return forward(static_cast<char>(value));
+        } else if constexpr (impl::explicitly_convertible_to<T, bool>) {
+            return forward(static_cast<bool>(value));
+        } else {
+            static_assert(false, "unreachable");
+        }
+    }
+};
+
+
+template <std::integral Base>
+struct __explicit_init__<Int, const char*, Base>            : Returns<Int> {
+    static auto operator()(const char* str, Base base) {
+        PyObject* result = PyLong_FromString(str, nullptr, base);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Int>(result);
+    }
+};
+template <>
+struct __explicit_init__<Int, const char*>                  : Returns<Int> {
+    static auto operator()(const char* str) { return Int(str, 0); }
+};
+
+
+template <std::integral Base>
+struct __explicit_init__<Int, std::string, Base>             : Returns<Int> {
+    static auto operator()(const std::string& str, Base base) {
+        return __explicit_init__<Int, const char*, Base>{}(str.c_str(), base);
+    }
+};
+template <>
+struct __explicit_init__<Int, std::string>                  : Returns<Int> {
+    static auto operator()(const std::string& str) { return Int(str, 0); }
+};
+
+
+template <std::integral Base>
+struct __explicit_init__<Int, std::string_view, Base>       : Returns<Int> {
+    static auto operator()(const std::string_view& str, Base base) {
+        return __explicit_init__<Int, const char*, Base>{}(str.data(), base);
+    }
+};
+template <>
+struct __explicit_init__<Int, std::string_view>             : Returns<Int> {
+    static auto operator()(const std::string_view& str) { return Int(str, 0); }
+};
+
+
+template <impl::python_like T, std::integral Base> requires (impl::str_like<T>)
+struct __explicit_init__<Int, T, Base>                      : Returns<Int> {
+    static auto operator()(const T& str, Base base) {
+        PyObject* result = PyLong_FromUnicodeObject(str.ptr(), base);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Int>(result);
+    }
+};
+template <impl::python_like T> requires (impl::str_like<T>)
+struct __explicit_init__<Int, T>                            : Returns<Int> {
+    static auto operator()(const T& str) { return Int(str, 0); }
+};
+
+
+template <impl::python_like T>
+    requires (!impl::bool_like<T> && !impl::int_like<T> && !impl::str_like<T>)
+struct __explicit_init__<Int, T>                            : Returns<Int> {
+    static auto operator()(const T& obj) {
+        PyObject* result = PyNumber_Long(obj.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Int>(result);
+    }
+};
 
 
 template <std::derived_from<Int> From, std::integral To>
-struct __cast__<From, To> : Returns<To> {
+struct __cast__<From, To>                                   : Returns<To> {
     static To operator()(const From& from) {
         if constexpr (sizeof(To) <= sizeof(long)) {
             if constexpr (std::signed_integral<To>) {
@@ -281,11 +326,22 @@ struct __cast__<From, To> : Returns<To> {
 
 
 template <std::derived_from<Int> From, std::floating_point To>
-struct __cast__<From, To> : Returns<To> {
+struct __cast__<From, To>                                   : Returns<To> {
     static To operator()(const From& from) {
         return PyLong_AsDouble(from.ptr());
     }
 };
+
+
+// TODO: maybe I can add an explicit conversion to any type that is explicitly
+// convertible from long long?
+
+
+inline const Int Int::neg_two = -2;
+inline const Int Int::neg_one = -1;
+inline const Int Int::zero = 0;
+inline const Int Int::one = 1;
+inline const Int Int::two = 2;
 
 
 }  // namespace py

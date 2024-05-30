@@ -71,8 +71,10 @@ template <impl::complex_like T> requires (!std::derived_from<T, Object>)
 struct __as_object__<T>                                     : Returns<Complex> {};
 template <>
 struct __as_object__<const char*>                           : Returns<Str> {};
+template <>
+struct __as_object__<char*>                                 : Returns<Str> {};
 template <size_t N>
-struct __as_object__<const char(&)[N]>                      : Returns<Str> {};
+struct __as_object__<char[N]>                               : Returns<Str> {};
 template <std::derived_from<std::string> T>
 struct __as_object__<T>                                     : Returns<Str> {};
 template <std::derived_from<std::string_view> T>

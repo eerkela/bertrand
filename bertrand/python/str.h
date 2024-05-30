@@ -7,8 +7,8 @@
 
 #include "common.h"
 #include "int.h"
-#include "list.h"
 #include "tuple.h"
+#include "list.h"
 #include "set.h"
 #include "dict.h"
 #ifdef BERTRAND_HAS_STD_FORMAT

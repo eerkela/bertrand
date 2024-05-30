@@ -672,7 +672,7 @@ namespace impl {
     );  // NOTE: string will be garbage collected at shutdown
 
     template <typename T>
-    using as_object_t = __as_object__<std::decay_t<T>>::Return;
+    using as_object_t = __as_object__<std::remove_cvref_t<T>>::Return;
 
     template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
     class Item;

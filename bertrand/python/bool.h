@@ -42,74 +42,27 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Default constructor.  Initializes to False. */
-    Bool() : Base(Py_False, borrowed_t{}) {}
+    Bool(Handle h, borrowed_t t) : Base(h, t) {}
+    Bool(Handle h, stolen_t t) : Base(h, t) {}
 
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    Bool(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Bool(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    /* Convert an equivalent pybind11 type into a py::Bool. */
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Bool(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Unwrap a pybind11 accessor into a py::Bool. */
-    template <typename Policy>
-    Bool(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Bool>(accessor).release(), stolen_t{})
-    {}
-
-    /* Implicitly convert C++ booleans into py::Bool. */
-    template <impl::cpp_like T> requires (impl::bool_like<T>)
-    Bool(const T& value) : Base(value ? Py_True : Py_False, borrowed_t{}) {}
-
-    /* Explicitly convert an arbitrary Python object into a boolean. */
-    template <impl::python_like T> requires (!impl::bool_like<T>)
-    explicit Bool(const T& obj) : Base(nullptr, stolen_t{}) {
-        int result = PyObject_IsTrue(obj.ptr());
-        if (result == -1) {
-            Exception::from_python();
-        }
-        m_ptr = Py_NewRef(result ? Py_True : Py_False);
-    }
-
-    /* Trigger explicit conversion operators to bool. */
-    template <impl::cpp_like T>
-        requires (!impl::bool_like<T> && impl::explicitly_convertible_to<T, bool>)
-    explicit Bool(const T& value) : Bool(static_cast<bool>(value)) {}
-
-    /* Explicitly convert any C++ object that implements a `.size()` method into a
-    py::Bool. */
-    template <impl::cpp_like T>
-        requires (
-            !impl::bool_like<T> &&
-            !impl::explicitly_convertible_to<T, bool> &&
-            impl::has_size<T>
-        )
-    explicit Bool(const T& obj) : Bool(std::size(obj) > 0) {}
-
-    /* Explicitly convert any C++ object that implements a `.empty()` method into a
-    py::Bool. */
-    template <impl::cpp_like T>
-        requires (
-            !impl::bool_like<T> &&
-            !impl::explicitly_convertible_to<T, bool> &&
-            !impl::has_size<T> &&
-            impl::has_empty<T>
-        )
-    explicit Bool(const T& obj) : Bool(!obj.empty()) {}
-
-    /* Explicitly convert a std::tuple into a py::Bool. */
     template <typename... Args>
-    explicit Bool(const std::tuple<Args...>& obj) : Bool(sizeof...(Args) > 0) {}
+        requires (
+            std::is_invocable_r_v<Bool, __init__<Bool, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Bool, std::remove_cvref_t<Args>...>::enable
+        )
+    Bool(Args&&... args) : Base(
+        __init__<Bool, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    /* Explicitly convert a string literal into a py::Bool. */
-    template <size_t N>
-    explicit Bool(const char(&string)[N]) : Bool(N > 1) {}
-
-    /* Explicitly convert a C string into a py::Bool. */
-    template <std::same_as<const char*> T>
-    explicit Bool(T str) : Bool(std::strcmp(str, "") != 0) {}
+    template <typename... Args>
+        requires (
+            !__init__<Bool, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Bool, __explicit_init__<Bool, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Bool, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Bool(Args&&... args) : Base(
+        __explicit_init__<Bool, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
@@ -125,8 +78,131 @@ public:
 };
 
 
+template <typename T>
+struct __issubclass__<T, Bool>                              : Returns<bool> {
+    static consteval bool operator()() {
+        return impl::bool_like<T>;
+    }
+    static consteval bool operator()(const T& obj) {
+        return operator()(obj);
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Bool>                              : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Bool>();
+        } else if constexpr (issubclass<T, Bool>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyBool_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
+
+
+template <>
+struct __init__<Bool>                                       : Returns<Bool> {
+    static auto operator()() {
+        return reinterpret_borrow<Bool>(Py_False);
+    }
+};
+
+
+template <impl::cpp_like T> requires (impl::bool_like<T>)
+struct __init__<Bool, T>                                    : Returns<Bool> {
+    static auto operator()(const T& value) {
+        return reinterpret_borrow<Bool>(value ? Py_True : Py_False);
+    }
+};
+
+
+template <impl::python_like T> requires (!impl::bool_like<T>)
+struct __explicit_init__<Bool, T>                           : Returns<Bool> {
+    static auto operator()(const T& obj) {
+        int result = PyObject_IsTrue(obj.ptr());
+        if (result == -1) {
+            Exception::from_python();
+        }
+        return reinterpret_borrow<Bool>(result ? Py_True : Py_False);
+    }
+};
+
+
+template <impl::cpp_like T>
+    requires (
+        !impl::bool_like<T> &&
+        impl::explicitly_convertible_to<T, bool>
+    )
+struct __explicit_init__<Bool, T>                           : Returns<Bool> {
+    static auto operator()(const T& value) {
+        return reinterpret_borrow<Bool>(
+            static_cast<bool>(value) ? Py_True : Py_False
+        );
+    }
+};
+
+
+template <impl::cpp_like T>
+    requires (
+        !impl::bool_like<T> &&
+        !impl::explicitly_convertible_to<T, bool> &&
+        impl::has_size<T>
+    )
+struct __explicit_init__<Bool, T>                           : Returns<Bool> {
+    static auto operator()(const T& obj) {
+        return reinterpret_borrow<Bool>(std::size(obj) > 0 ? Py_True : Py_False);
+    }
+};
+
+
+template <impl::cpp_like T>
+    requires (
+        !impl::bool_like<T> &&
+        !impl::explicitly_convertible_to<T, bool> &&
+        !impl::has_size<T> &&
+        impl::has_empty<T>
+    )
+struct __explicit_init__<Bool, T>                           : Returns<Bool> {
+    static auto operator()(const T& obj) {
+        return reinterpret_borrow<Bool>(obj.empty() ? Py_False : Py_True);
+    }
+};
+
+
+template <typename... Args>
+struct __explicit_init__<Bool, std::tuple<Args...>>         : Returns<Bool> {
+    static auto operator()(const std::tuple<Args...>& obj) {
+        return reinterpret_borrow<Bool>(sizeof...(Args) > 0 ? Py_True : Py_False);
+    }
+};
+
+
+template <size_t N>
+struct __explicit_init__<Bool, char[N]>                     : Returns<Bool> {
+    static auto operator()(const char(&string)[N]) {
+        // NOTE: N includes a null terminator
+        return reinterpret_borrow<Bool>(N > 1 ? Py_True : Py_False);
+    }
+};
+
+
+template <>
+struct __explicit_init__<Bool, const char*>                 : Returns<Bool> {
+    static auto operator()(const char* str) {
+        return reinterpret_borrow<Bool>(
+            std::strcmp(str, "") != 0 ? Py_True : Py_False
+        );
+    }
+};
+
+
 template <std::derived_from<Bool> From>
-struct __cast__<From, bool> : Returns<bool> {
+struct __cast__<From, bool>                                 : Returns<bool> {
     static bool operator()(const From& from) {
         int result = PyObject_IsTrue(from.ptr());
         if (result == -1) {
@@ -138,7 +214,7 @@ struct __cast__<From, bool> : Returns<bool> {
 
 
 template <std::derived_from<Bool> From, std::integral To>
-struct __cast__<From, To> : Returns<To> {
+struct __cast__<From, To>                                   : Returns<To> {
     static To operator()(const From& from) {
         return impl::implicit_cast<bool>(from);
     }
@@ -146,7 +222,7 @@ struct __cast__<From, To> : Returns<To> {
 
 
 template <std::derived_from<Bool> From, std::floating_point To>
-struct __cast__<From, To> : Returns<To> {
+struct __cast__<From, To>                                   : Returns<To> {
     static To operator()(const From& from) {
         return impl::implicit_cast<bool>(from);
     }

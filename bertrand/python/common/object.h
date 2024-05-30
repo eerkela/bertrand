@@ -29,50 +29,60 @@ namespace impl {
         return TypeError(msg.str());
     }
 
-    #define BERTRAND_INIT(cls)                                                          \
-        cls(::bertrand::py::Handle h, borrowed_t t) : Base(h, t) {}                     \
-        cls(::bertrand::py::Handle h, stolen_t t) : Base(h, t) {}                       \
-                                                                                        \
-        template <typename... Args>                                                     \
-            requires (                                                                  \
-                std::is_invocable_r_v<                                                  \
-                    cls,                                                                \
-                    ::bertrand::py::__init__<cls, std::decay_t<Args>...>,               \
-                    Args...                                                             \
-                >                                                                       \
-            )                                                                           \
-        cls(Args&&... args) : Base(                                                     \
-            ::bertrand::py::__init__<cls, std::decay_t<Args>...>{}(                     \
-                std::forward<Args>(args)...                                             \
-            )                                                                           \
-        ) {}                                                                            \
-                                                                                        \
-        template <typename... Args>                                                     \
-            requires (                                                                  \
-                !::bertrand::py::__init__<cls, std::decay_t<Args>...>::enable &&        \
-                std::is_invocable_r_v<                                                  \
-                    cls,                                                                \
-                    ::bertrand::py::__explicit_init__<cls, std::decay_t<Args>...>,      \
-                    Args...                                                             \
-                >                                                                       \
-            )                                                                           \
-        explicit cls(Args&&... args) : Base(                                            \
-            ::bertrand::py::__explicit_init__<cls, std::decay_t<Args>...>{}(            \
-                std::forward<Args>(args)...                                             \
-            )                                                                           \
+    /* A convenience macro that defines all of the required constructors for a subclass
+    of py::Object.  This allows implicit and explicit constructors to be defined out of
+    line by specializing the py::__init__ and py::__explicit_init__ control structures.
+
+    NOTE: this macro can obfuscate error messages to some degree, so it's not used for
+    any of the built-in types.  It does, however, present a uniform and
+    backwards-compatible entry point for user-defined types, so they don't have to
+    concern themselves with the intricacies of the control struct architecture. */
+    #define BERTRAND_INIT(cls) \
+        cls(::bertrand::py::Handle h, borrowed_t t) : Base(h, t) {} \
+        cls(::bertrand::py::Handle h, stolen_t t) : Base(h, t) {} \
+        \
+        template <typename... Args> \
+            requires ( \
+                std::is_invocable_r_v< \
+                    cls, \
+                    ::bertrand::py::__init__<cls, std::remove_cvref_t<Args>...>, \
+                    Args... \
+                > && \
+                ::bertrand::py::__init__<cls, std::remove_cvref_t<Args>...>::enable \
+            ) \
+        cls(Args&&... args) : Base( \
+            ::bertrand::py::__init__<cls, std::remove_cvref_t<Args>...>{}( \
+                std::forward<Args>(args)... \
+            ) \
+        ) {} \
+        \
+        template <typename... Args> \
+            requires ( \
+                !::bertrand::py::__init__<cls, std::remove_cvref_t<Args>...>::enable && \
+                std::is_invocable_r_v< \
+                    cls, \
+                    ::bertrand::py::__explicit_init__<cls, std::remove_cvref_t<Args>...>, \
+                    Args... \
+                > && \
+                ::bertrand::py::__explicit_init__<cls, std::remove_cvref_t<Args>...>::enable \
+            ) \
+        explicit cls(Args&&... args) : Base( \
+            ::bertrand::py::__explicit_init__<cls, std::remove_cvref_t<Args>...>{}( \
+                std::forward<Args>(args)... \
+            ) \
         ) {}
 
 }
 
 
-/* A revised Python object interface that allows implicit conversions to subtypes
-(applying a type check on the way), explicit conversions to arbitrary C++ types,
-type-safe operators, and generalized slice/attr syntax. */
+/* A dynamically-typed Python object that allows implicit and explicit conversions to
+to arbitrary types via pybind11::cast(), as well as type-safe attribute access and
+operator overloads.  This is the base class for all Bertrand-enabled Python objects. */
 class Object {
 protected:
     PyObject* m_ptr;
 
-    /* Protected tags mirror pybind11::object and allow for the use of
+    /* Protected tags mirror those of pybind11::object and allow the use of
     reinterpret_borrow<>, reinterpret_steal<> for bertrand types. */
     struct borrowed_t {};
     struct stolen_t {};
@@ -81,6 +91,9 @@ protected:
     friend T reinterpret_borrow(Handle);
     template <std::derived_from<Object> T>
     friend T reinterpret_steal(Handle);
+
+    // TODO: delete from_pybind11_accessor(), since it is superseded by constructor
+    // control structures
 
     template <typename Self, typename Policy>
     static pybind11::object from_pybind11_accessor(
@@ -121,21 +134,10 @@ public:
     Object() : m_ptr(Py_NewRef(Py_None)) {}
 
     /* reinterpret_borrow() constructor.  Borrows a reference to a raw Python handle. */
-    Object(Handle ptr, const borrowed_t&) : m_ptr(Py_XNewRef(ptr.ptr())) {}
+    Object(Handle h, borrowed_t) : m_ptr(Py_XNewRef(h.ptr())) {}
 
     /* reinterpret_steal() constructor.  Steals a reference to a raw Python handle. */
-    Object(Handle ptr, const stolen_t&) : m_ptr(ptr.ptr()) {}
-
-    /* Convert a pybind11 accessor into a generic Object. */
-    template <typename Policy>
-    Object(const pybind11::detail::accessor<Policy>& accessor) : m_ptr(nullptr) {
-        pybind11::object obj(accessor);
-        if (typecheck(obj)) {
-            m_ptr = obj.release().ptr();
-        } else {
-            throw impl::noconvert<Object>(obj.ptr());
-        }
-    }
+    Object(Handle h, stolen_t) : m_ptr(h.ptr()) {}
 
     /* Copy constructor.  Borrows a reference to an existing object. */
     Object(const Object& other) : m_ptr(Py_XNewRef(other.m_ptr)) {}
@@ -149,15 +151,35 @@ public:
     /* Move constructor from equivalent pybind11 type. */
     Object(pybind11::object&& other) : m_ptr(other.release().ptr()) {}
 
-    /* Convert any C++ value into a generic python object. */
-    template <impl::cpp_like T>
-    Object(const T& value) : m_ptr([&value] {
-        try {
-            return pybind11::cast(value).release().ptr();
-        } catch (...) {
-            Exception::from_pybind11();
-        }
-    }()) {}
+    /* Universal implicit constructor.  Implemented via the __init__ control struct. */
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<
+                Object,
+                __init__<Object, std::remove_cvref_t<Args>...>,
+                Args...
+            >
+        )
+    Object(Args&&... args) : Object(
+        __init__<Object, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
+
+    /* Universal explicit constructor.  Implemented via the __explicit_init__ control
+    struct. */
+    template <typename... Args>
+        requires (
+            !__init__<Object, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<
+                Object,
+                __explicit_init__<Object, std::remove_cvref_t<Args>...>,
+                Args...
+            >
+        )
+    explicit Object(Args&&... args) : Object(
+        __explicit_init__<Object, std::remove_cvref_t<Args>...>{}(
+            std::forward<Args>(args)...
+        )
+    ) {}
 
     /* Copy assignment operator. */
     Object& operator=(const Object& other) {
@@ -182,7 +204,7 @@ public:
         return *this;
     }
 
-    /* Destructor allows any object to be stored with static duration. */
+    /* Destructor.  Allows any object to be stored with static duration. */
     ~Object() noexcept {
         if (Py_IsInitialized()) {
             Py_XDECREF(m_ptr);
@@ -269,24 +291,18 @@ public:
         return impl::Attr<Self, name>(self);
     }
 
-    /* Implicit conversion operator.  Implicit conversions can be registered for any
-    type via the __cast__ control struct.  Further implicit conversions should not be
-    implemented, as it can lead to template ambiguities and unexpected behavior.
-    Ambiguities can still arise via the control struct, but they are more predictable
-    and avoidable. */
+    /* Universal implicit conversion operator.  Implemented via the __cast__ control
+    struct. */
     template <typename Self, typename T>
         requires (__cast__<Self, T>::enable)
     [[nodiscard]] operator T(this const Self& self) {
         return __cast__<Self, T>{}(self);
     }
 
-    /* Explicit conversion operator.  This defers to implicit conversions where
-    possible, and forwards all other conversions to pybind11's cast() mechanism.  Along
-    with implicit and explicit constructors, this obviates most uses of
-    `pybind11::cast<T>()` and replaces it with the native `static_cast<T>()` and
-    implicit conversions instead.  */
+    /* Universal explicit conversion operator.  Implemented via the __explicit_cast__
+    control struct. */
     template <typename Self, typename T>
-        requires (!__cast__<Self, T>::enable /* && __explicit_cast__<Self, T>::enable */)  // TODO: checking explicit_cast causes errors
+        requires (!__cast__<Self, T>::enable && __explicit_cast__<Self, T>::enable)
     [[nodiscard]] explicit operator T(this const Self& self) {
         return __explicit_cast__<Self, T>{}(self);
     }
@@ -295,16 +311,16 @@ public:
     types via the __call__ control struct, enabling static type safety for Python
     functions in C++. */
     template <typename Self, typename... Args>
-        requires (__call__<std::decay_t<Self>, Args...>::enable)
+        requires (__call__<std::remove_cvref_t<Self>, Args...>::enable)
     auto operator()(this Self&& self, Args&&... args) {
-        using Return = typename __call__<std::decay_t<Self>, Args...>::Return;
+        using Return = typename __call__<std::remove_cvref_t<Self>, Args...>::Return;
         static_assert(
             std::is_void_v<Return> || std::derived_from<Return, Object>,
             "Call operator must return either void or a py::Object subclass.  "
             "Check your specialization of __call__ for the given arguments and "
             "ensure that it is derived from py::Object."
         );
-        return ops::call<Return, std::decay_t<Self>, Args...>{}(
+        return ops::call<Return, std::remove_cvref_t<Self>, Args...>{}(
             self, std::forward<Args>(args)...
         );
     }
@@ -466,19 +482,8 @@ template <std::derived_from<Object> T>
 }
 
 
-template <typename T, std::derived_from<Object> Self>
-struct __issubclass__<T, Self> : Returns<bool> {
-    static consteval bool operator()() {
-        return std::derived_from<T, Self>;
-    }
-    static constexpr bool operator()(const T& obj) {
-        return operator()();
-    }
-};
-
-
 template <typename T>
-struct __issubclass__<T, Object> : Returns<bool> {
+struct __issubclass__<T, Object>                            : Returns<bool> {
     static consteval bool operator()() {
         return std::derived_from<T, Object> || std::derived_from<T, pybind11::object>;
     }
@@ -499,9 +504,13 @@ struct __issubclass__<T, Object> : Returns<bool> {
 
 
 template <typename T>
-struct __isinstance__<T, Object> : Returns<bool> {
+struct __isinstance__<T, Object>                            : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        return issubclass<Object>(obj);
+        if constexpr (impl::python_like<T>) {
+            return obj.ptr() != nullptr;
+        } else {
+            return issubclass<Object>(obj);
+        }
     }
     static bool operator()(const T& obj, const Object& cls) {
         int result = PyObject_IsInstance(
@@ -518,7 +527,7 @@ struct __isinstance__<T, Object> : Returns<bool> {
 
 template <std::derived_from<Object> Self, impl::pybind11_like T>
     requires (issubclass<T, Self>())
-struct __init__<Self, T> : Returns<Self> {
+struct __init__<Self, T>                                    : Returns<Self> {
     static auto operator()(const T& other) {
         return reinterpret_borrow<Self>(other.ptr());
     }
@@ -529,7 +538,7 @@ struct __init__<Self, T> : Returns<Self> {
 
 
 template <std::derived_from<Object> Self, typename Policy>
-struct __init__<Self, pybind11::detail::accessor<Policy>> : Returns<Self> {
+struct __init__<Self, pybind11::detail::accessor<Policy>>   : Returns<Self> {
     static auto operator()(const pybind11::detail::accessor<Policy>& accessor) {
         pybind11::object obj(accessor);
         if (isinstance<Self>(obj)) {
@@ -542,7 +551,7 @@ struct __init__<Self, pybind11::detail::accessor<Policy>> : Returns<Self> {
 
 
 template <impl::cpp_like T>
-struct __init__<Object, T> : Returns<Object> {
+struct __init__<Object, T>                                  : Returns<Object> {
     static auto operator()(const T& value) {
         try {
             return reinterpret_steal<Object>(pybind11::cast(value).release());
@@ -554,7 +563,7 @@ struct __init__<Object, T> : Returns<Object> {
 
 
 template <std::derived_from<Object> From>
-struct __cast__<From, pybind11::handle> : Returns<pybind11::handle> {
+struct __cast__<From, pybind11::handle>                     : Returns<pybind11::handle> {
     static pybind11::handle operator()(const From& from) {
         return from.ptr();
     }
@@ -562,7 +571,7 @@ struct __cast__<From, pybind11::handle> : Returns<pybind11::handle> {
 
 
 template <std::derived_from<Object> From>
-struct __cast__<From, pybind11::object> : Returns<pybind11::object> {
+struct __cast__<From, pybind11::object>                     : Returns<pybind11::object> {
     static auto operator()(const From& from) {
         return pybind11::reinterpret_borrow<pybind11::object>(from.ptr());
     }
@@ -577,9 +586,9 @@ template <std::derived_from<Object> From, impl::pybind11_like To>
         !std::same_as<To, pybind11::handle> &&
         !std::same_as<To, pybind11::object> &&
         From::template typecheck<To>()
-        // issubclass<To, From>()
+        // issubclass<To, From>()  // TODO: replace typecheck with this
     )
-struct __cast__<From, To> : Returns<To> {
+struct __cast__<From, To>                                   : Returns<To> {
     static auto operator()(const From& from) {
         return pybind11::reinterpret_borrow<To>(from.ptr());
     }
@@ -590,7 +599,7 @@ struct __cast__<From, To> : Returns<To> {
 
 
 template <std::derived_from<Object> From, std::derived_from<From> To>
-struct __cast__<From, To> : Returns<To> {
+struct __cast__<From, To>                                   : Returns<To> {
     static auto operator()(const From& from) {
         if (isinstance<To>(from)) {
             return reinterpret_borrow<To>(from.ptr());
@@ -610,7 +619,7 @@ struct __cast__<From, To> : Returns<To> {
 
 template <std::derived_from<Object> From, impl::proxy_like To>
     requires (__cast__<From, impl::unwrap_proxy<To>>::enable)
-struct __cast__<From, To> : Returns<To> {
+struct __cast__<From, To>                                   : Returns<To> {
     static auto operator()(const From& from) {
         return To(impl::implicit_cast<impl::unwrap_proxy<To>>(from));
     }
@@ -621,12 +630,11 @@ template <impl::not_proxy_like To>
     requires (
         !std::is_pointer_v<To> &&
         !std::is_reference_v<To> &&
-        !std::same_as<To, pybind11::handle> &&
-        !std::derived_from<To, pybind11::object> &&
+        !std::derived_from<To, pybind11::handle> &&
         !std::derived_from<To, pybind11::arg> &&
         !std::derived_from<To, Object>  // TODO: all internal objects should inherit from a shared tag
     )
-struct __cast__<Object, To> : Returns<To> {
+struct __cast__<Object, To>                                 : Returns<To> {
     static auto operator()(const Object& self) {
         try {
             return Handle(self.ptr()).template cast<To>();
@@ -643,7 +651,7 @@ struct __cast__<Object, To> : Returns<To> {
 
 
 template <std::derived_from<Object> From, typename To>
-struct __explicit_cast__<From, To> : Returns<To> {
+struct __explicit_cast__<From, To>                          : Returns<To> {
     static auto operator()(const From& from) {
         try {
             return Handle(from.ptr()).template cast<To>();
@@ -655,7 +663,7 @@ struct __explicit_cast__<From, To> : Returns<To> {
 
 
 template <std::derived_from<Object> From> 
-struct __explicit_cast__<From, std::string> : Returns<std::string> {
+struct __explicit_cast__<From, std::string>                 : Returns<std::string> {
     static auto operator()(const From& from) {
         PyObject* str = PyObject_Str(from.ptr());
         if (str == nullptr) {

@@ -6,6 +6,7 @@
 #define BERTRAND_PYTHON_COMPLEX_H
 
 #include "common.h"
+#include "str.h"
 
 
 namespace bertrand {
@@ -42,80 +43,27 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Default constructor.  Initializes to 0+0j. */
-    Complex() : Base(PyComplex_FromDoubles(0.0, 0.0), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
+    Complex(Handle h, borrowed_t t) : Base(h, t) {}
+    Complex(Handle h, stolen_t t) : Base(h, t) {}
 
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    Complex(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Complex(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    /* Convert an equivalent pybind11 type into a py::Complex. */
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Complex(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Unwrap a pybind11 accessor into a py::Complex. */
-    template <typename Policy>
-    Complex(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Complex>(accessor).release(), stolen_t{})
-    {}
-
-    /* Implicitly convert any C++ type that implements `.real()` and `.imag()` into
-    a py::Complex object. */
-    template <impl::cpp_like T> requires (impl::complex_like<T>)
-    Complex(const T& value) : Base(
-        PyComplex_FromDoubles(value.real(), value.imag()),
-        stolen_t{}
-    ) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly convert a double into a py::Complex object as its real component. */
-    explicit Complex(double real) :
-        Base(PyComplex_FromDoubles(real, 0.0), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly convert a pair of doubles representing separate real, imaginary
-    components into a py::Complex object. */
-    explicit Complex(double real, double imag) :
-        Base(PyComplex_FromDoubles(real, imag), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly convert an arbitrary Python object into a complex number. */
-    template <impl::python_like T> requires (!impl::complex_like<T>)
-    explicit Complex(const T& obj) : Base(nullptr, stolen_t{}) {
-        Py_complex complex = PyComplex_AsCComplex(obj.ptr());
-        if (complex.real == -1.0 && PyErr_Occurred()) {
-            Exception::from_python();
-        }
-        m_ptr = PyComplex_FromDoubles(complex.real, complex.imag);
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Trigger explicit conversions to std::complex<double>. */
-    template <impl::cpp_like T>
+    template <typename... Args>
         requires (
-            !impl::complex_like<T> &&
-            impl::explicitly_convertible_to<T, std::complex<double>>
+            std::is_invocable_r_v<Complex, __init__<Complex, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Complex, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Complex(const T& value) :
-        Complex(static_cast<std::complex<double>>(value))
-    {}
+    Complex(Args&&... args) : Base(
+        __init__<Complex, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
+
+    template <typename... Args>
+        requires (
+            !__init__<Complex, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Complex, __explicit_init__<Complex, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Complex, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Complex(Args&&... args) : Base(
+        __explicit_init__<Complex, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
     ////////////////////////////////
     ////    PYTHON INTERFACE    ////
@@ -132,19 +80,116 @@ public:
     }
 
     /* Get the magnitude of the Complex number. */
-    [[nodiscard]] Complex conjugate() const {
-        Py_complex complex = PyComplex_AsCComplex(this->ptr());
-        if (complex.real == -1.0 && PyErr_Occurred()) {
-            Exception::from_python();
-        }
-        return Complex(complex.real, -complex.imag);
-    }
+    [[nodiscard]] auto conjugate() const;
 
 };
 
 
+template <typename Real, typename Imag>
+    requires (
+        (impl::bool_like<Real> || impl::int_like<Real> || impl::float_like<Real>) &&
+        (impl::bool_like<Imag> || impl::int_like<Imag> || impl::float_like<Imag>)
+    )
+struct __init__<Complex, Real, Imag>                        : Returns<Complex> {
+    static auto operator()(const Real& real, const Imag& imag) {
+        PyObject* result = PyComplex_FromDoubles(
+            static_cast<double>(real),
+            static_cast<double>(imag)
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Complex>(result);
+    }
+};
+template <typename Real>
+    requires (impl::bool_like<Real> || impl::int_like<Real> || impl::float_like<Real>)
+struct __init__<Complex, Real>                              : Returns<Complex> {
+    static auto operator()(const Real& real) { return Complex(real, 0.0); }
+};
+template <>
+struct __init__<Complex>                                    : Returns<Complex> {
+    static auto operator()() { return Complex(0.0, 0.0); }
+};
+
+
+template <impl::cpp_like T> requires (impl::complex_like<T>)
+struct __init__<Complex, T>                                 : Returns<Complex> {
+    static auto operator()(const T& value) {
+        return Complex(value.real(), value.imag());
+    }
+};
+
+
+template <impl::cpp_like T>
+    requires (
+        !impl::bool_like<T> &&
+        !impl::int_like<T> &&
+        !impl::float_like<T> &&
+        !impl::complex_like<T> &&
+        !impl::str_like<T> &&
+        impl::explicitly_convertible_to<T, double>
+    )
+struct __explicit_init__<Complex, T>                        : Returns<Complex> {
+    static auto operator()(const T& value) {
+        return Complex(static_cast<double>(value));
+    }
+};
+
+
+template <impl::cpp_like T>
+    requires (
+        !impl::bool_like<T> &&
+        !impl::int_like<T> &&
+        !impl::float_like<T> &&
+        !impl::complex_like<T> &&
+        !impl::str_like<T> &&
+        impl::explicitly_convertible_to<T, std::complex<double>>
+    )
+struct __explicit_init__<Complex, T>                        : Returns<Complex> {
+    static auto operator()(const T& value) {
+        std::complex<double> complex = static_cast<std::complex<double>>(value);
+        return Complex(complex.real(), complex.imag());
+    }
+};
+
+
+template <impl::str_like T>
+struct __explicit_init__<Complex, T>                        : Returns<Complex> {
+    static auto operator()(const Str& value) {
+        PyObject* result = PyObject_CallOneArg(
+            (PyObject*)&PyComplex_Type,
+            value.ptr()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Complex>(result);
+    }
+};
+
+
+template <impl::python_like T>
+    requires (
+        !impl::bool_like<T> &&
+        !impl::int_like<T> &&
+        !impl::float_like<T> &&
+        !impl::complex_like<T> &&
+        !impl::str_like<T>
+    )
+struct __explicit_init__<Complex, T>                         : Returns<Complex> {
+    static auto operator()(const T& obj) {
+        Py_complex complex = PyComplex_AsCComplex(obj.ptr());
+        if (complex.real == -1.0 && PyErr_Occurred()) {
+            Exception::from_python();
+        }
+        return Complex(complex.real, complex.imag);
+    }
+};
+
+
 template <std::derived_from<Complex> From, typename To>
-struct __cast__<From, std::complex<To>> : Returns<std::complex<To>> {
+struct __cast__<From, std::complex<To>>                     : Returns<std::complex<To>> {
     static auto operator()(const From& from) {
         Py_complex complex = PyComplex_AsCComplex(from.ptr());
         if (complex.real == -1.0 && PyErr_Occurred()) {
@@ -153,6 +198,15 @@ struct __cast__<From, std::complex<To>> : Returns<std::complex<To>> {
         return std::complex<To>(complex.real, complex.imag);
     }
 };
+
+
+[[nodiscard]] inline auto Complex::conjugate() const {
+    Py_complex complex = PyComplex_AsCComplex(this->ptr());
+    if (complex.real == -1.0 && PyErr_Occurred()) {
+        Exception::from_python();
+    }
+    return Complex(complex.real, -complex.imag);
+}
 
 
 }  // namespace py

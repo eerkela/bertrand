@@ -679,8 +679,8 @@ namespace ops {
 
 /* Convert an arbitrary C++ value to an equivalent Python object if it isn't one
 already. */
-template <typename T> requires (__as_object__<std::decay_t<T>>::enable)
-[[nodiscard]] auto as_object(T&& value) -> __as_object__<std::decay_t<T>>::Return {
+template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
+[[nodiscard]] auto as_object(T&& value) -> __as_object__<std::remove_cvref_t<T>>::Return {
     return std::forward<T>(value);
 }
 

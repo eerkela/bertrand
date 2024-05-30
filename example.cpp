@@ -196,8 +196,16 @@ void run() {
 
 
 
-    auto d2 = py::Dict{std::pair{"a", 1}, {"b", 2}};
-    py::print(typeid(decltype(d2)).name());
+    // auto d2 = py::Dict{std::pair{"a", 1}, {"b", 2}};
+    // py::print(typeid(decltype(d2)).name());
+
+    // py::Bool x = 1;
+    // py::Bool y(std::complex{1.2, 2.3});
+    // py::print(x);
+    // py::print(y);
+
+    py::print(py::Complex("1+2j"));
+
 
 
 
