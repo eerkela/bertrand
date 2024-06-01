@@ -431,7 +431,7 @@ protected:
         static constexpr size_t size = sizeof...(Args);
 
         /* Retrieve the (annotated) type at index I. */
-        template <size_t I>
+        template <size_t I> requires (I < size)
         using type = std::tuple_element<I, std::tuple<Args...>>::type;
 
         /* Find the index of the named argument, or `size` if the argument is not
@@ -558,6 +558,14 @@ protected:
             return ((std::strcmp(Inspect<Args>::name, name) == 0) || ...);
         }
 
+        /* Check whether the argument at index I is marked as optional. */
+        template <size_t I> requires (I < size)
+        static constexpr bool is_opt = Inspect<type<I>>::opt;
+
+        /* Check whether the named argument is marked as optional. */
+        template <StaticStr name> requires (index<name> < size)
+        static constexpr bool is_opt_kw = Inspect<type<index<name>>>::opt;
+
     };
 
     using target = Signature<Target...>;
@@ -596,10 +604,10 @@ protected:
         using tuple = CollectDefaults<0, std::tuple<>, Target...>::type;
 
         template <size_t I, typename... Ts>
-        struct find { static constexpr size_t value = 0; };
+        struct find_helper { static constexpr size_t value = 0; };
         template <size_t I, typename T, typename... Ts>
-        struct find<I, std::tuple<T, Ts...>> { static constexpr size_t value = 
-            (I == T::index) ? 0 : 1 + find<I, std::tuple<Ts...>>::value;
+        struct find_helper<I, std::tuple<T, Ts...>> { static constexpr size_t value = 
+            (I == T::index) ? 0 : 1 + find_helper<I, std::tuple<Ts...>>::value;
         };
 
         /* Statically analyzes the arguments that are supplied to the function's
@@ -630,7 +638,7 @@ protected:
                         return false;
                     } else {
                         constexpr size_t idx = target::template index<Inspect<V>::name>;
-                        using D2 = std::tuple_element<find<idx>::value, tuple>::type;
+                        using D2 = std::tuple_element<find_helper<idx>::value, tuple>::type;
                         if constexpr (
                             !std::convertible_to<typename Inspect<V>::type, typename D2::type>
                         ) {
@@ -686,10 +694,15 @@ protected:
         template <typename... Source>
         static constexpr bool enable = Parse<Source...>::enable;
 
+        /* Get the type of the default value associated with the target argument at
+        index I. */
+        template <size_t I>
+        static constexpr size_t find = find_helper<I, tuple>::value;
+
         /* Get the default value associated with the target argument at index I. */
         template <size_t I>
         const auto get() const {
-            return std::get<find<I, tuple>::value>(values).value;
+            return std::get<find<I>>(values).value;
         };
 
     };
@@ -2089,6 +2102,41 @@ public:
     /* Indicates whether the function accepts variadic keyword arguments. */
     static constexpr bool has_kwargs = target::has_kwargs;
 
+    /* Get the default value at index I of the target signature. */
+    template <size_t I> requires (target::template is_opt<I>)
+    auto& default_value() {
+        if (contents == nullptr) {
+            throw TypeError();  // TODO: search for the default value in the Python object?
+        }
+        return contents->defaults.template get<I>();
+    }
+
+    /* Get the default value at index I of the target signature. */
+    template <size_t I> requires (target::template is_opt<I>)
+    const auto& default_value() const {
+        if (contents == nullptr) {
+            throw TypeError();  // TODO: search for the default value in the Python object?
+        }
+        return contents->defaults.template get<I>();
+    }
+
+    /* Get the default value for the named argument. */
+    template <StaticStr name> requires (target::template is_opt_kw<name>)
+    auto& default_value() {
+        if (contents == nullptr) {
+            throw TypeError();  // TODO: search for the default value in the Python object?
+        }
+        return contents->defaults.template get<target::template index<name>>();
+    }
+
+    /* Get the default value for the named argument. */
+    template <StaticStr name> requires (target::template is_opt_kw<name>)
+    const auto& default_value() const {
+        if (contents == nullptr) {
+            throw TypeError();  // TODO: search for the default value in the Python object?
+        }
+        return contents->defaults.template get<target::template index<name>>();
+    }
 
     // TODO: if default specialization is given, typecheck<> should be fully generic, right?
     // typecheck<T>() should check impl::is_callable_any<T>;

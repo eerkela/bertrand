@@ -86,6 +86,9 @@ namespace py = bertrand::py;
 using namespace py::literals;
 
 
+import example;
+
+
 // #include <Python.h>
 // #include <pybind11/pybind11.h>
 // namespace py = pybind11;
@@ -104,6 +107,8 @@ int subtract(int x, int y) {
 void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
+
+    py::print(add(4, 5));
 
     // py::Set a = {1, 2, 3};
     // py::Set b("abc");
@@ -205,7 +210,6 @@ void run() {
     // py::print(y);
 
     py::print(py::Int("1"));
-
 
 
 

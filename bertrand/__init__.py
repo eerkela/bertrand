@@ -68,7 +68,7 @@
 # del timedelta       # type: ignore
 
 
-from .setup_helpers import BuildExt, Extension, get_include
+from .setuptools import BuildExt, Extension, get_include
 
 
 try:

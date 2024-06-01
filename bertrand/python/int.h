@@ -221,9 +221,9 @@ struct __explicit_init__<Int, T>                            : Returns<Int> {
 };
 
 
-template <std::integral Base>
+template <std::convertible_to<int> Base>
 struct __explicit_init__<Int, const char*, Base>            : Returns<Int> {
-    static auto operator()(const char* str, Base base) {
+    static auto operator()(const char* str, int base) {
         PyObject* result = PyLong_FromString(str, nullptr, base);
         if (result == nullptr) {
             Exception::from_python();
@@ -241,9 +241,9 @@ struct __explicit_init__<Int, char[N]>                      : Returns<Int> {
 };
 
 
-template <std::integral Base>
+template <std::convertible_to<int> Base>
 struct __explicit_init__<Int, std::string, Base>             : Returns<Int> {
-    static auto operator()(const std::string& str, Base base) {
+    static auto operator()(const std::string& str, int base) {
         return Int(str.c_str(), base);
     }
 };
@@ -253,9 +253,9 @@ struct __explicit_init__<Int, std::string>                  : Returns<Int> {
 };
 
 
-template <std::integral Base>
+template <std::convertible_to<int> Base>
 struct __explicit_init__<Int, std::string_view, Base>       : Returns<Int> {
-    static auto operator()(const std::string_view& str, Base base) {
+    static auto operator()(const std::string_view& str, int base) {
         return Int(str.data(), base);
     }
 };
@@ -265,9 +265,9 @@ struct __explicit_init__<Int, std::string_view>             : Returns<Int> {
 };
 
 
-template <impl::python_like T, std::integral Base> requires (impl::str_like<T>)
+template <impl::python_like T, std::convertible_to<int> Base> requires (impl::str_like<T>)
 struct __explicit_init__<Int, T, Base>                      : Returns<Int> {
-    static auto operator()(const T& str, Base base) {
+    static auto operator()(const T& str, int base) {
         PyObject* result = PyLong_FromUnicodeObject(str.ptr(), base);
         if (result == nullptr) {
             Exception::from_python();

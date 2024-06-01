@@ -316,30 +316,31 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Default constructor.  Initializes to an uninitialized string with the given
-    size, defaulting to zero. */
-    ByteArray(size_t size = 0) : Base(
-        PyByteArray_FromStringAndSize(nullptr, size),
-        stolen_t{}
-    ) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
+    ByteArray(Handle h, borrowed_t t) : Base(h, t) {}
+    ByteArray(Handle h, stolen_t t) : Base(h, t) {}
 
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    ByteArray(Handle h, const borrowed_t& t) : Base(h, t) {}
-    ByteArray(Handle h, const stolen_t& t) : Base(h, t) {}
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<ByteArray, __init__<ByteArray, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<ByteArray, std::remove_cvref_t<Args>...>::enable
+        )
+    ByteArray(Args&&... args) : Base(
+        __init__<ByteArray, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    /* Convert an equivalent pybind11 type into a py::ByteArray. */
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    ByteArray(T&& other) : Base(std::forward<T>(other)) {}
+    template <typename... Args>
+        requires (
+            !__init__<ByteArray, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<ByteArray, __explicit_init__<ByteArray, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<ByteArray, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit ByteArray(Args&&... args) : Base(
+        __explicit_init__<ByteArray, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    /* Unwrap a pybind11 accessor into a py::ByteArray. */
-    template <typename Policy>
-    ByteArray(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<ByteArray>(accessor).release(), stolen_t{})
-    {}
+
+
+
 
     /* Implicitly convert a raw sequence of bytes into a py::ByteArray object. */
     ByteArray(const void* data, size_t size) : Base(
@@ -351,19 +352,7 @@ public:
         }
     }
 
-    /* Implicitly convert a string literal into a py::ByteArray object.  Note that this
-    interprets the string as raw binary data rather than text, and it automatically
-    excludes the terminating null byte.  This is primary useful for hardcoded binary
-    data, rather than as a replacement for py::Str. */
-    template <size_t N>
-    ByteArray(const char (&string)[N]) : Base(
-        PyByteArray_FromStringAndSize(string, N - 1),
-        stolen_t{}
-    ) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
+
 
     /* Get a bytes representation of a Python object that implements the buffer
     protocol. */
@@ -496,6 +485,48 @@ public:
     BERTRAND_METHOD([[nodiscard]], zfill, const)
 
 };
+
+
+template <std::convertible_to<size_t> T>
+struct __init__<ByteArray, T>                               : Returns<ByteArray> {
+    static auto operator()(size_t size) {
+        PyObject* result = PyByteArray_FromStringAndSize(nullptr, size);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<ByteArray>(result);
+    }
+};
+template <>
+struct __init__<ByteArray>                                  : Returns<ByteArray> {
+    static auto operator()() { return ByteArray(0); }
+};
+
+
+template <size_t N>
+struct __init__<ByteArray, char[N]>                         : Returns<ByteArray> {
+    static auto operator()(const char (&string)[N]) {
+        PyObject* result = PyByteArray_FromStringAndSize(string, N - 1);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<ByteArray>(result);
+    }
+};
+
+
+template <>
+struct __init__<ByteArray, const char*>                     : Returns<ByteArray> {
+    static auto operator()(const char* string) {
+        PyObject* result = PyByteArray_FromStringAndSize(string, strlen(string));
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<ByteArray>(result);
+    }
+};
+
+
 
 
 namespace ops {

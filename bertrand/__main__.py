@@ -4,7 +4,7 @@ import argparse
 
 
 from . import __version__
-from .setup_helpers import quick_include
+from .setuptools import quick_include
 
 
 # TODO: Add linker options to `python -m bertrand -I` for pcre2, cpptrace, and googletest
