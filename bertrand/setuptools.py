@@ -1,19 +1,41 @@
-"""Build tools for bertrand-enabled C++ extensions.
-"""
-# pylint: disable=unused-argument
-import json
-import os
+"""Build tools for bertrand-enabled C++ extensions."""
+import datetime
 import re
+import shutil
 import subprocess
 import sys
 import sysconfig
 from pathlib import Path
+import platform
 from typing import Any
 
 import numpy
 import pybind11
 from pybind11.setup_helpers import Pybind11Extension
 from pybind11.setup_helpers import build_ext as pybind11_build_ext
+import setuptools  # type: ignore
+
+
+# TODO: I could theoretically use a build system like the following:
+
+# pip install bertrand
+# cd my_project
+# bertrand install
+
+# -> That would locally install a compatible C++ compiler, Ninja, CMake, and Python,
+# then build the project with the necessary configuration.  Since all build steps are
+# centralized through Python, I probably wouldn't even need to interfere with the
+# user's environment, except for running update-alternatives for the python version.
+
+# This is modeled off the way conan is installed, which is about as simple as C++
+# package management can get.
+
+
+
+# TODO: add conan integrations so that C++ dependencies can be installed automatically
+# as part of setup.py, just like pip dependencies.  This would simplify the installation
+# of most projects to just pip install pkg
+
 
 
 # TODO: list cpptrace, pcre2, googletest version #s explicitly here?
@@ -77,25 +99,31 @@ class Extension(Pybind11Extension):
     ----------
     *args, **kwargs : Any
         Arbitrary arguments passed to the Pybind11Extension constructor.
+    conan : list[str], optional
+        A list of Conan package names to install before building the extension.
     cxx_std : int, default 20
         The C++ standard to use when compiling the extension.  Values less than 20 will
         raise a ValueError.
-    clangd : bool, default True
-        If true, include the source file in a compile_commands.json file that is
-        emitted for use with clangd and related tools, which provide code completion
-        and other features.
+    traceback : bool, default True
+        If set to false, add `BERTRAND_NO_TRACEBACK` to the compile definitions, which
+        will disable cross-language tracebacks for the extension.
+    extra_cmake_args : dict[str, Any], optional
+        Additional arguments to pass to the Extension's CMake configuration.  These are
+        emitted as key-value pairs into a `set_target_properties()` block in the
+        generated CMakeLists.txt file.  Some options are filled in by default,
+        including `PREFIX`, `LIBRARY_OUTPUT_DIRECTORY`, `LIBRARY_OUTPUT_NAME`,
+        `SUFFIX`, `CXX_STANDARD`, and `CXX_STANDARD_REQUIRED`.
     """
 
-    CMAKE_MIN_VERSION = "3.28" # CMake 3.28+ is necessary for C++20 module support
-    MODULE_REGEX = re.compile(r"\s*export\s+module\s+(\w+)", re.MULTILINE)
+    MODULE_REGEX = re.compile(r"\s*export\s+module\s+(\w+).*;", re.MULTILINE)
 
     def __init__(
         self,
         *args: Any,
+        executable: bool = False,
         cxx_std: int = 23,
-        clangd: bool = True,
         traceback: bool = True,
-        cmake_args: dict[str, Any] | None = None,
+        extra_cmake_args: dict[str, Any] | None = None,
         **kwargs: Any
     ) -> None:
         if cxx_std < 23:
@@ -104,105 +132,98 @@ class Extension(Pybind11Extension):
             )
 
         super().__init__(*args, **kwargs)
+        self.executable = executable
         self.cxx_std = cxx_std
-        self.clangd = clangd
+        self.traceback = traceback
+        self.extra_cmake_args = extra_cmake_args or {}
+
         self.include_dirs.append(get_include())
         self.include_dirs.append(numpy.get_include())
-        self.cmake_args = cmake_args or {}
-        if traceback:
+        if self.traceback:
             self.extra_compile_args.append("-g")
             self.extra_link_args.append("-g")
         else:
-            self.extra_compile_args.append("-DBERTRAND_NO_TRACEBACK")
-            self.extra_link_args.append("-DBERTRAND_NO_TRACEBACK")
+            self.define_macros.append("BERTRAND_NO_TRACEBACK")
 
-    def exports_module(self, source: Path) -> bool:
-        """Checks whether the given source file exports a module by searching for an
-        `export module` declaration.
-
-        Parameters
-        ----------
-        source : Path
-            The path to the source file to check.
-
-        Returns
-        -------
-        bool
-            True if the source file exports a module, False otherwise.
-        """
-        with source.open("r") as file:
-            return bool(self.MODULE_REGEX.search(file.read()))
-
-    def build_cmakelists(
+    def add_to_cmakelists(
         self,
-        file: Path,
-        debug: bool,
-        include_dirs: list[str],
-        library_dirs: list[str],
-        libraries: list[str],
+        cmakelists: Path,
+        build_dir: Path,
+        module_cache: dict[str, bool],
+        conan: list[tuple[str, str, str]]
     ) -> None:
         """Generate a temporary CMakeLists.txt that configures the extension for
         building with CMake.
 
         Parameters
         ----------
-        file : Path
-            The path to the generated CMakeLists.txt file.
-        debug : bool
-            If true, set --config=Debug when invoking CMake.  Otherwise, use Release.
-        include_dirs : list[str]
-            Additional include directories to pass to the compiler.  These are set in
-            the build_ext command and must be passed to CMake as well.
-        library_dirs : list[str]
-            Additional library directories to pass to the linker.  These are set in the
-            build_ext command and must be passed to CMake as well.
-        libraries : list[str]
-            Additional libraries to link against.  These are set in the build_ext
-            command and must be passed to CMake as well.
+        cmakelists : Path
+            The (current) path to the generated CMakeLists.txt file.
+        build_dir : Path
+            The path to the build directory for the extension.
+        module_cache : dict[str, bool]
+            A dictionary that caches whether each source file exports a module.  If the
+            same source is used across multiple extensions, this will prevent duplicate
+            scans.
+        conan : list[tuple[str, str, str]]
+            A list of Conan packages to link against when building the extension.
         """
-        file.touch(exist_ok=True)
-        with file.open("w") as f:
-            f.write(f"cmake_minimum_required(VERSION {self.CMAKE_MIN_VERSION})\n")
-            f.write(f"project({self.name} LANGUAGES CXX)\n")
-            f.write(f"set(CMAKE_CXX_STANDARD {self.cxx_std})\n")
-            f.write("set(CMAKE_CXX_STANDARD_REQUIRED ON)\n")
-            f.write(f"set(CMAKE_LIBRARY_OUTPUT_DIRECTORY {file.parent})\n")
-            f.write(f"set(CMAKE_BUILD_TYPE {'Debug' if debug else 'Release'})\n")
-            f.write(f"set(PYTHON_EXECUTABLE {sys.executable})\n")
-            f.write("set(CMAKE_CXX_EXTENSIONS OFF)\n")
-            f.write("set(CMAKE_CXX_SCAN_FOR_MODULES ON)\n")
-            for key, value in self.cmake_args.items():
-                f.write(f"set({key} {value})\n")
-
-            f.write(f"add_library({self.name} MODULE\n")
+        with cmakelists.open("a") as f:
+            if self.executable:
+                f.write(f"add_executable({self.name}\n")
+            else:
+                f.write(f"add_library({self.name} MODULE\n")
+            # TODO: add sources related to built-in bertrand modules
             for source in self.sources:
                 f.write(f"    {ROOT / source}\n")
             f.write(")\n")
 
             f.write(f"set_target_properties({self.name} PROPERTIES\n")
             f.write( "    PREFIX \"\"\n")
-            f.write(f"    LIBRARY_OUTPUT_NAME {self.name}\n")
-            f.write(f"    SUFFIX {sysconfig.get_config_var('EXT_SUFFIX')}\n")
+            f.write(f"    OUTPUT_NAME {self.name}\n")
+            if not self.executable:
+                f.write(f"    LIBRARY_OUTPUT_DIRECTORY {build_dir}")
+                f.write(f"    SUFFIX {sysconfig.get_config_var('EXT_SUFFIX')}\n")
+            f.write(f"    CXX_STANDARD {self.cxx_std}\n")
+            f.write( "    CXX_STANDARD_REQUIRED ON\n")
+            for key, value in self.extra_cmake_args.items():
+                f.write(f"    {key} {value}\n")
             f.write(")\n")
 
-            _include_dirs = include_dirs + self.include_dirs
-            if _include_dirs:
+            modules = []
+            for source in self.sources:
+                if source not in module_cache:
+                    with Path(ROOT / source).open("r", encoding="utf_8") as s:
+                        module_cache[source] = bool(self.MODULE_REGEX.search(s.read()))
+                if module_cache[source]:
+                    modules.append(source)
+
+            if modules:
+                f.write(f"target_sources({self.name} PRIVATE\n")
+                f.write( "    FILE_SET CXX_MODULES\n")
+                f.write(f"    BASE_DIRS {ROOT}\n")
+                f.write( "    FILES\n")
+                for source in modules:
+                    f.write(f"        {ROOT / source}\n")
+                f.write(")\n")
+
+            if self.include_dirs:
                 f.write(f"target_include_directories({self.name} PRIVATE\n")
-                for include in _include_dirs:
+                for include in self.include_dirs:
                     f.write(f"    {include}\n")
                 f.write(")\n")
 
-            _lib_dirs = library_dirs + self.library_dirs
-            if _lib_dirs:
+            if self.library_dirs:
                 f.write(f"target_link_directories({self.name} PRIVATE\n")
-                for lib_dir in _lib_dirs:
+                for lib_dir in self.library_dirs:
                     f.write(f"    {lib_dir}\n")
                 f.write(")\n")
 
-            _libraries = libraries + self.libraries
-            if _libraries:
+            if self.libraries or conan:
                 f.write(f"target_link_libraries({self.name} PRIVATE\n")
-                for lib in _libraries:
+                for package in conan:
+                    f.write(f"    {package[2]}\n")
+                for lib in self.libraries:
                     f.write(f"    {lib}\n")
                 f.write(")\n")
 
@@ -228,131 +249,329 @@ class Extension(Pybind11Extension):
                         f.write(f"    {define}\n")
                 f.write(")\n")
 
-            f.write(
-                f"target_sources({self.name} PRIVATE FILE_SET CXX_MODULES "
-                f"BASE_DIRS {ROOT} FILES\n"
-            )
-            for source in self.sources:
-                if self.exports_module(Path(ROOT / source)):
-                    f.write(f"    {ROOT / source}\n")
-            f.write(")\n")
 
-    def build(
+class BuildExt(pybind11_build_ext):
+    """A custom build_ext command that uses CMake to build extensions with support for
+    C++20 modules, parallel builds, clangd, executable targets, and bertrand's core
+    dependencies without any extra configuration.
+    """
+
+    CMAKE_MIN_VERSION = "3.28" # CMake 3.28+ is necessary for C++20 module support
+    user_options = pybind11_build_ext.user_options + [
+        (
+            "workers=",
+            "j",
+            "The number of parallel workers to use when building CMake extensions"
+        )
+    ]
+
+    def __init__(
         self,
-        build_dir: Path,
-        debug: bool,
-        include_dirs: list[str],
-        library_dirs: list[str],
-        libraries: list[str],
+        *args: Any,
+        conan: list[tuple[str, str, str]] | None = None,
+        workers: int | None = None,
+        **kwargs: Any
     ) -> None:
-        """Build the extension in the given directory, using CMake as the backend.
+        """Initialize the build extensions command.
 
         Parameters
         ----------
-        build_dir : Path
-            The directory in which to build the extension.
-        debug : bool
-            If true, set --config=Debug when invoking CMake.  Otherwise, use Release.
-        include_dirs : list[str]
-            Additional include directories to pass to the compiler.  These are set in
-            the build_ext command and must be passed to CMake as well.
-        library_dirs : list[str]
-            Additional library directories to pass to the linker.  These are set in the
-            build_ext command and must be passed to CMake as well.
-        libraries : list[str]
-            Additional libraries to link against.  These are set in the build_ext
-            command and must be passed to CMake as well.
+        *args : Any
+            Arbitrary positional arguments passed to the parent class.
+        workers : int, default 0
+            The number of parallel workers to use when building the extensions.  If set
+            to 0, then the build will be single-threaded.
+        **kwargs : Any
+            Arbitrary keyword arguments passed to the parent class.
         """
-        build_dir.mkdir(parents=True, exist_ok=True)
-        cmakelists = build_dir / "CMakeLists.txt"
-        self.build_cmakelists(
-            cmakelists,
-            debug,
-            include_dirs,
-            library_dirs,
-            libraries,
-        )
+        super().__init__(*args, **kwargs)
+        self.conan = conan or []
+        self.workers = workers
+
+    def finalize_options(self) -> None:
+        """Extract the number of parallel workers from the setup() call.
+
+        Raises
+        ------
+        ValueError
+            If the workers option is not set to a positive integer.
+        """
+        super().finalize_options()
+        if self.workers is not None:
+            try:
+                self.workers = int(self.workers)
+            except ValueError as e:
+                raise ValueError("workers must be set to an integer") from e
+
+            if self.workers < 1:
+                raise ValueError("workers must be set to a positive integer")
+
+    def init_cmakelists(self) -> Path:
+        """Create and initialize a CMakeLists.txt file for the entire project.
+
+        Returns
+        -------
+        Path
+            The path to the generated CMakeLists.txt file, for further processing.
+        """
+        file = Path(self.build_lib).absolute() / "CMakeLists.txt"
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.touch(exist_ok=True)
+
+        with file.open("w") as f:
+            f.write(f"cmake_minimum_required(VERSION {self.CMAKE_MIN_VERSION})\n")
+            f.write(f"project({self.distribution.get_name()} LANGUAGES CXX)\n")
+            f.write(f"set(CMAKE_BUILD_TYPE {'Debug' if self.debug else 'Release'})\n")
+            f.write(f"set(PYTHON_EXECUTABLE {sys.executable})\n")
+            f.write("set(CMAKE_COLOR_DIAGNOSTICS ON)\n")
+            f.write("set(CMAKE_CXX_SCAN_FOR_MODULES ON)\n")
+            f.write("set(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n")
+
+            conan_build_dir = Path(self.build_lib).absolute() / "build"
+            conan_build_dir /= "Debug" if self.debug else "Release"
+            # f.write(f"list(APPEND CMAKE_PREFIX_PATH {conan_build_dir})\n")
+            f.write(f"include({conan_build_dir}/generators/conan_toolchain.cmake)\n")
+            for package in self.conan:
+                f.write(f"find_package({package[1]} REQUIRED)\n")
+
+            if self.compiler.include_dirs:
+                f.write("include_directories(\n")
+                for include in self.compiler.include_dirs:
+                    f.write(f"    {include}\n")
+                f.write(")\n")
+
+            if self.compiler.library_dirs:
+                f.write("link_directories(\n")
+                for lib_dir in self.compiler.library_dirs:
+                    f.write(f"    {lib_dir}\n")
+                f.write(")\n")
+
+            f.write("link_libraries(\n")
+            f.write(f"    python{sysconfig.get_python_version()}\n")
+            if self.compiler.libraries:
+                for lib in self.compiler.libraries:
+                    f.write(f"    {lib}\n")
+            f.write(")\n")
+
+        return file
+
+    def init_conanfile(self) -> Path | None:
+        """Create and initialize a conanfile.txt file listing global C++ dependencies
+        for the entire project.
+
+        Returns
+        -------
+        Path
+            The path to the generated conanfile.txt file, for further processing.
+
+        Raises
+        ------
+        ValueError
+            If the conan packages are not specified as 3-tuples of strings.
+        """
+        if not self.conan:
+            return None
+
+        file = Path(self.build_lib).absolute() / "conanfile.txt"
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.touch(exist_ok=True)
+        with file.open("w") as f:
+            f.write("[requires]\n")
+            for package in self.conan:
+                if (
+                    not isinstance(package, tuple) or
+                    not all(isinstance(p, str) for p in package) or
+                    len(package) != 3
+                ):
+                    raise ValueError(
+                        "conan dependencies must be specified as 3-tuples of the form:\n"
+                        "    (requires, find_package, link_target)\n"
+                        "e.g.:\n"
+                        "    ('zlib/1.2.11', 'ZLIB', 'ZLIB::ZLIB')"
+                    )
+                f.write(f"{package[0]}\n")
+            f.write("\n")
+
+            f.write("[generators]\n")
+            f.write("CMakeDeps\n")
+            f.write("CMakeToolchain\n")
+            f.write("\n")
+
+            f.write("[layout]\n")
+            f.write("cmake_layout")
+
+        return file
+
+    def conan_install(self, conanfile: Path) -> None:
+        """Initialize a Conan profile for the current build environment, which uses the
+        same compiler and settings as the Python interpreter.
+
+        Parameters
+        ----------
+        conanfile : Path
+            The path to the conanfile.txt file that lists the global C++ dependencies for
+            the project.
+        """
+        timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        name = f"{self.distribution.get_name()}{timestamp}"
+        profile = Path.home() / f".conan2/profiles/{name}"
+        profile.parent.mkdir(parents=True, exist_ok=True)
+        profile.touch(exist_ok=True)
 
         try:
+
+            with profile.open("w") as f:
+                f.write("[settings]\n")
+                f.write(f"os={platform.system()}\n")
+                f.write(f"arch={platform.machine()}\n")
+                f.write(f"build_type={'Debug' if self.debug else 'Release'}\n")
+                f.write(f"compiler={sysconfig.get_config_var('CC')}\n")
+                f.write("compiler.cppstd=23\n")  # TODO: find a better way to get this
+                f.write(f"compiler.libcxx=libstdc++\n")  # TODO: get libcxx version?
+                f.write(f"compiler.version=14\n")  # TODO: get compiler version number?
+
+                f.write("[buildenv]\n")
+                f.write(f"CC={sysconfig.get_config_var('CC')}\n")
+                f.write(f"CXX={sysconfig.get_config_var('CXX')}\n")
+                f.write(f"CFLAGS={sysconfig.get_config_var('CFLAGS')}\n")
+                f.write("CONAN_CMAKE_GENERATOR=Ninja\n")
+
             subprocess.check_call(
-                ["cmake", "-G", "Ninja", str(build_dir)],
-                cwd=build_dir,
-            )
-            subprocess.check_call(
-                ["cmake", "--build", ".", "--config", "Debug" if debug else "Release"],
-                cwd=build_dir,
+                [
+                    "conan",
+                    "install",
+                    str(conanfile),
+                    "--build=missing",
+                    f"--output-folder={conanfile.parent}",
+                    f"--profile={profile.name}",
+                    "-verror",
+                ],
+                cwd=conanfile.parent
             )
         except subprocess.CalledProcessError as e:
-            print(e.stderr)
-
-
-class BuildExt(pybind11_build_ext):
-    """A custom build_ext command that uses CMake to build the extensions with C++20
-    module support and optionally emits a compile_commands.json file for use with
-    clangd and related tools.
-    """
+            if e.stderr:
+                print(e.stderr)
+        finally:
+            profile.unlink()
 
     def build_extensions(self) -> None:
         """Build all extensions in the project."""
-        # super().build_extensions()  # TODO: break in case of emergency
         self.check_extensions_list(self.extensions)
-        cwd = Path(os.getcwd()).absolute()
 
+        conanfile = self.init_conanfile()
+        if conanfile:
+            self.conan_install(conanfile)
+
+        call_cmake = False
+        cmakelists = self.init_cmakelists()
+        module_cache: dict[str, bool] = {}
         for ext in self.extensions:
             if isinstance(ext, Extension):
-                ext.build(
-                    (ROOT / self.get_ext_fullpath(ext.name)).parent,
-                    self.debug,
-                    self.compiler.include_dirs,
-                    self.compiler.library_dirs,
-                    self.compiler.libraries,
-                )
+                call_cmake = True
+                build_dir = Path(ROOT / self.get_ext_fullpath(ext.name)).parent
+                ext.add_to_cmakelists(cmakelists, build_dir, module_cache, self.conan)
             else:
                 super().build_extension(ext)
 
-        self.build_compile_commands(cwd)
+        config_args = [
+            "cmake",
+            "-G",
+            "Ninja",
+            str(cmakelists.parent)
+        ]
+        build_args = [
+            "cmake",
+            "--build",
+            ".",
+            "--config",
+            "Debug" if self.debug else "Release"
+        ]
+        if self.workers:
+            build_args += ["--parallel", str(self.workers)]
 
-    def build_compile_commands(self, cwd: Path) -> None:
-        """For each Extension that defines `clangd=True`, emit the command that was
-        used to build it into a compile_commands.json file, which is discoverable by
-        clangd and related tools.
-        
+        if call_cmake:
+            try:
+                subprocess.check_call(config_args, cwd=cmakelists.parent)
+                subprocess.check_call(build_args, cwd=cmakelists.parent)
+            except subprocess.CalledProcessError as e:
+                if e.stderr:
+                    print(e.stderr)
+
+            shutil.move(
+                cmakelists.parent / "compile_commands.json",
+                ROOT / "compile_commands.json"
+            )
+
+    def get_ext_filename(self, fullname: str) -> str:
+        """Format the filename of the extension module.
+
         Parameters
         ----------
-        cwd : Path
-            The current working directory in which to place the generated file.  This
-            is usually the same directory as the build script, which is assumed to be
-            the root of the project's source tree.
+        fullname : str
+            The name of the extension module.
+
+        Returns
+        -------
+        str
+            The formatted filename of the build product (either a shared library or an
+            executable).  If the extension is an executable, the name is returned
+            directly.  Otherwise, it will be decorated with a shared library extension
+            based on the platform, like normal.
+
+        Notes
+        -----
+        Overriding this method is required to allow setuptools to correctly copy the
+        build products out of the build directory without errors.
         """
-        commands = []
-        for ext in self.extensions:
-            if isinstance(ext, Extension) and not ext.clangd:
-                continue
+        ext = self.ext_map[fullname]
+        if getattr(ext, "executable", False):
+            return ext.name
+        return super().get_ext_filename(fullname)
 
-            for source in ext.sources:
-                include_dirs = self.compiler.include_dirs + ext.include_dirs
-                library_dirs = self.library_dirs + ext.library_dirs
-                libraries = self.libraries + ext.libraries
-                link_options = [sysconfig.get_config_var("LDFLAGS")] + ext.extra_link_args
-                commands.append({
-                    "directory": str(cwd),
-                    "file": source,
-                    "command": " ".join(
-                        self.compiler.compiler_so +
-                        ["-I" + header for header in include_dirs] +
-                        ["-L" + lib_dir for lib_dir in library_dirs] +
-                        ["-l" + lib for lib in libraries] +
-                        [
-                            f"-D{define[0]}={define[1]}" if isinstance(define, tuple)
-                            else f"-D{define}"
-                            for define in ext.define_macros
-                        ] +
-                        ext.extra_compile_args +
-                        link_options +
-                        ["-DLINTER"]
-                    ),
-                })
 
-        if commands:
-            with (cwd / "compile_commands.json").open("w") as file:
-                json.dump(commands, file, indent=4)
+def setup(
+    *args: Any,
+    cmdclass: dict[str, Any] | None = None,
+    conan: list[tuple[str, str, str]] | None = None,
+    workers: int | None = None,
+    **kwargs: Any
+) -> None:
+    """A custom setup() function that automatically appends the BuildExt command to the
+    setup commands.
+
+    Parameters
+    ----------
+    *args : Any
+        Arbitrary positional arguments passed to the setuptools.setup() function.
+    cmdclass : dict[str, Any] | None, default None
+        A dictionary of command classes to override the default setuptools commands.
+        If no setting is given for "build_ext", then it will be set to
+        bertrand.setuptools.BuildExt.
+    conan : list[tuple[str, str, str]] | None, default None
+        A list of C++ dependencies to install before building the extensions.  Each
+        dependency should be specified as a 3-tuple of strings, where the first is the
+        package name and optional version number, the second is the name passed to the
+        CMake find_package() command, and the third is the link target name, which is
+        supplied to the target_link_libraries() command in CMake.  These identifiers
+        can be found by running `conan search ${package_name}` or by browsing
+        ConanCenter.io.
+    workers : int | None, default None
+        The number of parallel workers to use when building extensions.  If set to
+        None, then the build will be single-threaded.  This can also be set through
+        the command line by supplying either `--workers=NUM` or `-j NUM`.
+    **kwargs : Any
+        Arbitrary keyword arguments passed to the setuptools.setup() function.
+    """
+    class BuildExtensions(BuildExt):
+        """A private subclass of BuildExt that captures the number of workers to use
+        from the setup() call.
+        """
+        def __init__(self, *a: Any, **kw: Any):
+            super().__init__(*a, conan=conan, workers=workers, **kw)
+
+    if cmdclass is None:
+        cmdclass = {"build_ext": BuildExtensions}
+    elif "build_ext" not in cmdclass:
+        cmdclass["build_ext"] = BuildExtensions
+
+    setuptools.setup(*args, cmdclass=cmdclass, **kwargs)

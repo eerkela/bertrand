@@ -50,6 +50,30 @@ namespace bertrand {
 namespace py {
 
 
+/* A static guard that initializes and uninitializes the Python interpreter
+automatically when bertrand/python.h is imported.  Allows use of static initialization
+without segfaulting. */
+struct Interpreter {
+    Interpreter() {
+        if (!Py_IsInitialized()) {
+            Py_Initialize();
+        }
+    }
+
+    ~Interpreter() {
+        if (Py_IsInitialized()) {
+            Py_Finalize();
+        }
+    }
+};
+
+
+/* Global interpreter object.  Subinterpreters may be spawned, but this interpreter
+must always exist before initializing any Python objects to allow for static storage
+duration. */
+static Interpreter interpreter;
+
+
 ///////////////////////////////////////
 ////    INHERITED FROM PYBIND11    ////
 ///////////////////////////////////////

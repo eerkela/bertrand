@@ -2,10 +2,10 @@
 requires = [
     "setuptools>=42",
     "wheel",
+    "cmake>=3.28",
+    "conan>=2.0.0",
     "pybind11>=2.6.1",
-    "cython >= 3.0.0",
-    "cmake>=3.18",
-    "numpy"
+    "numpy",
 ]
 build-backend = "setuptools.build_meta:__legacy__"
 
@@ -17,8 +17,8 @@ bertrand = ["py.typed"]
 
 [project]
 name = "bertrand"
-version = "0.5.1"
-description = "flexible type extensions for pandas"
+version = "0.0.1"
+description = "(in development) Type-safe language bindings for Python/C++"
 authors = [
     { name="Eric Erkela", email="eerkela42@gmail.com" }
 ]
@@ -27,7 +27,7 @@ license = { file = "LICENSE"}
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Cython",
+    "Programming Language :: C++",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: Utilities",
@@ -57,6 +57,7 @@ keywords = [
     "ETL",
 ]
 dependencies = [
+    "conan",
     "numpy",
     "pandas >= 2.0.0",
     "pyarrow",

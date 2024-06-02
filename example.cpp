@@ -110,6 +110,9 @@ void run() {
 
     py::print(add(4, 5));
 
+
+    // py::Bool x = 2.5;
+
     // py::Set a = {1, 2, 3};
     // py::Set b("abc");
     // py::print(a);
@@ -996,8 +999,6 @@ void run() {
 }
 
 
-
-
 static const py::Function func(
     "example",
     [](
@@ -1015,4 +1016,9 @@ BERTRAND_MODULE(example, m) {
     m.attr<"__doc__">() = "bertrand example plugin";
     m.attr<"func">() = func;
     m.def("run", "example function to demonstrate bertrand", &run);
+}
+
+
+int main() {
+    run();
 }
