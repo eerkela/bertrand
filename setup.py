@@ -1,11 +1,5 @@
 """Setup script for Bertrand."""
-from pathlib import Path
-import os
-import subprocess
-import sys
-from typing import Any
-
-from bertrand import Extension, BuildExt, setup
+from bertrand import Extension, setup
 
 
 # NOTE: C++ users have to execute $(python3 -m bertrand -I) to compile against bertrand.h
@@ -207,6 +201,15 @@ Clang:
 # -Werror=format-security
 # -Wdate-time
 # -D_FORTIFY_SOURCE=2
+
+
+
+# TODO: subclass the normal BuildExt class to install the necessary compilers before
+# any extensions?  Or I can distribute a second bertrand-setup package that automates
+# this.  It could also maybe just be a shell script
+
+
+
 
 
 EXTENSIONS = [
