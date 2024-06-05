@@ -72,6 +72,9 @@ dependencies = [
 ]
 requires-python = ">=3.9"
 
+[project.scripts]
+bertrand = "bertrand.__main__:main"
+
 [project.optional-dependencies]
 dev = [
     "black",
@@ -87,8 +90,10 @@ dev = [
     "sphinx_rtd_theme",
     "sphinx-tabs",
     "sphinx-togglebutton",
+    "types-beautifulsoup4",
     "types-python-dateutil",
     "types-pytz",
+    "types-requests",
     "types-regex",
     "types-tqdm",
     "types-tzlocal",
