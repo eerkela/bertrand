@@ -58,6 +58,7 @@ keywords = [
 ]
 dependencies = [
     "conan",
+    "beautifulsoup4",
     "numpy",
     "pandas >= 2.0.0",
     "pyarrow",
@@ -65,6 +66,8 @@ dependencies = [
     "python-dateutil",
     "pytz",
     "regex",
+    "requests",
+    "setuptools",
     "tzlocal",
 ]
 requires-python = ">=3.9"
@@ -74,8 +77,7 @@ dev = [
     "black",
     "bumpver",
     "cibuildwheel",
-    "cmake>=3.18",
-    "cython >= 3.0.0",
+    "cmake>=3.28",
     "mypy",
     "pandas-stubs",
     "pylint",
@@ -88,6 +90,7 @@ dev = [
     "types-python-dateutil",
     "types-pytz",
     "types-regex",
+    "types-tqdm",
     "types-tzlocal",
 ]
 

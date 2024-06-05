@@ -6,15 +6,19 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import time
 import tomllib
 from pathlib import Path
-from tqdm import tqdm
 from urllib.request import urlretrieve
 
-from . import __version__
-from .setuptools import quick_include
+import requests
+from bs4 import BeautifulSoup
+from tqdm import tqdm
+
+from bertrand import __version__
+# from bertrand.setuptools import quick_include
 
 
 class Environment:
@@ -52,8 +56,61 @@ class Environment:
             else:
                 self.pbar.close()
 
-    # TODO: ping each of these urls to make sure they are valid before proceeding with
-    # installation (which can take a long time)
+    @staticmethod
+    def get_gcc_version(version: str) -> str:
+        """Parse the version specifier for the GCC compiler.
+
+        Parameters
+        ----------
+        version : str
+            The version specifier to parse.
+
+        Returns
+        -------
+        str
+            The version of GCC to download.
+
+        Raises
+        ------
+        ValueError
+            If the version number was invalid or could not be detected.
+        """
+        if version == "latest":
+            url = "https://gcc.gnu.org/releases.html"
+            response = requests.get(url, timeout=30)
+            soup = BeautifulSoup(response.text, "html.parser")
+            pattern = re.compile(
+                r"GCC (?P<major>\d+)\.(?P<minor>\d+)(\.(?P<patch>\d+))?"
+            )
+            versions: list[tuple[int, int, int]] = []
+            for link in soup.find_all("a"):
+                regex = pattern.match(link.text)
+                if regex:
+                    versions.append((
+                        int(regex.group("major")),
+                        int(regex.group("minor")),
+                        int(regex.group("patch") or 0)
+                    ))
+            if not versions:
+                raise ValueError(
+                    "Could not detect latest GCC version.  Please specify a version "
+                    "number manually."
+                )
+            versions.sort(reverse=True)
+            version = ".".join(map(str, versions[0]))
+
+        regex = Environment.SEMVER_REGEX.match(version)
+        if not regex:
+            raise ValueError(
+                "Invalid GCC version.  Must be set to 'latest' or a version specifier "
+                "of the form 'X.Y.Z'."
+            )
+
+        major, _, _ = regex.groups()
+        if int(major) < 14:
+            raise ValueError("GCC version must be 14 or greater.")
+
+        return version
 
     @staticmethod
     def get_gcc_url(version: str) -> str:
@@ -64,25 +121,77 @@ class Environment:
         version : str
             The version of GCC to download.
 
-        Raises
-        ------
-        ValueError
-            If the GCC version is not in the form 'X.Y.Z' or is less than 14.
-
         Returns
         -------
         str
             The URL for the specified GCC version.
+
+        Raises
+        ------
+        ValueError
+            If the version number could not be found.
         """
+        result = f"https://ftpmirror.gnu.org/gnu/gcc/gcc-{version}/gcc-{version}.tar.xz"
+        response = requests.head(result, timeout=30, allow_redirects=True)
+        if response.status_code >= 400:
+            raise ValueError(f"GCC version {version} not found.")
+        return result
+
+    @staticmethod
+    def get_clang_version(version: str) -> str:
+        """Parse the version specifier for the Clang compiler.
+
+        Parameters
+        ----------
+        version : str
+            The version specifier to parse.
+
+        Returns
+        -------
+        str
+            The version of Clang to download.
+
+        Raises
+        ------
+        ValueError
+            If the version number was invalid or could not be detected.
+        """
+        if version == "latest":
+            url = "https://github.com/llvm/llvm-project/releases"
+            response = requests.get(url, timeout=30)
+            soup = BeautifulSoup(response.text, "html.parser")
+            pattern = re.compile(
+                r"LLVM (?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)(-rc(?P<candidate>\d+))?"
+            )
+            versions: list[tuple[int, int, int]] = []
+            for link in soup.find_all("a"):
+                regex = pattern.match(link.text)
+                if regex and not regex.group("candidate"):
+                    versions.append((
+                        int(regex.group("major")),
+                        int(regex.group("minor")),
+                        int(regex.group("patch")),
+                    ))
+            if not versions:
+                raise ValueError(
+                    "Could not detect latest CMake version.  Please specify a version "
+                    "number manually."
+                )
+            versions.sort(reverse=True)
+            version = ".".join(map(str, versions[0]))
+
         regex = Environment.SEMVER_REGEX.match(version)
         if not regex:
-            raise ValueError("Invalid GCC version.  Must be in the form 'X.Y.Z'.")
+            raise ValueError(
+                "Invalid Clang version.  Must be set to 'latest' or a version "
+                "specifier of the form 'X.Y.Z'."
+            )
 
         major, _, _ = regex.groups()
-        if int(major) < 14:
-            raise ValueError("GCC version must be 14 or greater.")
+        if int(major) < 18:
+            raise ValueError("Clang version must be 18 or greater.")
 
-        return f"https://ftpmirror.gnu.org/gnu/gcc/gcc-{version}/gcc-{version}.tar.xz"
+        return version
 
     @staticmethod
     def get_clang_url(version: str) -> str:
@@ -93,25 +202,77 @@ class Environment:
         version : str
             The version of Clang to download.
 
-        Raises
-        ------
-        ValueError
-            If the Clang version is not in the form 'X.Y.Z' or is less than 18.
-
         Returns
         -------
         str
             The URL for the specified Clang version.
+
+        Raises
+        ------
+        ValueError
+            If the version number could not be found.
         """
+        result = f"https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-{version}.tar.gz"
+        response = requests.head(result, timeout=30, allow_redirects=True)
+        if response.status_code >= 400:
+            raise ValueError(f"Clang version {version} not found.")
+        return result
+
+    @staticmethod
+    def get_ninja_version(version: str) -> str:
+        """Parse the version specifier for the Ninja generator.
+
+        Parameters
+        ----------
+        version : str
+            The version specifier to parse
+
+        Returns
+        -------
+        str
+            The version of Ninja to download.
+
+        Raises
+        ------
+        ValueError
+            If the version number was invalid or could not be detected.
+        """
+        if version == "latest":
+            url = "https://github.com/ninja-build/ninja/releases"
+            response = requests.get(url, timeout=30)
+            soup = BeautifulSoup(response.text, "html.parser")
+            pattern = re.compile(
+                r"v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
+            )
+            versions: list[tuple[int, int, int]] = []
+            for link in soup.find_all("a"):
+                regex = pattern.match(link.text)
+                if regex:
+                    versions.append((
+                        int(regex.group("major")),
+                        int(regex.group("minor")),
+                        int(regex.group("patch"))
+                    ))
+            if not versions:
+                raise ValueError(
+                    "Could not detect latest Ninja version.  Please specify a version "
+                    "number manually."
+                )
+            versions.sort(reverse=True)
+            version = ".".join(map(str, versions[0]))
+
         regex = Environment.SEMVER_REGEX.match(version)
         if not regex:
-            raise ValueError("Invalid Clang version.  Must be in the form 'X.Y.Z'.")
+            raise ValueError(
+                "Invalid Ninja version.  Must be set to 'latest' or a version "
+                "specifier of the form 'X.Y.Z'."
+            )
 
-        major, _, _ = regex.groups()
-        if int(major) < 18:
-            raise ValueError("Clang version must be 18 or greater.")
+        major, minor, _ = regex.groups()
+        if int(major) < 1 or (int(major) == 1 and int(minor) < 11):
+            raise ValueError("Ninja version must be 1.11 or greater.")
 
-        return f"https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-{version}.tar.gz"
+        return version
 
     @staticmethod
     def get_ninja_url(version: str) -> str:
@@ -122,24 +283,77 @@ class Environment:
         version : str
             The version of Ninja to download.
 
-        Raises
-        ------
-        ValueError
-            If the Ninja version is not in the form 'X.Y.Z' or is less than 1.12.
-
         Returns
         -------
         str
             The URL for the specified Ninja version.
+
+        Raises
+        ------
+        ValueError
+            If the version number could not be found.
         """
+        result = f"https://github.com/ninja-build/ninja/archive/refs/tags/v{version}.tar.gz"
+        response = requests.head(result, timeout=30, allow_redirects=True)
+        if response.status_code >= 400:
+            raise ValueError(f"Ninja version {version} not found.")
+        return result
+
+    @staticmethod
+    def get_cmake_version(version: str) -> str:
+        """Parse the version specifier for the CMake build tool.
+
+        Parameters
+        ----------
+        version : str
+            The version specifier to parse
+
+        Returns
+        -------
+        str
+            The version of CMake to download.
+
+        Raises
+        ------
+        ValueError
+            If the version number was invalid or could not be detected.
+        """
+        if version == "latest":
+            url = "https://github.com/Kitware/CMake/releases"
+            response = requests.get(url, timeout=30)
+            soup = BeautifulSoup(response.text, "html.parser")
+            pattern = re.compile(
+                r"v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)(-rc(?P<candidate>\d+))?"
+            )
+            versions: list[tuple[int, int, int]] = []
+            for link in soup.find_all("a"):
+                regex = pattern.match(link.text)
+                if regex and not regex.group("candidate"):
+                    versions.append((
+                        int(regex.group("major")),
+                        int(regex.group("minor")),
+                        int(regex.group("patch")),
+                    ))
+            if not versions:
+                raise ValueError(
+                    "Could not detect latest CMake version.  Please specify a version "
+                    "number manually."
+                )
+            versions.sort(reverse=True)
+            version = ".".join(map(str, versions[0]))
+
         regex = Environment.SEMVER_REGEX.match(version)
         if not regex:
-            raise ValueError("Invalid Ninja version.  Must be in the form 'X.Y.Z'.")
-        major, minor, _ = regex.groups()
-        if int(major) < 1 or (int(major) == 1 and int(minor) < 11):
-            raise ValueError("Ninja version must be 1.11 or greater.")
+            raise ValueError(
+                "Invalid CMake version.  Must be set to 'latest' or a version specifier "
+                "of the form 'X.Y.Z'."
+            )
 
-        return f"https://github.com/ninja-build/ninja/archive/refs/tags/v{version}.tar.gz"
+        major, minor, _ = regex.groups()
+        if int(major) < 3 or (int(major) == 3 and int(minor) < 28):
+            raise ValueError("CMake version must be 3.28 or greater.")
+
+        return version
 
     @staticmethod
     def get_cmake_url(version: str) -> str:
@@ -150,26 +364,78 @@ class Environment:
         version : str
             The version of CMake to download.
 
-        Raises
-        ------
-        ValueError
-            If the CMake version is not in the form 'X.Y.Z' or is less than 3.28.
-
         Returns
         -------
         str
             The URL for the specified CMake version.
+
+        Raises
+        ------
+        ValueError
+            If the version number could not be found.
         """
+        result = f"https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}.tar.gz"
+        response = requests.head(result, timeout=30, allow_redirects=True)
+        if response.status_code >= 400:
+            raise ValueError(f"CMake version {version} not found.")
+        return result
+
+    @staticmethod
+    def get_python_version(version: str) -> str:
+        """Parse the version specifier for Python.
+
+        Parameters
+        ----------
+        version : str
+            The version specifier to parse
+
+        Returns
+        -------
+        str
+            The version of Python to download.
+
+        Raises
+        ------
+        ValueError
+            If the version number was invalid or could not be detected.
+        """
+        if version == "latest":
+            url = "https://www.python.org/downloads/"
+            response = requests.get(url, timeout=30)
+            soup = BeautifulSoup(response.text, "html.parser")
+            pattern = re.compile(
+                r"Python (?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
+            )
+            versions: list[tuple[int, int, int]] = []
+            for link in soup.find_all("a"):
+                regex = pattern.match(link.text)
+                if regex:
+                    versions.append((
+                        int(regex.group("major")),
+                        int(regex.group("minor")),
+                        int(regex.group("patch"))
+                    ))
+            if not versions:
+                raise ValueError(
+                    "Could not detect latest Python version.  Please specify a version "
+                    "number manually."
+                )
+            versions.sort(reverse=True)
+            version = ".".join(map(str, versions[0]))
+
         regex = Environment.SEMVER_REGEX.match(version)
         if not regex:
-            raise ValueError("Invalid CMake version.  Must be in the form 'X.Y.Z'.")
-        major, minor, _ = regex.groups()
-        if int(major) < 3 or (int(major) == 3 and int(minor) < 28):
-            raise ValueError("CMake version must be 3.28 or greater.")
+            raise ValueError(
+                "Invalid Python version.  Must be set to 'latest' or a version "
+                "specifier of the form 'X.Y.Z'."
+            )
 
-        return (
-            f"https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}.tar.gz"
-        )
+        # TODO: determine minimum version number
+        major, minor, _ = regex.groups()
+        if int(major) < 3 or (int(major) == 3 and int(minor) < 12):
+            raise ValueError("Python version must be 3.12 or greater.")
+
+        return version
 
     @staticmethod
     def get_python_url(version: str) -> str:
@@ -180,34 +446,33 @@ class Environment:
         version : str
             The version of Python to download.
 
-        Raises
-        ------
-        ValueError
-            If the Python version is not in the form 'X.Y.Z' or is less than 3.12.  # TODO: determine min version
-
         Returns
         -------
         str
             The URL for the specified Python version.
-        """
-        regex = Environment.SEMVER_REGEX.match(version)
-        if not regex:
-            raise ValueError("Invalid Python version.  Must be in the form 'X.Y.Z'.")
-        major, minor, _ = regex.groups()
-        if int(major) < 3 or (int(major) == 3 and int(minor) < 12):
-            raise ValueError("Python version must be 3.12 or greater.")
 
-        return f"https://www.python.org/ftp/python/{version}/Python-{version}.tar.xz"
+        Raises
+        ------
+        ValueError
+            If the version number could not be found.
+        """
+        result = f"https://www.python.org/ftp/python/{version}/Python-{version}.tar.xz"
+        response = requests.head(result, timeout=30, allow_redirects=True)
+        if response.status_code >= 400:
+            raise ValueError(f"Python version {version} not found.")
+        return result
 
     def __init__(
         self,
         cwd: Path,
+        name: str = "venv",
         *,
         compiler: str = "gcc",
-        compiler_version: str = "14.1.0",
-        ninja_version: str = "1.12.1",
-        cmake_version: str = "3.29.4",
-        python_version: str = "3.12.3",
+        compiler_version: str = "latest",
+        generator: str = "ninja",
+        generator_version: str = "latest",
+        cmake_version: str = "latest",
+        python_version: str = "latest",
         workers: int = 0
     ) -> None:
         self.vars = {
@@ -219,57 +484,35 @@ class Environment:
         }
 
         self.compiler = compiler
-        self.compiler_version = compiler_version
         if self.compiler == "gcc":
+            self.compiler_version = self.get_gcc_version(compiler_version)
             self.compiler_url = self.get_gcc_url(self.compiler_version)
         elif self.compiler == "clang":
+            self.compiler_version = self.get_clang_version(compiler_version)
             self.compiler_url = self.get_clang_url(self.compiler_version)
         else:
             raise ValueError("Compiler must be 'gcc' or 'clang'.")
-        self.ninja_version = ninja_version
-        self.ninja_url = self.get_ninja_url(self.ninja_version)
-        self.cmake_version = cmake_version
+
+        self.generator = generator
+        if self.generator == "ninja":
+            self.generator_version = self.get_ninja_version(generator_version)
+            self.generator_url = self.get_ninja_url(self.generator_version)
+        else:
+            raise ValueError("Generator must be 'ninja'.")
+
+        self.cmake_version = self.get_cmake_version(cmake_version)
         self.cmake_url = self.get_cmake_url(self.cmake_version)
-        self.python_version = python_version
+        self.python_version = self.get_python_version(python_version)
         self.python_url = self.get_python_url(self.python_version)
 
         self.cwd = cwd
-        self.venv = cwd / "bertrand"
+        self.venv = cwd / name
         self.bin = self.venv / "bin"
         self.include = self.venv / "include"
         self.lib = self.venv / "lib"
         self.workers = workers or os.cpu_count() or 1
         if self.workers < 1:
             raise ValueError("workers must be a positive integer.")
-
-    def clean(self) -> None:
-        """Cleans up temporary build artifacts, including environment variables and
-        source directories.
-        """
-        if self.vars["CC"] is not None:
-            os.environ["CC"] = self.vars["CC"]
-        else:
-            os.environ.pop("CC", None)
-
-        if self.vars["CXX"] is not None:
-            os.environ["CXX"] = self.vars["CXX"]
-        else:
-            os.environ.pop("CXX", None)
-
-        if self.vars["PATH"] is not None:
-            os.environ["PATH"] = self.vars["PATH"]
-        else:
-            os.environ.pop("PATH", None)
-
-        if self.vars["LIBRARY_PATH"] is not None:
-            os.environ["LIBRARY_PATH"] = self.vars["LIBRARY_PATH"]
-        else:
-            os.environ.pop("LIBRARY_PATH", None)
-
-        if self.vars["LD_LIBRARY_PATH"] is not None:
-            os.environ["LD_LIBRARY_PATH"] = self.vars["LD_LIBRARY_PATH"]
-        else:
-            os.environ.pop("LD_LIBRARY_PATH", None)
 
     def install_gcc(self) -> None:
         """Install the GCC compiler."""
@@ -327,9 +570,9 @@ class Environment:
 
     def install_ninja(self) -> None:
         """Install the ninja build system."""
-        archive = self.venv / f"ninja-{self.ninja_version}.tar.gz"
-        install = self.venv / f"ninja-{self.ninja_version}"
-        urlretrieve(self.ninja_url, archive, self.ProgressBar("Downloading Ninja"))
+        archive = self.venv / f"ninja-{self.generator_version}.tar.gz"
+        install = self.venv / f"ninja-{self.generator_version}"
+        urlretrieve(self.generator_url, archive, self.ProgressBar("Downloading Ninja"))
         with tarfile.open(archive) as tar:
             for member in tqdm(
                 tar.getmembers(),
@@ -424,13 +667,6 @@ class Environment:
         env_file : Path
             The path to the TOML file containing the environment variables.
 
-        Raises
-        ------
-        TOMLDecodeError
-            If the file is not a valid TOML file.
-        ValueError
-            If any of the variables are not strings or lists of strings.
-
         Notes
         -----
         The file should be formatted as follows:
@@ -454,78 +690,94 @@ class Environment:
         will be prepended to the current paths (if any) and joined using the system's
         path separator, which can be found by running `import os; os.pathsep` in
         Python.
+
+        If any errors are encountered while parsing the file, the program will exit
+        with a return code of 1.
         """
-        new = []
-        with env_file.open("rb") as file:
-            data = tomllib.load(file)
+        commands = []
 
-        for key, value in data.get("vars", {}).items():
-            if not isinstance(value, str):
-                raise ValueError(f"Value for {key} must be a string.")
+        # save the current environment variables
+        for key, value in os.environ.items():
+            commands.append(f"export {Environment.OLD_PREFIX}{key}=\"{value}\"")
 
+        try:
+            # read new variables from the TOML file
+            with env_file.open("rb") as file:
+                data = tomllib.load(file)
+        except Exception as error:  # pylint: disable=broad-except
+            print(error)
+            sys.exit(1)
+
+        # [vars] get exported directly
+        for key, val_str in data.get("vars", {}).items():
+            if not isinstance(val_str, str):
+                print(f"ValueError: value for {key} must be a string.")
+                sys.exit(1)
+            commands.append(f'export {key}=\"{val_str}\"')
+
+        # [paths] get appended to the existing paths if possible
+        for key, val_list in data.get("paths", {}).items():
+            if not isinstance(val_list, list) or not all(isinstance(v, str) for v in val_list):
+                print(f"ValueError: value for {key} must be a list of strings.")
+                sys.exit(1)
             if os.environ.get(key, None):
-                print(f'export {Environment.OLD_PREFIX}{key}="{os.environ[key]}"')
-
-            new.append(f'export {key}={value}')
-
-        for key, value in data.get("paths", {}).items():
-            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
-                raise ValueError(f"Value for {key} must be a list of strings.")
-
-            if os.environ.get(key, None):
-                print(f'export {Environment.OLD_PREFIX}{key}="{os.environ[key]}"')
-                fragment = os.pathsep.join([*value, os.environ[key]])
+                fragment = os.pathsep.join([*val_list, os.environ[key]])
             else:
-                fragment = os.pathsep.join(value)
+                fragment = os.pathsep.join(val_list)
+            commands.append(f'export {key}=\"{fragment}\"')
 
-            new.append(f'export {key}={fragment}')
-
-        print("\n".join(new))
+        for command in commands:
+            print(command)
 
     @staticmethod
-    def deactivate(env_file: Path) -> None:
+    def deactivate() -> None:
         """Restore the environment variables to their original state.
-
-        This method reads the environment variables from a TOML file (typically
-        bertrand/env.toml) and prints bash commands to stdout that will unset the
-        variables and restore the values from before the environment was activated.
-
-        Parameters
-        ----------
-        env_file : Path
-            The path to the TOML file containing the environment variables.
-
-        Raises
-        ------
-        TOMLDecodeError
-            If the file is not a valid TOML file.
 
         Notes
         -----
         When the activate() method is called, the environment variables are saved
         with a prefix of "_OLD_VIRTUAL_" to prevent conflicts.  This method undoes that
         by transferring the value from the prefixed variable back to the original, and
-        then clearing the prefixed variable.
+        then clearing the temporary variable.
 
         If the variable did not exist before the environment was activated, it will
         clear it without replacement.
         """
-        with env_file.open("rb") as file:
-            data = tomllib.load(file)
-
-        for key, _ in data.get("vars", {}).keys():
-            if os.environ.get(f"{Environment.OLD_PREFIX}{key}", None):
-                print(f'export {key}="{os.environ[Environment.OLD_PREFIX + key]}"')
-                print(f'unset {Environment.OLD_PREFIX}{key}')
-            else:
+        for key, value in os.environ.items():
+            if key.startswith(Environment.OLD_PREFIX):
+                print(f'export {key.removeprefix(Environment.OLD_PREFIX)}=\"{value}\"')
+                print(f'unset {key}')
+            elif f"{Environment.OLD_PREFIX}{key}" not in os.environ:
                 print(f'unset {key}')
 
-        for key, _ in data.get("paths", {}).keys():
-            if os.environ.get(f"{Environment.OLD_PREFIX}{key}", None):
-                print(f'export {key}="${{{Environment.OLD_PREFIX}{key}:-}}"')
-                print(f'unset {Environment.OLD_PREFIX}{key}')
-            else:
-                print(f"unset {key}")
+    def create_env_file(self) -> None:
+        """Create a configuration file that stores environment variables to be loaded
+        into the virtual environment upon activation.
+
+        See Also
+        --------
+        Environment.activate
+            Specifies the format for the configuration file and convention for
+            sourcing it into the environment.
+
+        Notes
+        -----
+        By default, this populates the file with correct paths to the installed
+        compilers, headers, and libraries.  Users can modify this file to include
+        additional environment variables as needed.
+        """
+        env_file = self.venv / "env.toml"
+        with env_file.open("w") as file:
+            file.write(f"""
+[vars]
+CC = "{self.bin / self.compiler}"
+CXX = "{self.bin / 'g++'}"  # TODO: pass in correct C++ compiler
+
+[paths]
+PATH = ["{self.bin}"]
+LIBRARY_PATH = ["{self.lib}", "{self.lib / 'lib64'}"]
+LD_LIBRARY_PATH = ["{self.lib}", "{self.lib / 'lib64'}"]
+            """)
 
     def create_activation_script(self) -> None:
         """Create an activation script that enters the virtual environment."""
@@ -535,108 +787,49 @@ class Environment:
 # This file must be used with "source bertrand/activate" *from bash*
 # You cannot run it directly
 
-deactivate() {{
-    # reset old environment variables
-    if [ -n "${{_OLD_VIRTUAL_CC:-}}" ]; then
-        CC="${{_OLD_VIRTUAL_CC:-}}"
-        export CC
-        unset _OLD_VIRTUAL_CC
-    fi
-    if [ -n "${{_OLD_VIRTUAL_CXX:-}}" ]; then
-        CXX="${{_OLD_VIRTUAL_CXX:-}}"
-        export CXX
-        unset _OLD_VIRTUAL_CXX
-    fi
-    if [ -n "${{_OLD_VIRTUAL_PATH:-}}" ]; then
-        PATH="${{_OLD_VIRTUAL_PATH:-}}"
-        export PATH
-        unset _OLD_VIRTUAL_PATH
-    fi
-    if [ -n "${{_OLD_VIRTUAL_LIBRARY_PATH:-}}" ]; then
-        LIBRARY_PATH="${{_OLD_VIRTUAL_LIBRARY_PATH:-}}"
-        export LIBRARY_PATH
-        unset _OLD_VIRTUAL_LIBRARY_PATH
-    fi
-    if [ -n "${{_OLD_VIRTUAL_LD_LIBRARY_PATH:-}}" ]; then
-        LD_LIBRARY_PATH="${{_OLD_VIRTUAL_LD_LIBRARY_PATH:-}}"
-        export LD_LIBRARY_PATH
-        unset _OLD_VIRTUAL_LD_LIBRARY_PATH
-    fi
-    if [ -n "${{_OLD_VIRTUAL_PYTHONHOME:-}}" ]; then
-        PYTHONHOME="${{_OLD_VIRTUAL_PYTHONHOME:-}}"
-        export PYTHONHOME
-        unset _OLD_VIRTUAL_PYTHONHOME
-    fi
-
-    if [ -n "${{_OLD_VIRTUAL_PS1:-}}" ]; then
-        PS1="${{_OLD_VIRTUAL_PS1:-}}"
-        export PS1
-        unset _OLD_VIRTUAL_PS1
-    fi
-
-    unset BERTRAND_VIRTUAL_ENV
-    unset VIRTUAL_ENV
-    unset VIRTUAL_ENV_PROMPT
-    if [ ! "${{1:-}}" = "nondestructive" ]; then
-        # Self destruct!
-        unset -f deactivate
-    fi
-
-    # Call hash to forget past commands.  Without forgetting past commands,
-    # the $PATH changes we made may not be respected.
-    hash -r 2> /dev/null
-}}
-
-# unsert irrelevant variables
-deactivate nondestructive
+# Exit immediately if a command exits with a non-zero status
+set -e
 
 # on Windows, a path can contain colons and backslashes and has to be converted:
 if [ "${{OSTYPE:-}}" = "cygwin" ] || [ "${{OSTYPE:-}}" = "msys" ]; then
     # transform D:\\path\\to\\venv to /d/path/to/venv on MSYS
     # and to /cygdrive/d/path/to/venv on Cygwin
-    export VIRTUAL_ENV=$(cygpath "{self.venv}")
+    THIS_VIRTUAL_ENV=$(cygpath "{self.venv}")
 else
     # use the path as-is
-    export VIRTUAL_ENV="{self.venv}"
+    THIS_VIRTUAL_ENV="{self.venv}"
 fi
 
-BERTRAND_VIRTUAL_ENV="ON"
-export BERTRAND_VIRTUAL_ENV
-
-_OLD_VIRTUAL_CC="${{CC:-}}"
-CC="$VIRTUAL_ENV/bin/{self.compiler}"
-export CC
-
-_OLD_VIRTUAL_CXX="${{CXX:-}}"
-CXX="$VIRTUAL_ENV/bin/g++"  # TODO: pass in correct C++ compiler
-export CXX
-
-_OLD_VIRTUAL_PATH="$PATH"
-PATH="$VIRTUAL_ENV/bin:$PATH"
-export PATH
-
-_OLD_VIRTUAL_LIBRARY_PATH="${{LIBRARY_PATH:-}}"
-LIBRARY_PATH="$VIRTUAL_ENV/lib:$VIRTUAL_ENV/lib64:$LIBRARY_PATH"
-export LIBRARY_PATH
-
-_OLD_VIRTUAL_LD_LIBRARY_PATH="${{LD_LIBRARY_PATH:-}}"
-LD_LIBRARY_PATH="$VIRTUAL_ENV/lib:$VIRTUAL_ENV/lib64:$LD_LIBRARY_PATH"
-export LD_LIBRARY_PATH
-
-# unset PYTHONHOME if set
-# this will fail if PYTHONHOME is set to the empty string (which is bad anyway)
-if [ -n "${{PYTHONHOME:-}}" ]; then
-    _OLD_VIRTUAL_PYTHONHOME="${{PYTHONHOME:-}}"
-    unset PYTHONHOME
+# virtual environments cannot be nested
+if [ -n "$VIRTUAL_ENV" ]; then
+    if [ "$VIRTUAL_ENV" == "$THIS_VIRTUAL_ENV" ]; then
+        exit 0
+    else
+        echo "Deactivating existing virtual environment at $VIRTUAL_ENV"
+        deactivate
+    fi
 fi
+
+# save the previous variables and set those from env.toml
+eval "$(python -m bertrand activate "$THIS_VIRTUAL_ENV/env.toml")"
+
+export VIRTUAL_ENV="$THIS_VIRTUAL_ENV"
+export BERTRAND_HOME="$THIS_VIRTUAL_ENV"
+export PYTHONHOME="$THIS_VIRTUAL_ENV"
 
 if [ -z "${{VIRTUAL_ENV_DISABLE_PROMPT:-}}" ] ; then
-    _OLD_VIRTUAL_PS1="${{PS1:-}}"
-    PS1="({self.venv.name}) ${{PS1:-}}"
-    export PS1
-    VIRTUAL_ENV_PROMPT="({self.venv.name}) "
-    export VIRTUAL_ENV_PROMPT
+    export PS1="({self.venv.name}) ${{PS1:-}}"
+    export VIRTUAL_ENV_PROMPT="({self.venv.name}) "
 fi
+
+deactivate() {{
+    # reset old environment variables
+    eval "$(python -m bertrand deactivate)"
+
+    # Call hash to forget past commands.  Without forgetting past commands,
+    # the $PATH changes we made may not be respected.
+    hash -r 2> /dev/null
+}}
 
 # Call hash to forget past commands.  Without forgetting past commands,
 # the $PATH changes we made may not be respected.
@@ -672,58 +865,269 @@ hash -r 2> /dev/null
                 shutil.rmtree(self.venv)
             self.venv.mkdir(parents=True)
             try:
-                self.install_gcc()
+                self.install_gcc()  # TODO: check to see if binaries are already installed and skip if so
                 self.install_ninja()
                 self.install_cmake()
                 self.install_python()
+                self.create_env_file()
                 self.create_activation_script()
             except subprocess.CalledProcessError as error:
+                shutil.rmtree(self.venv)
                 print(error.stderr)
                 raise
-            finally:
-                self.clean()
+            except:
+                shutil.rmtree(self.venv)
+                raise
             flag.touch()
 
         print(f"Elapsed time: {time.time() - start:.2f} seconds")
 
 
-# TODO: Add linker options to `python -m bertrand -I` for pcre2, cpptrace, and googletest
+class Parser:
+    """Command-line parser for Bertrand utilities."""
+
+    def __init__(self) -> None:
+        self.root = argparse.ArgumentParser(
+            description="Command line utilities for bertrand.",
+        )
+        self.commands = self.root.add_subparsers(
+            dest="command",
+            title="commands",
+            description=(
+                "Create and manage Python/C/C++ virtual environments, package "
+                "managers, and streamlined build tools."
+            ),
+            prog="bertrand",
+            metavar="(command)",
+        )
+
+    def init(self) -> None:
+        """Add the 'init' command to the parser."""
+        command = self.commands.add_parser(
+            "init",
+            help=(
+                "Bootstrap a virtual environment with a full C/C++ compiler suite, "
+                "toolchain, Python distribution, and associated package managers.  "
+                "This can take approximately 15-20 minutes to complete, and the "
+                "resulting environment is stored in the current working directory "
+                "under the specified name (defaults to '/venv/').  It can be "
+                "activated by sourcing the `activate` script in the environment "
+                "directory (e.g. `$ source venv/activate`), and deactivated by "
+                "running the `$ deactivate` command from the command line."
+            ),
+        )
+        command.add_argument(
+            "name",
+            nargs="?",
+            default="venv",
+            help=(
+                "The name of the virtual environment to create.  This sets both the "
+                "environment's directory name and the command-line prompt within the "
+                "virtual environment.  Defaults to 'venv'."
+            ),
+        )
+        command.add_argument(
+            "-f", "--force",
+            action="store_true",
+            help=(
+                "Force the virtual environment to be rebuilt from the ground up.  "
+                "This deletes the existing environment and all packages that are "
+                "contained within it, and then reinstalls the environment from scratch."
+            ),
+        )
+        command.add_argument(
+            "-j", "--jobs",
+            type=int,
+            nargs=1,
+            default=0,
+            help=(
+                "The number of parallel workers to run when building the "
+                "environment.  Defaults to 0, which uses all available CPUs.  Must be "
+                "a positive integer."
+            ),
+            metavar="N",
+        )
+
+        # compiler options
+        compilers = command.add_argument_group(title="compilers").add_mutually_exclusive_group()
+        compilers.add_argument(
+            "--gcc",
+            nargs=1,
+            default="latest",
+            help=(
+                "[DEFAULT] Use the specified GCC version as the environment's "
+                "compiler.  The version must be >=14.1.0.  If no version is "
+                "specified, then the most recent release will be used.  "
+            ),
+            metavar="X.Y.Z",
+        )
+        compilers.add_argument(
+            "--clang",
+            nargs=1,
+            default="latest",
+            help=(
+                "Use the specified Clang version as the environment's compiler.  The "
+                "version must be >=18.0.0.  If no version is specified, then the most "
+                "recent release will be used."
+            ),
+            metavar="X.Y.Z",
+        )
+
+        # generator options
+        generators = command.add_argument_group(title="generators").add_mutually_exclusive_group()
+        generators.add_argument(
+            "--ninja",
+            nargs=1,
+            default="latest",
+            help=(
+                "[DEFAULT] Set the build system generator within the virtual "
+                "environment to Ninja.  Uses the same version scheme as the compiler, "
+                "and must be >=1.11."
+            ),
+            metavar="X.Y.Z",
+        )
+
+        # build systems
+        build_systems = command.add_argument_group(title="build systems").add_mutually_exclusive_group()
+        build_systems.add_argument(
+            "--cmake",
+            nargs=1,
+            default="latest",
+            help=(
+                "[DEFAULT] Set the CMake version to use within the virtual "
+                "environment.  Uses the same version scheme as the compiler, and must "
+                "be >=3.28."
+            ),
+            metavar="X.Y.Z",
+        )
+
+        # python options
+        python = command.add_argument_group(title="python").add_mutually_exclusive_group()
+        python.add_argument(
+            "--python",
+            nargs=1,
+            default="latest",
+            help=(
+                "[DEFAULT] Set the Python version to use within the virtual "
+                "environment.  Uses the same version scheme as the compiler, and must "
+                "be >=3.12."
+            ),
+            metavar="X.Y.Z",
+        )
+
+    def activate(self) -> None:
+        """Add the 'activate' command to the parser."""
+        command = self.commands.add_parser(
+            "activate",
+            help=(
+                "Print a sequence of bash commands that will be used to activate the "
+                "virtual environment when the activation script is sourced.  This "
+                "method parses the environment variables from a TOML file (typically "
+                "'venv/env.toml') and prints them to stdout as bash commands, which "
+                "are caught in the activation script and exported into the resulting "
+                "environment.  See the docs for Environment::activate() for more "
+                "details."
+            ),
+        )
+        command.add_argument(
+            "file",
+            type=Path,
+            nargs=1,
+            help="The path to the TOML file containing the environment variables."
+        )
+
+    def deactivate(self) -> None:
+        """Add the 'deactivate' command to the parser."""
+        self.commands.add_parser(
+            "deactivate",
+            help=(
+                "Print a sequence of bash commands that will be used to deactivate "
+                "the virtual environment when the deactivation script is sourced.  "
+                "This method undoes the changes made by the activation script, "
+                "restoring the environment variables to their original state."
+            )
+        )
+
+    def version(self) -> None:
+        """Add the 'version' query to the parser."""
+        self.root.add_argument("-v", "--version", action="version", version=__version__)
+
+    def include(self) -> None:
+        """Add the 'include' query to the parser."""
+        self.root.add_argument(
+            "-I", "--include",  # TODO: this should include a path to the virtual environment's headers
+            action="store_true",
+            help=(
+                "List all the include and link symbols needed to compile a "
+                "pure-C++ project that relies on Bertrand as a dependency.  This "
+                "includes the Python development headers, numpy, pybind11, pcre2, "
+                "googletest, and cpptrace as well as those of bertrand itself.  "
+                "Users can quickly include all of these in a single command by "
+                "adding `$(python3 -m bertrand -I)` to their compilation flags."
+            )
+        )
+
+    def __call__(self) -> argparse.Namespace:
+        """Run the command-line parser.
+
+        Returns
+        -------
+        argparse.Namespace
+            The parsed command-line arguments.
+        """
+        # commands
+        self.init()
+        self.activate()
+        self.deactivate()
+
+        # queries
+        self.version()
+        self.include()
+
+        return self.root.parse_args()
+
+
+
+
+
 
 
 def main() -> None:
     """Run Bertrand as a command-line utility."""
-    parser = argparse.ArgumentParser(description="Bertrand module utilities.")
-    parser.add_argument(
-        "-v", "--version",
-        action="store_true",
-        help="Print the installed version number."
-    )
-    parser.add_argument(
-        "-I", "--include",
-        action="store_true",
-        help=(
-            "List all the include and link symbols needed to compile a pure-C++ "
-            "project that relies on Bertrand as a dependency.  This includes the "
-            "Python development headers, numpy, pybind11, pcre2, googletest, and "
-            "cpptrace as well as those of bertrand itself.  Users can quickly include "
-            "all of these in a single command by adding `$(python3 -m bertrand -I)` "
-            "to their compilation flags."
-        )
-    )
+    parser = Parser()
+    args = parser()
 
-    args = parser.parse_args()
-    show_help = True
+    # breakpoint()
 
-    if args.include:
-        print(" ".join(quick_include()))
-        show_help = False
+    if args.command == "init":
+        compiler = next((k for k in ["gcc", "clang"] if getattr(args, k)), "gcc")
+        compiler_version = getattr(args, compiler)
+        generator = next((k for k in ["ninja"] if getattr(args, k)), "ninja")
+        generator_version = getattr(args, generator)
+        # breakpoint()
+        Environment(
+            Path.cwd(),
+            name=args.name or "venv",
+            compiler=compiler,
+            compiler_version=compiler_version,
+            generator=generator,
+            generator_version=generator_version,
+            cmake_version=args.cmake,
+            python_version=args.python,
+            workers=args.jobs,
+        ).create()
 
-    if args.version:
-        print(__version__)
-        show_help = False
+    # if args.activate:
+    #     Environment.activate(args.activate[0])
 
-    if show_help:
-        parser.print_help()
+    # elif args.deactivate:
+    #     Environment.deactivate()
+
+    # if args.include:
+    #     print(" ".join(quick_include()))
+
+    # else:
+    #     parser.root.print_help()
 
 
 if __name__ == "__main__":
