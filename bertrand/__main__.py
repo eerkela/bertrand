@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from .cli.env import (
-    Environment, current_env, get_bin, get_include, get_lib, get_link
+    Environment, init, get_bin, get_include, get_lib, get_link
 )
 from . import __version__
 
@@ -34,12 +34,13 @@ class Parser:
             help=(
                 "Bootstrap a virtual environment with a full C/C++ compiler suite, "
                 "toolchain, Python distribution, and associated package managers.  "
-                "This can take approximately 15-20 minutes to complete, and the "
-                "resulting environment is stored in the current working directory "
-                "under the specified name (defaults to '/venv/').  It can be "
-                "activated by sourcing the `activate` script in the environment "
-                "directory (e.g. `$ source venv/activate`), and deactivated by "
-                "running the `$ deactivate` command from the command line."
+                "This can take anywhere from ~15 to ~45 minutes to complete, "
+                "depending and the flags that are passed.  The resulting environment "
+                "is stored in the current working directory under the specified name "
+                "(defaults to '/venv/').  It can be activated by sourcing the "
+                "`activate` script within the environment directory (e.g. "
+                "`$ source venv/activate`), and deactivated by running the "
+                "`$ deactivate` command from the command line."
             ),
         )
         command.add_argument(
@@ -65,7 +66,7 @@ class Parser:
             "-j", "--jobs",
             type=int,
             nargs=1,
-            default=0,
+            default=[0],
             help=(
                 "The number of parallel workers to run when building the "
                 "environment.  Defaults to 0, which uses all available CPUs.  Must be "
@@ -79,7 +80,7 @@ class Parser:
         compilers.add_argument(
             "--gcc",
             nargs=1,
-            default="latest",
+            default=None,
             help=(
                 "[DEFAULT] Use the specified GCC version as the environment's "
                 "compiler.  The version must be >=14.1.0.  If no version is "
@@ -90,7 +91,7 @@ class Parser:
         compilers.add_argument(
             "--clang",
             nargs=1,
-            default="latest",
+            default=None,
             help=(
                 "Use the specified Clang version as the environment's compiler.  The "
                 "version must be >=18.0.0.  If no version is specified, then the most "
@@ -104,7 +105,7 @@ class Parser:
         generators.add_argument(
             "--ninja",
             nargs=1,
-            default="latest",
+            default=None,
             help=(
                 "[DEFAULT] Set the build system generator within the virtual "
                 "environment to Ninja.  Uses the same version scheme as the compiler, "
@@ -118,11 +119,24 @@ class Parser:
         build_systems.add_argument(
             "--cmake",
             nargs=1,
-            default="latest",
+            default=None,
             help=(
                 "[DEFAULT] Set the CMake version to use within the virtual "
                 "environment.  Uses the same version scheme as the compiler, and must "
                 "be >=3.28."
+            ),
+            metavar="X.Y.Z",
+        )
+
+        # linkers
+        linkers = command.add_argument_group(title="linkers").add_mutually_exclusive_group()
+        linkers.add_argument(
+            "--mold",
+            nargs=1,
+            default=None,
+            help=(
+                "[DEFAULT] Set the default linker within the virtual environment to "
+                "mold for fast builds.  Uses the same version scheme as the compiler."
             ),
             metavar="X.Y.Z",
         )
@@ -132,7 +146,7 @@ class Parser:
         python.add_argument(
             "--python",
             nargs=1,
-            default="latest",
+            default=None,
             help=(
                 "[DEFAULT] Set the Python version to use within the virtual "
                 "environment.  Uses the same version scheme as the compiler, and must "
@@ -268,17 +282,21 @@ def main() -> None:
         compiler_version = getattr(args, compiler)
         generator = next((k for k in ["ninja"] if getattr(args, k)), "ninja")
         generator_version = getattr(args, generator)
-        Environment(
+        init(
             Path.cwd(),
             name=args.name or "venv",
             compiler=compiler,
-            compiler_version=compiler_version,
+            compiler_version="latest" if not compiler_version else compiler_version[0],
             generator=generator,
-            generator_version=generator_version,
-            cmake_version=args.cmake,
-            python_version=args.python,
-            workers=args.jobs,
-        ).create()
+            generator_version="latest" if not generator_version else generator_version[0],
+            build_tool="cmake",
+            build_tool_version="latest" if not args.cmake else args.cmake[0],
+            linker="mold",
+            linker_version="latest" if not args.mold else args.mold[0],
+            python_version="latest" if not args.python else args.python[0],
+            workers=args.jobs[0],
+            force=args.force,
+        )
 
     elif args.command == "activate":
         Environment.activate(args.file)
