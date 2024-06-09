@@ -35,7 +35,7 @@ class Parser:
                 "Bootstrap a virtual environment with a full C/C++ compiler suite, "
                 "toolchain, Python distribution, and associated package managers.  "
                 "This can take anywhere from ~15 to ~45 minutes to complete, "
-                "depending and the flags that are passed.  The resulting environment "
+                "depending on hardware and configuration.  The resulting environment "
                 "is stored in the current working directory under the specified name "
                 "(defaults to '/venv/').  It can be activated by sourcing the "
                 "`activate` script within the environment directory (e.g. "
@@ -59,7 +59,8 @@ class Parser:
             help=(
                 "Force the virtual environment to be rebuilt from the ground up.  "
                 "This deletes the existing environment and all packages that are "
-                "contained within it, and then reinstalls the environment from scratch."
+                "contained within it, and then reinstalls the environment from "
+                "scratch."
             ),
         )
         command.add_argument(
@@ -83,8 +84,8 @@ class Parser:
             default=None,
             help=(
                 "[DEFAULT] Use the specified GCC version as the environment's "
-                "compiler.  The version must be >=14.1.0.  If no version is "
-                "specified, then the most recent release will be used.  "
+                "compiler.  The version must be >=14.1.0.  If set to 'latest', then "
+                "the most recent release will be used."
             ),
             metavar="X.Y.Z",
         )
@@ -94,7 +95,7 @@ class Parser:
             default=None,
             help=(
                 "Use the specified Clang version as the environment's compiler.  The "
-                "version must be >=18.0.0.  If no version is specified, then the most "
+                "version must be >=18.0.0.  If set to 'latest', then the most "
                 "recent release will be used."
             ),
             metavar="X.Y.Z",
@@ -136,7 +137,44 @@ class Parser:
             default=None,
             help=(
                 "[DEFAULT] Set the default linker within the virtual environment to "
-                "mold for fast builds.  Uses the same version scheme as the compiler."
+                "mold.  Uses the same version scheme as the compiler.  This is the "
+                "most efficient linker for C++ projects, and is recommended for most "
+                "use cases."
+            ),
+            metavar="X.Y.Z",
+        )
+        linkers.add_argument(
+            "--lld",
+            nargs=1,
+            default=None,
+            help=(
+                "Set the default linker within the virtual environment to lld.  This "
+                "is generally slower than mold, but still relatively fast and may "
+                "avoid some compatibility issues.  Uses the same version scheme as "
+                "the compiler."
+            ),
+            metavar="X.Y.Z",
+        )
+        linkers.add_argument(
+            "--gold",
+            nargs=1,
+            default=None,
+            help=(
+                "Set the default linker within the virtual environment to gold.  This "
+                "is an older linker that is slower than mold and lld, but is still "
+                "the system default on many Unix distributions.  Uses the same "
+                "version scheme as the compiler."
+            ),
+            metavar="X.Y.Z",
+        )
+        linkers.add_argument(
+            "--ld",
+            nargs=1,
+            default=None,
+            help=(
+                "Set the default linker within the virtual environment to ld.  This "
+                "is the oldest and slowest linker, but is also the most compatible "
+                "as a result.  Uses the same version scheme as the compiler."
             ),
             metavar="X.Y.Z",
         )
@@ -151,6 +189,47 @@ class Parser:
                 "[DEFAULT] Set the Python version to use within the virtual "
                 "environment.  Uses the same version scheme as the compiler, and must "
                 "be >=3.12."
+            ),
+            metavar="X.Y.Z",
+        )
+
+        # tooling options
+        tools = command.add_argument_group(title="tools")
+        tools.add_argument(
+            "--conan",
+            nargs=1,
+            default=None,
+            help=(
+                "[DEFAULT] Install the Conan package manager within the virtual "
+                "environment.  This is necessary for installing C++ dependencies into "
+                "the environment, and will be installed by default.  Setting this "
+                "option allows users to choose a specific version of Conan to "
+                "install, which must be >=2.0.0.  Defaults to 'latest'."
+            ),
+            metavar="X.Y.Z",
+        )
+        tools.add_argument(
+            "--clangtools",
+            nargs=1,
+            default=None,
+            help=(
+                "Install the clang-tools-extra target within the virtual environment, "
+                "which includes optional linters like clangd and clang-tidy.  "
+                "Bertrand will automatically emit a compile_commands.json file for "
+                "these tools to use, but users must manually integrate them with "
+                "their IDE of choice.  Uses the same version scheme as the compiler."
+            ),
+            metavar="X.Y.Z",
+        )
+        tools.add_argument(
+            "--valgrind",
+            nargs=1,
+            default=None,
+            help=(
+                "Configure the virtual environment to enable valgrind support.  This "
+                "is a memory leak detector that can be used to profile C/C++ code "
+                "to ensure that it is free of memory errors.  Considerably reduces "
+                "performance, and uses the same version scheme as the compiler."
             ),
             metavar="X.Y.Z",
         )
