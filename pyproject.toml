@@ -60,6 +60,7 @@ dependencies = [
     "conan",
     "beautifulsoup4",
     "numpy",
+    "packaging",
     "pandas >= 2.0.0",
     "pyarrow",
     "pybind11 >= 2.6.1",
