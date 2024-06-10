@@ -361,17 +361,21 @@ def main() -> None:
         compiler_version = getattr(args, compiler)
         generator = next((k for k in ["ninja"] if getattr(args, k)), "ninja")
         generator_version = getattr(args, generator)
+        build_system = next((k for k in ["cmake"] if getattr(args, k)), "cmake")
+        build_system_version = getattr(args, build_system)
+        linker = next((k for k in ["mold", "lld", "gold", "ld"] if getattr(args, k)), "mold")
+        linker_version = getattr(args, linker)
         init(
             Path.cwd(),
-            name=args.name or "venv",
+            args.name or "venv",
             compiler=compiler,
             compiler_version="latest" if not compiler_version else compiler_version[0],
             generator=generator,
             generator_version="latest" if not generator_version else generator_version[0],
-            build_system="cmake",
-            build_system_version="latest" if not args.cmake else args.cmake[0],
-            linker="mold",
-            linker_version="latest" if not args.mold else args.mold[0],
+            build_system=build_system,
+            build_system_version="latest" if not build_system_version else build_system_version[0],
+            linker=linker,
+            linker_version="latest" if not linker_version else linker_version[0],
             python_version="latest" if not args.python else args.python[0],
             conan_version="latest" if not args.conan else args.conan[0],
             workers=args.jobs[0],

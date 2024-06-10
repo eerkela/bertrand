@@ -68,6 +68,8 @@
 # del timedelta       # type: ignore
 
 
+__version__ = "0.0.1"  # handled by bumpver
+
 from .setuptools import BuildExt, Extension, get_include, setup
 
 
@@ -75,6 +77,3 @@ try:
     from .regex import Regex
 except ModuleNotFoundError:
     pass
-
-
-__version__ = "0.5.1"  # handled by bumpver

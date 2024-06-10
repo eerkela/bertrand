@@ -19,6 +19,7 @@ import packaging.version
 import pybind11
 import requests
 import tomlkit
+from bertrand import __version__
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
@@ -270,6 +271,7 @@ class Gold(Target):
         self.url = f"https://ftp.gnu.org/gnu/binutils/binutils-{self.version}.tar.xz"
         if not ping(self.url):
             raise ValueError(f"ld/gold version {self.version} not found.")
+        print(f"{self.name} URL: {self.url}")
 
     def install_gmp(self, venv: Path, workers: int) -> None:
         """Install GNU MP (a.k.a. GMP) into a virtual environment.
@@ -459,12 +461,11 @@ class Gold(Target):
             A path to the virtual environment containing the env.toml file.
         """
         with (venv / "env.toml").open("r") as f:
-            # TODO: may need to symlink ld.gold to gold
             env = tomlkit.load(f)
-        env["info"]["linker"] = self.name  # type: ignore
+        env["info"]["linker"] = "ld" if self.name == "ld" else "ld.gold"  # type: ignore
         env["info"]["linker_version"] = str(self.version)  # type: ignore
         env["vars"]["LD"] = str(venv / "bin" / self.name)  # type: ignore
-        env["flags"]["LDFLAGS"].extend([f"-fuse-ld={self.name}"])  # type: ignore
+        env["flags"]["LDFLAGS"].append(f"-fuse-ld={self.name}")  # type: ignore
         with (venv / "env.toml").open("w") as f:
             tomlkit.dump(env, f)
 
@@ -476,7 +477,8 @@ class Gold(Target):
         venv : Path
             A path to the virtual environment containing the ld/gold linker.
         """
-        os.environ["LD"] = str(venv / "bin" / self.name)  # TODO: same as above
+        name = "ld" if self.name == "ld" else "ld.gold"
+        os.environ["LD"] = str(venv / "bin" / name)
         os.environ["LDFLAGS"] = " ".join(
             [os.environ["LDFLAGS"], f"-fuse-ld={self.name}"]
             if os.environ.get("LDFLAGS", None) else
@@ -518,6 +520,7 @@ class GCC(Target):
         self.url = f"https://ftpmirror.gnu.org/gnu/gcc/gcc-{self.version}/gcc-{self.version}.tar.xz"
         if not ping(self.url):
             raise ValueError(f"GCC version {self.version} not found.")
+        print(f"GCC URL: {self.url}")
 
     def __call__(self, venv: Path, workers: int) -> None:
         archive = venv / f"gcc-{self.version}.tar.xz"
@@ -639,6 +642,12 @@ class Clang(Target):
         self.url = f"https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-{self.version}.tar.gz"
         if not ping(self.url):
             raise ValueError(f"Clang version {self.version} not found.")
+        if "clang" in self.targets:
+            print(f"Clang URL: {self.url}")
+        if "lld" in self.targets:
+            print(f"lld URL: {self.url}")
+        if "clangtools" in self.targets:
+            print(f"Clangtools URL: {self.url}")
 
     def __call__(self, venv: Path, workers: int, **kwargs: Any) -> None:
         archive = venv / f"clang-{self.version}.tar.gz"
@@ -694,8 +703,8 @@ class Clang(Target):
         if "lld" in self.targets:
             env["info"]["linker"] = "lld"  # type: ignore
             env["info"]["linker_version"] = str(self.version)  # type: ignore
-            env["vars"]["LD"] = str(venv / "bin" / "lld")  # type: ignore  # TODO: check for lld/ld.lld
-            env["flags"]["LDFLAGS"].extend([f"-fuse-ld={self.name}"])  # type: ignore
+            env["vars"]["LD"] = str(venv / "bin" / "ld.lld")  # type: ignore
+            env["flags"]["LDFLAGS"].append("-fuse-ld=lld")  # type: ignore
         if "clang-tools-extra" in self.targets:
             env["info"]["clangtools"] = str(self.version)  # type: ignore
         with (venv / "env.toml").open("w") as f:
@@ -716,11 +725,11 @@ class Clang(Target):
             os.environ["NM"] = str(venv / "bin" / "llvm-nm")
             os.environ["RANLIB"] = str(venv / "bin" / "llvm-ranlib")
         if "lld" in self.targets:
-            os.environ["LD"] = str(venv / "bin" / "lld")  # TODO: same as above
+            os.environ["LD"] = str(venv / "bin" / "ld.lld")
             os.environ["LDFLAGS"] = " ".join(
-                [os.environ["LDFLAGS"], f"-fuse-ld={self.name}"]
+                [os.environ["LDFLAGS"], "-fuse-ld=lld"]
                 if os.environ.get("LDFLAGS", None) else
-                [f"-fuse-ld={self.name}"]
+                ["-fuse-ld=lld"]
             )
 
 
@@ -758,6 +767,7 @@ class Ninja(Target):
         self.url = f"https://github.com/ninja-build/ninja/archive/refs/tags/v{self.version}.tar.gz"
         if not ping(self.url):
             raise ValueError(f"Ninja version {self.version} not found.")
+        print(f"Ninja URL: {self.url}")
 
     def __call__(self, venv: Path, workers: int) -> None:
         archive = venv / f"ninja-{self.version}.tar.gz"
@@ -826,6 +836,7 @@ class CMake(Target):
         self.url = f"https://github.com/Kitware/CMake/releases/download/v{self.version}/cmake-{self.version}.tar.gz"
         if not ping(self.url):
             raise ValueError(f"CMake version {self.version} not found.")
+        print(f"CMake URL: {self.url}")
 
     def __call__(self, venv: Path, workers: int) -> None:
         archive = venv / f"cmake-{self.version}.tar.gz"
@@ -900,6 +911,7 @@ class Mold(Target):
         self.url = f"https://github.com/rui314/mold/archive/refs/tags/v{self.version}.tar.gz"
         if not ping(self.url):
             raise ValueError(f"mold version {self.version} not found.")
+        print(f"mold URL: {self.url}")
 
     def __call__(self, venv: Path, workers: int) -> None:
         archive = venv / f"mold-{self.version}.tar.gz"
@@ -939,10 +951,10 @@ class Mold(Target):
         """
         with (venv / "env.toml").open("r") as f:
             env = tomlkit.load(f)
-        env["info"]["linker"] = self.name  # type: ignore
+        env["info"]["linker"] = "ld.mold"  # type: ignore
         env["info"]["linker_version"] = str(self.version)  # type: ignore
         env["vars"]["LD"] = str(venv / "bin" / self.name)  # type: ignore
-        env["flags"]["LDFLAGS"].extend([f"-fuse-ld={self.name}"])  # type: ignore
+        env["flags"]["LDFLAGS"].append("-fuse-ld=mold")  # type: ignore
         with (venv / "env.toml").open("w") as f:
             tomlkit.dump(env, f)
 
@@ -954,11 +966,11 @@ class Mold(Target):
         venv : Path
             A path to the virtual environment containing the mold linker.
         """
-        os.environ["LD"] = str(venv / "bin" / self.name)
+        os.environ["LD"] = str(venv / "bin" / "ld.mold")
         os.environ["LDFLAGS"] = " ".join(
-            [os.environ["LDFLAGS"], f"-fuse-ld={self.name}"]
+            [os.environ["LDFLAGS"], "-fuse-ld=mold"]
             if os.environ.get("LDFLAGS", None) else
-            [f"-fuse-ld={self.name}"]
+            ["-fuse-ld=mold"]
         )
 
 
@@ -992,6 +1004,7 @@ class Valgrind(Target):
         self.url = f"https://sourceware.org/pub/valgrind/valgrind-{self.version}.tar.bz2"
         if not ping(self.url):
             raise ValueError(f"Valgrind version {self.version} not found.")
+        print(f"Valgrind URL: {self.url}")
 
     def __call__(self, venv: Path, workers: int) -> None:
         archive = venv / f"valgrind-{self.version}.tar.bz2"
@@ -1063,6 +1076,7 @@ class Python(Target):
         self.url = f"https://www.python.org/ftp/python/{self.version}/Python-{self.version}.tar.xz"
         if not ping(self.url):
             raise ValueError(f"Python version {self.version} not found.")
+        print(f"Python URL: {self.url}")
 
     def __call__(self, venv: Path, workers: int) -> None:
         archive = venv / f"Python-{self.version}.tar.xz"
@@ -1126,26 +1140,22 @@ class Conan(Target):
         if version == "latest":
             super().__init__(name, pip_versions[0])
         else:
-            p_version = Version(version)
-            if p_version not in pip_versions:
+            v = Version(version)
+            if v not in pip_versions:
                 raise ValueError(
                     f"Invalid Conan version '{version}'.  Must be set to 'latest' or a "
                     f"version specifier of the form 'X.Y.Z'."
                 )
-            if p_version < self.MIN_VERSION:
+            if v < self.MIN_VERSION:
                 raise ValueError(
                     f"Conan version must be {self.MIN_VERSION} or greater."
                 )
-            super().__init__(name, p_version)
+            super().__init__(name, v)
 
     def __call__(self, venv: Path, workers: int) -> None:
         self.push_environment(venv)
         subprocess.check_call(
-            [
-                str(venv / "bin" / "pip"),
-                "install",
-                f"conan=={self.version}"
-            ],
+            [str(venv / "bin" / "pip"), "install", f"conan=={self.version}"],
             cwd=venv
         )
 
@@ -1175,12 +1185,62 @@ class Conan(Target):
         os.environ["CONAN_HOME"] = str(venv / ".conan")
 
 
+class Bertrand(Target):
+    """Strategy for installing the Bertrand package manager into a virtual environment."""
+
+    def __init__(self, name: str, version: str) -> None:
+        available = pypi_versions("bertrand")
+        if not available:
+            raise RuntimeError("Could not retrieve Bertrand version numbers from pypi.")
+        if version == "latest":
+            super().__init__(name, available[0])
+        else:
+            v = Version(version)
+            if v not in available:
+                raise ValueError(
+                    f"Invalid Bertrand version '{version}'.  Must be set to 'latest' "
+                    f"or a version specifier of the form 'X.Y.Z'."
+                )
+            super().__init__(name, v)
+
+    def __call__(self, venv: Path, workers: int) -> None:
+        self.push_environment(venv)
+        subprocess.check_call(
+            [str(venv / "bin" / "pip"), "install", f"bertrand=={__version__}"],
+            cwd=venv
+        )
+
+    def push_toml(self, venv: Path) -> None:
+        """Update the toml file with the config for Bertrand.
+
+        Parameters
+        ----------
+        venv : Path
+            A path to the virtual environment containing the env.toml file.
+        """
+        with (venv / "env.toml").open("r") as f:
+            env = tomlkit.load(f)
+        env["info"]["bertrand"] = __version__  # type: ignore
+        env["vars"]["BERTRAND_HOME"] = str(venv)  # type: ignore
+        with (venv / "env.toml").open("w") as f:
+            tomlkit.dump(env, f)
+
+    def push_environment(self, venv: Path) -> None:
+        """Update the current environment with the config for Bertrand.
+        
+        Parameters
+        ----------
+        venv : Path
+            A path to the virtual environment containing Bertrand.
+        """
+        os.environ["BERTRAND_HOME"] = str(venv)
+
 
 # TODO: Bertrand target sets an environment variable before building, which gets
 # caught in setup.py and triggers the compilation of extension modules.  The same
 # environment variable is set within the virtual environment as part of env.toml,
 # and bertrand is installed in headless mode without it.
-
+# -> Just check whether BERTRAND_HOME exists in the current environment.
 
 
 class Recipe:
@@ -1196,7 +1256,7 @@ class Recipe:
     linker: Gold | Clang | Mold
     python: Python
     conan: Conan
-    # bertrand: Bertrand
+    bertrand: Bertrand
     clangtools: Clang | None
     valgrind: Valgrind | None
 
@@ -1220,11 +1280,9 @@ class Recipe:
         if compiler == "gcc":
             self.compiler = GCC(compiler, compiler_version)
             self.export.add(self.compiler)
-            print(f"GCC URL: {self.compiler.url}")
         elif compiler == "clang":
             self.compiler = Clang(compiler, compiler_version)
             self.export.add(self.compiler)
-            print(f"Clang URL: {self.compiler.url}")
         else:
             raise ValueError(
                 f"Compiler '{compiler}' not recognized.  Run "
@@ -1234,7 +1292,6 @@ class Recipe:
         if generator == "ninja":
             self.generator = Ninja(generator, generator_version)
             self.export.add(self.generator)
-            print(f"Ninja URL: {self.generator.url}")
         else:
             raise ValueError(
                 f"Generator '{generator}' not recognized.  Run "
@@ -1244,7 +1301,6 @@ class Recipe:
         if build_system == "cmake":
             self.build_system = CMake(build_system, build_system_version)
             self.export.add(self.build_system)
-            print(f"CMake URL: {self.build_system.url}")
         else:
             raise ValueError(
                 f"Build tool '{build_system}' not recognized.  Run "
@@ -1254,19 +1310,15 @@ class Recipe:
         if linker == "ld":
             self.linker = Gold(linker, linker_version)
             self.export.add(self.linker)
-            print(f"ld URL: {self.linker.url}")
         elif linker == "gold":
             self.linker = Gold(linker, linker_version)
             self.export.add(self.linker)
-            print(f"gold URL: {self.linker.url}")
         elif linker == "lld":
             self.linker = Clang(linker, linker_version)
             self.export.add(self.linker)
-            print(f"lld URL: {self.linker.url}")
         elif linker == "mold":
             self.linker = Mold(linker, linker_version)
             self.export.add(self.linker)
-            print(f"mold URL: {self.linker.url}")
         else:
             raise ValueError(
                 f"Linker '{linker}' not recognized.  Run "
@@ -1275,26 +1327,20 @@ class Recipe:
 
         self.python = Python("python", python_version)
         self.export.add(self.python)
-        print(f"Python URL: {self.python.url}")
-
         self.conan = Conan("conan", conan_version)
         self.export.add(self.conan)
-
-        # self.bertrand = Bertrand("bertrand", bertrand_version)  # TODO: get version from this environment
-        # self.export.add(self.bertrand)
-        # print(f"Bertrand command: {self.bertrand.command}")
+        self.bertrand = Bertrand("bertrand", __version__)
+        self.export.add(self.bertrand)
 
         self.clangtools = None
         if clangtools_version:
             self.clangtools = Clang("clangtools", clangtools_version)
             self.export.add(self.clangtools)
-            print(f"Clangtools URL: {self.clangtools.url}")
 
         self.valgrind = None
         if valgrind_version:
             self.valgrind = Valgrind("valgrind", valgrind_version)
             self.export.add(self.valgrind)
-            print(f"Valgrind URL: {self.valgrind.url}")
 
     def consume(self, target: Target) -> None:
         """Remove the target from the export set and mark it as built.
@@ -1318,6 +1364,8 @@ class Recipe:
         order: list[Target] = []
         if self.linker.name in ("ld", "gold"):
             order.append(self.linker)
+        else:
+            order.append(Gold("gold", "latest"))
         order.append(self.compiler)
         order.append(self.generator)
         order.append(self.build_system)
@@ -1347,14 +1395,13 @@ class Recipe:
             The sequence of targets to install.
         """
         order: list[Target] = []
-        # order.append(Make("make", "latest"))
         if self.linker.name in ("ld", "gold"):
             order.append(self.linker)
-        elif self.linker.name == "mold" and self.compiler:
+        else:
             # NOTE: the LLVMGold.so plugin is required to build Python with LTO using
             # Clang, even if we end up using mold in the final environment.  This
             # appears to be a bug in the Python build system itself.
-            order.append(Gold("gold", "latest"))  # TODO: fails unless I use 2.37 or below
+            order.append(Gold("gold", "latest"))
         order.append(self.compiler)
         if self.linker.name == "lld" and self.linker.version == self.compiler.version:
             self.consume(self.linker)
@@ -1715,11 +1762,7 @@ def init(
     )
 
     # install the recipe
-    try:
-        recipe.install(venv, workers)
-    except subprocess.CalledProcessError as error:
-        print(error.stderr)
-        raise
+    recipe.install(venv, workers)
     (venv / "built").touch(exist_ok=True)
 
     # restore previous environment
