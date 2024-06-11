@@ -1,47 +1,23 @@
 """Build tools for bertrand-enabled C++ extensions."""
 import datetime
+import os
 import re
 import shutil
 import subprocess
 import sys
 import sysconfig
-from pathlib import Path
 import platform
+from pathlib import Path
 from typing import Any
 
 import numpy
 import pybind11
+import setuptools  # type: ignore
 from pybind11.setup_helpers import Pybind11Extension
 from pybind11.setup_helpers import build_ext as pybind11_build_ext
-import setuptools  # type: ignore
 
-
-# TODO: I could theoretically use a build system like the following:
-
-# pip install bertrand
-# cd my_project
-# bertrand install
-
-# -> That would locally install a compatible C++ compiler, Ninja, CMake, and Python,
-# then build the project with the necessary configuration.  Since all build steps are
-# centralized through Python, I probably wouldn't even need to interfere with the
-# user's environment, except for running update-alternatives for the python version.
-
-# This is modeled off the way conan is installed, which is about as simple as C++
-# package management can get.
-
-
-
-# TODO: add conan integrations so that C++ dependencies can be installed automatically
-# as part of setup.py, just like pip dependencies.  This would simplify the installation
-# of most projects to just pip install pkg
-
-
-
-# TODO: list cpptrace, pcre2, googletest version #s explicitly here?
 
 ROOT: Path = Path(__file__).absolute().parent.parent
-DEPS: Path = ROOT / "third_party"
 
 
 def get_include() -> str:
@@ -455,7 +431,19 @@ class BuildExt(pybind11_build_ext):
             profile.unlink()
 
     def build_extensions(self) -> None:
-        """Build all extensions in the project."""
+        """Build all extensions in the project.
+
+        Raises
+        ------
+        RuntimeError
+            If setup.py is invoked outside of a bertrand virtual environment.
+        """
+        if self.extensions and not os.environ.get("BERTRAND_HOME", None):
+            raise RuntimeError(
+                "setup.py must be run inside a bertrand virtual environment in order "
+                "to compile C++ extensions"
+            )
+
         self.check_extensions_list(self.extensions)
 
         conanfile = self.init_conanfile()
@@ -573,5 +561,7 @@ def setup(
         cmdclass = {"build_ext": BuildExtensions}
     elif "build_ext" not in cmdclass:
         cmdclass["build_ext"] = BuildExtensions
+
+    # TODO: conan packages need to be installed here?
 
     setuptools.setup(*args, cmdclass=cmdclass, **kwargs)

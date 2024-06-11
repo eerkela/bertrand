@@ -3,9 +3,7 @@
 import argparse
 from pathlib import Path
 
-from .cli.env import (
-    Environment, init, get_bin, get_include, get_lib, get_link
-)
+from .cli import init
 from . import __version__
 
 
@@ -188,7 +186,7 @@ class Parser:
             help=(
                 "[DEFAULT] Set the Python version to use within the virtual "
                 "environment.  Uses the same version scheme as the compiler, and must "
-                "be >=3.12."
+                "be >=3.9."
             ),
             metavar="X.Y.Z",
         )
@@ -266,6 +264,11 @@ class Parser:
                 "restoring the environment variables to their original state."
             )
         )
+
+    # TODO: install command
+    # TODO: uninstall command
+    # TODO: update command
+    # TODO: compile command
 
     def version(self) -> None:
         """Add the 'version' query to the parser."""

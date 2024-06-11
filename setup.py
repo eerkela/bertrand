@@ -1,9 +1,12 @@
 """Setup script for Bertrand."""
-from bertrand import Extension, setup
+import os
+from typing import Any
+
+from bertrand import BuildExt, Extension, setup
 
 
-# NOTE: C++ users have to execute $(python3 -m bertrand -I) to compile against bertrand.h
-# g++ foo.cpp -o foo.out $(python3 -m bertrand -I)
+# NOTE: C++ users have to execute $(bertrand -I) to compile against bertrand.h
+# g++ foo.cpp -o foo.out $(bertrand -I)
 
 # NOTE: Python users writing C++ extensions should use bertrand's custom Extension
 # class to add the necessary linkages to the bertrand library, and to enable clangd
@@ -204,12 +207,18 @@ Clang:
 
 
 
-# TODO: subclass the normal BuildExt class to install the necessary compilers before
-# any extensions?  Or I can distribute a second bertrand-setup package that automates
-# this.  It could also maybe just be a shell script
+class BuildExtSilent(BuildExt):
+    """A modification of the standard BuiltExt command that skips building C++
+    extensions if not in a virtual environment, rather than failing.
+    """
 
+    def __init__(self, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
 
-
+    def build_extensions(self) -> None:
+        """Build if in a virtual environment, otherwise skip."""
+        if os.environ.get("BERTRAND_HOME", None):
+            super().build_extensions()
 
 
 EXTENSIONS = [
@@ -221,6 +230,7 @@ setup(
     ext_modules=EXTENSIONS,
     conan=[
         ("pcre2/10.43", "PCRE2", "pcre2::pcre2"),
-        ("cpptrace/0.6.0", "cpptrace", "cpptrace::cpptrace"),
-    ]
+        ("cpptrace/0.6.1", "cpptrace", "cpptrace::cpptrace"),
+    ],
+    cmdclass={"build_ext": BuildExtSilent},
 )
