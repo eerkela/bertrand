@@ -15,12 +15,7 @@ import numpy
 import pybind11
 import tomlkit
 
-
-# TODO: environment should actually be a global object, so there's no need for the
-# current() or exists() methods.  Just check the truthiness of the object itself.
-
-# TODO: this class could be imported into init.py and used to standardize everything
-# and incrementally build the environment.
+from bertrand import __file__ as bertrand_root
 
 
 T = TypeVar("T")
@@ -31,43 +26,39 @@ class Table(Generic[T]):
     file.  Subclasses can add behavior for modifying the environment as needed.
     """
 
-    def __init__(self, env: Environment, table: dict[str, T]) -> None:
-        self.env = env
+    def __init__(self, environment: Environment, table: dict[str, T]) -> None:
+        self.environment = environment
         self.table = table
 
     def keys(self) -> KeysView[str]:
-        """Return a view of the keys in the table.
-
+        """
         Returns
         -------
         KeysView[str]
-            A view of the keys in the table.
+            A view on the keys stored in the table.
         """
         return self.table.keys()
 
     def values(self) -> ValuesView[T]:
-        """Return a view of the values in the table.
-
+        """
         Returns
         -------
         ValuesView[T]
-            A view of the values in the table.
+            A view on the values stored in the table.
         """
         return self.table.values()
 
     def items(self) -> ItemsView[str, T]:
-        """Return a view of the items in the table.
-
+        """
         Returns
         -------
         ItemsView[str, T]
-            A view of the items in the table.
+            A view on the key-value pairs stored in the table.
         """
         return self.table.items()
 
     def copy(self) -> dict[str, T]:
-        """Return a shallow copy of the table.
-
+        """
         Returns
         -------
         dict[str, T]
@@ -78,17 +69,17 @@ class Table(Generic[T]):
     def clear(self) -> None:
         """Remove all items from the table."""
         self.table.clear()
-        self.env.save()
+        self.environment.save()
 
     def get(self, key: str, default: T | None = None) -> T | None:
-        """Get an item from the table.
+        """Get an item from the table or a default value if the key is not found.
 
         Parameters
         ----------
         key : str
-            The key to look up in the table.
+            The key to look up.
         default : T | None, optional
-            The value to return if the key is not found, by default None.
+            The value to return if the key is not found.  Defaults to None.
 
         Returns
         -------
@@ -99,14 +90,15 @@ class Table(Generic[T]):
         return self.table.get(key, default)
 
     def pop(self, key: str, default: T | None = None) -> T | None:
-        """Remove an item from the table and return its value.
+        """Remove an item from the table and return its value or a default value if the
+        key is not found.
 
         Parameters
         ----------
         key : str
             The key to remove from the table.
         default : T, optional
-            The value to return if the key is not found, by default None.
+            The value to return if the key is not found.  Defaults to None.
 
         Returns
         -------
@@ -115,19 +107,18 @@ class Table(Generic[T]):
             found.
         """
         result = self.table.pop(key, default)
-        self.env.save()
+        self.environment.save()
         return result
 
     def setdefault(self, key: str, default: T) -> T:
-        """Set the value of a key if it is not already present, and then return the
-        value.
+        """Set the value of a key if it is not already present, then return the value.
 
         Parameters
         ----------
         key : str
             The key to set the value of.
-        default : T, optional
-            The value to set if the key is not already present, by default None.
+        default : T
+            The value to set if the key is not already present.
 
         Returns
         -------
@@ -135,7 +126,7 @@ class Table(Generic[T]):
             The value associated with the key.
         """
         result = self.table.setdefault(key, default)
-        self.env.save()
+        self.environment.save()
         return result
 
     def update(self, other: dict[str, T]) -> None:
@@ -147,7 +138,7 @@ class Table(Generic[T]):
             The dictionary to update the table with.
         """
         self.table.update(other)
-        self.env.save()
+        self.environment.save()
 
     def __bool__(self) -> bool:
         return bool(self.table)
@@ -166,20 +157,11 @@ class Table(Generic[T]):
 
     def __setitem__(self, key: str, value: T) -> None:
         self.table[key] = value
-        self.env.save()
+        self.environment.save()
 
     def __delitem__(self, key: str) -> None:
         del self.table[key]
-        self.env.save()
-
-    def __getattr__(self, key: str) -> T:
-        return self.table[key]
-
-    def __setattr__(self, key: str, value: T) -> None:
-        self.table[key] = value
-
-    def __delattr__(self, key: str) -> None:
-        del self.table[key]
+        self.environment.save()
 
     def __contains__(self, key: str) -> bool:
         return key in self.table
@@ -203,8 +185,8 @@ class Array(Generic[T]):
     file.  Subclasses can add behavior for modifying the environment as needed.
     """
 
-    def __init__(self, env: Environment, array: deque[T]) -> None:
-        self.env = env
+    def __init__(self, environment: Environment, array: deque[T]) -> None:
+        self.environment = environment
         self.array = array
 
     def append(self, value: T) -> None:
@@ -216,7 +198,7 @@ class Array(Generic[T]):
             The value to append to the array.
         """
         self.array.append(value)
-        self.env.save()
+        self.environment.save()
 
     def appendleft(self, value: T) -> None:
         """Prepend a value to the array.
@@ -227,7 +209,7 @@ class Array(Generic[T]):
             The value to prepend to the array.
         """
         self.array.appendleft(value)
-        self.env.save()
+        self.environment.save()
 
     def extend(self, other: Iterable[T]) -> None:
         """Extend the array with the contents of another sequence.
@@ -238,7 +220,7 @@ class Array(Generic[T]):
             The sequence to extend the array with.
         """
         self.array.extend(other)
-        self.env.save()
+        self.environment.save()
 
     def extendleft(self, other: Iterable[T]) -> None:
         """Extend the array with the contents of another sequence, prepending each item.
@@ -251,7 +233,7 @@ class Array(Generic[T]):
             The sequence to extend the array with.
         """
         self.array.extendleft(other)
-        self.env.save()
+        self.environment.save()
 
     def insert(self, index: int, value: T) -> None:
         """Insert a value into the array at a specific index.
@@ -264,7 +246,7 @@ class Array(Generic[T]):
             The value to insert into the array.
         """
         self.array.insert(index, value)
-        self.env.save()
+        self.environment.save()
 
     def remove(self, value: T) -> None:
         """Remove the first occurrence of a value from the array.
@@ -280,7 +262,7 @@ class Array(Generic[T]):
             If the value is not found in the array.
         """
         self.array.remove(value)
-        self.env.save()
+        self.environment.save()
 
     def pop(self) -> T:
         """Remove and return the last value in the array.
@@ -291,7 +273,7 @@ class Array(Generic[T]):
             The value of the value that was removed.
         """
         result = self.array.pop()
-        self.env.save()
+        self.environment.save()
         return result
 
     def popleft(self) -> T:
@@ -303,7 +285,7 @@ class Array(Generic[T]):
             The value of the value that was removed.
         """
         result = self.array.popleft()
-        self.env.save()
+        self.environment.save()
         return result
 
     def copy(self) -> deque[T]:
@@ -319,7 +301,7 @@ class Array(Generic[T]):
     def clear(self) -> None:
         """Remove all items from the array."""
         self.array.clear()
-        self.env.save()
+        self.environment.save()
 
     def index(self, value: T) -> int:
         """Return the index of the first occurrence of a value in the array.
@@ -374,12 +356,12 @@ class Array(Generic[T]):
         temp = list(self.array)
         temp.sort(key=key, reverse=reverse)
         self.array = deque(temp)
-        self.env.save()
+        self.environment.save()
 
     def reverse(self) -> None:
         """Reverse the order of the items in the array."""
         self.array.reverse()
-        self.env.save()
+        self.environment.save()
 
     def rotate(self, n: int) -> None:
         """Rotate the array n steps to the right.
@@ -390,7 +372,7 @@ class Array(Generic[T]):
             The number of steps to rotate the array to the right.
         """
         self.array.rotate(n)
-        self.env.save()
+        self.environment.save()
 
     def __len__(self) -> int:
         return len(self.array)
@@ -424,7 +406,7 @@ class Array(Generic[T]):
             self.array = deque(temp)
         else:
             self.array[index] = value  # type: ignore
-        self.env.save()
+        self.environment.save()
 
     def __delitem__(self, index: SupportsIndex | slice) -> None:
         if isinstance(index, slice):
@@ -433,7 +415,7 @@ class Array(Generic[T]):
             self.array = deque(temp)
         else:
             del self.array[index]
-        self.env.save()
+        self.environment.save()
 
     def __eq__(self, other: Any) -> bool:
         return self.array == other
@@ -441,292 +423,26 @@ class Array(Generic[T]):
     def __ne__(self, other: Any) -> bool:
         return self.array != other
 
-    def __add__(self, other: deque[T]) -> deque[T]:
-        return self.array + other
+    def __add__(self, other: Iterable[T]) -> deque[T]:
+        return self.array + deque(other)
 
-    def __iadd__(self, other: deque[T]) -> Array[T]:
+    def __iadd__(self, other: Iterable[T]) -> Array[T]:
         self.extend(other)
         return self
 
 
-class SepArray(Array[T]):
-    """A list-like object that stores a sequence of values separated by a delimiter.
-    Changes to the list will be reflected in the corresponding environment variable by
-    converting each value to a string, joining them with the delimiter, and then
-    prepending the result to the environment variable.
-    """
-
-    def _normalize_index(self, index: int, truncate: bool) -> int:
-        if index < 0:
-            index += len(self.array)
-
-        if truncate:
-            if index < 0:
-                index = 0
-            elif index > len(self.array):
-                index = len(self.array)
-        elif index < 0 or index > len(self.array):
-            raise IndexError("Index out of range.")
-
-        return index
-
-    def __init__(
-        self,
-        env: Environment,
-        key: str,
-        array: deque[T],
-        sep: str,
-    ) -> None:
-        super().__init__(env, array)
-        self.key = key
-        self.sep = sep
-
-    def append(self, value: T) -> None:
-        """Append a value to the array.
-
-        Parameters
-        ----------
-        value : T
-            The value to append to the array.
-        """
-        n = len(self.array)
-        super().append(value)
-        if self.key in os.environ:
-            components = self.sep.split(os.environ[self.key])
-            os.environ[self.key] = self.sep.join(
-                [*components[:n], str(value), *components[n:]]
-            )
-        else:
-            os.environ[self.key] = self.sep.join(str(p) for p in self.array)
-
-    def appendleft(self, value: T) -> None:
-        """Prepend a value to the array.
-
-        Parameters
-        ----------
-        value : T
-            The value to prepend to the array.
-        """
-        super().appendleft(value)
-        if self.key in os.environ:
-            components = self.sep.split(os.environ[self.key])
-            os.environ[self.key] = self.sep.join([str(value), *components])
-        else:
-            os.environ[self.key] = self.sep.join(str(v) for v in self.array)
-
-    def extend(self, other: Iterable[T]) -> None:
-        """Extend the array with the contents of another sequence.
-
-        Parameters
-        ----------
-        other : Iterable[T]
-            The sequence to extend the array with.
-        """
-        n = len(self.array)
-        super().extend(other)
-        if self.key in os.environ:
-            components = self.sep.split(os.environ[self.key])
-            os.environ[self.key] = self.sep.join(
-                [*components[:n], *[str(v) for v in other], *components[n:]]
-            )
-        else:
-            os.environ[self.key] = self.sep.join(str(v) for v in self.array)
-
-    def extendleft(self, other: Iterable[T]) -> None:
-        """Extend the array with the contents of another sequence, prepending each
-        item.
-
-        Note that this implicitly reverses the order of the items in the sequence.
-
-        Parameters
-        ----------
-        other : Iterable[T]
-            The sequence to extend the array with.
-        """
-        super().extendleft(other)
-        if self.key in os.environ:
-            components = self.sep.split(os.environ[self.key])
-            os.environ[self.key] = self.sep.join(
-                [*[str(v) for v in other], *components]
-            )
-        else:
-            os.environ[self.key] = self.sep.join(str(v) for v in self.array)
-
-    def insert(self, index: int, value: T) -> None:
-        """Insert a value into the array at a specific index.
-
-        Parameters
-        ----------
-        index : int
-            The index to insert the value at.
-        value : T
-            The value to insert into the array.
-        """
-        index = self._normalize_index(index, truncate=True)
-        super().insert(index, value)
-        if self.key in os.environ:
-            components = self.sep.split(os.environ[self.key])
-            os.environ[self.key] = self.sep.join(
-                [*components[:index], str(value), *components[index:]]
-            )
-        else:
-            os.environ[self.key] = self.sep.join(str(v) for v in self.array)
-
-    def remove(self, value: T) -> None:
-        """Remove the first occurrence of a value from the array.
-
-        Parameters
-        ----------
-        value : Path
-            The value to remove from the array.
-
-        Raises
-        ------
-        ValueError
-            If the value is not found in the array.
-        """
-        index = self.array.index(value)
-        super().remove(value)
-        if self.key in os.environ:
-            components = self.sep.split(os.environ[self.key])
-            os.environ[self.key] = self.sep.join(
-                [*components[:index], *components[index + 1:]]
-            )
-        else:
-            os.environ[self.key] = self.sep.join(str(v) for v in self.array)
-
-    def pop(self) -> T:
-        """Remove and return the last value in the array.
-
-        Returns
-        -------
-        T
-            The value of the value that was removed.
-        """
-        n = len(self.array)
-        result = super().pop()
-        if self.key in os.environ:
-            components = self.sep.split(os.environ[self.key])
-            os.environ[self.key] = self.sep.join(
-                [*components[:n - 1], *components[n:]]
-            )
-        else:
-            os.environ[self.key] = self.sep.join(str(v) for v in self.array)
-        return result
-
-    def popleft(self) -> T:
-        """Remove and return the first item in the array.
-
-        Returns
-        -------
-        T
-            The value of the value that was removed.
-        """
-        result = super().popleft()
-        if self.key in os.environ:
-            components = self.sep.split(os.environ[self.key])
-            os.environ[self.key] = self.sep.join(components[1:])
-        else:
-            os.environ[self.key] = self.sep.join(str(v) for v in self.array)
-        return result
-
-    def clear(self) -> None:
-        """Remove all items from the array."""
-        n = len(self.array)
-        super().clear()
-        if self.key in os.environ:
-            components = self.sep.split(os.environ[self.key])
-            os.environ[self.key] = self.sep.join(components[n:])
-
-    def sort(
-        self,
-        *,
-        key: Callable[[T], bool] | None = None,
-        reverse: bool = False
-    ) -> None:
-        """Sort the array in place.
-
-        Parameters
-        ----------
-        key : Callable, optional
-            A function to use as the key for sorting, by default None.
-        reverse : bool, optional
-            Whether to sort the array in descending order, by default False.
-        """
-        super().sort(key=key, reverse=reverse)
-        if self.key in os.environ:
-            components = self.sep.split(os.environ[self.key])
-            os.environ[self.key] = self.sep.join(
-                [*[str(v) for v in self.array], *components[len(self.array):]]
-            )
-        else:
-            os.environ[self.key] = self.sep.join(str(v) for v in self.array)
-
-    def reverse(self) -> None:
-        """Reverse the order of the items in the array."""
-        super().reverse()
-        if self.key in os.environ:
-            components = self.sep.split(os.environ[self.key])
-            os.environ[self.key] = self.sep.join(
-                [*[str(v) for v in self.array], *components[len(self.array):]]
-            )
-        else:
-            os.environ[self.key] = self.sep.join(str(v) for v in self.array)
-
-    def rotate(self, n: int) -> None:
-        """Rotate the array n steps to the right.
-
-        Parameters
-        ----------
-        n : int
-            The number of steps to rotate the array to the right.
-        """
-        super().rotate(n)
-        if self.key in os.environ:
-            components = self.sep.split(os.environ[self.key])
-            os.environ[self.key] = self.sep.join(
-                [*[str(v) for v in self.array], *components[len(self.array):]]
-            )
-        else:
-            os.environ[self.key] = self.sep.join(str(v) for v in self.array)
-
-    @overload
-    def __setitem__(self, index: SupportsIndex, value: T) -> None: ...
-    @overload
-    def __setitem__(self, index: slice, value: Iterable[T]) -> None: ...
-    def __setitem__(self, index: SupportsIndex | slice, value: T | Iterable[T]) -> None:
-        n = len(self.array)
-        super().__setitem__(index, value)  # type: ignore
-        if self.key in os.environ:
-            components = self.sep.split(os.environ[self.key])
-            os.environ[self.key] = self.sep.join(
-                [*[str(v) for v in self.array], *components[n:]]
-            )
-        else:
-            os.environ[self.key] = self.sep.join(str(v) for v in self.array)
-
-    def __delitem__(self, index: SupportsIndex | slice) -> None:
-        n = len(self.array)
-        super().__delitem__(index)
-        if self.key in os.environ:
-            components = self.sep.split(os.environ[self.key])
-            os.environ[self.key] = self.sep.join(
-                [*[str(v) for v in self.array], *components[n:]]
-            )
-        else:
-            os.environ[self.key] = self.sep.join(str(v) for v in self.array)
-
-
 class Vars(Table[Any]):
     """A table that represents the [vars] section of an env.toml file.  Pushes any
-    changes to the current environment.
+    changes to both the toml file and the current environment.
     """
 
     def clear(self) -> None:
         """Remove all items from the table."""
-        for key in self.table:
+        keys = list(self.table)
+        self.table.clear()
+        for key in keys:
             os.environ.pop(key, None)
-        super().clear()
+        self.environment.save()
 
     def pop(self, key: str, default: Any = None) -> Any:
         """Remove an item from the table and return its value.
@@ -744,8 +460,10 @@ class Vars(Table[Any]):
             The value associated with the key, or the default value if the key is not
             found.
         """
+        result = self.table.pop(key, default)
         os.environ.pop(key, None)
-        return super().pop(key, default)
+        self.environment.save()
+        return result
 
     def setdefault(self, key: str, default: Any = None) -> Any:
         """Set the value of a key if it is not already present, and then return the
@@ -763,9 +481,10 @@ class Vars(Table[Any]):
         Any
             The value associated with the key.
         """
-        if key not in self.table:
-            os.environ[key] = default
-        return super().setdefault(key, default)
+        result = self.table.setdefault(key, default)
+        os.environ[key] = result
+        self.environment.save()
+        return result
 
     def update(self, other: dict[str, Any]) -> None:
         """Update the table with the contents of another dictionary.
@@ -775,17 +494,20 @@ class Vars(Table[Any]):
         other : dict[str, Any]
             The dictionary to update the table with.
         """
+        self.table.update(other)
         for key, value in other.items():
             os.environ[key] = value
-        super().update(other)
+        self.environment.save()
 
     def __setitem__(self, key: str, value: Any) -> None:
+        self.table[key] = value
         os.environ[key] = value
-        super().__setitem__(key, value)
+        self.environment.save()
 
     def __delitem__(self, key: str) -> None:
+        del self.table[key]
         os.environ.pop(key, None)
-        super().__delitem__(key)
+        self.environment.save()
 
 
 class Paths(Table["Paths.Entry"]):
@@ -794,40 +516,245 @@ class Paths(Table["Paths.Entry"]):
     environment variable when modified.
     """
 
-    class Entry(SepArray[Path]):
+    @staticmethod
+    def _reset_path(key: str, old: Iterable[Path]) -> None:
+        if key in os.environ:
+            ignore = {str(p) for p in old}
+            os.environ[key] = os.pathsep.join(
+                p for p in os.environ[key].split(os.pathsep) if p not in ignore
+            )
+
+    @staticmethod
+    def _extend_path(key: str, value: Iterable[Path]) -> None:
+        if key in os.environ:
+            os.environ[key] = os.pathsep.join([*[str(p) for p in value], os.environ[key]])
+        else:
+            os.environ[key] = os.pathsep.join(str(p) for p in value)
+
+    class Entry(Array[Path]):
         """Represents a single entry in the [paths] table."""
 
-        def __init__(self, env: Environment, key: str, array: deque[Path]) -> None:
-            super().__init__(env, key, array, os.pathsep)
+        # pylint: disable=protected-access
 
-    def _reset_var(self, key: str) -> None:
-        """Reset an environment variable to its original value.
+        def __init__(self, environment: Environment, key: str, array: deque[Path]) -> None:
+            super().__init__(environment, array)
+            self.key = key
 
-        Parameters
-        ----------
-        key : str
-            The key to reset.
-        """
-        if key in os.environ:
-            components = os.pathsep.split(os.environ[key])
-            value = {str(p) for p in self.table[key]}
-            new = [c for c in components if c not in value]
-            os.environ[key] = os.pathsep.join(new)
+        def append(self, value: Path) -> None:
+            """Append a path to the entry.
+
+            Parameters
+            ----------
+            value : Path
+                The path to append.
+            """
+            temp = self.array.copy()
+            self.array.append(value)
+            Paths._reset_path(self.key, temp)
+            Paths._extend_path(self.key, self.array)
+            self.environment.save()
+
+        def appendleft(self, value: Path) -> None:
+            """Prepend a path to the entry.
+
+            Parameters
+            ----------
+            value : Path
+                The path to prepend.
+            """
+            temp = self.array.copy()
+            self.array.appendleft(value)
+            Paths._reset_path(self.key, temp)
+            Paths._extend_path(self.key, self.array)
+            self.environment.save()
+
+        def extend(self, other: Iterable[Path]) -> None:
+            """Extend the entry with the contents of another sequence.
+
+            Parameters
+            ----------
+            other : Iterable[Path]
+                The sequence to extend the entry with.
+            """
+            temp = self.array.copy()
+            self.array.extend(other)
+            Paths._reset_path(self.key, temp)
+            Paths._extend_path(self.key, self.array)
+            self.environment.save()
+
+        def extendleft(self, other: Iterable[Path]) -> None:
+            """Extend the entry with the contents of another sequence, prepending each
+            item.
+
+            Note that this implicitly reverses the order of the items in the sequence.
+
+            Parameters
+            ----------
+            other : Iterable[Path]
+                The sequence to extend the entry with.
+            """
+            temp = self.array.copy()
+            self.array.extendleft(other)
+            Paths._reset_path(self.key, temp)
+            Paths._extend_path(self.key, self.array)
+            self.environment.save()
+
+        def insert(self, index: int, value: Path) -> None:
+            """Insert a path into the entry at a specific index.
+
+            Parameters
+            ----------
+            index : int
+                The index to insert the path at.
+            value : Path
+                The path to insert into the entry.
+            """
+            temp = self.array.copy()
+            self.array.insert(index, value)
+            Paths._reset_path(self.key, temp)
+            Paths._extend_path(self.key, self.array)
+            self.environment.save()
+
+        def remove(self, value: Path) -> None:
+            """Remove the first occurrence of a path from the entry.
+
+            Parameters
+            ----------
+            value : Path
+                The path to remove from the entry.
+                
+            Raises
+            ------
+            ValueError
+                If the path is not found in the entry.
+            """
+            temp = self.array.copy()
+            self.array.remove(value)
+            Paths._reset_path(self.key, temp)
+            Paths._extend_path(self.key, self.array)
+            self.environment.save()
+
+        def pop(self) -> Path:
+            """Remove and return the last path in the entry.
+
+            Returns
+            -------
+            Path
+                The path that was removed.
+            """
+            temp = self.array.copy()
+            result = self.array.pop()
+            Paths._reset_path(self.key, temp)
+            Paths._extend_path(self.key, self.array)
+            self.environment.save()
+            return result
+
+        def popleft(self) -> Path:
+            """Remove and return the first path in the entry.
+
+            Returns
+            -------
+            Path
+                The path that was removed.
+            """
+            temp = self.array.copy()
+            result = self.array.popleft()
+            Paths._reset_path(self.key, temp)
+            Paths._extend_path(self.key, self.array)
+            self.environment.save()
+            return result
+
+        def clear(self) -> None:
+            """Remove all paths from the entry."""
+            temp = self.array.copy()
+            self.array.clear()
+            Paths._reset_path(self.key, temp)
+            self.environment.save()
+
+        def sort(
+            self,
+            *,
+            key: Callable[[Path], bool] | None = None,
+            reverse: bool = False
+        ) -> None:
+            """Sort the entry in place.
+
+            Parameters
+            ----------
+            key : Callable, optional
+                A function to use as the key for sorting, by default None.
+            reverse : bool, optional
+                Whether to sort the entry in descending order, by default False.
+            """
+            temp = list(self.array)
+            temp.sort(key=key, reverse=reverse)
+            self.array = deque(temp)
+            Paths._reset_path(self.key, temp)
+            Paths._extend_path(self.key, self.array)
+            self.environment.save()
+
+        def reverse(self) -> None:
+            """Reverse the order of the paths in the entry."""
+            temp = self.array.copy()
+            self.array.reverse()
+            Paths._reset_path(self.key, temp)
+            Paths._extend_path(self.key, self.array)
+            self.environment.save()
+
+        def rotate(self, n: int = 1) -> None:
+            """Rotate the entry n steps to the right.
+
+            Parameters
+            ----------
+            n : int
+                The number of steps to rotate the entry to the right.
+            """
+            temp = self.array.copy()
+            self.array.rotate(n)
+            Paths._reset_path(self.key, temp)
+            Paths._extend_path(self.key, self.array)
+            self.environment.save()
+
+        @overload
+        def __setitem__(self, index: SupportsIndex, value: Path) -> None: ...
+        @overload
+        def __setitem__(self, index: slice, value: Iterable[Path]) -> None: ...
+        def __setitem__(
+            self,
+            index: SupportsIndex | slice,
+            value: Path | Iterable[Path]
+        ) -> None:
+            temp = list(self.array)
+            temp[index] = value  # type: ignore
+            self.array = deque(temp)
+            Paths._reset_path(self.key, temp)
+            Paths._extend_path(self.key, self.array)
+            self.environment.save()
+
+        def __delitem__(self, index: SupportsIndex | slice) -> None:
+            temp = list(self.array)
+            del temp[index]
+            self.array = deque(temp)
+            Paths._reset_path(self.key, temp)
+            Paths._extend_path(self.key, self.array)
+            self.environment.save()
 
     def clear(self) -> None:
         """Remove all items from the table and the environment."""
-        for key in self.table:
-            self._reset_var(key)
-        super().clear()
+        temp = self.table.copy()
+        self.table.clear()
+        for key in temp:
+            Paths._reset_path(key, temp[key])
+        self.environment.save()
 
-    def pop(self, key: str, default: Entry | None = None) -> Entry | None:
-        """Remove an item from the table and the environment and return its value.
+    def get(self, key: str, default: list[Path] | Entry | None = None) -> Entry | None:
+        """Get an item from the table.
 
         Parameters
         ----------
         key : str
-            The key to remove from the table and the environment.
-        default : Entry | None, optional
+            The key to look up in the table.
+        default : list[Path] | Entry | None, optional
             The value to return if the key is not found, by default None.
 
         Returns
@@ -836,10 +763,35 @@ class Paths(Table["Paths.Entry"]):
             The value associated with the key, or the default value if the key is not
             found.
         """
-        self._reset_var(key)
-        return super().pop(key, default)
+        if isinstance(default, list):
+            default = Paths.Entry(self.environment, key, deque(default))
+        return self.table.get(key, default)
 
-    def setdefault(self, key: str, default: Entry) -> Entry:
+    def pop(self, key: str, default: list[Path] | Entry | None = None) -> Entry | None:
+        """Remove an item from the table and the environment and return its value.
+
+        Parameters
+        ----------
+        key : str
+            The key to remove from the table and the environment.
+        default : list[Path] | Entry | None, optional
+            The value to return if the key is not found, by default None.
+
+        Returns
+        -------
+        Entry | None
+            The value associated with the key, or the default value if the key is not
+            found.
+        """
+        if isinstance(default, list):
+            default = Paths.Entry(self.environment, key, deque(default))
+        result = self.table.pop(key, default)
+        if result is not None:
+            Paths._reset_path(key, result)
+        self.environment.save()
+        return result
+
+    def setdefault(self, key: str, default: list[Path] | Entry) -> Entry:
         """Set the value of a key if it is not already present in the table or the
         environment, and then return the value.
 
@@ -847,7 +799,7 @@ class Paths(Table["Paths.Entry"]):
         ----------
         key : str
             The key to set the value of.
-        default : Entry
+        default : list[Path] | Entry
             The value to set if the key is not already present.
 
         Returns
@@ -855,48 +807,79 @@ class Paths(Table["Paths.Entry"]):
         Entry
             The value associated with the key.
         """
-        if key not in self.table:
-            if key in os.environ:
-                os.environ[key] = os.pathsep.join(
-                    [*[str(p) for p in default], os.environ[key]]
-                )
-            else:
-                os.environ[key] = os.pathsep.join(str(p) for p in default)
-        return super().setdefault(key, default)
+        if isinstance(default, list):
+            default = Paths.Entry(self.environment, key, deque(default))
+        replace = key not in self.table
+        result = self.table.setdefault(key, default)
+        if replace:
+            Paths._extend_path(key, result)
+        self.environment.save()
+        return result
 
-    def update(self, other: dict[str, Entry]) -> None:
+    def update(self, other: dict[str, list[Path]] | dict[str, Entry]) -> None:
         """Update the table with the contents of another dictionary.
 
         Parameters
         ----------
-        other : dict[str, Entry]
+        other : dict[str, list[Path]]
             The dictionary to update the table with.
         """
+        # convert lists to Entries
+        normalized: dict[str, Paths.Entry] = {}
         for key, value in other.items():
-            if key in self.table:
-                self._reset_var(key)
-            if key in os.environ:
-                os.environ[key] = os.pathsep.join(
-                    [*[str(p) for p in value], os.environ[key]]
-                )
+            if isinstance(value, list):
+                normalized[key] = Paths.Entry(self.environment, key, deque(value))
             else:
-                os.environ[key] = os.pathsep.join(str(p) for p in value)
-        super().update(other)
+                normalized[key] = value
 
-    def __setitem__(self, key: str, value: Entry) -> None:
+        # do the update
+        temp = self.table.copy()
+        self.table.update(normalized)
+
+        # update the environment
+        for key, value in normalized.items():
+            if key in temp:
+                Paths._reset_path(key, temp[key])
+            Paths._extend_path(key, value)
+
+        # save the changes
+        self.environment.save()
+
+    def __setitem__(self, key: str, value: list[Path] | Entry) -> None:
+        if isinstance(value, list):
+            value = Paths.Entry(self.environment, key, deque(value))
+
         if key in self.table:
-            self._reset_var(key)
-        if key in os.environ:
-            os.environ[key] = os.pathsep.join(
-                [*[str(p) for p in value], os.environ[key]]
-            )
+            old = self.table[key]
+            self.table[key] = value
+            Paths._reset_path(key, old)
         else:
-            os.environ[key] = os.pathsep.join(str(p) for p in value)
-        super().__setitem__(key, value)
+            self.table[key] = value
+
+        Paths._extend_path(key, value)
+        self.environment.save()
 
     def __delitem__(self, key: str) -> None:
-        self._reset_var(key)
-        super().__delitem__(key)
+        if key in self.table:
+            old = self.table[key]
+            del self.table[key]
+            Paths._reset_path(key, old)
+        else:
+            del self.table[key]
+        self.environment.save()
+
+    def __or__(self, other: dict[str, list[Path]] | dict[str, Entry]) -> dict[str, Entry]:
+        normalized: dict[str, Paths.Entry] = {}
+        for k, v in other.items():
+            if isinstance(v, list):
+                normalized[k] = Paths.Entry(self.environment, k, deque(v))
+            else:
+                normalized[k] = v
+        return self.table | normalized
+
+    def __ior__(self, other: dict[str, list[Path]] | dict[str, Entry]) -> Paths:  # type: ignore
+        self.update(other)
+        return self
 
 
 class Flags(Table["Flags.Entry"]):
@@ -905,40 +888,244 @@ class Flags(Table["Flags.Entry"]):
     when modified.
     """
 
-    class Entry(SepArray[str]):
+    @staticmethod
+    def _reset_flags(key: str, old: Iterable[str]) -> None:
+        if key in os.environ:
+            os.environ[key] = " ".join(
+                f for f in os.environ[key].split(" ") if f not in old
+            )
+
+    @staticmethod
+    def _extend_flags(key: str, value: Iterable[str]) -> None:
+        if key in os.environ:
+            os.environ[key] = " ".join([os.environ[key], *value])
+        else:
+            os.environ[key] = " ".join(value)
+
+    class Entry(Array[str]):
         """Represents a single entry in the [flags] table."""
 
-        def __init__(self, env: Environment, key: str, array: deque[str]) -> None:
-            super().__init__(env, key, array, " ")
+        # pylint: disable=protected-access
 
-    def _reset_var(self, key: str) -> None:
-        """Reset an environment variable to its original value.
+        def __init__(self, environment: Environment, key: str, array: deque[str]) -> None:
+            super().__init__(environment, array)
+            self.key = key
 
-        Parameters
-        ----------
-        key : str
-            The key to reset.
-        """
-        if key in os.environ:
-            components = os.environ[key].split(" ")
-            value = self.table[key]
-            new = [c for c in components if c not in value]
-            os.environ[key] = " ".join(new)
+        def append(self, value: str) -> None:
+            """Append a flag to the entry.
+
+            Parameters
+            ----------
+            value : str
+                The flag to append.
+            """
+            temp = self.array.copy()
+            self.array.append(value)
+            Flags._reset_flags(self.key, temp)
+            Flags._extend_flags(self.key, self.array)
+            self.environment.save()
+
+        def appendleft(self, value: str) -> None:
+            """Prepend a flag to the entry.
+
+            Parameters
+            ----------
+            value : str
+                The flag to prepend.
+            """
+            temp = self.array.copy()
+            self.array.appendleft(value)
+            Flags._reset_flags(self.key, temp)
+            Flags._extend_flags(self.key, self.array)
+            self.environment.save()
+
+        def extend(self, other: Iterable[str]) -> None:
+            """Extend the entry with the contents of another sequence.
+
+            Parameters
+            ----------
+            other : Iterable[str]
+                The sequence to extend the entry with.
+            """
+            temp = self.array.copy()
+            self.array.extend(other)
+            Flags._reset_flags(self.key, temp)
+            Flags._extend_flags(self.key, self.array)
+            self.environment.save()
+
+        def extendleft(self, other: Iterable[str]) -> None:
+            """Extend the entry with the contents of another sequence, prepending each
+            item.
+
+            Note that this implicitly reverses the order of the items in the sequence.
+
+            Parameters
+            ----------
+            other : Iterable[str]
+                The sequence to extend the entry with.
+            """
+            temp = self.array.copy()
+            self.array.extendleft(other)
+            Flags._reset_flags(self.key, temp)
+            Flags._extend_flags(self.key, self.array)
+            self.environment.save()
+
+        def insert(self, index: int, value: str) -> None:
+            """Insert a flag into the entry at a specific index.
+
+            Parameters
+            ----------
+            index : int
+                The index to insert the flag at.
+            value : str
+                The flag to insert into the entry.
+            """
+            temp = self.array.copy()
+            self.array.insert(index, value)
+            Flags._reset_flags(self.key, temp)
+            Flags._extend_flags(self.key, self.array)
+            self.environment.save()
+
+        def remove(self, value: str) -> None:
+            """Remove the first occurrence of a flag from the entry.
+
+            Parameters
+            ----------
+            value : str
+                The flag to remove from the entry.
+                
+            Raises
+            ------
+            ValueError
+                If the flag is not found in the entry.
+            """
+            temp = self.array.copy()
+            self.array.remove(value)
+            Flags._reset_flags(self.key, temp)
+            Flags._extend_flags(self.key, self.array)
+            self.environment.save()
+
+        def pop(self) -> str:
+            """Remove and return the last flag in the entry.
+
+            Returns
+            -------
+            str
+                The flag that was removed.
+            """
+            temp = self.array.copy()
+            result = self.array.pop()
+            Flags._reset_flags(self.key, temp)
+            Flags._extend_flags(self.key, self.array)
+            self.environment.save()
+            return result
+
+        def popleft(self) -> str:
+            """Remove and return the first flag in the entry.
+
+            Returns
+            -------
+            str
+                The flag that was removed.
+            """
+            temp = self.array.copy()
+            result = self.array.popleft()
+            Flags._reset_flags(self.key, temp)
+            Flags._extend_flags(self.key, self.array)
+            self.environment.save()
+            return result
+
+        def clear(self) -> None:
+            """Remove all flags from the entry."""
+            temp = self.array.copy()
+            self.array.clear()
+            Flags._reset_flags(self.key, temp)
+            self.environment.save()
+
+        def sort(
+            self,
+            *,
+            key: Callable[[str], bool] | None = None,
+            reverse: bool = False
+        ) -> None:
+            """Sort the entry in place.
+
+            Parameters
+            ----------
+            key : Callable, optional
+                A function to use as the key for sorting, by default None.
+            reverse : bool, optional
+                Whether to sort the entry in descending order, by default False.
+            """
+            temp = list(self.array)
+            temp.sort(key=key, reverse=reverse)
+            self.array = deque(temp)
+            Flags._reset_flags(self.key, temp)
+            Flags._extend_flags(self.key, self.array)
+            self.environment.save()
+
+        def reverse(self) -> None:
+            """Reverse the order of the flags in the entry."""
+            temp = self.array.copy()
+            self.array.reverse()
+            Flags._reset_flags(self.key, temp)
+            Flags._extend_flags(self.key, self.array)
+            self.environment.save()
+
+        def rotate(self, n: int = 1) -> None:
+            """Rotate the entry n steps to the right.
+
+            Parameters
+            ----------
+            n : int
+                The number of steps to rotate the entry to the right.
+            """
+            temp = self.array.copy()
+            self.array.rotate(n)
+            Flags._reset_flags(self.key, temp)
+            Flags._extend_flags(self.key, self.array)
+            self.environment.save()
+
+        @overload
+        def __setitem__(self, index: SupportsIndex, value: str) -> None: ...
+        @overload
+        def __setitem__(self, index: slice, value: Iterable[str]) -> None: ...
+        def __setitem__(
+            self,
+            index: SupportsIndex | slice,
+            value: str | Iterable[str]
+        ) -> None:
+            temp = list(self.array)
+            temp[index] = value  # type: ignore
+            self.array = deque(temp)
+            Flags._reset_flags(self.key, temp)
+            Flags._extend_flags(self.key, self.array)
+            self.environment.save()
+
+        def __delitem__(self, index: SupportsIndex | slice) -> None:
+            temp = list(self.array)
+            del temp[index]
+            self.array = deque(temp)
+            Flags._reset_flags(self.key, temp)
+            Flags._extend_flags(self.key, self.array)
+            self.environment.save()
 
     def clear(self) -> None:
         """Remove all items from the table and the environment."""
-        for key in self.table:
-            self._reset_var(key)
-        super().clear()
+        temp = self.table.copy()
+        self.table.clear()
+        for key in temp:
+            Flags._reset_flags(key, temp[key])
+        self.environment.save()
 
-    def pop(self, key: str, default: Entry | None = None) -> Entry | None:
-        """Remove an item from the table and the environment and return its value.
+    def get(self, key: str, default: list[str] | Entry | None = None) -> Entry | None:
+        """Get an item from the table.
 
         Parameters
         ----------
         key : str
-            The key to remove from the table and the environment.
-        default : Entry | None, optional
+            The key to look up in the table.
+        default : list[str] | Entry | None, optional
             The value to return if the key is not found, by default None.
 
         Returns
@@ -947,10 +1134,35 @@ class Flags(Table["Flags.Entry"]):
             The value associated with the key, or the default value if the key is not
             found.
         """
-        self._reset_var(key)
-        return super().pop(key, default)
+        if isinstance(default, list):
+            default = Flags.Entry(self.environment, key, deque(default))
+        return self.table.get(key, default)
 
-    def setdefault(self, key: str, default: Entry) -> Entry:
+    def pop(self, key: str, default: list[str] | Entry | None = None) -> Entry | None:
+        """Remove an item from the table and the environment and return its value.
+
+        Parameters
+        ----------
+        key : str
+            The key to remove from the table and the environment.
+        default : list[str] | Entry | None, optional
+            The value to return if the key is not found, by default None.
+
+        Returns
+        -------
+        Entry | None
+            The value associated with the key, or the default value if the key is not
+            found.
+        """
+        if isinstance(default, list):
+            default = Flags.Entry(self.environment, key, deque(default))
+        result = self.table.pop(key, default)
+        if result is not None:
+            Flags._reset_flags(key, result)
+        self.environment.save()
+        return result
+
+    def setdefault(self, key: str, default: list[str] | Entry) -> Entry:
         """Set the value of a key if it is not already present in the table or the
         environment, and then return the value.
 
@@ -958,7 +1170,7 @@ class Flags(Table["Flags.Entry"]):
         ----------
         key : str
             The key to set the value of.
-        default : Entry
+        default : list[str] | Entry
             The value to set if the key is not already present.
 
         Returns
@@ -966,42 +1178,79 @@ class Flags(Table["Flags.Entry"]):
         Entry
             The value associated with the key.
         """
-        if key not in self.table:
-            if key in os.environ:
-                os.environ[key] = " ".join([*default, os.environ[key]])
-            else:
-                os.environ[key] = " ".join(default)
-        return super().setdefault(key, default)
+        if isinstance(default, list):
+            default = Flags.Entry(self.environment, key, deque(default))
+        replace = key not in self.table
+        result = self.table.setdefault(key, default)
+        if replace:
+            Flags._extend_flags(key, result)
+        self.environment.save()
+        return result
 
-    def update(self, other: dict[str, Entry]) -> None:
+    def update(self, other: dict[str, list[str]] | dict[str, Entry]) -> None:
         """Update the table with the contents of another dictionary.
 
         Parameters
         ----------
-        other : dict[str, Entry]
+        other : dict[str, list[str]] | dict[str, Entry]
             The dictionary to update the table with.
         """
+        # convert lists to Entries
+        normalized: dict[str, Flags.Entry] = {}
         for key, value in other.items():
-            if key in self.table:
-                self._reset_var(key)
-            if key in os.environ:
-                os.environ[key] = " ".join([*value, os.environ[key]])
+            if isinstance(value, list):
+                normalized[key] = Flags.Entry(self.environment, key, deque(value))
             else:
-                os.environ[key] = " ".join(value)
-        super().update(other)
+                normalized[key] = value
 
-    def __setitem__(self, key: str, value: Entry) -> None:
+        # do the update
+        temp = self.table.copy()
+        self.table.update(normalized)
+
+        # update the environment
+        for key, value in normalized.items():
+            if key in temp:
+                Flags._reset_flags(key, temp[key])
+            Flags._extend_flags(key, value)
+
+        # save the changes
+        self.environment.save()
+
+    def __setitem__(self, key: str, value: list[str] | Entry) -> None:
+        if isinstance(value, list):
+            value = Flags.Entry(self.environment, key, deque(value))
+
         if key in self.table:
-            self._reset_var(key)
-        if key in os.environ:
-            os.environ[key] = " ".join([*value, os.environ[key]])
+            old = self.table[key]
+            self.table[key] = value
+            Flags._reset_flags(key, old)
         else:
-            os.environ[key] = " ".join(value)
-        super().__setitem__(key, value)
+            self.table[key] = value
+
+        Flags._extend_flags(key, value)
+        self.environment.save()
 
     def __delitem__(self, key: str) -> None:
-        self._reset_var(key)
-        super().__delitem__(key)
+        if key in self.table:
+            old = self.table[key]
+            del self.table[key]
+            Flags._reset_flags(key, old)
+        else:
+            del self.table[key]
+        self.environment.save()
+
+    def __or__(self, other: dict[str, list[str]] | dict[str, Entry]) -> dict[str, Entry]:
+        normalized: dict[str, Flags.Entry] = {}
+        for k, v in other.items():
+            if isinstance(v, list):
+                normalized[k] = Flags.Entry(self.environment, k, deque(v))
+            else:
+                normalized[k] = v
+        return self.table | normalized
+
+    def __ior__(self, other: dict[str, list[str]] | dict[str, Entry]) -> Flags:  # type: ignore
+        self.update(other)
+        return self
 
 
 class Packages(Array["Packages.Entry"]):
@@ -1023,24 +1272,16 @@ class Packages(Array["Packages.Entry"]):
 
         VALID_KEYS = {"name", "version", "find", "link"}
 
-        def __init__(self, env: Environment, table: dict[str, Any]) -> None:
-            if "name" not in table:
-                raise ValueError("Package entry must have a 'name' field.")
-            if "version" not in table:
-                raise ValueError("Package entry must have a 'version' field.")
-            if "find" not in table:
-                raise ValueError("Package entry must have a 'find' field.")
-            if "link" not in table:
-                raise ValueError("Package entry must have a 'link' field.")
+        def __init__(self, environment: Environment, table: dict[str, str]) -> None:
+            for key in self.VALID_KEYS:
+                if key not in table:
+                    raise ValueError(f"Package entry must have a '{key}' field.")
+
             for key in table:
                 if key not in self.VALID_KEYS:
                     raise ValueError(f"Unexpected key '{key}' in package entry.")
 
-            self.env = env
-            self.name = table["name"]
-            self.name = table["version"]
-            self.find = table["find"]
-            self.link = table["link"]
+            self.environment = environment
             self.table = table
 
         @property
@@ -1057,7 +1298,7 @@ class Packages(Array["Packages.Entry"]):
         @name.setter
         def name(self, value: str) -> None:
             self.table["name"] = value
-            self.env.save()
+            self.environment.save()
 
         @property
         def version(self) -> str:
@@ -1073,7 +1314,7 @@ class Packages(Array["Packages.Entry"]):
         @version.setter
         def version(self, value: str) -> None:
             self.table["version"] = value
-            self.env.save()
+            self.environment.save()
 
         @property
         def find(self) -> str:
@@ -1090,7 +1331,7 @@ class Packages(Array["Packages.Entry"]):
         @find.setter
         def find(self, value: str) -> None:
             self.table["find"] = value
-            self.env.save()
+            self.environment.save()
 
         @property
         def link(self) -> str:
@@ -1107,13 +1348,128 @@ class Packages(Array["Packages.Entry"]):
         @link.setter
         def link(self, value: str) -> None:
             self.table["link"] = value
-            self.env.save()
+            self.environment.save()
+
+        def __eq__(self, other: Any) -> bool:
+            if isinstance(other, Packages.Entry):
+                return self.table == other.table
+            return self.table == other
+
+        def __ne__(self, other: Any) -> bool:
+            return not self == other
+
+    def append(self, value: dict[str, str] | Entry) -> None:
+        """Append a package entry to the array.
+
+        Parameters
+        ----------
+        value : dict[str, str] | Entry
+            The package entry to append.
+        """
+        if isinstance(value, dict):
+            value = Packages.Entry(self.environment, value)
+        super().append(value)
+
+    def appendleft(self, value: dict[str, str] | Entry) -> None:
+        """Prepend a package entry to the array.
+
+        Parameters
+        ----------
+        value : dict[str, str] | Entry
+            The package entry to prepend.
+        """
+        if isinstance(value, dict):
+            value = Packages.Entry(self.environment, value)
+        super().appendleft(value)
+
+    def extend(self, other: Iterable[dict[str, str] | Entry]) -> None:
+        """Extend the array with the contents of another sequence.
+
+        Parameters
+        ----------
+        other : Iterable[dict[str, str] | Entry]
+            The sequence to extend the array with.
+        """
+        super().extend(
+            Packages.Entry(self.environment, value) if isinstance(value, dict) else value
+            for value in other
+        )
+
+    def extendleft(self, other: Iterable[dict[str, str] | Entry]) -> None:
+        """Extend the array with the contents of another sequence, prepending each item.
+
+        Note that this implicitly reverses the order of the items in the sequence.
+
+        Parameters
+        ----------
+        other : Iterable[dict[str, str] | Entry]
+            The sequence to extend the array with.
+        """
+        super().extendleft(
+            Packages.Entry(self.environment, value) if isinstance(value, dict) else value
+            for value in other
+        )
+
+    def insert(self, index: int, value: dict[str, str] | Entry) -> None:
+        """Insert a package entry into the array at a specific index.
+
+        Parameters
+        ----------
+        index : int
+            The index to insert the package entry at.
+        value : dict[str, str] | Entry
+            The package entry to insert into the array.
+        """
+        if isinstance(value, dict):
+            value = Packages.Entry(self.environment, value)
+        super().insert(index, value)
+
+    def remove(self, value: dict[str, str] | Entry) -> None:
+        """Remove the first occurrence of a package entry from the array.
+
+        Parameters
+        ----------
+        value : dict[str, str] | Entry
+            The package entry to remove from the array.
+        """
+        if isinstance(value, dict):
+            value = Packages.Entry(self.environment, value)
+        super().remove(value)
+
+    @overload
+    def __setitem__(self, index: SupportsIndex, value: dict[str, str] | Entry) -> None: ...
+    @overload
+    def __setitem__(self, index: slice, value: Iterable[dict[str, str] | Entry]) -> None: ...
+    def __setitem__(
+        self,
+        index: SupportsIndex | slice,
+        value: dict[str, str] | Entry | Iterable[dict[str, str] | Entry]
+    ) -> None:
+        if isinstance(index, slice):
+            super().__setitem__(
+                Packages.Entry(self.environment, v) if isinstance(v, dict) else v  # type: ignore
+                for v in value  # type: ignore
+            )
+        else:
+            if isinstance(value, dict):
+                value = Packages.Entry(self.environment, value)
+            super().__setitem__(index, value)  # type: ignore
+
+    def __add__(self, other: Iterable[dict[str, str] | Entry]) -> deque[Entry]:
+        return self.array + deque(
+            Packages.Entry(self.environment, v) if isinstance(v, dict) else v
+            for v in other
+        )
+
+    def __iadd__(self, other: Iterable[dict[str, str] | Entry]) -> Packages:  # type: ignore
+        self.extend(other)
+        return self
 
 
 
 
-# TODO: indexing into an environment should check os.environ.
-# -> the / operator will compute from the root of the virtual environment.
+
+
 
 
 class Environment:
@@ -1122,71 +1478,210 @@ class Environment:
     """
 
     OLD_PREFIX = "_OLD_VIRTUAL_"
-    venv: Path | None
-    toml: Path | None
-    info: Table[Any] | None
-    vars: Vars | None
-    paths: Paths | None
-    flags: Flags | None
-    packages: Packages | None
 
     def __init__(self) -> None:
         raise NotImplementedError(
             "Environment should be used as a global object, not instantiated directly."
         )
 
-    def __new__(cls) -> Environment:
-        self = super().__new__(cls)
-        if "BERTRAND_HOME" in os.environ:
-            self.venv = Path(os.environ["BERTRAND_HOME"])
-            self.toml = self.venv / "env.toml"
-            if self.toml.exists():
-                with self.toml.open("r") as f:
-                    content = tomlkit.load(f)
+    @property
+    def toml(self) -> Path:
+        """Get the path to the env.toml file for the current virtual environment.
 
-                # if "info" in content:
-                #     info = content["info"]
-                #     if isinstance(info, tomlkit.items.AbstractTable):
-                #         self.info = Info(self, dict(info))
-                #     else:
-                #         raise ValueError(f"[info] must be a table, not {type(info)}")
-                # else:
-                #     raise ValueError(f"No [info] table in file: {self.toml}")
+        Returns
+        -------
+        Path
+            The path to the environment's configuration file.
 
-                # if "vars" in content:
-                #     _vars = content["vars"]
-                #     if isinstance(_vars, tomlkit.items.AbstractTable):
-                #         self.vars = Vars(self, dict(_vars))
-                #     else:
-                #         raise ValueError(f"[vars] must be a table, not {type(vars)}")
-                # else:
-                #     raise ValueError(f"No [vars] table in file: {self.toml}")
+        Raises
+        ------
+        RuntimeError
+            If no environment is currently active.
+        FileNotFoundError
+            If the environment file does not exist.
+        """
+        if not self:
+            raise RuntimeError("No environment is currently active.")
+        path = Path(os.environ["BERTRAND_HOME"]) / "env.toml"
+        if not path.exists():
+            raise FileNotFoundError("Environment file not found.")
+        return path
 
-                # if "paths" in content:
-                #     paths = content["paths"]
-                #     if isinstance(paths, tomlkit.items.AbstractTable):
-                #         self.paths = Table(self, dict(paths))
-                #     else:
-                #         raise ValueError(f"[paths] must be a table, not {type(paths)}")
-                # else:
-                #     raise ValueError(f"No [paths] table in file: {self.toml}")
+    @property
+    def info(self) -> Table[Any]:
+        """The [info] table from the env.toml file.
 
-                # if "flags" in content:
-                #     flags = content["flags"]
-                #     if isinstance(flags, tomlkit.items.AbstractTable):
-                #         self.flags = Table(self, dict(flags))
-                #     else:
-                #         raise ValueError(f"[flags] must be a table, not {type(flags)}")
-                # else:
-                #     raise ValueError(f"No [flags] table in file: {self.toml}")
-        else:
-            self.venv = None
-            self.toml = None
-        return self
+        Returns
+        -------
+        Table[Any]
+            A dict-like object representing the [info] table in the env.toml file.
+            Mutating the table will automatically update the env.toml file with the new
+            values.
 
-    def __bool__(self) -> bool:
-        """Check if there is an active virtual environment."""
-        return "BERTRAND_HOME" in os.environ
+        Raises
+        ------
+        RuntimeError
+            If no environment is active.
+        FileNotFoundError
+            If the environment file does not exist.
+        KeyError
+            If there is no [info] table in the environment file.
+        TypeError
+            If the [info] table is not a table.
+        """
+        with self.toml.open("r") as f:
+            content = tomlkit.load(f)
+            if "info" not in content:
+                raise KeyError(f"No [info] table in file: {self.toml}")
+            info = content["info"]
+            if not isinstance(info, tomlkit.items.AbstractTable):
+                raise TypeError(f"[info] must be a table, not {type(info)}")
+            return Table(self, dict(info))
+
+    @property
+    def vars(self) -> Vars:
+        """The [vars] table from the env.toml file.
+
+        Returns
+        -------
+        Vars
+            A dict-like object representing the [vars] table in the env.toml file.
+            Mutating the table will automatically update both the env.toml file and the
+            system environment with the new values.
+
+        Raises
+        ------
+        RuntimeError
+            If no environment is active.
+        FileNotFoundError
+            If the environment file does not exist.
+        KeyError
+            If there is no [vars] table in the environment file.
+        TypeError
+            If the [vars] table is not a table.
+        """
+        with self.toml.open("r") as f:
+            content = tomlkit.load(f)
+            if "vars" not in content:
+                raise KeyError(f"No [vars] table in file: {self.toml}")
+            vars_ = content["vars"]
+            if not isinstance(vars_, tomlkit.items.AbstractTable):
+                raise TypeError(f"[vars] must be a table, not {type(vars)}")
+            return Vars(self, dict(vars_))
+
+    # TODO: paths, flags, and packages should all operate with ordinary data structures,
+    # and convert them into the proper entry types, rather than requiring the user to
+    # create the entry types themselves.
+
+    @property
+    def paths(self) -> Paths:
+        """The [paths] table from the env.toml file.
+
+        Returns
+        -------
+        Paths
+            A dict-like object representing the [paths] table in the env.toml file.
+            Mutating the table will automatically update both the env.toml file and the
+            system environment with the new values.
+
+        Raises
+        ------
+        RuntimeError
+            If no environment is active.
+        FileNotFoundError
+            If the environment file does not exist.
+        KeyError
+            If there is no [paths] table in the environment file.
+        TypeError
+            If the [paths] table is not a table containing lists of strings.
+        """
+        with self.toml.open("r") as f:
+            content = tomlkit.load(f)
+            if "paths" not in content:
+                raise KeyError(f"No [paths] table in file: {self.toml}")
+            paths = content["paths"]
+            if not isinstance(paths, tomlkit.items.AbstractTable):
+                raise TypeError(f"[paths] must be a table, not {type(paths)}")
+            if not all(
+                isinstance(x, list) and all(isinstance(y, str) for y in x)
+                for x in paths.values()
+            ):
+                raise TypeError("values in [paths] table must all be lists of strings")
+            return Paths(self, {k: deque(v) for k, v in paths.items()})
+
+    @property
+    def flags(self) -> Flags:
+        """The [flags] table from the env.toml file.
+
+        Returns
+        -------
+        Flags
+            A dict-like object representing the [flags] table in the env.toml file.
+            Mutating the table will automatically update both the env.toml file and the
+            system environment with the new values.
+
+        Raises
+        ------
+        RuntimeError
+            If no environment is active.
+        FileNotFoundError
+            If the environment file does not exist.
+        KeyError
+            If there is no [flags] table in the environment file.
+        TypeError
+            If the [flags] table is not a table containing lists of strings.
+        """
+        with self.toml.open("r") as f:
+            content = tomlkit.load(f)
+            if "flags" not in content:
+                raise KeyError(f"No [flags] table in file: {self.toml}")
+            flags = content["flags"]
+            if not isinstance(flags, tomlkit.items.AbstractTable):
+                raise TypeError(f"[flags] must be a table, not {type(flags)}")
+            if not all(
+                isinstance(x, list) and all(isinstance(y, str) for y in x)
+                for x in flags.values()
+            ):
+                raise TypeError("values in [flags] table must all be lists of strings")
+            return Flags(self, {k: deque(v) for k, v in flags.items()})
+
+    @property
+    def packages(self) -> Packages:
+        """The [packages] table from the env.toml file.
+
+        Returns
+        -------
+        Packages
+            A list-like object representing the [packages] table in the env.toml file.
+            Each item in the list is a dict-like object with the fields 'name', 'version',
+            'find', and 'link'.  Mutating the table will automatically update the env.toml
+            file with the new values.
+
+        Raises
+        ------
+        RuntimeError
+            If no environment is active.
+        FileNotFoundError
+            If the environment file does not exist.
+        KeyError
+            If there is no [packages] table in the environment file.
+        TypeError
+            If the [packages] table is not a list of tables.
+        """
+        with self.toml.open("r") as f:
+            content = tomlkit.load(f)
+            if "packages" not in content:
+                raise KeyError(f"No [packages] table in file: {self.toml}")
+            packages = content["packages"]
+            if not isinstance(packages, list):
+                raise TypeError(f"[packages] must be a list, not {type(packages)}")
+            if not all(
+                isinstance(p, tomlkit.items.Table) and "name" in p and "version" in p
+                and "find" in p and "link" in p
+                for p in packages
+            ):
+                raise TypeError(f"[packages] must be a list of tables")
+            return Packages(self, [Packages.Entry(self, p) for p in packages])
 
     def save(self) -> None:
         """Write the current environment to the TOML file.
@@ -1231,12 +1726,13 @@ class Environment:
                 content["packages"] = []
             tomlkit.dump(content, file)
 
+    def activate(self, toml: Path) -> None:
+        """Print a sequence of bash commands used to enter the virtual environment.
 
-
-
-
-    def activate(self) -> None:
-        """Print the sequence of bash commands used to enter the virtual environment.
+        Parameters
+        ----------
+        toml : Path
+            The path to the env.toml file used to configure the environment.
 
         Raises
         ------
@@ -1245,45 +1741,19 @@ class Environment:
 
         Notes
         -----
-        The file should be formatted as follows:
-
-        ```toml
-        [vars]
-        CC = "path/to/c/compiler"
-        CXX = "path/to/c++/compiler"
-        (...)
-
-        [paths]
-        PATH = ["/path/to/bin1/", "/path/to/bin2/", (...), "${PATH}"]
-        LIBRARY_PATH = ["/path/to/lib1/", "/path/to/lib2/", (...), "${LIBRARY_PATH}"]
-        LD_LIBRARY_PATH = ["/path/to/lib1/", "/path/to/lib2/", (...), "${LD_LIBRARY_PATH}"]
-        (...)
-        ```
-
-        Where each value is a string or a list of strings describing a valid bash
-        command.  When the environment is activated, the variables in [vars] will
-        overwrite any existing variables with the same name.  The values in [paths]
-        will be prepended to the current paths (if any) and joined using the system's
-        path separator, which can be found by running `import os; os.pathsep` in
-        Python.
-
-        If any errors are encountered while parsing the file, the program will exit
-        with a return code of 1.
+        This method is called by the `$ bertrand activate` shell command, which is in
+        turn called by the virtual environment's `activate` script.  Each command will
+        be executed verbatim when the script is sourced.
         """
-        if self.content is None:
+        if not toml.exists():
             raise ValueError("Environment file not found.")
 
         commands = []
-
-        # save the current environment variables
         for key, value in os.environ.items():
             commands.append(f"export {Environment.OLD_PREFIX}{key}=\"{value}\"")
 
         # [vars] get exported directly
-        for key, val_str in self.content.get("vars", {}).items():
-            if not isinstance(val_str, str):
-                print(f"ValueError: value for {key} must be a string.")
-                sys.exit(1)
+        for key, val_str in self.vars.items():
             commands.append(f'export {key}=\"{val_str}\"')
 
         # [paths] get appended to the existing paths if possible
@@ -1332,42 +1802,52 @@ class Environment:
             elif f"{Environment.OLD_PREFIX}{key}" not in os.environ:
                 print(f'unset {key}')
 
-    # TODO: modifications made to the environment should be forwarded to the
-    # env.toml file.
+    def __bool__(self) -> bool:
+        """Check if there is an active virtual environment."""
+        return "BERTRAND_HOME" in os.environ
 
-
-
-    def __len__(self) -> int:
-        return len(self.content)
+    def __contains__(self, key: str) -> bool:
+        """Check if a key exists in the current environment."""
+        return key in os.environ
 
     def __getitem__(self, key: str) -> Any:
+        """Get the value of a key in the current environment."""
         return os.environ[key]
 
     def __setitem__(self, key: str, value: Any) -> None:
-        os.environ[key] = value
+        """Set the value of a key in the current environment."""
+        vars_ = self.vars
+        paths = self.paths
+        flags = self.flags
+        if key in paths:
+            paths[key].clear()
+            paths[key].extend(value)
+        elif key in flags:
+            flags[key].clear()
+            flags[key].extend(value)
+        else:
+            vars_[key] = value
 
     def __delitem__(self, key: str) -> None:
-        del os.environ[key]
+        """Clear a key from the current environment."""
+        self.vars.pop(key)
+        self.paths.pop(key)
+        self.flags.pop(key)
 
-    def __contains__(self, key: str) -> bool:
-        return key in os.environ
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(os.environ)
-
-    def __str__(self) -> str:
-        return str(self.content)
+    def __truediv__(self, key: Path | str) -> Path:
+        """Navigate from the root of the virtual environment's directory."""
+        if not self:
+            raise RuntimeError("No environment is currently active.")
+        return Path(os.environ["BERTRAND_HOME"]) / key
 
     def __repr__(self) -> str:
-        return repr(self.content)
-
-    def __bool__(self) -> bool:
-        return bool(self.content)
-
-
-environment = Environment.__new__(Environment)
+        if not self:
+            return "<Environment: headless>"
+        return f"<Environment: {self.toml}>"
 
 
+
+env = Environment.__new__(Environment)
 
 
 
@@ -1376,27 +1856,12 @@ environment = Environment.__new__(Environment)
 
 
 
-def get_bin() -> list[str]:
-    """Return a list of paths to the binary directories of the current virtual
-    environment.
-
-    Returns
-    -------
-    list[str]
-        A list of paths to the binary directories of the current virtual environment.
-    """
-    env = Environment.current()
-    if not env:
-        return []
-
-    # TODO: Can't use div operator?  This should probably be enabled?
-
-    return list(map(str, [
-        env / "bin",
-    ]))
+# TODO: numpy.get_include() and pybind11.get_include() should be automatically added
+# to CPATH so that they're always available without needing a get_include() method.
 
 
-def get_include() -> list[str]:
+
+def get_include() -> str:
     """Return a list of paths to the include directories of the current virtual
     environment.
 
@@ -1405,15 +1870,9 @@ def get_include() -> list[str]:
     list[str]
         A list of paths to the include directories of the current virtual environment.
     """
-    env = Environment.current()
-    if not env:
-        return []
+    return str(Path(bertrand_root).absolute().parent)
 
-    return [
-        str(env / "include"),
-        numpy.get_include(),
-        pybind11.get_include(),
-    ]
+
 
 
 def get_lib() -> list[str]:
@@ -1425,10 +1884,6 @@ def get_lib() -> list[str]:
     list[str]
         A list of paths to the library directories of the current virtual environment.
     """
-    env = Environment.current()
-    if not env:
-        return []
-
     return list(map(str, [
         env / "lib",
         env / "lib64",
