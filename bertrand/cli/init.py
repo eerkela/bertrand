@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 from tqdm import tqdm
 
 from bertrand import __version__
+from .env import env
 
 
 Version = packaging.version.Version
@@ -211,29 +212,12 @@ class Target:
     def __bool__(self) -> bool:
         return self.build
 
-    def __call__(self, venv: Path, workers: int) -> None:
+    def __call__(self, workers: int) -> None:
         raise NotImplementedError()
 
-    def push_toml(self, venv: Path) -> None:
-        """Update the toml file with the config for the build target.
-
-        Does nothing unless overridden in a subclass.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the env.toml file.
-        """
-
-    def push_environment(self, venv: Path) -> None:
-        """Update the current environment with the config for the build target.
-
-        Does nothing unless overridden in a subclass.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the build target.
+    def push(self) -> None:
+        """Update the env.toml file for the build target and export any changes to
+        the build environment.  Does nothing unless overridden in a subclass.
         """
 
 
@@ -284,13 +268,11 @@ class Gold(Target):
             raise ValueError(f"ld/gold version {self.version} not found.")
         print(f"{self.name} URL: {self.url}")
 
-    def install_gmp(self, venv: Path, workers: int) -> None:
+    def install_gmp(self, workers: int) -> None:
         """Install GNU MP (a.k.a. GMP) into a virtual environment.
 
         Parameters
         ----------
-        venv : Path
-            The path to the virtual environment to install GMP into.
         workers : int
             The number of workers to use when building GMP.
 
@@ -304,19 +286,22 @@ class Gold(Target):
             raise ValueError("Could not detect latest GMP version.")
         version = normalize_version(versions[0])
 
-        archive = venv / f"gmp-{version}.tar.xz"
-        source = venv / f"gmp-{version}"
-        build = venv / f"gmp-{version}-build"
+        archive = env / f"gmp-{version}.tar.xz"
+        source = env / f"gmp-{version}"
+        build = env / f"gmp-{version}-build"
         try:
             download(
                 f"https://ftp.gnu.org/gnu/gmp/gmp-{version}.tar.xz",
                 archive,
                 "Downloading GMP"
             )
-            extract(archive, venv, " Extracting GMP")
+            extract(archive, env.dir, " Extracting GMP")
             archive.unlink()
             build.mkdir(parents=True, exist_ok=True)
-            subprocess.check_call([str(source / 'configure'), f"--prefix={venv}"], cwd=build)
+            subprocess.check_call(
+                [str(source / 'configure'), f"--prefix={env.dir}"],
+                cwd=build
+            )
             subprocess.check_call(["make", f"-j{workers}"], cwd=build)
             subprocess.check_call(["make", "install"], cwd=build)
         finally:
@@ -326,15 +311,13 @@ class Gold(Target):
             if build.exists():
                 shutil.rmtree(build)
 
-    def install_mpfr(self, venv: Path, workers: int) -> None:
+    def install_mpfr(self, workers: int) -> None:
         """Install the MPFR library into a virtual environment.
 
         This depends on GMP.
 
         Parameters
         ----------
-        venv : Path
-            The path to the virtual environment to install MPFR into.
         workers : int
             The number of workers to use when building MPFR.
 
@@ -343,29 +326,29 @@ class Gold(Target):
         ValueError
             If the latest MPFR version cannot be detected.
         """
-        self.install_gmp(venv, workers)
+        self.install_gmp(workers)
         versions = scrape_versions(self.MPFR_RELEASES, self.MPFR_PATTERN, 1)
         if not versions:
             raise ValueError("Could not detect latest MPFR version.")
         version = normalize_version(versions[0])
 
-        archive = venv / f"mpfr-{version}.tar.xz"
-        source = venv / f"mpfr-{version}"
-        build = venv / f"mpfr-{version}-build"
+        archive = env / f"mpfr-{version}.tar.xz"
+        source = env / f"mpfr-{version}"
+        build = env / f"mpfr-{version}-build"
         try:
             download(
                 f"https://ftp.gnu.org/gnu/mpfr/mpfr-{version}.tar.xz",
                 archive,
                 "Downloading MPFR"
             )
-            extract(archive, venv, " Extracting MPFR")
+            extract(archive, env.dir, " Extracting MPFR")
             archive.unlink()
             build.mkdir(parents=True, exist_ok=True)
             subprocess.check_call(
                 [
                     str(source / 'configure'),
-                    f"--prefix={venv}",
-                    f"--with-gmp={venv}",
+                    f"--prefix={env.dir}",
+                    f"--with-gmp={env.dir}",
                 ],
                 cwd=build
             )
@@ -378,13 +361,11 @@ class Gold(Target):
             if build.exists():
                 shutil.rmtree(build)
 
-    def install_texinfo(self, venv: Path, workers: int) -> None:
+    def install_texinfo(self, workers: int) -> None:
         """Install the GNU Texinfo system into a virtual environment.
 
         Parameters
         ----------
-        venv : Path
-            The path to the virtual environment to install Texinfo into.
         workers : int
             The number of workers to use when building Texinfo.
 
@@ -404,19 +385,22 @@ class Gold(Target):
             raise ValueError("Could not detect latest texinfo version.")
         version = versions[0]
 
-        archive = venv / f"texinfo-{version}.tar.xz"
-        source = venv / f"texinfo-{version}"
-        build = venv / f"texinfo-{version}-build"
+        archive = env / f"texinfo-{version}.tar.xz"
+        source = env / f"texinfo-{version}"
+        build = env / f"texinfo-{version}-build"
         try:
             download(
                 f"https://ftp.gnu.org/gnu/texinfo/texinfo-{version}.tar.xz",
                 archive,
                 "Downloading Texinfo"
             )
-            extract(archive, venv, " Extracting Texinfo")
+            extract(archive, env.dir, " Extracting Texinfo")
             archive.unlink()
             build.mkdir(parents=True, exist_ok=True)
-            subprocess.check_call([str(source / 'configure'), f"--prefix={venv}"], cwd=build)
+            subprocess.check_call(
+                [str(source / 'configure'), f"--prefix={env.dir}"],
+                cwd=build
+            )
             subprocess.check_call(["make", f"-j{workers}"], cwd=build)
             subprocess.check_call(["make", "install"], cwd=build)
         finally:
@@ -426,36 +410,37 @@ class Gold(Target):
             if build.exists():
                 shutil.rmtree(build)
 
-    def __call__(self, venv: Path, workers: int) -> None:
-        self.install_mpfr(venv, workers)
-        self.install_texinfo(venv, workers)
-        archive = venv / f"binutils-{self.version}.tar.xz"
-        source = venv / f"binutils-{self.version}"
-        build = venv / f"binutils-{self.version}-build"
+    def __call__(self, workers: int) -> None:
+        self.install_mpfr(workers)
+        self.install_texinfo(workers)
+        archive = env / f"binutils-{self.version}.tar.xz"
+        source = env / f"binutils-{self.version}"
+        build = env / f"binutils-{self.version}-build"
         try:
             download(
                 f"https://ftp.gnu.org/gnu/binutils/binutils-{self.version}.tar.xz",
                 archive,
                 "Downloading Binutils"
             )
-            extract(archive, venv, " Extracting Binutils")
+            extract(archive, env.dir, " Extracting Binutils")
             archive.unlink()
             build.mkdir(parents=True, exist_ok=True)
             subprocess.check_call(
                 [
                     str(source / 'configure'),
-                    f"--prefix={venv}",
+                    f"--prefix={env.dir}",
                     "--enable-gold",
                     "--enable-plugins",
                     "--enable-shared",
                     "--disable-werror",
-                    f"--with-gmp={venv}",
-                    f"--with-mpfr={venv}",
+                    f"--with-gmp={env.dir}",
+                    f"--with-mpfr={env.dir}",
                 ],
                 cwd=build,
             )
             subprocess.check_call(["make", f"-j{workers}"], cwd=build)
             subprocess.check_call(["make", "install"], cwd=build)
+
         finally:
             archive.unlink(missing_ok=True)
             if source.exists():
@@ -463,38 +448,12 @@ class Gold(Target):
             if build.exists():
                 shutil.rmtree(build)
 
-    def push_toml(self, venv: Path) -> None:
-        """Update the toml file with the config for the ld/gold linker.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the env.toml file.
-        """
-        with (venv / "env.toml").open("r") as f:
-            env = tomlkit.load(f)
-        env["info"]["linker"] = "ld" if self.name == "ld" else "ld.gold"  # type: ignore
-        env["info"]["linker_version"] = str(self.version)  # type: ignore
-        env["vars"]["LD"] = str(venv / "bin" / self.name)  # type: ignore
-        env["flags"]["LDFLAGS"].append(f"-fuse-ld={self.name}")  # type: ignore
-        with (venv / "env.toml").open("w") as f:
-            tomlkit.dump(env, f)
-
-    def push_environment(self, venv: Path) -> None:
-        """Update the current environment with the config for the ld/gold linker.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the ld/gold linker.
-        """
-        name = "ld" if self.name == "ld" else "ld.gold"
-        os.environ["LD"] = str(venv / "bin" / name)
-        os.environ["LDFLAGS"] = " ".join(
-            [os.environ["LDFLAGS"], f"-fuse-ld={self.name}"]
-            if os.environ.get("LDFLAGS", None) else
-            [f"-fuse-ld={self.name}"]
-        )
+    def push(self) -> None:
+        """Update the environment with the config for the ld/gold linker."""
+        env.info["linker"] = "ld" if self.name == "ld" else "ld.gold"
+        env.info["linker_version"] = str(self.version)
+        env.vars["LD"] = str(env / "bin" / self.name)
+        env.flags["LDFLAGS"].append(f"-fuse-ld={self.name}")
 
 
 class GCC(Target):
@@ -533,20 +492,20 @@ class GCC(Target):
             raise ValueError(f"GCC version {self.version} not found.")
         print(f"GCC URL: {self.url}")
 
-    def __call__(self, venv: Path, workers: int) -> None:
-        archive = venv / f"gcc-{self.version}.tar.xz"
-        source = venv / f"gcc-{self.version}"
-        build = venv / f"gcc-{self.version}-build"
+    def __call__(self, workers: int) -> None:
+        archive = env / f"gcc-{self.version}.tar.xz"
+        source = env / f"gcc-{self.version}"
+        build = env / f"gcc-{self.version}-build"
         try:
             download(self.url, archive, "Downloading GCC")
-            extract(archive, venv, " Extracting GCC")
+            extract(archive, env.dir, " Extracting GCC")
             archive.unlink()
             subprocess.check_call(["./contrib/download_prerequisites"], cwd=source)
             build.mkdir(parents=True, exist_ok=True)
             subprocess.check_call(
                 [
                     str(source / "configure"),
-                    f"--prefix={venv}",
+                    f"--prefix={env.dir}",
                     "--enable-languages=c,c++",
                     "--enable-shared",
                     "--disable-werror",
@@ -557,6 +516,7 @@ class GCC(Target):
             )
             subprocess.check_call(["make", f"-j{workers}"], cwd=build)
             subprocess.check_call(["make", "install"], cwd=build)
+
         finally:
             archive.unlink(missing_ok=True)
             if source.exists():
@@ -564,53 +524,18 @@ class GCC(Target):
             if build.exists():
                 shutil.rmtree(build)
 
-    def push_toml(self, venv: Path) -> None:
-        """Update the toml file with the config for the GCC compiler.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the env.toml file.
-        """
-        with (venv / "env.toml").open("r") as f:
-            env = tomlkit.load(f)
-        env["info"]["c_compiler"] = "gcc"  # type: ignore
-        env["info"]["cxx_compiler"] = "g++"  # type: ignore
-        env["info"]["compiler_version"] = str(self.version)  # type: ignore
-        env["vars"]["CC"] = str(venv / "bin" / "gcc")  # type: ignore
-        env["vars"]["CXX"] = str(venv / "bin" / "g++")  # type: ignore
-        env["vars"]["AR"] = str(venv / "bin" / "gcc-ar")  # type: ignore
-        env["vars"]["NM"] = str(venv / "bin" / "gcc-nm")  # type: ignore
-        env["vars"]["RANLIB"] = str(venv / "bin" / "gcc-ranlib")  # type: ignore
-        env["paths"]["LIBRARY_PATH"].append(str(venv / "lib64"))  # type: ignore
-        env["paths"]["LD_LIBRARY_PATH"].append(str(venv / "lib64"))  # type: ignore
-        with (venv / "env.toml").open("w") as f:
-            tomlkit.dump(env, f)
-
-    def push_environment(self, venv: Path) -> None:
-        """Update the current environment with the config for the GCC compiler.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the GCC compiler.
-        """
-        os.environ["CC"] = str(venv / "bin" / "gcc")
-        os.environ["CXX"] = str(venv / "bin" / "g++")
-        os.environ["AR"] = str(venv / "bin" / "gcc-ar")
-        os.environ["NM"] = str(venv / "bin" / "gcc-nm")
-        os.environ["RANLIB"] = str(venv / "bin" / "gcc-ranlib")
-        lib64 = venv / "lib64"
-        os.environ["LIBRARY_PATH"] = os.pathsep.join(
-            [str(lib64), os.environ["LIBRARY_PATH"]]
-            if os.environ.get("LIBRARY_PATH", None) else
-            [str(lib64)]
-        )
-        os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(
-            [str(lib64), os.environ["LD_LIBRARY_PATH"]]
-            if os.environ.get("LD_LIBRARY_PATH", None) else
-            [str(lib64)]
-        )
+    def push(self) -> None:
+        """Update the environment with the config for the GCC compiler."""
+        env.info["c_compiler"] = "gcc"
+        env.info["cxx_compiler"] = "g++"
+        env.info["compiler_version"] = str(self.version)
+        env.vars["CC"] = str(env / "bin" / "gcc")
+        env.vars["CXX"] = str(env / "bin" / "g++")
+        env.vars["AR"] = str(env / "bin" / "gcc-ar")
+        env.vars["NM"] = str(env / "bin" / "gcc-nm")
+        env.vars["RANLIB"] = str(env / "bin" / "gcc-ranlib")
+        env.paths["LIBRARY_PATH"].append(env / "lib64")
+        env.paths["LD_LIBRARY_PATH"].append(env / "lib64")
 
 
 class Clang(Target):
@@ -660,13 +585,13 @@ class Clang(Target):
         if "clangtools" in self.targets:
             print(f"Clangtools URL: {self.url}")
 
-    def __call__(self, venv: Path, workers: int, **kwargs: Any) -> None:
-        archive = venv / f"clang-{self.version}.tar.gz"
-        source = venv / f"llvm-project-llvmorg-{self.version}"
-        build = venv / f"clang-{self.version}-build"
+    def __call__(self, workers: int, **kwargs: Any) -> None:
+        archive = env / f"clang-{self.version}.tar.gz"
+        source = env / f"llvm-project-llvmorg-{self.version}"
+        build = env / f"clang-{self.version}-build"
         try:
             download(self.url, archive, "Downloading Clang")
-            extract(archive, venv, " Extracting Clang")
+            extract(archive, env.dir, " Extracting Clang")
             archive.unlink()
             build.mkdir(parents=True, exist_ok=True)
             subprocess.check_call(
@@ -675,10 +600,10 @@ class Clang(Target):
                     "-G",
                     "Unix Makefiles",
                     f"-DLLVM_ENABLE_PROJECTS={';'.join(self.targets)}",
-                    f"-DCMAKE_INSTALL_PREFIX={venv}",
+                    f"-DCMAKE_INSTALL_PREFIX={env.dir}",
                     "-DCMAKE_BUILD_TYPE=Release",
                     "-DBUILD_SHARED_LIBS=ON",
-                    f"-DLLVM_BINUTILS_INCDIR={venv / 'include'}",
+                    f"-DLLVM_BINUTILS_INCDIR={env / 'include'}",
                     str(source / 'llvm'),
                 ],
                 cwd=build
@@ -692,56 +617,24 @@ class Clang(Target):
             if build.exists():
                 shutil.rmtree(build)
 
-    def push_toml(self, venv: Path) -> None:
-        """Update the toml file with the config for the Clang compiler.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the env.toml file.
-        """
-        with (venv / "env.toml").open("r") as f:
-            env = tomlkit.load(f)
+    def push(self) -> None:
+        """Update the environment with the config for the Clang compiler."""
         if "clang" in self.targets:
-            env["info"]["c_compiler"] = "clang"  # type: ignore
-            env["info"]["cxx_compiler"] = "clang++"  # type: ignore
-            env["info"]["compiler_version"] = str(self.version)  # type: ignore
-            env["vars"]["CC"] = str(venv / "bin" / "clang")  # type: ignore
-            env["vars"]["CXX"] = str(venv / "bin" / "clang++")  # type: ignore
-            env["vars"]["AR"] = str(venv / "bin" / "llvm-ar")  # type: ignore
-            env["vars"]["NM"] = str(venv / "bin" / "llvm-nm")  # type: ignore
-            env["vars"]["RANLIB"] = str(venv / "bin" / "llvm-ranlib")  # type: ignore
+            env.info["c_compiler"] = "clang"
+            env.info["cxx_compiler"] = "clang++"
+            env.info["compiler_version"] = str(self.version)
+            env.vars["CC"] = str(env / "bin" / "clang")
+            env.vars["CXX"] = str(env / "bin" / "clang++")
+            env.vars["AR"] = str(env / "bin" / "llvm-ar")
+            env.vars["NM"] = str(env / "bin" / "llvm-nm")
+            env.vars["RANLIB"] = str(env / "bin" / "llvm-ranlib")
         if "lld" in self.targets:
-            env["info"]["linker"] = "lld"  # type: ignore
-            env["info"]["linker_version"] = str(self.version)  # type: ignore
-            env["vars"]["LD"] = str(venv / "bin" / "ld.lld")  # type: ignore
-            env["flags"]["LDFLAGS"].append("-fuse-ld=lld")  # type: ignore
-        if "clang-tools-extra" in self.targets:
-            env["info"]["clangtools"] = str(self.version)  # type: ignore
-        with (venv / "env.toml").open("w") as f:
-            tomlkit.dump(env, f)
-
-    def push_environment(self, venv: Path) -> None:
-        """Update the environment with paths to the Clang targets that were built.
-
-        Parameters
-        ----------
-        venv : Path
-            The path to the virtual environment containing the Clang targets.
-        """
-        if "clang" in self.targets:
-            os.environ["CC"] = str(venv / "bin" / "clang")
-            os.environ["CXX"] = str(venv / "bin" / "clang++")
-            os.environ["AR"] = str(venv / "bin" / "llvm-ar")
-            os.environ["NM"] = str(venv / "bin" / "llvm-nm")
-            os.environ["RANLIB"] = str(venv / "bin" / "llvm-ranlib")
-        if "lld" in self.targets:
-            os.environ["LD"] = str(venv / "bin" / "ld.lld")
-            os.environ["LDFLAGS"] = " ".join(
-                [os.environ["LDFLAGS"], "-fuse-ld=lld"]
-                if os.environ.get("LDFLAGS", None) else
-                ["-fuse-ld=lld"]
-            )
+            env.info["linker"] = "lld"
+            env.info["linker_version"] = str(self.version)
+            env.vars["LD"] = str(env / "bin" / "ld.lld")
+            env.flags["LDFLAGS"].append("-fuse-ld=lld")
+        if "clangtools" in self.targets:
+            env.info["clangtools"] = str(self.version)
 
 
 class Ninja(Target):
@@ -780,37 +673,27 @@ class Ninja(Target):
             raise ValueError(f"Ninja version {self.version} not found.")
         print(f"Ninja URL: {self.url}")
 
-    def __call__(self, venv: Path, workers: int) -> None:
-        archive = venv / f"ninja-{self.version}.tar.gz"
-        install = venv / f"ninja-{self.version}"
+    def __call__(self, workers: int) -> None:
+        archive = env / f"ninja-{self.version}.tar.gz"
+        install = env / f"ninja-{self.version}"
         try:
             download(self.url, archive, "Downloading Ninja")
-            extract(archive, venv, " Extracting Ninja")
+            extract(archive, env.dir, " Extracting Ninja")
             archive.unlink()
             subprocess.check_call(
                 [str(install / "configure.py"), "--bootstrap"],
                 cwd=install
             )
-            shutil.move(install / "ninja", venv / "bin" / "ninja")
+            shutil.move(install / "ninja", env / "bin" / "ninja")
         finally:
             archive.unlink(missing_ok=True)
             if install.exists():
                 shutil.rmtree(install)
 
-    def push_toml(self, venv: Path) -> None:
-        """Update the toml file with the config for the Ninja build system.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the env.toml file.
-        """
-        with (venv / "env.toml").open("r") as f:
-            env = tomlkit.load(f)
-        env["info"]["generator"] = self.name  # type: ignore
-        env["info"]["generator_version"] = str(self.version)  # type: ignore
-        with (venv / "env.toml").open("w") as f:
-            tomlkit.dump(env, f)
+    def push(self) -> None:
+        """Update the environment with the config for the Ninja build system."""
+        env.info["generator"] = self.name
+        env.info["generator_version"] = str(self.version)
 
 
 class CMake(Target):
@@ -849,26 +732,32 @@ class CMake(Target):
             raise ValueError(f"CMake version {self.version} not found.")
         print(f"CMake URL: {self.url}")
 
-    def __call__(self, venv: Path, workers: int) -> None:
-        archive = venv / f"cmake-{self.version}.tar.gz"
-        source = venv / f"cmake-{self.version}"
-        build = venv / f"cmake-{self.version}-build"
+    def __call__(self, workers: int) -> None:
+        archive = env / f"cmake-{self.version}.tar.gz"
+        source = env / f"cmake-{self.version}"
+        build = env / f"cmake-{self.version}-build"
         try:
             download(self.url, archive, "Downloading CMake")
-            extract(archive, venv, " Extracting CMake")
+            extract(archive, env.dir, " Extracting CMake")
             archive.unlink()
             build.mkdir(parents=True, exist_ok=True)
             subprocess.check_call(
                 [
                     str(source / "bootstrap"),
-                    f"--prefix={venv}",
+                    f"--prefix={env.dir}",
                     "--generator=Ninja",
                     f"--parallel={workers}",
                 ],
                 cwd=build
             )
-            subprocess.check_call([str(venv / "bin" / "ninja"), f"-j{workers}"], cwd=build)
-            subprocess.check_call([str(venv / "bin" / "ninja"), "install"], cwd=build)
+            subprocess.check_call(
+                [str(env / "bin" / "ninja"), f"-j{workers}"],
+                cwd=build
+            )
+            subprocess.check_call(
+                [str(env / "bin" / "ninja"), "install"],
+                cwd=build
+            )
         finally:
             archive.unlink(missing_ok=True)
             if source.exists():
@@ -876,20 +765,10 @@ class CMake(Target):
             if build.exists():
                 shutil.rmtree(build)
 
-    def push_toml(self, venv: Path) -> None:
-        """Update the toml file with the config for the CMake build system.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the env.toml file.
-        """
-        with (venv / "env.toml").open("r") as f:
-            env = tomlkit.load(f)
-        env["info"]["build_system"] = self.name  # type: ignore
-        env["info"]["build_system_version"] = str(self.version)  # type: ignore
-        with (venv / "env.toml").open("w") as f:
-            tomlkit.dump(env, f)
+    def push(self) -> None:
+        """Update the environment with the config for the CMake build system."""
+        env.info["build_system"] = self.name
+        env.info["build_system_version"] = str(self.version)
 
 
 class Mold(Target):
@@ -924,21 +803,21 @@ class Mold(Target):
             raise ValueError(f"mold version {self.version} not found.")
         print(f"mold URL: {self.url}")
 
-    def __call__(self, venv: Path, workers: int) -> None:
-        archive = venv / f"mold-{self.version}.tar.gz"
-        source = venv / f"mold-{self.version}"
-        build = venv / f"mold-{self.version}-build"
+    def __call__(self, workers: int) -> None:
+        archive = env / f"mold-{self.version}.tar.gz"
+        source = env / f"mold-{self.version}"
+        build = env / f"mold-{self.version}-build"
         try:
             download(self.url, archive, "Downloading mold")
-            extract(archive, venv, " Extracting mold")
+            extract(archive, env.dir, " Extracting mold")
             archive.unlink()
             build.mkdir(parents=True, exist_ok=True)
-            cmake = str(venv / "bin" / "cmake")
+            cmake = str(env / "bin" / "cmake")
             subprocess.check_call(
                 [
                     cmake,
                     "-DCMAKE_BUILD_TYPE=Release",
-                    f"-DCMAKE_INSTALL_PREFIX={venv}",
+                    f"-DCMAKE_INSTALL_PREFIX={env.dir}",
                     f"-B{str(build)}",
                 ],
                 cwd=source
@@ -952,37 +831,12 @@ class Mold(Target):
             if build.exists():
                 shutil.rmtree(build)
 
-    def push_toml(self, venv: Path) -> None:
-        """Update the toml file with the config for the mold linker.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the env.toml file.
-        """
-        with (venv / "env.toml").open("r") as f:
-            env = tomlkit.load(f)
-        env["info"]["linker"] = "ld.mold"  # type: ignore
-        env["info"]["linker_version"] = str(self.version)  # type: ignore
-        env["vars"]["LD"] = str(venv / "bin" / self.name)  # type: ignore
-        env["flags"]["LDFLAGS"].append("-fuse-ld=mold")  # type: ignore
-        with (venv / "env.toml").open("w") as f:
-            tomlkit.dump(env, f)
-
-    def push_environment(self, venv: Path) -> None:
-        """Update the current environment with the config for the mold linker.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the mold linker.
-        """
-        os.environ["LD"] = str(venv / "bin" / "ld.mold")
-        os.environ["LDFLAGS"] = " ".join(
-            [os.environ["LDFLAGS"], "-fuse-ld=mold"]
-            if os.environ.get("LDFLAGS", None) else
-            ["-fuse-ld=mold"]
-        )
+    def push(self) -> None:
+        """Update the environment with the config for the mold linker."""
+        env.info["linker"] = "mold"
+        env.info["linker_version"] = str(self.version)
+        env.vars["LD"] = str(env / "bin" / "ld.mold")
+        env.flags["LDFLAGS"].append("-fuse-ld=mold")
 
 
 class Valgrind(Target):
@@ -1017,17 +871,20 @@ class Valgrind(Target):
             raise ValueError(f"Valgrind version {self.version} not found.")
         print(f"Valgrind URL: {self.url}")
 
-    def __call__(self, venv: Path, workers: int) -> None:
-        archive = venv / f"valgrind-{self.version}.tar.bz2"
-        source = venv / f"valgrind-{self.version}"
-        build = venv / f"valgrind-{self.version}-build"
+    def __call__(self, workers: int) -> None:
+        archive = env / f"valgrind-{self.version}.tar.bz2"
+        source = env / f"valgrind-{self.version}"
+        build = env / f"valgrind-{self.version}-build"
         try:
             download(self.url, archive, "Downloading Valgrind")
-            extract(archive, venv, " Extracting Valgrind")
+            extract(archive, env.dir, " Extracting Valgrind")
             archive.unlink()
             subprocess.check_call(["./autogen.sh"], cwd=source)
             build.mkdir(parents=True, exist_ok=True)
-            subprocess.check_call([str(source / "configure"), f"--prefix={venv}"], cwd=build)
+            subprocess.check_call(
+                [str(source / "configure"), f"--prefix={env.dir}"],
+                cwd=build
+            )
             subprocess.check_call(["make", f"-j{workers}"], cwd=build)
             subprocess.check_call(["make", "install"], cwd=build)
         finally:
@@ -1037,19 +894,9 @@ class Valgrind(Target):
             if build.exists():
                 shutil.rmtree(build)
 
-    def push_toml(self, venv: Path) -> None:
-        """Update the toml file with the config for Valgrind.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the env.toml file.
-        """
-        with (venv / "env.toml").open("r") as f:
-            env = tomlkit.load(f)
-        env["info"]["valgrind"] = str(self.version)  # type: ignore
-        with (venv / "env.toml").open("w") as f:
-            tomlkit.dump(env, f)
+    def push(self) -> None:
+        """Update the environment with the config for Valgrind."""
+        env.info["valgrind"] = str(self.version)
 
 
 class Python(Target):
@@ -1089,19 +936,19 @@ class Python(Target):
             raise ValueError(f"Python version {self.version} not found.")
         print(f"Python URL: {self.url}")
 
-    def __call__(self, venv: Path, workers: int) -> None:
-        archive = venv / f"Python-{self.version}.tar.xz"
-        source = venv / f"Python-{self.version}"
-        build = venv / f"Python-{self.version}-build"
+    def __call__(self, workers: int) -> None:
+        archive = env / f"Python-{self.version}.tar.xz"
+        source = env / f"Python-{self.version}"
+        build = env / f"Python-{self.version}-build"
         try:
             download(self.url, archive, "Downloading Python")
-            extract(archive, venv, " Extracting Python")
+            extract(archive, env.dir, " Extracting Python")
             archive.unlink()
             build.mkdir(parents=True, exist_ok=True)
             configure_args = [
                 str(source / "configure"),
                 "--prefix",
-                str(venv),
+                str(env.dir),
                 "--with-ensurepip=upgrade",
                 "--enable-shared",
                 "--enable-optimizations",
@@ -1114,8 +961,8 @@ class Python(Target):
             subprocess.check_call(configure_args, cwd=build)
             subprocess.check_call(["make", f"-j{workers}"], cwd=build)
             subprocess.check_call(["make", "install"], cwd=build)
-            os.symlink(venv / "bin" / "python3", venv / "bin" / "python")
-            os.symlink(venv / "bin" / "pip3", venv / "bin" / "pip")
+            os.symlink(env / "bin" / "python3", env / "bin" / "python")
+            os.symlink(env / "bin" / "pip3", env / "bin" / "pip")
         finally:
             archive.unlink(missing_ok=True)
             if source.exists():
@@ -1123,19 +970,10 @@ class Python(Target):
             if build.exists():
                 shutil.rmtree(build)
 
-    def push_toml(self, venv: Path) -> None:
-        """Update the toml file with the config for Python.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the env.toml file.
-        """
-        with (venv / "env.toml").open("r") as f:
-            env = tomlkit.load(f)
-        env["info"]["python"] = str(self.version)  # type: ignore
-        with (venv / "env.toml").open("w") as f:
-            tomlkit.dump(env, f)
+    def push(self) -> None:
+        """Update the environment with the config for Python."""
+        env.info["python"] = str(self.version)
+        env.flags["LDFLAGS"].append(f"-lpython{self.version.major}.{self.version.minor}")
 
 
 class Conan(Target):
@@ -1163,37 +1001,16 @@ class Conan(Target):
                 )
             super().__init__(name, v)
 
-    def __call__(self, venv: Path, workers: int) -> None:
-        self.push_environment(venv)
+    def __call__(self, workers: int) -> None:
+        os.environ["CONAN_HOME"] = str(env / ".conan")
         subprocess.check_call(
-            [str(venv / "bin" / "pip"), "install", f"conan=={self.version}"],
-            cwd=venv
+            [str(env / "bin" / "pip"), "install", f"conan=={self.version}"],
         )
 
-    def push_toml(self, venv: Path) -> None:
-        """Update the toml file with the config for Conan.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the env.toml file.
-        """
-        with (venv / "env.toml").open("r") as f:
-            env = tomlkit.load(f)
-        env["info"]["conan"] = str(self.version)  # type: ignore
-        env["vars"]["CONAN_HOME"] = str(venv / ".conan")  # type: ignore
-        with (venv / "env.toml").open("w") as f:
-            tomlkit.dump(env, f)
-
-    def push_environment(self, venv: Path) -> None:
-        """Update the current environment with the config for Conan.
-
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing Conan.
-        """
-        os.environ["CONAN_HOME"] = str(venv / ".conan")
+    def push(self) -> None:
+        """Update the environment with the config for Conan."""
+        env.info["conan"] = str(self.version)
+        env.vars["CONAN_HOME"] = str(env / ".conan")
 
 
 class Bertrand(Target):
@@ -1214,37 +1031,51 @@ class Bertrand(Target):
                 )
             super().__init__(name, v)
 
-    def __call__(self, venv: Path, workers: int) -> None:
-        self.push_environment(venv)
+    def __call__(self, workers: int) -> None:
         subprocess.check_call(
-            [str(venv / "bin" / "pip"), "install", f"bertrand=={__version__}"],
-            cwd=venv
+            [str(env / "bin" / "pip"), "install", f"bertrand=={__version__}"],
         )
 
-    def push_toml(self, venv: Path) -> None:
-        """Update the toml file with the config for Bertrand.
+    def push(self) -> None:
+        """Update the environment with the config for Bertrand."""
+        env.info["bertrand"] = __version__
+        np_include = subprocess.run(
+            [
+                str(env / "bin" / "python"),
+                "-c",
+                "import numpy; print(numpy.get_include())"
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        pybind11_include = subprocess.run(
+            [
+                str(env / "bin" / "python"),
+                "-c",
+                "import pybind11; print(pybind11.get_include())"
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        # TODO: add bertrand include path (although there may not be any headers to include)
+        # bertrand_include = subprocess.run(
+        #     [
+        #         str(env / "bin" / "python"),
+        #         "-c",
+        #         "import bertrand; print(bertrand.get_include())"
+        #     ],
+        #     capture_output=True,
+        #     text=True,
+        #     check=True,
+        # )
 
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing the env.toml file.
-        """
-        with (venv / "env.toml").open("r") as f:
-            env = tomlkit.load(f)
-        env["info"]["bertrand"] = __version__  # type: ignore
-        env["vars"]["BERTRAND_HOME"] = str(venv)  # type: ignore
-        with (venv / "env.toml").open("w") as f:
-            tomlkit.dump(env, f)
-
-    def push_environment(self, venv: Path) -> None:
-        """Update the current environment with the config for Bertrand.
-        
-        Parameters
-        ----------
-        venv : Path
-            A path to the virtual environment containing Bertrand.
-        """
-        os.environ["BERTRAND_HOME"] = str(venv)
+        env.paths["CPATH"].extend([
+            Path(np_include.stdout.strip()),
+            Path(pybind11_include.stdout.strip()),
+            # Path(bertrand_include.stdout.strip()),
+        ])
 
 
 class Recipe:
@@ -1368,7 +1199,7 @@ class Recipe:
         order: list[Target] = []
         if self.linker.name in ("ld", "gold"):
             order.append(self.linker)
-        else:
+        else:  # TODO: no need to reinstall gold if it's already built
             order.append(Gold("gold", "latest"))
         order.append(self.compiler)
         order.append(self.generator)
@@ -1401,7 +1232,7 @@ class Recipe:
         order: list[Target] = []
         if self.linker.name in ("ld", "gold"):
             order.append(self.linker)
-        else:
+        else:  # TODO: no need to reinstall gold if it's already built
             # NOTE: the LLVMGold.so plugin is required to build Python with LTO using
             # Clang, even if we end up using mold in the final environment.  This
             # appears to be a bug in the Python build system itself.
@@ -1432,13 +1263,11 @@ class Recipe:
             order.append(self.clangtools)
         return order
 
-    def install(self, venv: Path, workers: int) -> None:
+    def install(self, workers: int) -> None:
         """Install the virtual environment in the given directory.
 
         Parameters
         ----------
-        venv : Path
-            The path to the virtual environment.
         workers : int
             The number of workers to use when building the tools.
         """
@@ -1451,29 +1280,25 @@ class Recipe:
         # install recipe
         for target in order:
             if target:
-                target(venv, workers)
+                target(workers)
             if target in self.export:
-                target.push_environment(venv)
-                target.push_toml(venv)
+                target.push()
                 self.consume(target)
 
         # write activation script
-        file = venv / "activate"
+        file = env / "activate"
         with file.open("w") as f:
             f.write(f"""
 # This file must be used with "source venv/activate" *from bash*
 # You cannot run it directly
 
-# Exit immediately if a command exits with non-zero status
-set -e
-
 # on Windows, a path can contain colons and backslashes and has to be converted:
 if [ "${{OSTYPE:-}}" == "cygwin" ] || [ "${{OSTYPE:-}}" == "msys" ]; then
     # transform D:\\path\\to\\venv into /d/path/to/venv on MSYS
     # and to /cygdrive/d/path/to/venv on Cygwin
-    THIS_VIRTUAL_ENV=$(cygpath "{venv}")
+    THIS_VIRTUAL_ENV=$(cygpath "{env.dir}")
 else
-    THIS_VIRTUAL_ENV="{venv}"
+    THIS_VIRTUAL_ENV="{env.dir}"
 fi
 
 # virtual environments cannot be nested
@@ -1487,15 +1312,16 @@ if [ -n "$VIRTUAL_ENV" ]; then
 fi
 
 # save the previous variables and set those from env.toml
-eval "$(bertrand activate "${{THIS_VIRTUAL_ENV}}/env.toml")"
+echo $(bertrand activate "${{THIS_VIRTUAL_ENV}}")
+eval "$(bertrand activate "${{THIS_VIRTUAL_ENV}}")"
 
 export VIRTUAL_ENV="${{THIS_VIRTUAL_ENV}}"
 export BERTRAND_HOME="${{THIS_VIRTUAL_ENV}}"
 export PYTHONHOME="${{THIS_VIRTUAL_ENV}}"
 
 if [ -z "${{VIRTUAL_ENV_DISABLE_PROMPT:-}}" ] ; then
-    export PS1="({venv.name}) ${{PS1:-}}"
-    export VIRTUAL_ENV_PROMPT="({venv.name}) "
+    export PS1="({env.dir.name}) ${{PS1:-}}"
+    export VIRTUAL_ENV_PROMPT="({env.dir.name}) "
 fi
 
 deactivate() {{
@@ -1590,7 +1416,7 @@ def init(
     command-line use.
     """
     start = time.time()
-    if os.environ.get("BERTRAND_HOME", None):
+    if "BERTRAND_HOME" in os.environ:
         raise RuntimeError(
             "`$ bertrand init` should not be run from inside a virtual environment. "
             "Exit the virtual environment before running this command."
@@ -1615,167 +1441,146 @@ def init(
     if workers < 1:
         raise ValueError("workers must be a positive integer.")
 
-    # remove old environment if force installing
-    venv = cwd / name
-    if force and venv.exists():
-        shutil.rmtree(venv)
-    venv.mkdir(parents=True, exist_ok=True)
-
-    # check if an environment already exists and skip previously built targets
-    toml_path = venv / "env.toml"
-    if toml_path.exists():
-        with toml_path.open("r") as f:
-            env = dict(tomlkit.load(f)["info"])  # type: ignore
-            if "c_compiler" in env and "compiler_version" in env:
-                if recipe.compiler.name != env["c_compiler"]:
-                    raise RuntimeError(
-                        f"compiler '{recipe.compiler.name}' does not match existing "
-                        f"environment '{env['compiler']}'.  Use `--force` if you want "
-                        f"to rebuild the environment from scratch."
-                    )
-                if recipe.compiler.version != Version(env["compiler_version"]):  # type: ignore
-                    raise RuntimeError(
-                        f"compiler version '{recipe.compiler.version}' does not match "
-                        f"existing environment '{env['compiler_version']}'.  Use "
-                        f"`--force` if you want to rebuild the environment from "
-                        f"scratch."
-                    )
-                recipe.consume(recipe.compiler)
-                recipe.compiler.push_environment(venv)
-            if "generator" in env and "generator_version" in env:
-                if recipe.generator.name != env["generator"]:
-                    raise RuntimeError(
-                        f"generator '{recipe.generator.name}' does not match existing "
-                        f"environment '{env['generator']}'.  Use `--force` if you want "
-                        f"to rebuild the environment from scratch."
-                    )
-                if recipe.generator.version != Version(env["generator_version"]):  # type: ignore
-                    raise RuntimeError(
-                        f"generator version '{recipe.generator.version}' does not match "
-                        f"existing environment '{env['generator_version']}'.  Use "
-                        f"`--force` if you want to rebuild the environment from scratch."
-                    )
-                recipe.consume(recipe.generator)
-                recipe.generator.push_environment(venv)
-            if "build_system" in env and "build_system_version" in env:
-                if recipe.build_system.name != env["build_system"]:
-                    raise RuntimeError(
-                        f"build system '{recipe.build_system.name}' does not match "
-                        f"existing environment '{env['build_system']}'.  Use `--force` "
-                        f"if you want to rebuild the environment from scratch."
-                    )
-                # pylint: disable=line-too-long
-                if recipe.build_system.version != Version(env["build_system_version"]):  # type: ignore
-                    raise RuntimeError(
-                        f"build system version '{recipe.build_system.version}' does not "
-                        f"match existing environment '{env['build_system_version']}'.  "
-                        f"Use `--force` if you want to rebuild the environment from "
-                        f"scratch."
-                    )
-                recipe.consume(recipe.build_system)
-                recipe.build_system.push_environment(venv)
-            if "linker" in env and "linker_version" in env:
-                if recipe.linker.name != env["linker"]:
-                    raise RuntimeError(
-                        f"linker '{recipe.linker.name}' does not match existing "
-                        f"environment '{env['linker']}'.  Use `--force` if you want to "
-                        f"rebuild the environment from scratch."
-                    )
-                if recipe.linker.version != Version(env["linker_version"]):  # type: ignore
-                    raise RuntimeError(
-                        f"linker version '{recipe.linker.version}' does not match "
-                        f"existing environment '{env['linker_version']}'.  Use `--force` "
-                        f"if you want to rebuild the environment from scratch."
-                    )
-                recipe.consume(recipe.linker)
-                recipe.linker.push_environment(venv)
-            if "python" in env:
-                if recipe.python.version != Version(env["python"]):  # type: ignore
-                    raise RuntimeError(
-                        f"Python version '{recipe.python.version}' does not match "
-                        f"existing environment '{env['python']}'.  Use `--force` if you "
-                        f"want to rebuild the environment from scratch."
-                    )
-                recipe.consume(recipe.python)
-                recipe.python.push_environment(venv)
-            if "conan" in env:
-                if recipe.conan.version != Version(env["conan"]):  # type: ignore
-                    raise RuntimeError(
-                        f"Conan version '{recipe.conan.version}' does not match "
-                        f"existing environment '{env['conan']}'.  Use `--force` if you "
-                        f"want to rebuild the environment from scratch."
-                    )
-                recipe.consume(recipe.conan)
-                recipe.conan.push_environment(venv)
-            if recipe.clangtools and "clangtools" in env:
-                if recipe.clangtools.version != Version(env["clangtools"]):  # type: ignore
-                    raise RuntimeError(
-                        f"Clang tools version '{recipe.clangtools.version}' does not "
-                        f"match existing environment '{env['clangtools']}'.  Use "
-                        f"`--force` if you want to rebuild the environment from scratch."
-                    )
-                recipe.consume(recipe.clangtools)
-                recipe.clangtools.push_environment(venv)
-            if recipe.valgrind and "valgrind" in env:
-                if recipe.valgrind.version != Version(env["valgrind"]):  # type: ignore
-                    raise RuntimeError(
-                        f"Valgrind version '{recipe.valgrind.version}' does not match "
-                        f"existing environment '{env['valgrind']}'.  Use `--force` if you "
-                        f"want to rebuild the environment from scratch."
-                    )
-                recipe.consume(recipe.valgrind)
-                recipe.valgrind.push_environment(venv)
-    else:
-        with toml_path.open("w") as f:
-            empty: dict[str, dict[str, Any]] = {
-                "info": {},
-                "vars": {},
-                "paths": {
-                    "PATH": [str(venv / "bin")],
-                    "CPATH": [str(venv / "include")],
-                    "LIBRARY_PATH": [str(venv / "lib")],
-                    "LD_LIBRARY_PATH": [str(venv / "lib")],
-                },
-                "flags": {
-                    "CFLAGS": [],
-                    "CXXFLAGS": [],
-                    "LDFLAGS": [],
-                }
-            }
-            tomlkit.dump(empty, f)
-
+    # set up the environment
     old_environment = os.environ.copy()
-    os.environ["PATH"] = os.pathsep.join(
-        [str(venv / "bin"), os.environ["PATH"]]
-        if os.environ.get("PATH", None) else
-        [str(venv / "bin")]
-    )
-    os.environ["CPATH"] = os.pathsep.join(
-        [str(venv / "include"), os.environ["CPATH"]]
-        if os.environ.get("CPATH", None) else
-        [str(venv / "include")]
-    )
-    os.environ["LIBRARY_PATH"] = os.pathsep.join(
-        [str(venv / "lib"), os.environ["LIBRARY_PATH"]]
-        if os.environ.get("LIBRARY_PATH", None) else
-        [str(venv / "lib")]
-    )
-    os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(
-        [str(venv / "lib"), os.environ["LD_LIBRARY_PATH"]]
-        if os.environ.get("LD_LIBRARY_PATH", None) else
-        [str(venv / "lib")]
-    )
+    os.environ["BERTRAND_HOME"] = str(cwd / name)
 
-    # install the recipe
-    recipe.install(venv, workers)
-    (venv / "built").touch(exist_ok=True)
+    try:
 
-    # restore previous environment
-    for k in os.environ:
-        if k in old_environment:
-            os.environ[k] = old_environment[k]
-        else:
-            del os.environ[k]
+        # remove old environment if force installing
+        if force and env.dir.exists():
+            shutil.rmtree(env.dir)
+        env.dir.mkdir(parents=True, exist_ok=True)
+
+        # initialize env.toml
+        if not env.toml.exists():
+            with env.toml.open("w") as f:
+                tomlkit.dump({
+                    "info": {},
+                    "vars": {},
+                    "paths": {
+                        "PATH": [str(env / "bin")],
+                        "CPATH": [str(env / "include")],
+                        "LIBRARY_PATH": [str(env / "lib")],
+                        "LD_LIBRARY_PATH": [str(env / "lib")],
+                    },
+                    "flags": {
+                        "CFLAGS": [],
+                        "CXXFLAGS": [],
+                        "LDFLAGS": [],
+                    },
+                    "packages": [],
+                }, f)
+
+        # export env.toml into the current environment
+        env.vars = env.vars.copy()  # type: ignore
+        env.paths = env.paths.copy()  # type: ignore
+        env.flags = env.flags.copy()  # type: ignore
+
+        # skip previously built targets
+        info = env.info
+        if "c_compiler" in info and "compiler_version" in info:
+            if recipe.compiler.name != info["c_compiler"]:
+                raise RuntimeError(
+                    f"compiler '{recipe.compiler.name}' does not match existing "
+                    f"environment '{info['compiler']}'.  Use `--force` if you want to "
+                    f"rebuild the environment from scratch."
+                )
+            if recipe.compiler.version != Version(info["compiler_version"]):
+                raise RuntimeError(
+                    f"compiler version '{recipe.compiler.version}' does not match "
+                    f"existing environment '{info['compiler_version']}'.  Use "
+                    f"`--force` if you want to rebuild the environment from scratch."
+                )
+            recipe.consume(recipe.compiler)
+        if "generator" in info and "generator_version" in info:
+            if recipe.generator.name != info["generator"]:
+                raise RuntimeError(
+                    f"generator '{recipe.generator.name}' does not match existing "
+                    f"environment '{info['generator']}'.  Use `--force` if you want "
+                    f"to rebuild the environment from scratch."
+                )
+            if recipe.generator.version != Version(info["generator_version"]):
+                raise RuntimeError(
+                    f"generator version '{recipe.generator.version}' does not match "
+                    f"existing environment '{info['generator_version']}'.  Use "
+                    f"`--force` if you want to rebuild the environment from scratch."
+                )
+            recipe.consume(recipe.generator)
+        if "build_system" in info and "build_system_version" in info:
+            if recipe.build_system.name != info["build_system"]:
+                raise RuntimeError(
+                    f"build system '{recipe.build_system.name}' does not match "
+                    f"existing environment '{info['build_system']}'.  Use `--force` "
+                    f"if you want to rebuild the environment from scratch."
+                )
+            # pylint: disable=line-too-long
+            if recipe.build_system.version != Version(info["build_system_version"]):
+                raise RuntimeError(
+                    f"build system version '{recipe.build_system.version}' does not "
+                    f"match existing environment '{info['build_system_version']}'.  "
+                    f"Use `--force` if you want to rebuild the environment from "
+                    f"scratch."
+                )
+            recipe.consume(recipe.build_system)
+        if "linker" in info and "linker_version" in info:
+            if recipe.linker.name != info["linker"]:
+                raise RuntimeError(
+                    f"linker '{recipe.linker.name}' does not match existing "
+                    f"environment '{info['linker']}'.  Use `--force` if you want to "
+                    f"rebuild the environment from scratch."
+                )
+            if recipe.linker.version != Version(info["linker_version"]):
+                raise RuntimeError(
+                    f"linker version '{recipe.linker.version}' does not match "
+                    f"existing environment '{info['linker_version']}'.  Use `--force` "
+                    f"if you want to rebuild the environment from scratch. "
+                )
+            recipe.consume(recipe.linker)
+        if "python" in info:
+            if recipe.python.version != Version(info["python"]):
+                raise RuntimeError(
+                    f"Python version '{recipe.python.version}' does not match "
+                    f"existing environment '{info['python']}'.  Use `--force` if "
+                    f"you want to rebuild the environment from scratch."
+                )
+            recipe.consume(recipe.python)
+        if "conan" in info:
+            if recipe.conan.version != Version(info["conan"]):
+                raise RuntimeError(
+                    f"Conan version '{recipe.conan.version}' does not match "
+                    f"existing environment '{info['conan']}'.  Use `--force` if "
+                    f"you want to rebuild the environment from scratch."
+                )
+            recipe.consume(recipe.conan)
+        if recipe.clangtools and "clangtools" in info:
+            if recipe.clangtools.version != Version(info["clangtools"]):
+                raise RuntimeError(
+                    f"Clang tools version '{recipe.clangtools.version}' does not "
+                    f"match existing environment '{info['clangtools']}'.  Use "
+                    f"`--force` if you want to rebuild the environment from scratch. "
+                )
+            recipe.consume(recipe.clangtools)
+        if recipe.valgrind and "valgrind" in info:
+            if recipe.valgrind.version != Version(info["valgrind"]):
+                raise RuntimeError(
+                    f"Valgrind version '{recipe.valgrind.version}' does not match "
+                    f"existing environment '{info['valgrind']}'.  Use `--force` if "
+                    f"you want to rebuild the environment from scratch."
+                )
+            recipe.consume(recipe.valgrind)
+
+        # install the recipe
+        recipe.install(workers)
+
+    finally:
+
+        # restore previous environment
+        for k in os.environ:
+            if k in old_environment:
+                os.environ[k] = old_environment[k]
+            else:
+                del os.environ[k]
 
     # print elapsed time
     elapsed = time.time() - start

@@ -70,6 +70,8 @@
 
 __version__ = "0.0.1"  # handled by bumpver
 
+# from .cli import env, init
+
 from .setuptools import BuildExt, Extension, get_include, setup
 
 

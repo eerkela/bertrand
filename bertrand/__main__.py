@@ -3,7 +3,7 @@
 import argparse
 from pathlib import Path
 
-from .cli import init
+from .cli import init, activate, deactivate
 from . import __version__
 
 
@@ -265,8 +265,76 @@ class Parser:
             )
         )
 
-    # TODO: install command
-    # TODO: uninstall command
+    # TODO: conan has different syntax for install and uninstall compared to pip, so
+    # I'll have to think about how best to handle it.
+
+    def install(self) -> None:
+        """Add the 'install' command to the parser."""
+        command = self.commands.add_parser(
+            "install",
+            help=(
+                "Install a C++ dependency into the virtual environment using the "
+                "Conan package manager.  This command will download the specified "
+                "package from the Conan repository and then install it into the "
+                "virtual environment similar to pip."
+            )
+        )
+        command.add_argument(
+            "package",
+            nargs=1,
+            help=(
+                "Specifies the package to install.  Must be provided in the format: "
+                "`package/version@find/link`, where the 'package/version' fragment is "
+                "identical to a normal `conan install` command, and the 'find/link' "
+                "fragment tells CMake how to locate the package's headers and "
+                "libraries.  The `find` and `link` symbols can typically be found on "
+                "the package's conan.io page under the CMake `find_package` and "
+                "`target_link_libraries` examples.  After installing, this "
+                "information will be saved to the environment's [[packages]] array, "
+                "and will be automatically inserted whenever C/C++ code is compiled "
+                "within it."
+            ),
+        )
+
+        command.add_argument(
+            "options",
+            nargs="*",
+            help=(
+                "Additional options to pass to the Conan install command.  These are "
+                "passed directly to Conan, and can be used to specify build options, "
+                "compiler flags, or other package-specific settings.  For more "
+                "information, see the Conan documentation."
+            ),
+        )
+
+    def uninstall(self) -> None:
+        """Add the 'uninstall' command to the parser."""
+        command = self.commands.add_parser(
+            "uninstall",
+            help=(
+                "Uninstall a C++ dependency from the virtual environment using the "
+                "Conan package manager.  Identical to the `conan remove` command, "
+                "except that it also updates the environment's [[packages]] array to "
+                "reflect the new state."
+            )
+        )
+        command.add_argument(
+            "package",
+            nargs=1,
+            help=(
+                "Specifies the package to uninstall.  Must be provided in the format: "
+                "`package/version`, where the 'package/version' fragment is "
+                "identical to a normal `conan install` command, and the 'find/link' "
+                "fragment tells CMake how to locate the package's headers and "
+                "libraries.  The `find` and `link` symbols can typically be found on "
+                "the package's conan.io page under the CMake `find_package` and "
+                "`target_link_libraries` examples.  After uninstalling, this "
+                "information will be removed from the environment's [[packages]] array, "
+                "and will no longer be inserted whenever C/C++ code is compiled within "
+                "it."
+            ),
+        )
+
     # TODO: update command
     # TODO: compile command
 
@@ -343,6 +411,7 @@ class Parser:
         self.init()
         self.activate()
         self.deactivate()
+        # self.install()
 
         # queries
         self.version()
@@ -386,10 +455,12 @@ def main() -> None:
         )
 
     elif args.command == "activate":
-        Environment.activate(args.file)
+        for command in activate(args.file[0]):
+            print(command)
 
     elif args.command == "deactivate":
-        Environment.deactivate()
+        for command in deactivate():
+            print(command)
 
     elif args.binaries:
         print(get_bin())
