@@ -306,7 +306,7 @@ class BuildExt(pybind11_build_ext):
             conan_build_dir = Path(self.build_lib).absolute() / "build"
             conan_build_dir /= "Debug" if self.debug else "Release"
             # f.write(f"list(APPEND CMAKE_PREFIX_PATH {conan_build_dir})\n")
-            f.write(f"include({conan_build_dir}/generators/conan_toolchain.cmake)\n")
+            # f.write(f"include({conan_build_dir}/generators/conan_toolchain.cmake)\n")  # TODO: why is this here?
             for package in self.conan:
                 f.write(f"find_package({package[1]} REQUIRED)\n")
 
@@ -403,8 +403,8 @@ class BuildExt(pybind11_build_ext):
                 f.write(f"build_type={'Debug' if self.debug else 'Release'}\n")
                 f.write(f"compiler={sysconfig.get_config_var('CC')}\n")
                 f.write("compiler.cppstd=23\n")  # TODO: find a better way to get this
-                f.write(f"compiler.libcxx=libstdc++\n")  # TODO: get libcxx version?
-                f.write(f"compiler.version=14\n")  # TODO: get compiler version number?
+                f.write("compiler.libcxx=libstdc++\n")  # TODO: get libcxx version?
+                f.write("compiler.version=14\n")  # TODO: get compiler version number?
 
                 f.write("[buildenv]\n")
                 f.write(f"CC={sysconfig.get_config_var('CC')}\n")
@@ -465,7 +465,8 @@ class BuildExt(pybind11_build_ext):
             "cmake",
             "-G",
             "Ninja",
-            str(cmakelists.parent)
+            str(cmakelists.parent),
+            # "DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake",
         ]
         build_args = [
             "cmake",
@@ -550,7 +551,7 @@ def setup(
     **kwargs : Any
         Arbitrary keyword arguments passed to the setuptools.setup() function.
     """
-    class BuildExtensions(BuildExt):
+    class BuildExtWrapper(BuildExt):
         """A private subclass of BuildExt that captures the number of workers to use
         from the setup() call.
         """
@@ -558,10 +559,20 @@ def setup(
             super().__init__(*a, conan=conan, workers=workers, **kw)
 
     if cmdclass is None:
-        cmdclass = {"build_ext": BuildExtensions}
+        cmdclass = {"build_ext": BuildExtWrapper}
     elif "build_ext" not in cmdclass:
-        cmdclass["build_ext"] = BuildExtensions
+        cmdclass["build_ext"] = BuildExtWrapper
+    else:
+        cmd: type = cmdclass["build_ext"]
+        if issubclass(cmd, BuildExt):
 
-    # TODO: conan packages need to be installed here?
+            class BuildExtSubclassWrapper(cmd):
+                """A private subclass of BuildExt that captures the number of workers
+                to use from the setup() call.
+                """
+                def __init__(self, *a: Any, **kw: Any):
+                    super().__init__(*a, conan=conan, workers=workers, **kw)
+
+        cmdclass["build_ext"] = BuildExtSubclassWrapper
 
     setuptools.setup(*args, cmdclass=cmdclass, **kwargs)

@@ -3103,32 +3103,36 @@ def activate(venv: Path) -> list[str]:
         raise TypeError("[flags] table must be a table containing lists of strings.")
 
     # save the current environment variables
-    commands = []
-    for key, value in os.environ.items():
-        # if key not in ignore:
-        commands.append(f"export {Environment.OLD_PREFIX}{key}=\"{value}\"")
+    old: list[str] = []
+    new: list[str] = []
 
     # [vars] get exported directly
-    for key, var in _vars.items():
-        commands.append(f'export {key}=\"{var}\"')
+    for key, value in _vars.items():
+        if key in os.environ:
+            old.append(f"export {Environment.OLD_PREFIX}{key}=\"{os.environ[key]}\"")
+        new.append(f"export {key}=\"{value}\"")
 
     # [paths] get prepended to existing paths
     for key, pathlist in paths.items():
         if key in os.environ:
+            old.append(f"export {Environment.OLD_PREFIX}{key}=\"{os.environ[key]}\"")
             fragment = os.pathsep.join([*pathlist, os.environ[key]])
         else:
             fragment = os.pathsep.join(pathlist)
-        commands.append(f'export {key}=\"{fragment}\"')
+        if fragment:
+            new.append(f'export {key}=\"{fragment}\"')
 
     # [flags] get appended to existing flags
     for key, flaglist in flags.items():
         if key in os.environ:
-            fragment = " ".join([*flaglist, os.environ[key]])
+            old.append(f"export {Environment.OLD_PREFIX}{key}=\"{os.environ[key]}\"")
+            fragment = " ".join([os.environ[key], *flaglist])
         else:
             fragment = " ".join(flaglist)
-        commands.append(f'export {key}=\"{fragment}\"')
+        if fragment:
+            new.append(f'export {key}=\"{fragment}\"')
 
-    return commands
+    return old + new
 
 
 def deactivate() -> list[str]:
@@ -3152,16 +3156,32 @@ def deactivate() -> list[str]:
     clear it without replacement.
     """
     commands: list[str] = []
-    for key, value in os.environ.items():
-        if key.startswith(Environment.OLD_PREFIX):
-            commands.append(f'export {key.removeprefix(Environment.OLD_PREFIX)}=\"{value}\"')
-            commands.append(f'unset {key}')
-        elif f"{Environment.OLD_PREFIX}{key}" not in os.environ:
-            commands.append(f'unset {key}')
+
+    for key in env.flags:
+        old = f"{Environment.OLD_PREFIX}{key}"
+        if old in os.environ:
+            commands.append(f"export {key}=\"{os.environ[old]}\"")
+            commands.append(f"unset {old}")
+        else:
+            commands.append(f"unset {key}")
+
+    for key in env.paths:
+        old = f"{Environment.OLD_PREFIX}{key}"
+        if old in os.environ:
+            commands.append(f"export {key}=\"{os.environ[old]}\"")
+            commands.append(f"unset {old}")
+        else:
+            commands.append(f"unset {key}")
+
+    for key in env.vars:
+        old = f"{Environment.OLD_PREFIX}{key}"
+        if old in os.environ:
+            commands.append(f"export {key}=\"{os.environ[old]}\"")
+            commands.append(f"unset {old}")
+        else:
+            commands.append(f"unset {key}")
+
     return commands
-
-
-
 
 
 

@@ -69,6 +69,7 @@ dependencies = [
     "regex",
     "requests",
     "setuptools",
+    "tqdm",
     "tomlkit",
     "tzlocal",
 ]

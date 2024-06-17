@@ -455,6 +455,8 @@ def main() -> None:
         )
 
     elif args.command == "activate":
+        # print("ABC=\"hello, world!\"")
+        # print("DEF=\"goodbye, world!\"")
         for command in activate(args.file[0]):
             print(command)
 

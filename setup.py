@@ -5,6 +5,30 @@ from typing import Any
 from bertrand import BuildExt, Extension, setup
 
 
+# TODO: for headless installation, use pipx to install bertrand:
+
+# See: https://devguide.python.org/getting-started/setup-building/#install-dependencies
+
+# sudo apt update
+# sudo apt-get install build-essential gdb lcov pkg-config \
+#     libbz2-dev libffi-dev libgdbm-dev libgdbm-compat-dev liblzma-dev \
+#     libncurses5-dev libreadline6-dev libsqlite3-dev libssl-dev \
+#     lzma lzma-dev tk-dev uuid-dev zlib1g-dev
+# sudo apt install pipx
+# sudo pipx ensurepath --global
+# pipx install bertrand
+# bertrand init
+
+
+
+# sudo apt build-dep python3
+# sudo apt install pkg-config
+
+
+
+
+
+
 # NOTE: C++ users have to execute $(bertrand -I) to compile against bertrand.h
 # g++ foo.cpp -o foo.out $(bertrand -I)
 
@@ -207,7 +231,7 @@ Clang:
 
 
 
-class BuildExtSilent(BuildExt):
+class BuildExtHeadless(BuildExt):
     """A modification of the standard BuiltExt command that skips building C++
     extensions if not in a virtual environment, rather than failing.
     """
@@ -232,5 +256,5 @@ setup(
         ("pcre2/10.43", "PCRE2", "pcre2::pcre2"),
         ("cpptrace/0.6.1", "cpptrace", "cpptrace::cpptrace"),
     ],
-    cmdclass={"build_ext": BuildExtSilent},
+    cmdclass={"build_ext": BuildExtHeadless},
 )

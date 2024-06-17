@@ -17,7 +17,7 @@ from bs4 import BeautifulSoup
 from tqdm import tqdm
 
 from bertrand import __version__
-from .env import env
+from .env import Environment, env
 
 
 Version = packaging.version.Version
@@ -440,7 +440,7 @@ class Gold(Target):
             )
             subprocess.check_call(["make", f"-j{workers}"], cwd=build)
             subprocess.check_call(["make", "install"], cwd=build)
-
+            shutil.move(env / "bin" / "ld", env / "bin" / "ld.ld")
         finally:
             archive.unlink(missing_ok=True)
             if source.exists():
@@ -450,9 +450,9 @@ class Gold(Target):
 
     def push(self) -> None:
         """Update the environment with the config for the ld/gold linker."""
-        env.info["linker"] = "ld" if self.name == "ld" else "ld.gold"
+        env.info["linker"] = self.name
         env.info["linker_version"] = str(self.version)
-        env.vars["LD"] = str(env / "bin" / self.name)
+        env.vars["LD"] = str(env / "bin" / f"ld.{self.name}")
         env.flags["LDFLAGS"].append(f"-fuse-ld={self.name}")
 
 
@@ -506,17 +506,19 @@ class GCC(Target):
                 [
                     str(source / "configure"),
                     f"--prefix={env.dir}",
+                    f"--with-ld={env / 'bin' / 'ld.gold'}",
                     "--enable-languages=c,c++",
                     "--enable-shared",
+                    "--enable-lto",
+                    "--enable-checking=release",
                     "--disable-werror",
                     "--disable-multilib",
-                    "--disable-bootstrap"
+                    "--disable-bootstrap",
                 ],
                 cwd=build
             )
             subprocess.check_call(["make", f"-j{workers}"], cwd=build)
             subprocess.check_call(["make", "install"], cwd=build)
-
         finally:
             archive.unlink(missing_ok=True)
             if source.exists():
@@ -973,7 +975,12 @@ class Python(Target):
     def push(self) -> None:
         """Update the environment with the config for Python."""
         env.info["python"] = str(self.version)
+        env.vars["PYTHONHOME"] = str(env.dir)
         env.flags["LDFLAGS"].append(f"-lpython{self.version.major}.{self.version.minor}")
+
+
+# TODO: ideally, the Conan target would be subsumed by Bertrand, and would be
+# installed as a dependency.
 
 
 class Conan(Target):
@@ -1004,6 +1011,9 @@ class Conan(Target):
     def __call__(self, workers: int) -> None:
         os.environ["CONAN_HOME"] = str(env / ".conan")
         subprocess.check_call(
+            [str(env / "bin" / "pip"), "install", "pandas"],  # TODO: for some reason, the build fails without this line
+        )
+        subprocess.check_call(
             [str(env / "bin" / "pip"), "install", f"conan=={self.version}"],
         )
 
@@ -1033,8 +1043,15 @@ class Bertrand(Target):
 
     def __call__(self, workers: int) -> None:
         subprocess.check_call(
-            [str(env / "bin" / "pip"), "install", f"bertrand=={__version__}"],
+            [str(env / "bin" / "pip"), "install", "numpy"],
         )
+        subprocess.check_call(
+            [str(env / "bin" / "pip"), "install", "pybind11"],
+        )
+        # TODO: eventually, this all boils down to:
+        # subprocess.check_call(
+        #     [str(env / "bin" / "pip"), "install", f"bertrand=={__version__}"],
+        # )
 
     def push(self) -> None:
         """Update the environment with the config for Bertrand."""
@@ -1216,7 +1233,7 @@ class Recipe:
             self.python.with_valgrind = True
         order.append(self.python)
         order.append(self.conan)
-        # order.append(self.bertrand)
+        order.append(self.bertrand)
         if self.clangtools:
             order.append(self.clangtools)
         return order
@@ -1258,7 +1275,7 @@ class Recipe:
             self.python.with_valgrind = True
         order.append(self.python)
         order.append(self.conan)
-        # order.append(self.bertrand)
+        order.append(self.bertrand)
         if self.clangtools:
             order.append(self.clangtools)
         return order
@@ -1292,45 +1309,61 @@ class Recipe:
 # This file must be used with "source venv/activate" *from bash*
 # You cannot run it directly
 
+# Check if we are currently inside a (non-bertrand) Python virtual environment
+# and preemptively deactivate it
+if [ -n "${{VIRTUAL_ENV}}" ] && [ -z "${{BERTRAND_HOME}}" ]; then
+    echo "Deactivating current virtual environment at ${{VIRTUAL_ENV}}"
+    deactivate
+fi
+
+deactivate() {{
+    # deactivation script restores all prefixed variables, including paths
+    if [ -n "${{BERTRAND_HOME}}" ] ; then
+        eval "$(bertrand deactivate)"
+    fi
+
+    # Call hash to forget past commands.  Without this, the $PATH changes we
+    # made may not be respected.
+    hash -r 2> /dev/null
+
+    if [ -n "${{{Environment.OLD_PREFIX}PS1:-}}" ] ; then
+        export PS1="${{{Environment.OLD_PREFIX}PS1:-}}"
+        unset {Environment.OLD_PREFIX}PS1
+    fi
+
+    unset VIRTUAL_ENV
+    unset VIRTUAL_ENV_PROMPT
+    unset BERTRAND_HOME
+    if [ ! "${{1:-}}" == "nondestructive" ] ; then
+        # Self destruct!
+        unset -f deactivate
+    fi
+}}
+
+# unset irrelevant variables
+deactivate nondestructive
+
 # on Windows, a path can contain colons and backslashes and has to be converted:
 if [ "${{OSTYPE:-}}" == "cygwin" ] || [ "${{OSTYPE:-}}" == "msys" ]; then
     # transform D:\\path\\to\\venv into /d/path/to/venv on MSYS
     # and to /cygdrive/d/path/to/venv on Cygwin
-    THIS_VIRTUAL_ENV=$(cygpath "{env.dir}")
+    export VIRTUAL_ENV=$(cygpath "{env.dir}")
 else
-    THIS_VIRTUAL_ENV="{env.dir}"
-fi
-
-# virtual environments cannot be nested
-if [ -n "$VIRTUAL_ENV" ]; then
-    if [ "$VIRTUAL_ENV" == "$THIS_VIRTUAL_ENV" ]; then
-        exit 0
-    else
-        echo "Deactivating virtual environment at ${{VIRTUAL_ENV}}"
-        deactivate
-    fi
+    export VIRTUAL_ENV="{env.dir}"
 fi
 
 # save the previous variables and set those from env.toml
-echo $(bertrand activate "${{THIS_VIRTUAL_ENV}}")
-eval "$(bertrand activate "${{THIS_VIRTUAL_ENV}}")"
-
-export VIRTUAL_ENV="${{THIS_VIRTUAL_ENV}}"
-export BERTRAND_HOME="${{THIS_VIRTUAL_ENV}}"
-export PYTHONHOME="${{THIS_VIRTUAL_ENV}}"
+export BERTRAND_HOME="${{VIRTUAL_ENV}}"
+eval "$(bertrand activate "${{VIRTUAL_ENV}}")"
 
 if [ -z "${{VIRTUAL_ENV_DISABLE_PROMPT:-}}" ] ; then
+    {Environment.OLD_PREFIX}PS1="${{PS1:-}}"
     export PS1="({env.dir.name}) ${{PS1:-}}"
     export VIRTUAL_ENV_PROMPT="({env.dir.name}) "
 fi
 
-deactivate() {{
-    eval "$(bertrand deactivate)"
-    hash -r 2> /dev/null
-}}
-
-# Call hash to forget past commands.  Without forgetting past commands,
-# the $PATH changes we made may not be respected.
+# Call hash to forget past commands.  Without this, the $PATH changes we
+# made may not be respected.
 hash -r 2> /dev/null
             """)
 
@@ -1455,22 +1488,22 @@ def init(
         # initialize env.toml
         if not env.toml.exists():
             with env.toml.open("w") as f:
-                tomlkit.dump({
-                    "info": {},
-                    "vars": {},
-                    "paths": {
-                        "PATH": [str(env / "bin")],
-                        "CPATH": [str(env / "include")],
-                        "LIBRARY_PATH": [str(env / "lib")],
-                        "LD_LIBRARY_PATH": [str(env / "lib")],
-                    },
-                    "flags": {
-                        "CFLAGS": [],
-                        "CXXFLAGS": [],
-                        "LDFLAGS": [],
-                    },
-                    "packages": [],
-                }, f)
+                doc = tomlkit.document()
+                paths = tomlkit.table()
+                paths.add("PATH", [str(env.dir / "bin")])
+                paths.add("CPATH", [str(env.dir / "include")])
+                paths.add("LIBRARY_PATH", [str(env.dir / "lib")])
+                paths.add("LD_LIBRARY_PATH", [str(env.dir / "lib")])
+                flags = tomlkit.table()
+                flags.add("CFLAGS", [])
+                flags.add("CXXFLAGS", [])
+                flags.add("LDFLAGS", [])
+                doc.add("info", tomlkit.table())
+                doc.add("vars", tomlkit.table())
+                doc.add("paths", paths)
+                doc.add("flags", flags)
+                doc.add("packages", tomlkit.aot())
+                tomlkit.dump(doc, f)
 
         # export env.toml into the current environment
         env.vars = env.vars.copy()  # type: ignore
