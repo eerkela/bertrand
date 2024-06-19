@@ -68,11 +68,7 @@
 # del timedelta       # type: ignore
 
 
-__version__ = "0.0.1"  # handled by bumpver
-
-# from .cli import env, init
-
-from .setuptools import BuildExt, Extension, get_include, setup
+from .env import BuildExt, Extension, get_include, setup, env, __version__
 
 
 try:

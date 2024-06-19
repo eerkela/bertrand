@@ -6,6 +6,10 @@ requires = [
     "conan>=2.0.0",
     "pybind11>=2.6.1",
     "numpy",
+    "tomlkit",
+    "packaging",
+    "beautifulsoup4",
+    "tqdm",
 ]
 build-backend = "setuptools.build_meta:__legacy__"
 
@@ -98,6 +102,7 @@ dev = [
     "types-pytz",
     "types-requests",
     "types-regex",
+    "types-setuptools",
     "types-tqdm",
     "types-tzlocal",
 ]

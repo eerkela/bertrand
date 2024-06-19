@@ -253,8 +253,8 @@ EXTENSIONS = [
 setup(
     ext_modules=EXTENSIONS,
     conan=[
-        ("pcre2/10.43", "PCRE2", "pcre2::pcre2"),
-        ("cpptrace/0.6.1", "cpptrace", "cpptrace::cpptrace"),
+        "pcre2/10.43@PCRE2/pcre2::pcre2",
+        "cpptrace/0.6.1@cpptrace/cpptrace::cpptrace",
     ],
     cmdclass={"build_ext": BuildExtHeadless},
 )
