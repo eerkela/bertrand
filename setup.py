@@ -236,25 +236,19 @@ class BuildExtHeadless(BuildExt):
     extensions if not in a virtual environment, rather than failing.
     """
 
-    def __init__(self, *args: Any, **kwargs: Any):
-        super().__init__(*args, **kwargs)
-
     def build_extensions(self) -> None:
         """Build if in a virtual environment, otherwise skip."""
         if os.environ.get("BERTRAND_HOME", None):
             super().build_extensions()
 
 
-EXTENSIONS = [
-    Extension("example", ["example.cpp", "example_module.cpp"], executable=True),
-]
-
-
 setup(
-    ext_modules=EXTENSIONS,
     conan=[
         "pcre2/10.43@PCRE2/pcre2::pcre2",
         "cpptrace/0.6.1@cpptrace/cpptrace::cpptrace",
+    ],
+    ext_modules=[
+        Extension("example", ["bertrand/example.cpp", "bertrand/example_module.cpp"]),
     ],
     cmdclass={"build_ext": BuildExtHeadless},
 )

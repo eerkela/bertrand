@@ -1,9 +1,10 @@
 """Run Bertrand from the command line to get include directory, version number, etc.
 """
 import argparse
+import subprocess
 from pathlib import Path
 
-from .cli import init, activate, deactivate
+from .env import init, activate, deactivate
 from . import __version__
 
 
@@ -23,6 +24,67 @@ class Parser:
             ),
             prog="bertrand",
             metavar="(command)",
+        )
+
+    def version(self) -> None:
+        """Add the 'version' query to the parser."""
+        self.root.add_argument("-v", "--version", action="version", version=__version__)
+
+    def binaries(self) -> None:
+        """Add the 'binaries' query to the parser."""
+        self.root.add_argument(
+            "-b", "--binaries",
+            action="store_true",
+            help=(
+                "List the path to the virtual environment's binaries directory.  This "
+                "includes the path to the C++ compiler, Python interpreter, and any "
+                "other binaries that are installed within the environment."
+            )
+        )
+
+    def include(self) -> None:
+        """Add the 'include' query to the parser."""
+        self.root.add_argument(
+            "-I", "--include",
+            action="store_true",
+            help=(
+                "List all the include paths needed to compile a pure-C++ project that "
+                "relies on Bertrand as a dependency.  This includes the path to the "
+                "C++ standard library, Python development headers, as well as those "
+                "of any C++ dependency installed through conan.  Users can quickly "
+                "include all of these in a single command by adding `$(bertrand -I)` "
+                "to their compilation flags."
+            )
+        )
+
+    def libraries(self) -> None:
+        """Add the 'libraries' query to the parser."""
+        self.root.add_argument(
+            "-L", "--libraries",
+            action="store_true",
+            help=(
+                "List all the library paths needed to compile a pure-C++ project that "
+                "relies on Bertrand as a dependency.  This includes the C++ standard "
+                "library, Python standard library, as well as those of any C++ "
+                "dependency installed through conan.  Users can quickly link all of "
+                "these in a single command by adding `$(bertrand -L)` to their "
+                "compilation flags."
+            )
+        )
+
+    def link(self) -> None:
+        """Add the 'link' query to the parser."""
+        self.root.add_argument(
+            "-l", "--link",
+            action="store_true",
+            help=(
+                "List all the link symbols needed to compile a pure-C++ project that "
+                "relies on Bertrand as a dependency.  This includes the C++ standard "
+                "library, Python standard library, as well as those of any C++ "
+                "dependency installed through conan.  Users can quickly link all of "
+                "these in a single command by adding `$(bertrand -l)` to their "
+                "compilation flags."
+            )
         )
 
     def init(self) -> None:
@@ -295,7 +357,6 @@ class Parser:
                 "within it."
             ),
         )
-
         command.add_argument(
             "options",
             nargs="*",
@@ -336,67 +397,41 @@ class Parser:
         )
 
     # TODO: update command
-    # TODO: compile command
 
-    def version(self) -> None:
-        """Add the 'version' query to the parser."""
-        self.root.add_argument("-v", "--version", action="version", version=__version__)
-
-    def binaries(self) -> None:
-        """Add the 'binaries' query to the parser."""
-        self.root.add_argument(
-            "-b", "--binaries",
-            action="store_true",
+    def compile(self) -> None:
+        """Add the 'compile' command to the parser."""
+        command = self.commands.add_parser(
+            "compile",
             help=(
-                "List the path to the virtual environment's binaries directory.  This "
-                "includes the path to the C++ compiler, Python interpreter, and any "
-                "other binaries that are installed within the environment."
-            )
+                "Compile a C++ project within the virtual environment by invoking "
+                "bertrand's setuptools extensions.  This automatically generates "
+                "equivalent Python bindings for all exported modules, and passes any "
+                "additional arguments to the installed compiler."
+            ),
         )
-
-    def include(self) -> None:
-        """Add the 'include' query to the parser."""
-        self.root.add_argument(
-            "-I", "--include",
-            action="store_true",
+        command.add_argument(
+            "path",
+            nargs=1,
+            type=Path,
             help=(
-                "List all the include paths needed to compile a pure-C++ project that "
-                "relies on Bertrand as a dependency.  This includes the path to the "
-                "C++ standard library, Python development headers, as well as those "
-                "of any C++ dependency installed through conan.  Users can quickly "
-                "include all of these in a single command by adding `$(bertrand -I)` "
-                "to their compilation flags."
-            )
+                "Either a path to a single C++ source file or a directory containing "
+                "a setup.py script.  If a single file is given, then its dependencies "
+                "will be automatically determined from the file's AST and included as "
+                "sources in the build.  If a directory is given, then the setup.py "
+                "script will be invoked, as if the user had run "
+                "`python setup.py build_ext` from the command line."
+            ),
         )
-
-    def libraries(self) -> None:
-        """Add the 'libraries' query to the parser."""
-        self.root.add_argument(
-            "-L", "--libraries",
-            action="store_true",
+        command.add_argument(
+            "compiler_options",
+            nargs=argparse.REMAINDER,
             help=(
-                "List all the library paths needed to compile a pure-C++ project that "
-                "relies on Bertrand as a dependency.  This includes the C++ standard "
-                "library, Python standard library, as well as those of any C++ "
-                "dependency installed through conan.  Users can quickly link all of "
-                "these in a single command by adding `$(bertrand -L)` to their "
-                "compilation flags."
-            )
-        )
-
-    def link(self) -> None:
-        """Add the 'link' query to the parser."""
-        self.root.add_argument(
-            "-l", "--link",
-            action="store_true",
-            help=(
-                "List all the link symbols needed to compile a pure-C++ project that "
-                "relies on Bertrand as a dependency.  This includes the C++ standard "
-                "library, Python standard library, as well as those of any C++ "
-                "dependency installed through conan.  Users can quickly link all of "
-                "these in a single command by adding `$(bertrand -l)` to their "
-                "compilation flags."
-            )
+                "Additional options to pass to the compiler's command line, which are "
+                "passed as-is.  Note that dependencies (include paths, import "
+                "statements, library paths, and link symbols) are automatically "
+                "resolved by the environment, so users should not need to specify "
+                "them manually."
+            ),
         )
 
     def __call__(self) -> argparse.Namespace:
@@ -407,18 +442,19 @@ class Parser:
         argparse.Namespace
             The parsed command-line arguments.
         """
-        # commands
-        self.init()
-        self.activate()
-        self.deactivate()
-        # self.install()
-
         # queries
         self.version()
         self.binaries()
         self.link()
         self.include()
         self.libraries()
+
+        # commands
+        self.init()
+        self.activate()
+        self.deactivate()
+        # self.install()
+        self.compile()
 
         return self.root.parse_args()
 
@@ -463,6 +499,14 @@ def main() -> None:
     elif args.command == "deactivate":
         for command in deactivate():
             print(command)
+
+    elif args.command == "compile":
+        # TODO: pass the compiler options to the compiler as an environment variable
+        # that gets caught in the setup.py script.
+        subprocess.check_call(
+            ["python", "setup.py", "build_ext", *args.compiler_options],
+            cwd=args.path[0]
+        )
 
     elif args.binaries:
         print(get_bin())

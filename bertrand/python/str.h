@@ -94,7 +94,8 @@ public:
     template <impl::cpp_like T>
         requires (
             !std::convertible_to<T, const char*> &&
-            std::convertible_to<T, std::string>
+            std::convertible_to<T, std::string> &&
+            impl::not_proxy_like<T>
         )
     Str(const T& string) : Base(nullptr, stolen_t{}) {
         std::string s = string;
