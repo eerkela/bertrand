@@ -12,6 +12,29 @@ namespace bertrand {
 namespace py {
 
 
+template <typename T>
+struct __issubclass__<T, Int>                               : Returns<bool> {
+    static consteval bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() { return impl::int_like<T>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Int>                               : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Int>();
+        } else if constexpr (issubclass<T, Int>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyLong_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
+
+
 /* Represents a statically-typed Python integer in C++. */
 class Int : public Object {
     using Base = Object;
@@ -55,33 +78,6 @@ public:
     static const Int one;
     static const Int two;
 
-};
-
-
-template <typename T>
-struct __issubclass__<T, Int>                               : Returns<bool> {
-    static consteval bool operator()() {
-        return impl::int_like<T>;
-    }
-    static consteval bool operator()(const T& obj) {
-        return operator()(obj);
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, Int>                               : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Int>();
-        } else if constexpr (issubclass<T, Int>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyLong_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
 };
 
 

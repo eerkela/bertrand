@@ -120,10 +120,10 @@ void run() {
 
 
 
-    std::array<int, 3> vec{1, 2, 3};
-    py::Tuple<py::Int> list = vec;
 
-    py::print(list);
+    std::array<int, 3> arr{1, 2, 3};
+    py::Tuple<py::Int> tuple = arr;
+    py::print(tuple);
 
 
 

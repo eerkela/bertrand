@@ -29,6 +29,7 @@ struct __issubclass__<T, List<Value>>                       : Returns<bool> {
     static constexpr bool check_value_type = std::derived_from<U, Object> ?
         std::derived_from<U, Value> : std::convertible_to<U, Value>;
 
+    static consteval bool operator()(const T&) { return operator()(); }
     static consteval bool operator()() {
         if constexpr (!impl::list_like<T>) {
             return false;
@@ -39,9 +40,6 @@ struct __issubclass__<T, List<Value>>                       : Returns<bool> {
         } else {
             return false;
         }
-    }
-    static consteval bool operator()(const T& obj) {
-        return operator()();
     }
 };
 

@@ -15,6 +15,29 @@ namespace bertrand {
 namespace py {
 
 
+template <typename T>
+struct __issubclass__<T, Type>                              : Returns<bool> {
+    static consteval bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() { return impl::type_like<T>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Type>                              : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Type>();
+        } else if constexpr (issubclass<T, Type>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyType_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
+
+
 /* Represents a statically-typed Python type object in C++.  Note that new types can be
 created on the fly by invoking the `type` metaclass directly, using an optional name,
 bases, and namespace. */
@@ -260,33 +283,6 @@ public:
 };
 
 
-template <typename T>
-struct __issubclass__<T, Type>                              : Returns<bool> {
-    static consteval bool operator()() {
-        return impl::type_like<T>;
-    }
-    static consteval bool operator()(const T& obj) {
-        return operator()(obj);
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, Type>                              : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Type>();
-        } else if constexpr (issubclass<T, Type>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyType_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-};
-
-
 template <>
 struct __init__<Type>                                       : Returns<Type> {
     static auto operator()() {
@@ -301,7 +297,6 @@ struct __explicit_init__<Type, T>                           : Returns<Type> {
         return reinterpret_borrow<Type>((PyObject*)Py_TYPE(obj.ptr()));
     }
 };
-
 
 
 // TODO: maybe these are a case where I need to place the constructor in the class
@@ -386,6 +381,37 @@ struct __explicit_init__<Type, Name>                        : Returns<Type> {
 };
 
 
+/////////////////////
+////    SUPER    ////
+/////////////////////
+
+
+template <typename T>
+struct __issubclass__<T, Super>                             : Returns<bool> {
+    static consteval bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() { return std::derived_from<T, Super>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Super>                             : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Super>();
+        } else if constexpr (issubclass<T, Super>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyObject_IsInstance(
+                obj.ptr(),
+                reinterpret_cast<PyObject*>(&PySuper_Type)
+            );
+        } else {
+            return false;
+        }
+    }
+};
+
+
 /* Represents a statically-typed Python `super` object in C++. */
 class Super : public Object {
     using Base = Object;
@@ -416,36 +442,6 @@ public:
         __explicit_init__<Super, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
 
-};
-
-
-template <typename T>
-struct __issubclass__<T, Super>                             : Returns<bool> {
-    static consteval bool operator()() {
-        return std::derived_from<T, Super>;
-    }
-    static consteval bool operator()(const T& obj) {
-        return operator()(obj);
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, Super>                             : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Super>();
-        } else if constexpr (issubclass<T, Super>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyObject_IsInstance(
-                obj.ptr(),
-                reinterpret_cast<PyObject*>(&PySuper_Type)
-            );
-        } else {
-            return false;
-        }
-    }
 };
 
 

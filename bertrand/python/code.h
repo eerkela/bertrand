@@ -35,6 +35,29 @@ namespace py {
 ////////////////////
 
 
+template <typename T>
+struct __issubclass__<T, Code>                              : Returns<bool> {
+    static consteval bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() { return std::derived_from<T, Code>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Code>                              : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Code>();
+        } else if constexpr (issubclass<T, Code>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyCode_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
+
+
 /* A new subclass of pybind11::object that represents a compiled Python code object,
 enabling seamless embedding of Python as a scripting language within C++.
 
@@ -417,33 +440,6 @@ public:
 };
 
 
-template <typename T>
-struct __issubclass__<T, Code>                              : Returns<bool> {
-    static consteval bool operator()() {
-        return std::derived_from<T, Code>;
-    }
-    static consteval bool operator()(const T&) {
-        return operator()();
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, Code>                              : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Code>();
-        } else if constexpr (issubclass<T, Code>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyCode_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-};
-
-
 // TODO: swap semantics of constructor and compile() method.  Constructor should allow
 // compilation of inline scripts, so that you don't need to use the _python literal.
 // The ::compile() method would then take a file name and compile the contents of
@@ -492,6 +488,29 @@ struct __explicit_init__<Code, std::string_view>            : Returns<Code> {
 /////////////////////
 ////    FRAME    ////
 /////////////////////
+
+
+template <typename T>
+struct __issubclass__<T, Frame>                              : Returns<bool> {
+    static consteval bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() { return std::derived_from<T, Frame>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Frame>                              : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Frame>();
+        } else if constexpr (issubclass<T, Frame>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyFrame_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
 
 
 /* Represents a statically-typed Python frame object in C++.  These are the same frames
@@ -623,33 +642,6 @@ public:
 
     #endif
 
-};
-
-
-template <typename T>
-struct __issubclass__<T, Frame>                              : Returns<bool> {
-    static consteval bool operator()() {
-        return std::derived_from<T, Frame>;
-    }
-    static consteval bool operator()(const T&) {
-        return operator()();
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, Frame>                              : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Frame>();
-        } else if constexpr (issubclass<T, Frame>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyFrame_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
 };
 
 

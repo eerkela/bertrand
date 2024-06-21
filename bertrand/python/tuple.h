@@ -42,6 +42,7 @@ struct __issubclass__<T, Tuple<Value>>                      : Returns<bool> {
         static constexpr bool value = (check_value_type<Args> && ...);
     };
 
+    static consteval bool operator()(const T&) { return operator()(); }
     static consteval bool operator()() {
         if constexpr (!impl::tuple_like<T>) {
             return false;
@@ -54,9 +55,6 @@ struct __issubclass__<T, Tuple<Value>>                      : Returns<bool> {
         } else {
             return false;
         }
-    }
-    static consteval bool operator()(const T&) {
-        return operator()();
     }
 };
 

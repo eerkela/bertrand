@@ -13,6 +13,29 @@ namespace bertrand {
 namespace py {
 
 
+template <typename T>
+struct __issubclass__<T, Complex>                           : Returns<bool> {
+    static consteval bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() { return impl::complex_like<T>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Complex>                           : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Complex>();
+        } else if constexpr (issubclass<T, Complex>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyComplex_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
+
+
 /* Represents a statically-typed Python complex number in C++. */
 class Complex : public Object {
     using Base = Object;
@@ -56,33 +79,6 @@ public:
     /* Get the magnitude of the Complex number. */
     [[nodiscard]] auto conjugate() const;
 
-};
-
-
-template <typename T>
-struct __issubclass__<T, Complex>                           : Returns<bool> {
-    static consteval bool operator()() {
-        return impl::complex_like<T>;
-    }
-    static consteval bool operator()(const T& obj) {
-        return operator()(obj);
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, Complex>                           : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Complex>();
-        } else if constexpr (issubclass<T, Complex>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyComplex_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
 };
 
 

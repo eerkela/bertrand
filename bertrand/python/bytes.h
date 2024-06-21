@@ -23,6 +23,29 @@ namespace py {
 /////////////////////
 
 
+template <typename T>
+struct __issubclass__<T, Bytes>                             : Returns<bool> {
+    static consteval bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() { return impl::bytes_like<T>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Bytes>                             : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Bytes>();
+        } else if constexpr (issubclass<T, Bytes>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyBytes_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
+
+
 /* Represents a statically-typed Python `bytes` object in C++. */
 class Bytes : public Object {
     using Base = Object;
@@ -169,33 +192,6 @@ public:
 };
 
 
-template <typename T>
-struct __issubclass__<T, Bytes>                             : Returns<bool> {
-    static consteval bool operator()() {
-        return impl::bytes_like<T>;
-    }
-    static consteval bool operator()(const T& obj) {
-        return operator()(obj);
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, Bytes>                             : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Bytes>();
-        } else if constexpr (issubclass<T, Bytes>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyBytes_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-};
-
-
 template <std::convertible_to<size_t> T>
 struct __init__<Bytes, T>                                   : Returns<Bytes> {
     static auto operator()(size_t size) {
@@ -317,6 +313,29 @@ namespace ops {
 /////////////////////////
 ////    BYTEARRAY    ////
 /////////////////////////
+
+
+template <typename T>
+struct __issubclass__<T, ByteArray>                         : Returns<bool> {
+    static consteval bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() { return impl::bytearray_like<T>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, ByteArray>                         : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, ByteArray>();
+        } else if constexpr (issubclass<T, ByteArray>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyByteArray_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
 
 
 /* Represents a statically-typed Python `bytearray` in C++. */
@@ -460,33 +479,6 @@ public:
     BERTRAND_METHOD([[nodiscard]], upper, const)
     BERTRAND_METHOD([[nodiscard]], zfill, const)
 
-};
-
-
-template <typename T>
-struct __issubclass__<T, ByteArray>                         : Returns<bool> {
-    static consteval bool operator()() {
-        return impl::bytearray_like<T>;
-    }
-    static consteval bool operator()(const T& obj) {
-        return operator()(obj);
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, ByteArray>                         : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, ByteArray>();
-        } else if constexpr (issubclass<T, ByteArray>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyByteArray_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
 };
 
 

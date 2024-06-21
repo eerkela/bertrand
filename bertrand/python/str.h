@@ -22,12 +22,8 @@ namespace py {
 
 template <typename T>
 struct __issubclass__<T, Str>                               : Returns<bool> {
-    static consteval bool operator()() {
-        return impl::str_like<T>;
-    }
-    static consteval bool operator()(const T& obj) {
-        return operator()(obj);
-    }
+    static consteval bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() { return impl::str_like<T>; }
 };
 
 

@@ -12,6 +12,29 @@ namespace bertrand {
 namespace py {
 
 
+template <typename T>
+struct __issubclass__<T, Bool>                              : Returns<bool> {
+    static consteval bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() { return impl::bool_like<T>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Bool>                              : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Bool>();
+        } else if constexpr (issubclass<T, Bool>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyBool_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
+
+
 /* Represents a statically-typed Python boolean in C++. */
 class Bool : public Object {
     using Base = Object;
@@ -49,33 +72,6 @@ public:
     BERTRAND_METHOD([[nodiscard]], as_integer_ratio, const)
     BERTRAND_METHOD([[nodiscard]], is_integer, const)
 
-};
-
-
-template <typename T>
-struct __issubclass__<T, Bool>                              : Returns<bool> {
-    static consteval bool operator()() {
-        return impl::bool_like<T>;
-    }
-    static consteval bool operator()(const T& obj) {
-        return operator()(obj);
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, Bool>                              : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Bool>();
-        } else if constexpr (issubclass<T, Bool>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyBool_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
 };
 
 

@@ -13,6 +13,39 @@ namespace bertrand {
 namespace py {
 
 
+template <typename T>
+struct __issubclass__<T, Range>                             : Returns<bool> {
+    static consteval bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() { return impl::range_like<T>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Range>                             : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Range>();
+        } else if constexpr (issubclass<T, Range>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj.ptr(),
+                (PyObject*) &PyRange_Type
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return false;
+        }
+    }
+};
+
+
 /* Represents a statically-typed Python `range` object in C++. */
 class Range : public Object {
     using Base = Object;
@@ -111,43 +144,6 @@ public:
         return attr<"step">().value();
     }
 
-};
-
-
-template <typename T>
-struct __issubclass__<T, Range>                             : Returns<bool> {
-    static consteval bool operator()() {
-        return impl::range_like<T>;
-    }
-    static consteval bool operator()(const T& obj) {
-        return operator()();
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, Range>                             : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Range>();
-        } else if constexpr (issubclass<T, Range>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
-                return false;
-            }
-            int result = PyObject_IsInstance(
-                obj.ptr(),
-                (PyObject*) &PyRange_Type
-            );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-        } else {
-            return false;
-        }
-    }
 };
 
 

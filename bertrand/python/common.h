@@ -25,6 +25,29 @@ namespace py {
 ////////////////////
 
 
+template <typename T>
+struct __issubclass__<T, NoneType>                          : Returns<bool> {
+    static constexpr bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() { return impl::none_like<T>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, NoneType>                          : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, NoneType>();
+        } else if constexpr (issubclass<T, NoneType>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && Py_IsNone(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
+
+
 /* Represents the type of Python's `None` singleton in C++. */
 class NoneType : public Object {
     using Base = Object;
@@ -58,33 +81,6 @@ public:
 };
 
 
-template <typename T>
-struct __issubclass__<T, NoneType>                          : Returns<bool> {
-    static consteval bool operator()() {
-        return impl::none_like<T>;
-    }
-    static constexpr bool operator()(const T& obj) {
-        return operator()();
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, NoneType>                          : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, NoneType>();
-        } else if constexpr (issubclass<T, NoneType>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && Py_IsNone(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-};
-
-
 template <>
 struct __init__<NoneType>                                   : Returns<NoneType> {
     static auto operator()() {
@@ -102,6 +98,39 @@ struct __init__<NoneType, T>                                : Returns<NoneType> 
 //////////////////////////////
 ////    NOTIMPLEMENTED    ////
 //////////////////////////////
+
+
+template <typename T>
+struct __issubclass__<T, NotImplementedType>                : Returns<bool> {
+    static constexpr bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() { return impl::notimplemented_like<T>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, NotImplementedType>                : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, NotImplementedType>();
+        } else if constexpr (issubclass<T, NotImplementedType>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj.ptr(),
+                (PyObject*) Py_TYPE(Py_NotImplemented)
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return false;
+        }
+    }
+};
 
 
 /* Represents the type of Python's `NotImplemented` singleton in C++. */
@@ -137,43 +166,6 @@ public:
 };
 
 
-template <typename T>
-struct __issubclass__<T, NotImplementedType>                : Returns<bool> {
-    static consteval bool operator()() {
-        return impl::notimplemented_like<T>;
-    }
-    static constexpr bool operator()(const T& obj) {
-        return operator()();
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, NotImplementedType>                : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, NotImplementedType>();
-        } else if constexpr (issubclass<T, NotImplementedType>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
-                return false;
-            }
-            int result = PyObject_IsInstance(
-                obj.ptr(),
-                (PyObject*) Py_TYPE(Py_NotImplemented)
-            );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-        } else {
-            return false;
-        }
-    }
-};
-
-
 template <>
 struct __init__<NotImplementedType>                         : Returns<NotImplementedType> {
     static auto operator()() {
@@ -191,6 +183,39 @@ struct __init__<NotImplementedType, T>                      : Returns<NotImpleme
 ////////////////////////
 ////    ELLIPSIS    ////
 ////////////////////////
+
+
+template <typename T>
+struct __issubclass__<T, EllipsisType>                      : Returns<bool> {
+    static constexpr bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() { return impl::ellipsis_like<T>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, EllipsisType>                      : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, EllipsisType>();
+        } else if constexpr (issubclass<T, EllipsisType>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj.ptr(),
+                (PyObject*) Py_TYPE(Py_Ellipsis)
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return false;
+        }
+    }
+};
 
 
 /* Represents the type of Python's `Ellipsis` singleton in C++. */
@@ -226,43 +251,6 @@ public:
 };
 
 
-template <typename T>
-struct __issubclass__<T, EllipsisType>                      : Returns<bool> {
-    static consteval bool operator()() {
-        return impl::ellipsis_like<T>;
-    }
-    static constexpr bool operator()(const T& obj) {
-        return operator()();
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, EllipsisType>                      : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, EllipsisType>();
-        } else if constexpr (issubclass<T, EllipsisType>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
-                return false;
-            }
-            int result = PyObject_IsInstance(
-                obj.ptr(),
-                (PyObject*) Py_TYPE(Py_Ellipsis)
-            );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-        } else {
-            return false;
-        }
-    }
-};
-
-
 template <>
 struct __init__<EllipsisType>                               : Returns<EllipsisType> {
     static auto operator()() {
@@ -285,6 +273,29 @@ static const NotImplementedType NotImplemented;
 /////////////////////
 ////    SLICE    ////
 /////////////////////
+
+
+template <typename T>
+struct __issubclass__<T, Slice>                             : Returns<bool> {
+    static constexpr bool operator()(const T& obj) { return operator()(); }
+    static consteval bool operator()() { return impl::slice_like<T>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Slice>                             : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Slice>();
+        } else if constexpr (issubclass<T, Slice>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PySlice_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
 
 
 namespace impl {
@@ -404,33 +415,6 @@ public:
 };
 
 
-template <typename T>
-struct __issubclass__<T, Slice>                             : Returns<bool> {
-    static consteval bool operator()() {
-        return impl::slice_like<T>;
-    }
-    static constexpr bool operator()(const T& obj) {
-        return operator()();
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, Slice>                             : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Slice>();
-        } else if constexpr (issubclass<T, Slice>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PySlice_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-};
-
-
 template <
     std::convertible_to<Object> Start,
     std::convertible_to<Object> Stop,
@@ -501,6 +485,29 @@ struct __init__<Slice>                                      : Returns<Slice> {
 //////////////////////
 ////    MODULE    ////
 //////////////////////
+
+
+template <typename T>
+struct __issubclass__<T, Module>                            : Returns<bool> {
+    static constexpr bool operator()(const T& obj) { return operator()(); }
+    static consteval bool operator()() { return impl::module_like<T>; }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Module>                            : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Module>();
+        } else if constexpr (issubclass<T, Module>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyModule_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
 
 
 /* Represents an imported Python module in C++. */
@@ -586,33 +593,6 @@ public:
         *this = reinterpret_steal<Module>(obj);
     }
 
-};
-
-
-template <typename T>
-struct __issubclass__<T, Module>                            : Returns<bool> {
-    static consteval bool operator()() {
-        return impl::module_like<T>;
-    }
-    static constexpr bool operator()(const T& obj) {
-        return operator()();
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, Module>                            : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Module>();
-        } else if constexpr (issubclass<T, Module>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyModule_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
 };
 
 
