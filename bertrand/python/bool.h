@@ -20,28 +20,6 @@ class Bool : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return impl::bool_like<T>;
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if (impl::cpp_like<T>) {
-            return typecheck<T>();
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyBool_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
     Bool(Handle h, borrowed_t t) : Base(h, t) {}
     Bool(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -63,10 +41,6 @@ public:
     explicit Bool(Args&&... args) : Base(
         __explicit_init__<Bool, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
-
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
 
     BERTRAND_METHOD([[nodiscard]], bit_length, const)
     BERTRAND_METHOD([[nodiscard]], bit_count, const)

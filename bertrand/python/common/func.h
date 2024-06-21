@@ -2138,58 +2138,50 @@ public:
         return contents->defaults.template get<target::template index<name>>();
     }
 
-    // TODO: if default specialization is given, typecheck<> should be fully generic, right?
-    // typecheck<T>() should check impl::is_callable_any<T>;
-
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return std::is_invocable_r_v<Return, T, Target...>;  // TODO: ensure this is correct
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if (impl::cpp_like<T>) {
-            return typecheck<T>();
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && (
-                PyFunction_Check(obj.ptr()) ||
-                PyMethod_Check(obj.ptr()) ||
-                PyCFunction_Check(obj.ptr())
-            );
-        } else {
-            return false;
-        }
-    }
-
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    Function(Handle h, borrowed_t t) : Base(h, t), contents(Capsule::from_python(h.ptr())) {}
+    Function(Handle h, stolen_t t) : Base(h, t), contents(Capsule::from_python(h.ptr())) {}
+
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<Function, __init__<Function, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Function, std::remove_cvref_t<Args>...>::enable
+        )
+    Function(Args&&... args) : Base(
+        __init__<Function, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
+
+    template <typename... Args>
+        requires (
+            !__init__<Function, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Function, __explicit_init__<Function, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Function, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Function(Args&&... args) : Base(
+        __explicit_init__<Function, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
     /* Copy/move constructors.  Passes a shared_ptr reference to the capsule in tandem
     with the PyObject* pointer. */
     Function(const Function& other) : Base(other), contents(other.contents) {}
     Function(Function&& other) : Base(std::move(other)), contents(std::move(other.contents)) {}
 
-    /* Reinterpret_borrow constructor.  Attempts to unpack the argument's capsule if it
-    represents a py::Function instance. */
-    Function(Handle h, const borrowed_t& t) :
-        Base(h, t), contents(Capsule::from_python(h.ptr()))
-    {}
 
-    /* Reinterpret_steal constructor.  Attempts to unpack the argument's capsule if it
-    represents a py::Function instance. */
-    Function(Handle h, const stolen_t& t) :
-        Base(h, t), contents(Capsule::from_python(h.ptr()))
-    {}
 
-    /* Convert an equivalent pybind11 type into a py::Function.  Attempts to unpack the
-    argument's capsule if it represents a py::Function instance. */
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Function(T&& other) : Base(std::forward<T>(other)) {
-        contents = Capsule::from_python(m_ptr);
-    }
+    // TODO: update these to use __init__, __explicit_init__
+
+
+
+
+    // /* Convert an equivalent pybind11 type into a py::Function.  Attempts to unpack the
+    // argument's capsule if it represents a py::Function instance. */
+    // template <impl::pybind11_like T> requires (typecheck<T>())
+    // Function(T&& other) : Base(std::forward<T>(other)) {
+    //     contents = Capsule::from_python(m_ptr);
+    // }
 
     /* Construct a py::Function from a pybind11 accessor.  Attempts to unpack the
     argument's capsule if it represents a py::Function instance. */
@@ -2964,6 +2956,41 @@ Function(std::string, std::string, F, D...) -> Function<
 
 template <typename R, typename... T>
 inline const char* Function<R(T...)>::Capsule::capsule_id = typeid(Function).name();
+
+
+// TODO: if default specialization is given, type checks should be fully generic, right?
+// issubclass<T, Function>() should check impl::is_callable_any<T>;
+
+template <typename T, typename R, typename... A>
+struct __issubclass__<T, Function<R(A...)>>                 : Returns<bool> {
+    static consteval bool operator()() {
+        return std::is_invocable_r_v<R, T, A...>;
+    }
+    static consteval bool operator()(const T&) {
+        return operator()();
+    }
+};
+
+
+template <typename T, typename R, typename... A>
+struct __isinstance__<T, Function<R(A...)>>                  : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if (impl::cpp_like<T>) {
+            return issubclass<T, Function<R(A...)>>();
+        } else if constexpr (issubclass<T, Function<R(A...)>>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && (
+                PyFunction_Check(obj.ptr()) ||
+                PyMethod_Check(obj.ptr()) ||
+                PyCFunction_Check(obj.ptr())
+            );
+        } else {
+            return false;
+        }
+    }
+};
+
 
 
 namespace impl {

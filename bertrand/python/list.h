@@ -22,6 +22,91 @@ namespace bertrand {
 namespace py {
 
 
+template <typename T, typename Value>
+struct __issubclass__<T, List<Value>>                       : Returns<bool> {
+    static constexpr bool generic = std::same_as<Value, Object>;
+    template <typename U>
+    static constexpr bool check_value_type = std::derived_from<U, Object> ?
+        std::derived_from<U, Value> : std::convertible_to<U, Value>;
+
+    static consteval bool operator()() {
+        if constexpr (!impl::list_like<T>) {
+            return false;
+        } else if constexpr (impl::pybind11_like<T>) {
+            return generic;
+        } else if constexpr (impl::is_iterable<T>) {
+            return check_value_type<impl::iter_type<T>>;
+        } else {
+            return false;
+        }
+    }
+    static consteval bool operator()(const T& obj) {
+        return operator()();
+    }
+};
+
+
+template <typename T, typename Value>
+struct __isinstance__<T, List<Value>>                       : Returns<bool> {
+    static constexpr bool generic = std::same_as<Value, Object>;
+    template <typename U>
+    static constexpr bool check_value_type = std::derived_from<U, Object> ?
+        std::derived_from<U, Value> : std::convertible_to<U, Value>;
+
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, List<Value>>();
+
+        } else if constexpr (impl::is_object_exact<T>) {
+            if constexpr (generic) {
+                return obj.ptr() != nullptr && PyList_Check(obj.ptr());
+            } else {
+                return (
+                    obj.ptr() != nullptr && PyList_Check(obj.ptr()) &&
+                    std::ranges::all_of(obj, [](const auto& item) {
+                        return isinstance<Value>(item);
+                    })
+                );
+            }
+
+        } else if constexpr (
+            std::derived_from<T, List<Object>> ||
+            std::derived_from<T, pybind11::list>
+        ) {
+            if constexpr (generic) {
+                return obj.ptr() != nullptr;
+            } else {
+                return (
+                    obj.ptr() != nullptr &&
+                    std::ranges::all_of(obj, [](const auto& item) {
+                        return isinstance<Value>(item);
+                    })
+                );
+            }
+
+        } else if constexpr (impl::list_like<T>) {
+            return obj.ptr() != nullptr && check_value_type<impl::iter_type<T>>;
+
+        } else {
+            return false;
+        }
+    }
+};
+
+
+template <typename T>
+List(const std::initializer_list<T>&) -> List<impl::as_object_t<T>>;
+template <impl::is_iterable T>
+List(T) -> List<impl::as_object_t<impl::iter_type<T>>>;
+template <typename T, typename... Args>
+    requires (!impl::is_iterable<T> && !impl::str_like<T>)
+List(T, Args...) -> List<Object>;
+template <impl::str_like T>
+List(T) -> List<Str>;
+template <size_t N>
+List(const char(&)[N]) -> List<Str>;
+
+
 /* Represents a statically-typed Python list in C++. */
 template <typename Val>
 class List : public Object, public impl::ListTag {
@@ -31,12 +116,6 @@ class List : public Object, public impl::ListTag {
         std::derived_from<Val, Object>,
         "py::List can only contain types derived from py::Object."
     );
-
-    static constexpr bool generic = std::same_as<Val, Object>;
-
-    template <typename T>
-    static constexpr bool check_value_type = std::derived_from<T, Object> ?
-        std::derived_from<T, Val> : std::convertible_to<T, Val>;
 
 public:
     using impl::ListTag::type;
@@ -52,63 +131,6 @@ public:
     using const_iterator = impl::Iterator<impl::ListIter<const value_type>>;
     using reverse_iterator = impl::ReverseIterator<impl::ListIter<value_type>>;
     using const_reverse_iterator = impl::ReverseIterator<impl::ListIter<const value_type>>;
-
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        if constexpr (!impl::list_like<T>) {
-            return false;
-        } else if constexpr (impl::pybind11_like<T>) {
-            return generic;
-        } else if constexpr (impl::is_iterable<T>) {
-            return check_value_type<impl::iter_type<T>>;
-        } else {
-            return false;
-        }
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-
-        } else if constexpr (impl::is_object_exact<T>) {
-            if constexpr (generic) {
-                return obj.ptr() != nullptr && PyList_Check(obj.ptr());
-            } else {
-                return (
-                    obj.ptr() != nullptr && PyTuple_Check(obj.ptr()) &&
-                    std::ranges::all_of(obj, [](const auto& item) {
-                        return value_type::typecheck(item);
-                    })
-                );
-            }
-
-        } else if constexpr (
-            std::derived_from<T, List<Object>> ||
-            std::derived_from<T, pybind11::tuple>
-        ) {
-            if constexpr (generic) {
-                return obj.ptr() != nullptr;
-            } else {
-                return (
-                    obj.ptr() != nullptr &&
-                    std::ranges::all_of(obj, [](const auto& item) {
-                        return value_type::typecheck(item);
-                    })
-                );
-            }
-
-        } else if constexpr (impl::list_like<T>) {
-            return obj.ptr() != nullptr && check_value_type<impl::iter_type<T>>;
-
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
 
     List(Handle h, borrowed_t t) : Base(h, t) {}
     List(Handle h, stolen_t t) : Base(h, t) {}
@@ -132,7 +154,6 @@ public:
         __explicit_init__<List, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
 
-
     /* Pack the contents of a braced initializer list into a new Python list. */
     List(const std::initializer_list<value_type>& contents) :
         Base(PyList_New(contents.size()), stolen_t{})
@@ -151,202 +172,6 @@ public:
         }
     }
 
-
-
-
-    /* Explicitly unpack a generic Python container into a py::List. */
-    template <impl::python_like T> requires (!impl::list_like<T> && impl::is_iterable<T>)
-    explicit List(const T& contents) : Base(nullptr, stolen_t{}) {
-        if constexpr (generic) {
-            m_ptr = PySequence_List(contents.ptr());
-            if (m_ptr == nullptr) {
-                Exception::from_python();
-            }
-        } else {
-            if constexpr (impl::has_size<T>) {
-                m_ptr = PyList_New(std::size(contents));
-                if (m_ptr == nullptr) {
-                    Exception::from_python();
-                }
-                try {
-                    size_t i = 0;
-                    for (const auto& item : contents) {
-                        PyList_SET_ITEM(m_ptr, i++, value_type(item).release().ptr());
-                    }
-                } catch (...) {
-                    Py_DECREF(m_ptr);
-                    throw;
-                }
-            } else {
-                m_ptr = PyList_New(0);
-                if (m_ptr == nullptr) {
-                    Exception::from_python();
-                }
-                try {
-                    for (const auto& item : contents) {
-                        if (PyList_Append(m_ptr, value_type(item).ptr())) {
-                            Exception::from_python();
-                        }
-                    }
-                } catch (...) {
-                    Py_DECREF(m_ptr);
-                    throw;
-                }
-            }
-        }
-    }
-
-    /* Explicitly unpack a generic C++ container into a new py::List. */
-    template <impl::cpp_like T> requires (impl::is_iterable<T>)
-    explicit List(const T& contents) : Base(nullptr, stolen_t{}) {
-        if constexpr (impl::has_size<T>) {
-            size_t size = std::size(contents);
-            m_ptr = PyList_New(size);
-            if (m_ptr == nullptr) {
-                Exception::from_python();
-            }
-            try {
-                size_t i = 0;
-                for (const auto& item : contents) {
-                    PyList_SET_ITEM(m_ptr, i++, value_type(item).release().ptr());
-                }
-            } catch (...) {
-                Py_DECREF(m_ptr);
-                throw;
-            }
-        } else {
-            m_ptr = PyList_New(0);
-            if (m_ptr == nullptr) {
-                Exception::from_python();
-            }
-            try {
-                for (const auto& item : contents) {
-                    if (PyList_Append(m_ptr, value_type(item).ptr())) {
-                        Exception::from_python();
-                    }
-                }
-            } catch (...) {
-                Py_DECREF(m_ptr);
-                throw;
-            }
-        }
-    }
-
-    /* Construct a new list from a pair of input iterators. */
-    template <typename Iter, std::sentinel_for<Iter> Sentinel>
-    explicit List(Iter first, Sentinel last) : Base(PyList_New(0), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            while (first != last) {
-                if (PyList_Append(m_ptr, value_type(*first).ptr())) {
-                    Exception::from_python();
-                }
-                ++first;
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Explicitly unpack a std::pair into a py::List. */
-    template <typename First, typename Second>
-        requires (
-            std::constructible_from<value_type, First> &&
-            std::constructible_from<value_type, Second>
-        )
-    explicit List(const std::pair<First, Second>& pair) :
-        Base(PyList_New(2), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            PyList_SET_ITEM(m_ptr, 0, value_type(pair.first).release().ptr());
-            PyList_SET_ITEM(m_ptr, 1, value_type(pair.second).release().ptr());
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Explicitly unpack a std::tuple into a py::List. */
-    template <typename... Args> requires (std::constructible_from<value_type, Args> && ...)
-    explicit List(const std::tuple<Args...>& tuple) :
-        Base(PyList_New(sizeof...(Args)), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-
-        auto unpack_tuple = [&]<size_t... Ns>(std::index_sequence<Ns...>) {
-            (
-                PyList_SET_ITEM(
-                    m_ptr,
-                    Ns,
-                    value_type(std::get<Ns>(tuple)).release().ptr()
-                ),
-                ...
-            );
-        };
-
-        try {
-            unpack_tuple(std::index_sequence_for<Args...>{});
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Explicitly unpack a C++ string literal into a py::Tuple. */
-    template <size_t N> requires (generic || std::same_as<value_type, Str>)
-    explicit List(const char (&string)[N]) : Base(PyList_New(N - 1), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            for (size_t i = 0; i < N - 1; ++i) {
-                PyObject* item = PyUnicode_FromStringAndSize(string + i, 1);
-                if (item == nullptr) {
-                    Exception::from_python();
-                }
-                PyList_SET_ITEM(m_ptr, i, item);
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Explicitly unpack a C++ string pointer into a py::Tuple. */
-    template <std::same_as<const char*> T> requires (generic || std::same_as<value_type, Str>)
-    explicit List(T string) : Base(PyList_New(0), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            for (const char* ptr = string; *ptr != '\0'; ++ptr) {
-                PyObject* item = PyUnicode_FromStringAndSize(ptr, 1);
-                if (item == nullptr) {
-                    Exception::from_python();
-                }
-                if (PyList_Append(m_ptr, item)) {
-                    Exception::from_python();
-                }
-                Py_DECREF(item);
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
-
     /* Get the underlying PyObject* array. */
     [[nodiscard]] PyObject** data() const noexcept {
         return PySequence_Fast_ITEMS(this->ptr());
@@ -363,10 +188,6 @@ public:
         PyList_SET_ITEM(this->ptr(), index, value);
         Py_XDECREF(prev);
     }
-
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
 
     /* Equivalent to Python `list.append(value)`. */
     void append(const value_type& value) {
@@ -484,10 +305,6 @@ public:
 
     BERTRAND_METHOD(, sort, )
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
     [[nodiscard]] friend List operator+(
         const List& self,
         const std::initializer_list<value_type>& items
@@ -538,40 +355,9 @@ protected:
 };
 
 
-template <typename T>
-List(const std::initializer_list<T>&) -> List<impl::as_object_t<T>>;
-template <impl::is_iterable T>
-List(T) -> List<impl::as_object_t<impl::iter_type<T>>>;
-template <typename T, typename... Args>
-    requires (!impl::is_iterable<T> && !impl::str_like<T>)
-List(T, Args...) -> List<Object>;
-template <impl::str_like T>
-List(T) -> List<Str>;
-template <size_t N>
-List(const char(&)[N]) -> List<Str>;
-
-
-template <typename T, std::derived_from<impl::ListTag> Self>
-struct __issubclass__<T, Self>                               : Returns<bool> {
-    static consteval bool operator()() {
-        return Self::template typecheck<T>();
-    }
-    static consteval bool operator()(const T& obj) {
-        return Self::typecheck(obj);
-    }
-};
-
-
-template <typename T, std::derived_from<impl::ListTag> Self>
-struct __isinstance__<T, Self>                               : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        return Self::typecheck(obj);
-    }
-};
-
-
+/* Default constructor.  Initializes to an empty list. */
 template <typename Value>
-struct __init__<List<Value>>                                 : Returns<List<Value>> {
+struct __init__<List<Value>>                                : Returns<List<Value>> {
     static auto operator()() {
         PyObject* result = PyList_New(0);
         if (result == nullptr) {
@@ -582,16 +368,16 @@ struct __init__<List<Value>>                                 : Returns<List<Valu
 };
 
 
+/* Converting constructor from compatible C++ lists. */
 template <typename Value, impl::cpp_like Container>
     requires (
         impl::list_like<Container> &&
         std::convertible_to<impl::iter_type<Container>, Value>
     )
-struct __init__<List<Value>, Container>                       : Returns<List<Value>> {
+struct __init__<List<Value>, Container>                     : Returns<List<Value>> {
     static auto operator()(const Container& contents) {
         if constexpr (impl::has_size<Container>) {
-            size_t size = std::size(contents);
-            PyObject* result = PyList_New(size);
+            PyObject* result = PyList_New(std::size(contents));
             if (result == nullptr) {
                 Exception::from_python();
             }
@@ -626,6 +412,229 @@ struct __init__<List<Value>, Container>                       : Returns<List<Val
 };
 
 
+/* Explicitly convert an arbitrary C++ container into a py::List. */
+template <typename Value, impl::cpp_like Container>
+    requires (
+        !impl::list_like<Container> &&
+        impl::is_iterable<Container> &&
+        std::constructible_from<Value, impl::iter_type<Container>>
+    )
+struct __explicit_init__<List<Value>, Container>            : Returns<List<Value>> {
+    static auto operator()(const Container& contents) {
+        if constexpr (impl::has_size<Container>) {
+            PyObject* result = PyList_New(std::size(contents));
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            try {
+                size_t i = 0;
+                for (const auto& item : contents) {
+                    PyList_SET_ITEM(result, i++, Value(item).release().ptr());
+                }
+            } catch (...) {
+                Py_DECREF(result);
+                throw;
+            }
+            return reinterpret_steal<List<Value>>(result);
+        } else {
+            PyObject* result = PyList_New(0);
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            try {
+                for (const auto& item : contents) {
+                    if (PyList_Append(result, Value(item).ptr())) {
+                        Exception::from_python();
+                    }
+                }
+            } catch (...) {
+                Py_DECREF(result);
+                throw;
+            }
+            return reinterpret_steal<List<Value>>(result);
+        }
+    }
+};
+
+
+/* Explicitly convert an arbitrary Python container into a py::List. */
+template <typename Value, impl::python_like Container>
+    requires (
+        !impl::list_like<Container> &&
+        impl::is_iterable<Container> &&
+        std::constructible_from<Value, impl::iter_type<Container>>
+    )
+struct __explicit_init__<List<Value>, Container>            : Returns<List<Value>> {
+    static auto operator()(const Container& contents) {
+        if constexpr (std::same_as<Value, Object>) {
+            PyObject* result = PySequence_List(contents.ptr());
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<List<Value>>(result);
+        } else {
+            if constexpr (impl::has_size<Container>) {
+                PyObject* result = PyList_New(std::size(contents));
+                if (result == nullptr) {
+                    Exception::from_python();
+                }
+                try {
+                    size_t i = 0;
+                    for (const auto& item : contents) {
+                        PyList_SET_ITEM(result, i++, Value(item).release().ptr());
+                    }
+                } catch (...) {
+                    Py_DECREF(result);
+                    throw;
+                }
+                return reinterpret_steal<List<Value>>(result);
+            } else {
+                PyObject* result = PyList_New(0);
+                if (result == nullptr) {
+                    Exception::from_python();
+                }
+                try {
+                    for (const auto& item : contents) {
+                        if (PyList_Append(result, Value(item).ptr())) {
+                            Exception::from_python();
+                        }
+                    }
+                } catch (...) {
+                    Py_DECREF(result);
+                    throw;
+                }
+                return reinterpret_steal<List<Value>>(result);
+            }
+        }
+    }
+};
+
+
+/* Explicitly convert a std::pair into a py::List. */
+template <typename Value, typename First, typename Second>
+    requires (
+        std::constructible_from<Value, First> &&
+        std::constructible_from<Value, Second>
+    )
+struct __explicit_init__<List<Value>, std::pair<First, Second>> : Returns<List<Value>> {
+    static auto operator()(const std::pair<First, Second>& pair) {
+        PyObject* result = PyList_New(2);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            PyList_SET_ITEM(result, 0, Value(pair.first).release().ptr());
+            PyList_SET_ITEM(result, 1, Value(pair.second).release().ptr());
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<List<Value>>(result);
+    }
+};
+
+
+/* Explicitly convert a std::tuple into a py::List. */
+template <typename Value, typename... Ts>
+    requires (std::constructible_from<Value, Ts> && ...)
+struct __explicit_init__<List<Value>, std::tuple<Ts...>>    : Returns<List<Value>> {
+    static auto operator()(const std::tuple<Ts...>& tuple) {
+        PyObject* result = PyList_New(sizeof...(Ts));
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+
+        auto unpack_tuple = [&]<size_t... Ns>(std::index_sequence<Ns...>) {
+            (
+                PyList_SET_ITEM(
+                    result,
+                    Ns,
+                    Value(std::get<Ns>(tuple)).release().ptr()
+                ),
+                ...
+            );
+        };
+
+        try {
+            unpack_tuple(std::index_sequence_for<Ts...>{});
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<List<Value>>(result);
+    }
+};
+
+
+/* Explicitly convert a C++ string literal into a py::List. */
+template <typename Value, size_t N>
+    requires (std::convertible_to<const char(&)[1], Value>)
+struct __explicit_init__<List<Value>, char[N]>              : Returns<List<Value>> {
+    static auto operator()(const char(&string)[N]) {
+        PyObject* result = PyList_New(N - 1);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            for (size_t i = 0; i < N - 1; ++i) {
+                PyList_SET_ITEM(result, i, Value(string[i]).release().ptr());
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<List<Value>>(result);
+    }
+};
+
+
+/* Explicitly convert a C++ string pointer into a py::List. */
+template <typename Value>
+    requires (std::convertible_to<const char*, Value>)
+struct __explicit_init__<List<Value>, const char*>           : Returns<List<Value>> {
+    static auto operator()(const char* string) {
+        PyObject* result = PyList_New(0);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            for (const char* ptr = string; *ptr != '\0'; ++ptr) {
+                if (PyList_Append(result, Value(ptr).ptr())) {
+                    Exception::from_python();
+                }
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<List<Value>>(result);
+    }
+};
+
+
+/* Construct a new py::List from a pair of input iterators. */
+template <typename Value, typename Iter, std::sentinel_for<Iter> Sentinel>
+    requires (std::constructible_from<Value, decltype(*std::declval<Iter>())>)
+struct __explicit_init__<List<Value>, Iter, Sentinel>       : Returns<List<Value>> {
+    static auto operator()(Iter first, Sentinel last) {
+        PyObject* result = PyList_New(0);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            while (first != last) {
+                if (PyList_Append(result, Value(*first).ptr())) {
+                    Exception::from_python();
+                }
+                ++first;
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<List<Value>>(result);
+    }
+};
 
 
 
@@ -633,8 +642,12 @@ struct __init__<List<Value>, Container>                       : Returns<List<Val
 
 
 
+
+
+/* Implicitly convert a py::List into a pybind11::list regardless of the templated
+value type. */
 template <std::derived_from<impl::ListTag> From, impl::list_like To>
-    requires (impl::pybind11_like<To> && !From::template typecheck<To>())
+    requires (impl::pybind11_like<To> && !issubclass<To, From>())
 struct __cast__<From, To> : Returns<To> {
     static auto operator()(const From& from) {
         return reinterpret_borrow<To>(from.ptr());

@@ -31,89 +31,27 @@ class Bytes : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return impl::bytes_like<T>;
-    }
+    Bytes(Handle h, borrowed_t t) : Base(h, t) {}
+    Bytes(Handle h, stolen_t t) : Base(h, t) {}
 
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if (impl::cpp_like<T>) {
-            return typecheck<T>();
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<Bytes, __init__<Bytes, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Bytes, std::remove_cvref_t<Args>...>::enable
+        )
+    Bytes(Args&&... args) : Base(
+        __init__<Bytes, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyBytes_Check(obj.ptr());
-
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Default constructor.  Initializes to an uninitialized string with the given
-    size, defaulting to zero. */
-    Bytes(size_t size = 0) :
-        Base(PyBytes_FromStringAndSize(nullptr, size), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    Bytes(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Bytes(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    /* Convert an equivalent pybind11 type into a py::Bytes. */
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Bytes(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Unwrap a pybind11 accessor into a py::Bytes. */
-    template <typename Policy>
-    Bytes(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Bytes>(accessor).release(), stolen_t{})
-    {}
-
-    /* Implicitly convert a raw sequence of bytes into a py::Bytes object. */
-    Bytes(const void* data, size_t size) :
-        Base(PyBytes_FromStringAndSize(static_cast<const char*>(data), size), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Implicitly convert a string literal into a py::Bytes object.  Note that this
-    interprets the string as raw binary data rather than text, and it automatically
-    excludes the terminating null byte.  This is primary useful for hardcoded binary
-    data, rather than as a replacement for py::Str. */
-    template <size_t N>
-    Bytes(const char (&string)[N]) :
-        Base(PyBytes_FromStringAndSize(string, N - 1), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Get a bytes representation of a Python object that implements the buffer
-    protocol. */
-    template <impl::python_like T> requires (!impl::bytes_like<T>)
-    explicit Bytes(const T& obj) : Base(PyBytes_FromObject(obj.ptr()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
+    template <typename... Args>
+        requires (
+            !__init__<Bytes, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Bytes, __explicit_init__<Bytes, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Bytes, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Bytes(Args&&... args) : Base(
+        __explicit_init__<Bytes, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
     /* Access the internal buffer of the bytes object.  Note that this implicitly
     includes an extra null byte at the end of the buffer, regardless of any nulls that
@@ -134,10 +72,6 @@ public:
         }
         return reinterpret_steal<Bytes>(result);
     }
-
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
 
     BERTRAND_METHOD([[nodiscard]], capitalize, const)
     BERTRAND_METHOD([[nodiscard]], center, const)
@@ -232,6 +166,105 @@ public:
     BERTRAND_METHOD([[nodiscard]], upper, const)
     BERTRAND_METHOD([[nodiscard]], zfill, const)
 
+};
+
+
+template <typename T>
+struct __issubclass__<T, Bytes>                             : Returns<bool> {
+    static consteval bool operator()() {
+        return impl::bytes_like<T>;
+    }
+    static consteval bool operator()(const T& obj) {
+        return operator()(obj);
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Bytes>                             : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Bytes>();
+        } else if constexpr (issubclass<T, Bytes>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyBytes_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
+
+
+template <std::convertible_to<size_t> T>
+struct __init__<Bytes, T>                                   : Returns<Bytes> {
+    static auto operator()(size_t size) {
+        PyObject* result = PyBytes_FromStringAndSize(nullptr, size);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Bytes>(result);
+    }
+};
+template <>
+struct __init__<Bytes>                                      : Returns<Bytes> {
+    static auto operator()() { return Bytes(0); }
+};
+
+
+template <>
+struct __init__<Bytes, char>                                : Returns<Bytes> {
+    static auto operator()(char value) {
+        PyObject* result = PyBytes_FromStringAndSize(&value, 1);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Bytes>(result);
+    }
+};
+template <size_t N>
+struct __init__<Bytes, char[N]>                             : Returns<Bytes> {
+    static auto operator()(const char (&string)[N]) {
+        PyObject* result = PyBytes_FromStringAndSize(string, N - 1);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Bytes>(result);
+    }
+};
+template <>
+struct __init__<Bytes, const char*>                        : Returns<Bytes> {
+    static auto operator()(const char* string) {
+        PyObject* result = PyBytes_FromStringAndSize(string, strlen(string));
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Bytes>(result);
+    }
+};
+
+
+template <>
+struct __init__<Bytes, const void*, size_t>                : Returns<Bytes> {
+    static auto operator()(const void* data, size_t size) {
+        PyObject* result = PyBytes_FromStringAndSize(static_cast<const char*>(data), size);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Bytes>(result);
+    }
+};
+
+
+template <impl::python_like T> requires (!impl::bytes_like<T>)
+struct __explicit_init__<Bytes, T>                          : Returns<Bytes> {
+    static auto operator()(const T& obj) {
+        PyObject* result = PyBytes_FromObject(obj.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Bytes>(result);
+    }
 };
 
 
@@ -294,28 +327,6 @@ class ByteArray : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return impl::bytearray_like<T>;
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if (impl::cpp_like<T>) {
-            return typecheck<T>();
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyByteArray_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
     ByteArray(Handle h, borrowed_t t) : Base(h, t) {}
     ByteArray(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -338,37 +349,6 @@ public:
         __explicit_init__<ByteArray, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
 
-
-
-
-
-    /* Implicitly convert a raw sequence of bytes into a py::ByteArray object. */
-    ByteArray(const void* data, size_t size) : Base(
-        PyByteArray_FromStringAndSize(static_cast<const char*>(data), size),
-        stolen_t{}
-    ) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-
-
-    /* Get a bytes representation of a Python object that implements the buffer
-    protocol. */
-    template <impl::python_like T> requires (!impl::bytearray_like<T>)
-    explicit ByteArray(const T& obj) :
-        Base(PyByteArray_FromObject(obj.ptr()), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
-
     /* Access the internal buffer of the bytearray object.  The data can be modified
     in-place, but should never be deallocated. */
     [[nodiscard]] char* data() const {
@@ -386,10 +366,6 @@ public:
         }
         return reinterpret_steal<ByteArray>(result);
     }
-
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
 
     BERTRAND_METHOD([[nodiscard]], capitalize, const)
     BERTRAND_METHOD([[nodiscard]], center, const)
@@ -487,6 +463,33 @@ public:
 };
 
 
+template <typename T>
+struct __issubclass__<T, ByteArray>                         : Returns<bool> {
+    static consteval bool operator()() {
+        return impl::bytearray_like<T>;
+    }
+    static consteval bool operator()(const T& obj) {
+        return operator()(obj);
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, ByteArray>                         : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, ByteArray>();
+        } else if constexpr (issubclass<T, ByteArray>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyByteArray_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
+
+
 template <std::convertible_to<size_t> T>
 struct __init__<ByteArray, T>                               : Returns<ByteArray> {
     static auto operator()(size_t size) {
@@ -503,6 +506,16 @@ struct __init__<ByteArray>                                  : Returns<ByteArray>
 };
 
 
+template <>
+struct __init__<ByteArray, char>                            : Returns<ByteArray> {
+    static auto operator()(char value) {
+        PyObject* result = PyByteArray_FromStringAndSize(&value, 1);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<ByteArray>(result);
+    }
+};
 template <size_t N>
 struct __init__<ByteArray, char[N]>                         : Returns<ByteArray> {
     static auto operator()(const char (&string)[N]) {
@@ -513,8 +526,6 @@ struct __init__<ByteArray, char[N]>                         : Returns<ByteArray>
         return reinterpret_steal<ByteArray>(result);
     }
 };
-
-
 template <>
 struct __init__<ByteArray, const char*>                     : Returns<ByteArray> {
     static auto operator()(const char* string) {
@@ -527,6 +538,28 @@ struct __init__<ByteArray, const char*>                     : Returns<ByteArray>
 };
 
 
+template <>
+struct __init__<ByteArray, const void*, size_t>             : Returns<ByteArray> {
+    static auto operator()(const void* data, size_t size) {
+        PyObject* result = PyByteArray_FromStringAndSize(static_cast<const char*>(data), size);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<ByteArray>(result);
+    }
+};
+
+
+template <impl::python_like T> requires (!impl::bytearray_like<T>)
+struct __explicit_init__<ByteArray, T>                       : Returns<ByteArray> {
+    static auto operator()(const T& obj) {
+        PyObject* result = PyByteArray_FromObject(obj.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<ByteArray>(result);
+    }
+};
 
 
 namespace ops {

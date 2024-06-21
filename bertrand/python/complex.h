@@ -21,28 +21,6 @@ class Complex : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return impl::complex_like<T>;
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyComplex_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
     Complex(Handle h, borrowed_t t) : Base(h, t) {}
     Complex(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -65,10 +43,6 @@ public:
         __explicit_init__<Complex, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
 
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
-
     /* Get the real part of the Complex number. */
     [[nodiscard]] double real() const noexcept {
         return PyComplex_RealAsDouble(this->ptr());
@@ -82,6 +56,33 @@ public:
     /* Get the magnitude of the Complex number. */
     [[nodiscard]] auto conjugate() const;
 
+};
+
+
+template <typename T>
+struct __issubclass__<T, Complex>                           : Returns<bool> {
+    static consteval bool operator()() {
+        return impl::complex_like<T>;
+    }
+    static consteval bool operator()(const T& obj) {
+        return operator()(obj);
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Complex>                           : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Complex>();
+        } else if constexpr (issubclass<T, Complex>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyComplex_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
 };
 
 

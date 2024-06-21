@@ -20,28 +20,6 @@ class Int : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return impl::int_like<T>;
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyLong_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
     Int(Handle h, borrowed_t t) : Base(h, t) {}
     Int(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -64,20 +42,12 @@ public:
         __explicit_init__<Int, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
 
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
-
     BERTRAND_METHOD([[nodiscard]], bit_length, const)
     BERTRAND_METHOD([[nodiscard]], bit_count, const)
     BERTRAND_METHOD([[nodiscard]], to_bytes, const)
     BERTRAND_STATIC_METHOD([[nodiscard]], from_bytes)
     BERTRAND_METHOD([[nodiscard]], as_integer_ratio, const)
     BERTRAND_METHOD([[nodiscard]], is_integer, const)
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
 
     static const Int neg_two;
     static const Int neg_one;

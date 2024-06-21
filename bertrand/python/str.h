@@ -20,6 +20,33 @@ namespace bertrand {
 namespace py {
 
 
+template <typename T>
+struct __issubclass__<T, Str>                               : Returns<bool> {
+    static consteval bool operator()() {
+        return impl::str_like<T>;
+    }
+    static consteval bool operator()(const T& obj) {
+        return operator()(obj);
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Str>                               : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Str>();
+        } else if constexpr (issubclass<T, Str>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyUnicode_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
+
+
 /* Represents a statically-typed Python string in C++. */
 class Str : public Object {
     using Base = Object;
@@ -28,185 +55,27 @@ class Str : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    static consteval bool typecheck() {
-        return impl::str_like<T>;
-    }
+    Str(Handle h, borrowed_t t) : Base(h, t) {}
+    Str(Handle h, stolen_t t) : Base(h, t) {}
 
-    template <typename T>
-    static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyUnicode_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Default constructor.  Initializes to empty string. */
-    Str() : Base(PyUnicode_FromStringAndSize("", 0), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    Str(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Str(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    /* Convert an equivalent pybind11 type into a py::Str. */
-    template <impl::pybind11_like T> requires (typecheck<T>())
-    Str(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Unwrap a pybind11 accessor into a py::Str. */
-    template <typename Policy>
-    Str(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Str>(accessor).release(), stolen_t{})
-    {}
-
-    /* Implicitly convert a string literal into a py::Str object. */
-    template <size_t N>
-    Str(const char(&string)[N]) : Base(
-        PyUnicode_FromStringAndSize(string, N - 1),
-        stolen_t{}
-    ) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Implicitly convert a C-style string array into a py::Str object. */
-    template <impl::cpp_like T> requires (std::convertible_to<T, const char*>)
-    Str(const T& string) : Base(PyUnicode_FromString(string), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Implicitly convert a C++ std::string into a py::Str object. */
-    template <impl::cpp_like T>
+    template <typename... Args>
         requires (
-            !std::convertible_to<T, const char*> &&
-            std::convertible_to<T, std::string> &&
-            impl::not_proxy_like<T>
+            std::is_invocable_r_v<Str, __init__<Str, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Str, std::remove_cvref_t<Args>...>::enable
         )
-    Str(const T& string) : Base(nullptr, stolen_t{}) {
-        std::string s = string;
-        m_ptr = PyUnicode_FromStringAndSize(s.c_str(), s.size());
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
+    Str(Args&&... args) : Base(
+        __init__<Str, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-    /* Implicitly convert a C++ std::string_view into a py::Str object. */
-    template <impl::cpp_like T>
+    template <typename... Args>
         requires (
-            !std::convertible_to<T, const char*> &&
-            !std::convertible_to<T, std::string> &&
-            std::convertible_to<T, std::string_view>
+            !__init__<Str, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Str, __explicit_init__<Str, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Str, std::remove_cvref_t<Args>...>::enable
         )
-    Str(const T& string) : Base(nullptr, stolen_t{}) {
-        std::string_view s = string;
-        m_ptr = PyUnicode_FromStringAndSize(s.data(), s.size());
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly convert an arbitrary Python object into a py::Str representation. */
-    template <impl::python_like T> requires (!impl::str_like<T>)
-    explicit Str(const T& obj) : Base(PyObject_Str(obj.ptr()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly convert an arbitrary C++ object into a py::Str representation. */
-    template <impl::cpp_like T>
-        requires (
-            !std::convertible_to<T, const char*> &&
-            !std::convertible_to<T, std::string> &&
-            !std::convertible_to<T, std::string_view>
-        )
-    explicit Str(const T& obj) : Base(PyObject_Str(as_object(obj).ptr()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    #ifdef BERTRAND_HAS_STD_FORMAT
-
-        /* Construct a Python unicode string from a std::format()-style interpolated
-        string. */
-        template <typename... Args> requires (sizeof...(Args) > 0)
-        explicit Str(const std::string_view& format, Args&&... args) :
-            Base(nullptr, stolen_t{})
-        {
-            std::string result = std::vformat(
-                format,
-                std::make_format_args(std::forward<Args>(args))...
-            );
-            m_ptr = PyUnicode_FromStringAndSize(result.c_str(), result.size());
-            if (m_ptr == nullptr) {
-                Exception::from_python();
-            }
-        }
-
-        /* Construct a Python unicode string from a std::format()-style interpolated string
-        with an optional locale. */
-        template <typename... Args> requires (sizeof...(Args) > 0)
-        explicit Str(
-            const std::locale& locale,
-            const std::string_view& format,
-            Args&&... args
-        ) : Base(nullptr, stolen_t{}) {
-            std::string result = std::vformat(
-                locale,
-                format,
-                std::make_format_args(std::forward<Args>(args))...
-            );
-            m_ptr = PyUnicode_FromStringAndSize(result.c_str(), result.size());
-            if (m_ptr == nullptr) {
-                Exception::from_python();
-            }
-        }
-
-        /* Construct a Python unicode string from a std::format()-style interpolated string.
-        This overload is chosen when the format string is given as a Python unicode
-        string. */
-        template <impl::python_like T, typename... Args>
-            requires (sizeof...(Args) > 0 && impl::str_like<T>)
-        explicit Str(const T& format, Args&&... args) : Str(
-            format.template cast<std::string>(),
-            std::forward<Args>(args)...
-        ) {}
-
-        /* Construct a Python unicode string from a std::format()-style interpolated string
-        with an optional locale. */
-        template <impl::python_like T, typename... Args>
-            requires (sizeof...(Args) > 0 && impl::str_like<T>)
-        explicit Str(
-            const std::locale& locale,
-            const T& format,
-            Args&&... args
-        ) : Str(
-            locale,
-            format.template cast<std::string>(),
-            std::forward<Args>(args)...
-        ) {}
-
-    #endif
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
+    explicit Str(Args&&... args) : Base(
+        __explicit_init__<Str, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
     /* Make an explicit copy of the string. */
     [[nodiscard]] Str copy() const {
@@ -276,10 +145,6 @@ public:
         }
         return reinterpret_steal<Str>(result);
     }
-
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
 
     BERTRAND_METHOD([[nodiscard]], capitalize, const)
     BERTRAND_METHOD([[nodiscard]], casefold, const)
@@ -581,19 +446,6 @@ public:
 };
 
 
-template <std::derived_from<Str> From>
-struct __cast__<From, std::string> : Returns<std::string> {
-    static std::string operator()(const From& from) {
-        Py_ssize_t length;
-        const char* result = PyUnicode_AsUTF8AndSize(from.ptr(), &length);
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return {result, static_cast<size_t>(length)};
-    }
-};
-
-
 namespace ops {
 
     template <typename Return, std::derived_from<Str> Self>
@@ -642,6 +494,198 @@ namespace ops {
     struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
 
 }
+
+
+template <>
+struct __init__<Str>                                        : Returns<Str> {
+    static auto operator()() {
+        PyObject* result = PyUnicode_FromStringAndSize("", 0);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+};
+
+
+template <>
+struct __init__<Str, char>                                   : Returns<Str> {
+    static auto operator()(char ch) {
+        PyObject* result = PyUnicode_FromOrdinal(ch);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+};
+
+
+template <size_t N>
+struct __init__<Str, char[N]>                               : Returns<Str> {
+    static auto operator()(const char(&string)[N]) {
+        PyObject* result = PyUnicode_FromStringAndSize(string, N - 1);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+};
+
+
+// TODO: force explicit const char* rather than convertible_to?
+template <impl::cpp_like T>
+    requires (
+        std::convertible_to<T, const char*> &&
+        impl::not_proxy_like<T>
+    )
+struct __init__<Str, T>                                     : Returns<Str> {
+    static auto operator()(const T& string) {
+        PyObject* result = PyUnicode_FromString(string);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+};
+
+
+template <impl::cpp_like T>
+    requires (
+        !std::convertible_to<T, const char*> &&
+        std::convertible_to<T, std::string> &&
+        impl::not_proxy_like<T>
+    )
+struct __init__<Str, T>                                     : Returns<Str> {
+    static auto operator()(const T& string) {
+        std::string s = string;
+        PyObject* result = PyUnicode_FromStringAndSize(s.c_str(), s.size());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+};
+
+
+template <impl::cpp_like T>
+    requires (
+        !std::convertible_to<T, const char*> &&
+        !std::convertible_to<T, std::string> &&
+        std::convertible_to<T, std::string_view> &&
+        impl::not_proxy_like<T>
+    )
+struct __init__<Str, T>                                     : Returns<Str> {
+    static auto operator()(const T& string) {
+        std::string_view s = string;
+        PyObject* result = PyUnicode_FromStringAndSize(s.data(), s.size());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+};
+
+
+template <impl::python_like T> requires (!impl::str_like<T>)
+struct __explicit_init__<Str, T>                            : Returns<Str> {
+    static auto operator()(const T& obj) {
+        PyObject* result = PyObject_Str(obj.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+};
+
+
+template <impl::cpp_like T>
+    requires (
+        !std::convertible_to<T, const char*> &&
+        !std::convertible_to<T, std::string> &&
+        !std::convertible_to<T, std::string_view>
+    )
+struct __explicit_init__<Str, T>                            : Returns<Str> {
+    static auto operator()(const T& obj) {
+        PyObject* result = PyObject_Str(as_object(obj).ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+};
+
+
+#ifdef BERTRAND_HAS_STD_FORMAT
+
+
+    template <std::convertible_to<std::string_view> T, typename... Args>
+        requires (sizeof...(Args) > 0)
+    struct __explicit_init__<Str, T, Args...>               : Returns<Str> {
+        static auto operator()(const T& format, const Args&... args) {
+            std::string result = std::vformat(format, std::make_format_args(args)...);
+            PyObject* str = PyUnicode_FromStringAndSize(result.c_str(), result.size());
+            if (str == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Str>(str);
+        }
+    };
+
+
+    template <std::convertible_to<std::string_view> T, typename... Args>
+        requires (sizeof...(Args) > 0)
+    struct __explicit_init__<Str, std::locale, T, Args...>  : Returns<Str> {
+        static auto operator()(const std::locale& locale, const T& format, const Args&... args) {
+            std::string result = std::vformat(locale, format, std::make_format_args(args)...);
+            PyObject* str = PyUnicode_FromStringAndSize(result.c_str(), result.size());
+            if (str == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Str>(str);
+        }
+    };
+
+
+    template <impl::python_like T, typename... Args>
+        requires (impl::str_like<T> && sizeof...(Args) > 0)
+    struct __explicit_init__<Str, T, Args...>               : Returns<Str> {
+        static auto operator()(const T& format, const Args&... args) {
+            if constexpr (impl::pybind11_like<T>) {
+                return Str(format.template cast<std::string>(), args...);
+            } else {
+                return Str(static_cast<std::string>(format), args...);
+            }
+        }
+    };
+
+
+    template <impl::python_like T, typename... Args>
+        requires (impl::str_like<T> && sizeof...(Args) > 0)
+    struct __explicit_init__<Str, std::locale, T, Args...>  : Returns<Str> {
+        static auto operator()(const std::locale& locale, const T& format, const Args&... args) {
+            if constexpr (impl::pybind11_like<T>) {
+                return Str(locale, format.template cast<std::string>(), args...);
+            } else {
+                return Str(locale, static_cast<std::string>(format), args...);
+            }
+        }
+    };
+
+
+#endif
+
+
+template <std::derived_from<Str> From>
+struct __cast__<From, std::string> : Returns<std::string> {
+    static std::string operator()(const From& from) {
+        Py_ssize_t length;
+        const char* result = PyUnicode_AsUTF8AndSize(from.ptr(), &length);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return {result, static_cast<size_t>(length)};
+    }
+};
 
 
 }  // namespace py

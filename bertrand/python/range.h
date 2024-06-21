@@ -21,41 +21,6 @@ class Range : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    static consteval bool typecheck() {
-        return impl::range_like<T>;
-    }
-
-    template <typename T>
-    static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-
-        } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
-                return false;
-            }
-            int result = PyObject_IsInstance(
-                obj.ptr(),
-                (PyObject*) &PyRange_Type
-            );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
     Range(Handle h, borrowed_t t) : Base(h, t) {}
     Range(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -77,10 +42,6 @@ public:
     explicit Range(Args&&... args) : Base(
         __explicit_init__<Range, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
-
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
 
     /* Get the number of occurrences of a given number within the range. */
     [[nodiscard]] Py_ssize_t count(
@@ -150,6 +111,43 @@ public:
         return attr<"step">().value();
     }
 
+};
+
+
+template <typename T>
+struct __issubclass__<T, Range>                             : Returns<bool> {
+    static consteval bool operator()() {
+        return impl::range_like<T>;
+    }
+    static consteval bool operator()(const T& obj) {
+        return operator()();
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Range>                             : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Range>();
+        } else if constexpr (issubclass<T, Range>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj.ptr(),
+                (PyObject*) &PyRange_Type
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return false;
+        }
+    }
 };
 
 

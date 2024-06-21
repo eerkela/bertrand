@@ -29,28 +29,6 @@ class Type : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return impl::type_like<T>;
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyType_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
     Type(Handle h, borrowed_t t) : Base(h, t) {}
     Type(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -72,10 +50,6 @@ public:
     explicit Type(Args&&... args) : Base(
         __explicit_init__<Type, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
 
     /* Get the Python type of a registered pybind11 extension type. */
     template <typename T>
@@ -286,6 +260,33 @@ public:
 };
 
 
+template <typename T>
+struct __issubclass__<T, Type>                              : Returns<bool> {
+    static consteval bool operator()() {
+        return impl::type_like<T>;
+    }
+    static consteval bool operator()(const T& obj) {
+        return operator()(obj);
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Type>                              : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Type>();
+        } else if constexpr (issubclass<T, Type>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyType_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
+
+
 template <>
 struct __init__<Type>                                       : Returns<Type> {
     static auto operator()() {
@@ -393,41 +394,6 @@ class Super : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return std::derived_from<T, Super>;
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-
-        } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
-                return false;
-            }
-            int result = PyObject_IsInstance(
-                obj.ptr(),
-                reinterpret_cast<PyObject*>(&PySuper_Type)
-            );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
     Super(Handle h, borrowed_t t) : Base(h, t) {}
     Super(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -450,6 +416,36 @@ public:
         __explicit_init__<Super, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
 
+};
+
+
+template <typename T>
+struct __issubclass__<T, Super>                             : Returns<bool> {
+    static consteval bool operator()() {
+        return std::derived_from<T, Super>;
+    }
+    static consteval bool operator()(const T& obj) {
+        return operator()(obj);
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Super>                             : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Super>();
+        } else if constexpr (issubclass<T, Super>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyObject_IsInstance(
+                obj.ptr(),
+                reinterpret_cast<PyObject*>(&PySuper_Type)
+            );
+        } else {
+            return false;
+        }
+    }
 };
 
 

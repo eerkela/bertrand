@@ -120,11 +120,21 @@ void run() {
 
 
 
-    std::vector<int> vec{1, 2, 3};
-    py::List<py::Int> list = vec;
+    std::array<int, 3> vec{1, 2, 3};
+    py::Tuple<py::Int> list = vec;
 
     py::print(list);
 
+
+
+
+
+
+
+
+    // TODO: not immediately clear if this should return the integer representation of
+    // each character, or the parse the characters into equivalent integers.
+    // py::print(py::Tuple{1, 2, 3});
 
 
 

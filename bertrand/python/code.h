@@ -246,28 +246,6 @@ class Code : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return std::derived_from<T, Code>;
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::python_like<T>) {
-            return obj.ptr() != nullptr && PyCode_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
     Code(Handle h, borrowed_t t) : Base(h, t) {}
     Code(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -439,6 +417,42 @@ public:
 };
 
 
+template <typename T>
+struct __issubclass__<T, Code>                              : Returns<bool> {
+    static consteval bool operator()() {
+        return std::derived_from<T, Code>;
+    }
+    static consteval bool operator()(const T&) {
+        return operator()();
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Code>                              : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Code>();
+        } else if constexpr (issubclass<T, Code>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyCode_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
+
+
+// TODO: swap semantics of constructor and compile() method.  Constructor should allow
+// compilation of inline scripts, so that you don't need to use the _python literal.
+// The ::compile() method would then take a file name and compile the contents of
+// into a code object.
+
+// static const py::Code script = R"(...)"
+// static const auto script = py::Code::compile("source.py");
+
+
 template <>
 struct __explicit_init__<Code, const char*>                 : Returns<Code> {
     static PyObject* load(const char* path) {
@@ -494,28 +508,6 @@ class Frame : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return std::derived_from<T, Frame>;
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyFrame_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
     Frame(Handle h, borrowed_t t) : Base(h, t) {}
     Frame(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -537,10 +529,6 @@ public:
     explicit Frame(Args&&... args) : Base(
         __explicit_init__<Frame, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
 
     /* Get the next outer frame from this one. */
     [[nodiscard]] Frame back() const {
@@ -635,6 +623,33 @@ public:
 
     #endif
 
+};
+
+
+template <typename T>
+struct __issubclass__<T, Frame>                              : Returns<bool> {
+    static consteval bool operator()() {
+        return std::derived_from<T, Frame>;
+    }
+    static consteval bool operator()(const T&) {
+        return operator()();
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Frame>                              : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Frame>();
+        } else if constexpr (issubclass<T, Frame>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyFrame_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
 };
 
 

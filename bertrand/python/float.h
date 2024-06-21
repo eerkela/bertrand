@@ -21,28 +21,6 @@ class Float : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return impl::float_like<T>;
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyFloat_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
     Float(Handle h, borrowed_t t) : Base(h, t) {}
     Float(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -65,18 +43,10 @@ public:
         __explicit_init__<Float, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
 
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
-
     BERTRAND_METHOD([[nodiscard]], as_integer_ratio, const)
     BERTRAND_METHOD([[nodiscard]], is_integer, const)
     BERTRAND_METHOD([[nodiscard]], hex, const)
     BERTRAND_STATIC_METHOD([[nodiscard]], fromhex)
-
-    /////////////////////////////
-    ////    C++ INTERFACE    ////
-    /////////////////////////////
 
     static const Float neg_one;
     static const Float neg_half;
@@ -85,6 +55,34 @@ public:
     static const Float one;
 
 };
+
+
+template <typename T>
+struct __issubclass__<T, Float>                             : Returns<bool> {
+    static consteval bool operator()() {
+        return impl::float_like<T>;
+    }
+    static consteval bool operator()(const T& obj) {
+        return operator()(obj);
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Float>                             : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Float>();
+        } else if constexpr (issubclass<T, Float>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PyFloat_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
+};
+
 
 
 template <>

@@ -389,7 +389,7 @@ namespace impl {
     auto visit_recursive(Obj&& obj, Func&& func, Rest&&... rest) {
         using Arg = visit_helper<std::decay_t<Obj>, std::decay_t<Func>>::Arg;
 
-        if (Arg::typecheck(obj)) {
+        if (isinstance<Arg>(obj)) {
             return std::invoke(func, reinterpret_borrow<Arg>(obj.ptr()));
 
         } else {
@@ -584,7 +584,7 @@ This is roughly equivalent to std::visit, but with a few key differences:
     2.  Each function is checked in order, which invokes a runtime type check against
         the type of the first argument.  The first function that matches the observed
         type of the object is called, and all other functions are ignored.
-    3.  The generic `py::Object` type acts as a catch-all, since its typecheck() method
+    3.  The generic `py::Object` type acts as a catch-all, since its isinstance() method
         always returns true as long as the object is not null.  Including a function
         that accepts `py::Object` can therefore act as a default case, if no previous
         function matches.
@@ -1222,9 +1222,9 @@ auto Regex::Match::group(const py::args& args) const
     result.reserve(tuple.size());
 
     for (const auto& arg : tuple) {
-        if (py::Str::typecheck(arg)) {
+        if (py::isinstance<py::Str>(arg)) {
             result.push_back(group(static_cast<std::string>(arg)));
-        } else if (py::Int::typecheck(arg)) {
+        } else if (py::isinstance<py::Int>(arg)) {
             result.push_back(group(static_cast<size_t>(arg)));
         } else {
             throw py::TypeError(

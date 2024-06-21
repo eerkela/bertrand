@@ -113,7 +113,7 @@ protected:
         const pybind11::detail::accessor<Policy>& accessor
     ) {
         pybind11::object obj(accessor);
-        if (Self::typecheck(obj)) {
+        if (isinstance<Self>(obj)) {
             return obj;
         } else {
             throw impl::noconvert<Self>(obj.ptr());
@@ -122,22 +122,6 @@ protected:
 
 public:
     static const Type type;
-
-    /* Check whether the templated type is considered object-like at compile time. */
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck() {
-        return std::derived_from<T, Object> || std::derived_from<T, pybind11::object>;
-    }
-
-    /* Check whether a Python/C++ value is considered object-like at compile time. */
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& value) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-        } else {
-            return value.ptr() != nullptr;
-        }
-    }
 
     ////////////////////////////
     ////    CONSTRUCTORS    ////
@@ -598,8 +582,7 @@ template <std::derived_from<Object> From, impl::pybind11_like To>
     requires (
         !std::same_as<To, pybind11::handle> &&
         !std::same_as<To, pybind11::object> &&
-        From::template typecheck<To>()
-        // issubclass<To, From>()  // TODO: replace typecheck with this
+        issubclass<To, From>()
     )
 struct __cast__<From, To>                                   : Returns<To> {
     static auto operator()(const From& from) {

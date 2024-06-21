@@ -33,24 +33,6 @@ class NoneType : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return impl::none_like<T>;
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && Py_IsNone(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-
     NoneType(Handle h, borrowed_t t) : Base(h, t) {}
     NoneType(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -73,6 +55,33 @@ public:
         __explicit_init__<NoneType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
 
+};
+
+
+template <typename T>
+struct __issubclass__<T, NoneType>                          : Returns<bool> {
+    static consteval bool operator()() {
+        return impl::none_like<T>;
+    }
+    static constexpr bool operator()(const T& obj) {
+        return operator()();
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, NoneType>                          : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, NoneType>();
+        } else if constexpr (issubclass<T, NoneType>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && Py_IsNone(obj.ptr());
+        } else {
+            return false;
+        }
+    }
 };
 
 
@@ -103,37 +112,6 @@ class NotImplementedType : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return std::derived_from<T, NotImplementedType>;
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-
-        } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
-                return false;
-            }
-            int result = PyObject_IsInstance(
-                obj.ptr(),
-                (PyObject*) Py_TYPE(Py_NotImplemented)
-            );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-
-        } else {
-            return false;
-        }
-    }
-
     NotImplementedType(Handle h, borrowed_t t) : Base(h, t) {}
     NotImplementedType(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -156,6 +134,43 @@ public:
         __explicit_init__<NotImplementedType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
 
+};
+
+
+template <typename T>
+struct __issubclass__<T, NotImplementedType>                : Returns<bool> {
+    static consteval bool operator()() {
+        return impl::notimplemented_like<T>;
+    }
+    static constexpr bool operator()(const T& obj) {
+        return operator()();
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, NotImplementedType>                : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, NotImplementedType>();
+        } else if constexpr (issubclass<T, NotImplementedType>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj.ptr(),
+                (PyObject*) Py_TYPE(Py_NotImplemented)
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return false;
+        }
+    }
 };
 
 
@@ -186,37 +201,6 @@ class EllipsisType : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return std::derived_from<T, EllipsisType>;
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-
-        } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
-                return false;
-            }
-            int result = PyObject_IsInstance(
-                obj.ptr(),
-                (PyObject*) Py_TYPE(Py_Ellipsis)
-            );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-
-        } else {
-            return false;
-        }
-    }
-
     EllipsisType(Handle h, borrowed_t t) : Base(h, t) {}
     EllipsisType(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -239,6 +223,43 @@ public:
         __explicit_init__<EllipsisType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
 
+};
+
+
+template <typename T>
+struct __issubclass__<T, EllipsisType>                      : Returns<bool> {
+    static consteval bool operator()() {
+        return impl::ellipsis_like<T>;
+    }
+    static constexpr bool operator()(const T& obj) {
+        return operator()();
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, EllipsisType>                      : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, EllipsisType>();
+        } else if constexpr (issubclass<T, EllipsisType>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            if (obj.ptr() == nullptr) {
+                return false;
+            }
+            int result = PyObject_IsInstance(
+                obj.ptr(),
+                (PyObject*) Py_TYPE(Py_Ellipsis)
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return false;
+        }
+    }
 };
 
 
@@ -288,28 +309,6 @@ class Slice : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return impl::slice_like<T>;
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PySlice_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
     Slice(Handle h, borrowed_t t) : Base(h, t) {}
     Slice(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -351,10 +350,6 @@ public:
             Exception::from_python();
         }
     }
-
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
 
     /* Get the start object of the slice.  Note that this might not be an integer. */
     [[nodiscard]] auto start() const {
@@ -406,6 +401,33 @@ public:
         return result;
     }
 
+};
+
+
+template <typename T>
+struct __issubclass__<T, Slice>                             : Returns<bool> {
+    static consteval bool operator()() {
+        return impl::slice_like<T>;
+    }
+    static constexpr bool operator()(const T& obj) {
+        return operator()();
+    }
+};
+
+
+template <typename T>
+struct __isinstance__<T, Slice>                             : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Slice>();
+        } else if constexpr (issubclass<T, Slice>()) {
+            return obj.ptr() != nullptr;
+        } else if constexpr (impl::is_object_exact<T>) {
+            return obj.ptr() != nullptr && PySlice_Check(obj.ptr());
+        } else {
+            return false;
+        }
+    }
 };
 
 
@@ -489,28 +511,6 @@ class Module : public Object {
 public:
     static const Type type;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        return impl::module_like<T>;
-    }
-
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
-        } else if constexpr (typecheck<T>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyModule_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
     Module(Handle h, borrowed_t t) : Base(h, t) {}
     Module(Handle h, stolen_t t) : Base(h, t) {}
 
@@ -532,10 +532,6 @@ public:
     explicit Module(Args&&... args) : Base(
         __explicit_init__<Module, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     ) {}
-
-    //////////////////////////////////
-    ////    PYBIND11 INTERFACE    ////
-    //////////////////////////////////
 
     // TODO: there may be no need to have a special case for overloading, either.  This
     // would just be handled automatically by the modular descriptor objects.  If the
