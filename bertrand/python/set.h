@@ -20,6 +20,89 @@ namespace py {
 ///////////////////
 
 
+template <typename T, typename Key>
+struct __issubclass__<T, Set<Key>>                          : Returns<bool> {
+    static constexpr bool generic = std::same_as<Key, Object>;
+    template <typename U>
+    static constexpr bool check_key_type = std::derived_from<U, Object> ?
+        std::derived_from<U, Key> : std::convertible_to<U, Key>;
+
+    static consteval bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() {
+        if constexpr (!impl::set_like<T>) {
+            return false;
+        } else if constexpr (impl::pybind11_like<T>) {
+            return generic;
+        } else if constexpr (impl::is_iterable<T>) {
+            return check_key_type<impl::iter_type<T>>;
+        } else {
+            return false;
+        }
+    }
+};
+
+
+template <typename T, typename Key>
+struct __isinstance__<T, Set<Key>>                          : Returns<bool> {
+    static constexpr bool generic = std::same_as<Key, Object>;
+    template <typename U>
+    static constexpr bool check_key_type = std::derived_from<U, Object> ?
+        std::derived_from<U, Key> : std::convertible_to<U, Key>;
+
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, Set<Key>>();
+
+        } else if constexpr (impl::is_object_exact<T>) {
+            if constexpr (generic) {
+                return obj.ptr() != nullptr && PySet_Check(obj.ptr());
+            } else {
+                return (
+                    obj.ptr() != nullptr && PySet_Check(obj.ptr()) &&
+                    std::ranges::all_of(obj, [](const auto& item) {
+                        return isinstance<Key>(item);
+                    })
+                );
+            }
+
+        } else if constexpr (
+            std::derived_from<T, Set<Object>> ||
+            std::derived_from<T, pybind11::set>
+        ) {
+            if constexpr (generic) {
+                return obj.ptr() != nullptr;
+            } else {
+                return (
+                    obj.ptr() != nullptr &&
+                    std::ranges::all_of(obj, [](const auto& item) {
+                        return isinstance<Key>(item);
+                    })
+                );
+            }
+
+        } else if constexpr (impl::set_like<T>) {
+            return obj.ptr() != nullptr && check_key_type<impl::iter_type<T>>;
+
+        } else {
+            return false;
+        }
+    }
+};
+
+
+template <typename T>
+Set(const std::initializer_list<T>&) -> Set<impl::as_object_t<T>>;
+template <impl::is_iterable T>
+Set(T) -> Set<impl::as_object_t<impl::iter_type<T>>>;
+template <typename T, typename... Args>
+    requires (!impl::is_iterable<T> && !impl::str_like<T>)
+Set(T, Args...) -> Set<Object>;
+template <impl::str_like T>
+Set(T) -> Set<Str>;
+template <size_t N>
+Set(const char(&)[N]) -> Set<Str>;
+
+
 /* Represents a statically-typed Python set in C++. */
 template <typename Key>
 class Set : public Object, public impl::SetTag {
@@ -55,84 +138,27 @@ public:
     using reverse_iterator = impl::ReverseIterator<impl::GenericIter<value_type>>;
     using const_reverse_iterator = impl::ReverseIterator<impl::GenericIter<const value_type>>;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        if constexpr (!impl::set_like<T>) {
-            return false;
-        } else if constexpr (impl::pybind11_like<T>) {
-            return generic;
-        } else if constexpr (impl::is_iterable<T>) {
-            return check_key_type<impl::iter_type<T>>;
-        } else {
-            return false;
-        }
-    }
+    Set(Handle h, borrowed_t t) : Base(h, t) {}
+    Set(Handle h, stolen_t t) : Base(h, t) {}
 
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<Set, __init__<Set, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Set, std::remove_cvref_t<Args>...>::enable
+        )
+    Set(Args&&... args) : Base(
+        __init__<Set, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-        } else if constexpr (impl::is_object_exact<T>) {
-            if constexpr (generic) {
-                return obj.ptr() != nullptr && PySet_Check(obj.ptr());
-            } else {
-                return (
-                    obj.ptr() != nullptr && PySet_Check(obj.ptr()) &&
-                    std::ranges::all_of(obj, [](const auto& item) {
-                        return key_type::typecheck(item);
-                    })
-                );
-            }
-
-        } else if constexpr (
-            std::derived_from<T, Set<Object>> ||
-            std::derived_from<T, pybind11::set>
-        ) {
-            if constexpr (generic) {
-                return obj.ptr() != nullptr;
-            } else {
-                return (
-                    obj.ptr() != nullptr &&
-                    std::ranges::all_of(obj, [](const auto& item) {
-                        return key_type::typecheck(item);
-                    })
-                );
-            }
-
-        } else if constexpr (impl::set_like<T>) {
-            return obj.ptr() != nullptr && check_key_type<impl::iter_type<T>>;
-
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Default constructor.  Initializes to an empty set. */
-    Set() : Base(PySet_New(nullptr), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    Set(Handle h, const borrowed_t& t) : Base(h, t) {}
-    Set(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    /* Copy/move constructors from equivalent pybind11 types or other sets with a
-    narrower key type. */
-    template <impl::python_like T> requires (typecheck<T>())
-    Set(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Unwrap a pybind11 accessor into a py::Set. */
-    template <typename Policy>
-    Set(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<Set>(accessor).release(), stolen_t{})
-    {}
+    template <typename... Args>
+        requires (
+            !__init__<Set, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Set, __explicit_init__<Set, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Set, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Set(Args&&... args) : Base(
+        __explicit_init__<Set, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
     /* Pack the contents of a braced initializer list into a new Python set. */
     Set(const std::initializer_list<key_type>& contents) :
@@ -152,154 +178,6 @@ public:
             throw;
         }
     }
-
-    /* Explicitly unpack an arbitrary Python container into a new py::Set. */
-    template <impl::python_like T> requires (!impl::set_like<T> && impl::is_iterable<T>)
-    explicit Set(const T& contents) : Base(PySet_New(contents.ptr()), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly unpack an arbitrary C++ container into a new py::Set. */
-    template <impl::cpp_like T> requires (impl::is_iterable<T>)
-    explicit Set(const T& contents) : Base(PySet_New(nullptr), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            for (const auto& item : contents) {
-                if (PySet_Add(m_ptr, key_type(item).ptr())) {
-                    Exception::from_python();
-                }
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Construct a new Set from a pair of input iterators. */
-    template <typename Iter, std::sentinel_for<Iter> Sentinel>
-    explicit Set(Iter first, Sentinel last) :
-        Base(PySet_New(nullptr), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            while (first != last) {
-                if (PySet_Add(m_ptr, key_type(*first).ptr())) {
-                    Exception::from_python();
-                }
-                ++first;
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Explicitly unpack a std::pair into a py::Set. */
-    template <typename First, typename Second>
-        requires (
-            std::constructible_from<key_type, First> &&
-            std::constructible_from<key_type, Second>
-        )
-    explicit Set(const std::pair<First, Second>& pair) :
-        Base(PySet_New(nullptr), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            if (PySet_Add(m_ptr, key_type(pair.first).ptr())) {
-                Exception::from_python();
-            }
-            if (PySet_Add(m_ptr, key_type(pair.second).ptr())) {
-                Exception::from_python();
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Explicitly unpack a std::tuple into a py::Set. */
-    template <typename... Args> requires (std::constructible_from<key_type, Args> && ...)
-    explicit Set(const std::tuple<Args...>& tuple) :
-        Base(PySet_New(nullptr), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-
-        auto unpack_tuple = [&]<size_t... Ns>(std::index_sequence<Ns...>) {
-            auto insert = [](PyObject* m_ptr, const key_type& item) {
-                if (PySet_Add(m_ptr, item.ptr())) {
-                    Exception::from_python();
-                }
-            };
-            (insert(m_ptr, key_type(std::get<Ns>(tuple))), ...);
-        };
-
-        try {
-            unpack_tuple(std::index_sequence_for<Args...>{});
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Explicitly unpack a C++ string literal into a py::Set. */
-    template <size_t N> requires (generic || std::same_as<key_type, Str>)
-    explicit Set(const char (&string)[N]) : Base(PySet_New(nullptr), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            for (size_t i = 0; i < N; ++i) {
-                PyObject* item = PyUnicode_FromStringAndSize(string + i, 1);
-                if (item == nullptr) {
-                    Exception::from_python();
-                }
-                if (PySet_Add(m_ptr, item)) {
-                    Exception::from_python();
-                }
-                Py_DECREF(item);
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Explicitly unpack a C++ string pointer into a py::Set. */
-    template <std::same_as<const char*> T> requires (generic || std::same_as<key_type, Str>)
-    explicit Set(T string) : Base(PySet_New(nullptr), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            for (const char* ptr = string; *ptr != '\0'; ++ptr) {
-                PyObject* item = PyUnicode_FromStringAndSize(ptr, 1);
-                if (item == nullptr) {
-                    Exception::from_python();
-                }
-                if (PySet_Add(m_ptr, item)) {
-                    Exception::from_python();
-                }
-                Py_DECREF(item);
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
 
     /* Equivalent to Python `set.add(key)`. */
     void add(const key_type& key) {
@@ -591,10 +469,6 @@ public:
         }
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
     [[nodiscard]] friend Set operator|(
         const Set& self,
         const std::initializer_list<key_type>& other
@@ -658,17 +532,218 @@ public:
 };
 
 
-template <typename T>
-Set(const std::initializer_list<T>&) -> Set<impl::as_object_t<T>>;
-template <impl::is_iterable T>
-Set(T) -> Set<impl::as_object_t<impl::iter_type<T>>>;
-template <typename T, typename... Args>
-    requires (!impl::is_iterable<T> && !impl::str_like<T>)
-Set(T, Args...) -> Set<Object>;
-template <impl::str_like T>
-Set(T) -> Set<Str>;
-template <size_t N>
-Set(const char(&)[N]) -> Set<Str>;
+/* Default constructor.  Initializes to an empty set. */
+template <typename Key>
+struct __init__<Set<Key>>                                   : Returns<Set<Key>> {
+    static auto operator()() {
+        PyObject* result = PySet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Set<Key>>(result);
+    }
+};
+
+
+/* Converting constructor from compatible C++ sets. */
+template <typename Key, impl::cpp_like Container>
+    requires (
+        impl::set_like<Container> &&
+        impl::is_iterable<Container> &&
+        std::convertible_to<impl::iter_type<Container>, Key>
+    )
+struct __init__<Set<Key>, Container>                        : Returns<Set<Key>> {
+    static auto operator()(const Container& contents) {
+        PyObject* result = PySet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            for (const auto& item : contents) {
+                if (PySet_Add(result, Key(item).ptr())) {
+                    Exception::from_python();
+                }
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<Set<Key>>(result);
+    }
+};
+
+
+/* Explicitly convert an arbitrary C++ container into a py::Set. */
+template <typename Key, impl::cpp_like Container>
+    requires (
+        !impl::set_like<Container> &&
+        impl::is_iterable<Container> &&
+        std::convertible_to<impl::iter_type<Container>, Key>
+    )
+struct __explicit_init__<Set<Key>, Container>               : Returns<Set<Key>> {
+    static auto operator()(const Container& contents) {
+        PyObject* result = PySet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            for (const auto& item : contents) {
+                if (PySet_Add(result, Key(item).ptr())) {
+                    Exception::from_python();
+                }
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<Set<Key>>(result);
+    }
+};
+
+
+/* Explicitly convert an arbitrary Python container into a new py::Set. */
+template <typename Key, impl::python_like Container>
+    requires (!impl::set_like<Container> && impl::is_iterable<Container>)
+struct __explicit_init__<Set<Key>, Container>               : Returns<Set<Key>> {
+    static auto operator()(const Container& contents) {
+        PyObject* result = PySet_New(contents.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Set<Key>>(result);
+    }
+};
+
+
+/* Explicitly convert a std::pair into a py::Set. */
+template <typename Key, typename First, typename Second>
+    requires (
+        std::constructible_from<Key, First> &&
+        std::constructible_from<Key, Second>
+    )
+struct __explicit_init__<Set<Key>, std::pair<First, Second>> : Returns<Set<Key>> {
+    static auto operator()(const std::pair<First, Second>& pair) {
+        PyObject* result = PySet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            if (PySet_Add(result, Key(pair.first).ptr())) {
+                Exception::from_python();
+            }
+            if (PySet_Add(result, Key(pair.second).ptr())) {
+                Exception::from_python();
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<Set<Key>>(result);
+    }
+};
+
+
+/* Explicitly convert a std::tuple into a py::Set. */
+template <typename Key, typename... Args>
+    requires (std::constructible_from<Key, Args> && ...)
+struct __explicit_init__<Set<Key>, std::tuple<Args...>>     : Returns<Set<Key>> {
+    static auto operator()(const std::tuple<Args...>& contents) {
+        PyObject* result = PySet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+
+        auto unpack_tuple = [&]<size_t... Ns>(std::index_sequence<Ns...>) {
+            auto insert = [](PyObject* m_ptr, const Key& item) {
+                if (PySet_Add(m_ptr, item.ptr())) {
+                    Exception::from_python();
+                }
+            };
+            (insert(result, Key(std::get<Ns>(contents))), ...);
+        };
+
+        try {
+            unpack_tuple(std::index_sequence_for<Args...>{});
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<Set<Key>>(result);
+    }
+};
+
+
+/* Explicitly convert a C++ string literal into a py::Set. */
+template <typename Key, size_t N>
+    requires (std::convertible_to<const char(&)[1], Key>)
+struct __explicit_init__<Set<Key>, char[N]>                 : Returns<Set<Key>> {
+    static auto operator()(const char(&string)[N]) {
+        PyObject* result = PySet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            for (size_t i = 0; i < N; ++i) {
+                if (PySet_Add(result, Key(string[i]).ptr())) {
+                    Exception::from_python();
+                }
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<Set<Key>>(result);
+    }
+};
+
+
+/* Explicitly convert a C++ string pointer into a py::Set. */
+template <typename Key>
+    requires (std::convertible_to<const char*, Key>)
+struct __explicit_init__<Set<Key>, const char*>             : Returns<Set<Key>> {
+    static auto operator()(const char* string) {
+        PyObject* result = PySet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            for (const char* ptr = string; *ptr != '\0'; ++ptr) {
+                if (PySet_Add(result, Key(ptr).ptr())) {
+                    Exception::from_python();
+                }
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<Set<Key>>(result);
+    }
+};
+
+
+/* Construct a new py::Set from a pair of input iterators. */
+template <typename Key, typename Iter, std::sentinel_for<Iter> Sentinel>
+    requires (std::constructible_from<Key, decltype(*std::declval<Iter>())>)
+struct __explicit_init__<Set<Key>, Iter, Sentinel>          : Returns<Set<Key>> {
+    static auto operator()(Iter first, Sentinel last) {
+        PyObject* result = PySet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            while (first != last) {
+                if (PySet_Add(result, Key(*first).ptr())) {
+                    Exception::from_python();
+                }
+                ++first;
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<Set<Key>>(result);
+    }
+};
 
 
 template <std::derived_from<impl::SetTag> From, impl::cpp_like To>
@@ -712,6 +787,89 @@ namespace ops {
 /////////////////////////
 
 
+template <typename T, typename Key>
+struct __issubclass__<T, FrozenSet<Key>>                    : Returns<bool> {
+    static constexpr bool generic = std::same_as<Key, Object>;
+    template <typename U>
+    static constexpr bool check_key_type = std::derived_from<U, Object> ?
+        std::derived_from<U, Key> : std::convertible_to<U, Key>;
+
+    static consteval bool operator()(const T&) { return operator()(); }
+    static consteval bool operator()() {
+        if constexpr (!impl::frozenset_like<T>) {
+            return false;
+        } else if constexpr (impl::pybind11_like<T>) {
+            return generic;
+        } else if constexpr (impl::is_iterable<T>) {
+            return check_key_type<impl::iter_type<T>>;
+        } else {
+            return false;
+        }
+    }
+};
+
+
+template <typename T, typename Key>
+struct __isinstance__<T, FrozenSet<Key>>                    : Returns<bool> {
+    static constexpr bool generic = std::same_as<Key, Object>;
+    template <typename U>
+    static constexpr bool check_key_type = std::derived_from<U, Object> ?
+        std::derived_from<U, Key> : std::convertible_to<U, Key>;
+
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::cpp_like<T>) {
+            return issubclass<T, FrozenSet<Key>>();
+
+        } else if constexpr (impl::is_object_exact<T>) {
+            if constexpr (generic) {
+                return obj.ptr() != nullptr && PyFrozenSet_Check(obj.ptr());
+            } else {
+                return (
+                    obj.ptr() != nullptr && PyFrozenSet_Check(obj.ptr()) &&
+                    std::ranges::all_of(obj, [](const auto& item) {
+                        return isinstance<Key>(item);
+                    })
+                );
+            }
+
+        } else if constexpr (
+            std::derived_from<T, FrozenSet<Object>> ||
+            std::derived_from<T, pybind11::frozenset>
+        ) {
+            if constexpr (generic) {
+                return obj.ptr() != nullptr;
+            } else {
+                return (
+                    obj.ptr() != nullptr &&
+                    std::ranges::all_of(obj, [](const auto& item) {
+                        return isinstance<Key>(item);
+                    })
+                );
+            }
+
+        } else if constexpr (impl::frozenset_like<T>) {
+            return obj.ptr() != nullptr && check_key_type<impl::iter_type<T>>;
+
+        } else {
+            return false;
+        }
+    }
+};
+
+
+template <typename T>
+FrozenSet(const std::initializer_list<T>&) -> FrozenSet<impl::as_object_t<T>>;
+template <impl::is_iterable T>
+FrozenSet(T) -> FrozenSet<impl::as_object_t<impl::iter_type<T>>>;
+template <typename T, typename... Args>
+    requires (!impl::is_iterable<T> && !impl::str_like<T>)
+FrozenSet(T, Args...) -> FrozenSet<Object>;
+template <impl::str_like T>
+FrozenSet(T) -> FrozenSet<Str>;
+template <size_t N>
+FrozenSet(const char(&)[N]) -> FrozenSet<Str>;
+
+
 /* Represents a statically-typed Python `frozenset` object in C++. */
 template <typename Key>
 class FrozenSet : public Object, public impl::FrozenSetTag {
@@ -747,84 +905,27 @@ public:
     using reverse_iterator = impl::ReverseIterator<impl::GenericIter<key_type>>;
     using const_reverse_iterator = impl::ReverseIterator<impl::GenericIter<const key_type>>;
 
-    template <typename T>
-    [[nodiscard]] static consteval bool typecheck() {
-        if constexpr (!impl::frozenset_like<T>) {
-            return false;
-        } else if constexpr (impl::pybind11_like<T>) {
-            return generic;
-        } else if constexpr (impl::is_iterable<T>) {
-            return check_key_type<impl::iter_type<T>>;
-        } else {
-            return false;
-        }
-    }
+    FrozenSet(Handle h, borrowed_t t) : Base(h, t) {}
+    FrozenSet(Handle h, stolen_t t) : Base(h, t) {}
 
-    template <typename T>
-    [[nodiscard]] static constexpr bool typecheck(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return typecheck<T>();
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<FrozenSet, __init__<FrozenSet, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<FrozenSet, std::remove_cvref_t<Args>...>::enable
+        )
+    FrozenSet(Args&&... args) : Base(
+        __init__<FrozenSet, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
-        } else if constexpr (impl::is_object_exact<T>) {
-            if constexpr (generic) {
-                return obj.ptr() != nullptr && PyFrozenSet_Check(obj.ptr());
-            } else {
-                return (
-                    obj.ptr() != nullptr && PyFrozenSet_Check(obj.ptr()) &&
-                    std::ranges::all_of(obj, [](const auto& item) {
-                        return key_type::typecheck(item);
-                    })
-                );
-            }
-
-        } else if constexpr (
-            std::derived_from<T, FrozenSet<Object>> ||
-            std::derived_from<T, pybind11::frozenset>
-        ) {
-            if constexpr (generic) {
-                return obj.ptr() != nullptr;
-            } else {
-                return (
-                    obj.ptr() != nullptr &&
-                    std::ranges::all_of(obj, [](const auto& item) {
-                        return key_type::typecheck(item);
-                    })
-                );
-            }
-
-        } else if constexpr (impl::frozenset_like<T>) {
-            return obj.ptr() != nullptr && check_key_type<impl::iter_type<T>>;
-
-        } else {
-            return false;
-        }
-    }
-
-    ////////////////////////////
-    ////    CONSTRUCTORS    ////
-    ////////////////////////////
-
-    /* Default constructor.  Initializes to an empty set. */
-    FrozenSet() : Base(PyFrozenSet_New(nullptr), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Reinterpret_borrow/reinterpret_steal constructors. */
-    FrozenSet(Handle h, const borrowed_t& t) : Base(h, t) {}
-    FrozenSet(Handle h, const stolen_t& t) : Base(h, t) {}
-
-    /* Copy/move constructors from equivalent pybind11 types or other frozensets with
-    a narrower key type. */
-    template <impl::python_like T> requires (typecheck<T>())
-    FrozenSet(T&& other) : Base(std::forward<T>(other)) {}
-
-    /* Unwrap a pybind11 accessor into a py::FrozenSet. */
-    template <typename Policy>
-    FrozenSet(const pybind11::detail::accessor<Policy>& accessor) :
-        Base(Base::from_pybind11_accessor<FrozenSet>(accessor).release(), stolen_t{})
-    {}
+    template <typename... Args>
+        requires (
+            !__init__<FrozenSet, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<FrozenSet, __explicit_init__<FrozenSet, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<FrozenSet, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit FrozenSet(Args&&... args) : Base(
+        __explicit_init__<FrozenSet, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    ) {}
 
     /* Pack the contents of a braced initializer list into a new Python frozenset. */
     FrozenSet(const std::initializer_list<key_type>& contents) :
@@ -844,157 +945,6 @@ public:
             throw;
         }
     }
-
-    /* Explicitly unpack an arbitrary Python container into a new py::FrozenSet. */
-    template <impl::python_like T> requires (!impl::frozenset_like<T> && impl::is_iterable<T>)
-    explicit FrozenSet(const T& contents) :
-        Base(PyFrozenSet_New(contents.ptr()), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-    }
-
-    /* Explicitly unpack an arbitrary C++ container into a new py::FrozenSet. */
-    template <impl::cpp_like T> requires (impl::is_iterable<T>)
-    explicit FrozenSet(const T& contents) : Base(PyFrozenSet_New(nullptr), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            for (const auto& item : contents) {
-                if (PySet_Add(m_ptr, key_type(item).ptr())) {
-                    Exception::from_python();
-                }
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Construct a new FrozenSet from a pair of input iterators. */
-    template <typename Iter, std::sentinel_for<Iter> Sentinel>
-    explicit FrozenSet(Iter first, Sentinel last) :
-        Base(PyFrozenSet_New(nullptr), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            while (first != last) {
-                if (PySet_Add(m_ptr, key_type(*first).ptr())) {
-                    Exception::from_python();
-                }
-                ++first;
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Explicitly unpack a std::pair into a py::FrozenSet. */
-    template <typename First, typename Second>
-        requires (
-            std::constructible_from<key_type, First> &&
-            std::constructible_from<key_type, Second>
-        )
-    explicit FrozenSet(const std::pair<First, Second>& pair) :
-        Base(PyFrozenSet_New(nullptr), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            if (PySet_Add(m_ptr, key_type(pair.first).ptr())) {
-                Exception::from_python();
-            }
-            if (PySet_Add(m_ptr, key_type(pair.second).ptr())) {
-                Exception::from_python();
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Explicitly unpack a std::tuple into a py::FrozenSet. */
-    template <typename... Args> requires (std::constructible_from<key_type, Args> && ...)
-    explicit FrozenSet(const std::tuple<Args...>& tuple) :
-        Base(PyFrozenSet_New(nullptr), stolen_t{})
-    {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-
-        auto unpack_tuple = [&]<size_t... Ns>(std::index_sequence<Ns...>) {
-            auto insert = [](PyObject* m_ptr, const auto& item) {
-                if (PySet_Add(m_ptr, item.ptr())) {
-                    Exception::from_python();
-                }
-            };
-            (insert(m_ptr, key_type(std::get<Ns>(tuple))), ...);
-        };
-
-        try {
-            unpack_tuple(std::index_sequence_for<Args...>{});
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    
-    /* Explicitly unpack a C++ string literal into a py::FrozenSet. */
-    template <size_t N> requires (generic || std::same_as<key_type, Str>)
-    explicit FrozenSet(const char (&string)[N]) : Base(PyFrozenSet_New(nullptr), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            for (size_t i = 0; i < N; ++i) {
-                PyObject* item = PyUnicode_FromStringAndSize(string + i, 1);
-                if (item == nullptr) {
-                    Exception::from_python();
-                }
-                if (PySet_Add(m_ptr, item)) {
-                    Exception::from_python();
-                }
-                Py_DECREF(item);
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    /* Explicitly unpack a C++ string pointer into a py::FrozenSet. */
-    template <std::same_as<const char*> T> requires (generic || std::same_as<key_type, Str>)
-    explicit FrozenSet(T string) : Base(PyFrozenSet_New(nullptr), stolen_t{}) {
-        if (m_ptr == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            for (const char* ptr = string; *ptr != '\0'; ++ptr) {
-                PyObject* item = PyUnicode_FromStringAndSize(ptr, 1);
-                if (item == nullptr) {
-                    Exception::from_python();
-                }
-                if (PySet_Add(m_ptr, item)) {
-                    Exception::from_python();
-                }
-                Py_DECREF(item);
-            }
-        } catch (...) {
-            Py_DECREF(m_ptr);
-            throw;
-        }
-    }
-
-    ////////////////////////////////
-    ////    PYTHON INTERFACE    ////
-    ////////////////////////////////
 
     /* Equivalent to Python `set.copy()`. */
     [[nodiscard]] FrozenSet copy() const {
@@ -1188,10 +1138,6 @@ public:
         }
     }
 
-    /////////////////////////
-    ////    OPERATORS    ////
-    /////////////////////////
-
     [[nodiscard]] friend FrozenSet operator|(
         const FrozenSet& self,
         const std::initializer_list<key_type>& other
@@ -1255,17 +1201,218 @@ public:
 };
 
 
-template <typename T>
-FrozenSet(const std::initializer_list<T>&) -> FrozenSet<impl::as_object_t<T>>;
-template <impl::is_iterable T>
-FrozenSet(T) -> FrozenSet<impl::as_object_t<impl::iter_type<T>>>;
-template <typename T, typename... Args>
-    requires (!impl::is_iterable<T> && !impl::str_like<T>)
-FrozenSet(T, Args...) -> FrozenSet<Object>;
-template <impl::str_like T>
-FrozenSet(T) -> FrozenSet<Str>;
-template <size_t N>
-FrozenSet(const char(&)[N]) -> FrozenSet<Str>;
+/* Default constructor.  Initializes to an empty set. */
+template <typename Key>
+struct __init__<FrozenSet<Key>>                             : Returns<FrozenSet<Key>> {
+    static auto operator()() {
+        PyObject* result = PyFrozenSet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<FrozenSet<Key>>(result);
+    }
+};
+
+
+/* Converting constructor from compatible C++ sets. */
+template <typename Key, impl::cpp_like Container>
+    requires (
+        impl::frozenset_like<Container> &&
+        impl::is_iterable<Container> &&
+        std::convertible_to<impl::iter_type<Container>, Key>
+    )
+struct __init__<FrozenSet<Key>, Container>                  : Returns<FrozenSet<Key>> {
+    static auto operator()(const Container& contents) {
+        PyObject* result = PyFrozenSet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            for (const auto& item : contents) {
+                if (PySet_Add(result, Key(item).ptr())) {
+                    Exception::from_python();
+                }
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<FrozenSet<Key>>(result);
+    }
+};
+
+
+/* Explicitly convert an arbitrary C++ container into a py::FrozenSet. */
+template <typename Key, impl::cpp_like Container>
+    requires (
+        !impl::frozenset_like<Container> &&
+        impl::is_iterable<Container> &&
+        std::convertible_to<impl::iter_type<Container>, Key>
+    )
+struct __explicit_init__<FrozenSet<Key>, Container>         : Returns<FrozenSet<Key>> {
+    static auto operator()(const Container& contents) {
+        PyObject* result = PyFrozenSet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            for (const auto& item : contents) {
+                if (PySet_Add(result, Key(item).ptr())) {
+                    Exception::from_python();
+                }
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<FrozenSet<Key>>(result);
+    }
+};
+
+
+/* Explicitly convert an arbitrary Python container into a new py::FrozenSet. */
+template <typename Key, impl::python_like Container>
+    requires (!impl::frozenset_like<Container> && impl::is_iterable<Container>)
+struct __explicit_init__<FrozenSet<Key>, Container>         : Returns<FrozenSet<Key>> {
+    static auto operator()(const Container& contents) {
+        PyObject* result = PyFrozenSet_New(contents.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<FrozenSet<Key>>(result);
+    }
+};
+
+
+/* Explicitly convert a std::pair into a py::FrozenSet. */
+template <typename Key, typename First, typename Second>
+    requires (
+        std::constructible_from<Key, First> &&
+        std::constructible_from<Key, Second>
+    )
+struct __explicit_init__<FrozenSet<Key>, std::pair<First, Second>> : Returns<FrozenSet<Key>> {
+    static auto operator()(const std::pair<First, Second>& pair) {
+        PyObject* result = PyFrozenSet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            if (PySet_Add(result, Key(pair.first).ptr())) {
+                Exception::from_python();
+            }
+            if (PySet_Add(result, Key(pair.second).ptr())) {
+                Exception::from_python();
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<FrozenSet<Key>>(result);
+    }
+};
+
+
+/* Explicitly convert a std::tuple into a py::FrozenSet. */
+template <typename Key, typename... Args>
+    requires (std::constructible_from<Key, Args> && ...)
+struct __explicit_init__<FrozenSet<Key>, std::tuple<Args...>> : Returns<FrozenSet<Key>> {
+    static auto operator()(const std::tuple<Args...>& contents) {
+        PyObject* result = PyFrozenSet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+
+        auto unpack_tuple = [&]<size_t... Ns>(std::index_sequence<Ns...>) {
+            auto insert = [](PyObject* m_ptr, const Key& item) {
+                if (PySet_Add(m_ptr, item.ptr())) {
+                    Exception::from_python();
+                }
+            };
+            (insert(result, Key(std::get<Ns>(contents))), ...);
+        };
+
+        try {
+            unpack_tuple(std::index_sequence_for<Args...>{});
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<FrozenSet<Key>>(result);
+    }
+};
+
+
+/* Explicitly convert a C++ string literal into a py::FrozenSet. */
+template <typename Key, size_t N>
+    requires (std::convertible_to<const char(&)[1], Key>)
+struct __explicit_init__<FrozenSet<Key>, char[N]>           : Returns<FrozenSet<Key>> {
+    static auto operator()(const char(&string)[N]) {
+        PyObject* result = PyFrozenSet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            for (size_t i = 0; i < N; ++i) {
+                if (PySet_Add(result, Key(string[i]).ptr())) {
+                    Exception::from_python();
+                }
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<FrozenSet<Key>>(result);
+    }
+};
+
+
+/* Explicitly convert a C++ string pointer into a py::FrozenSet. */
+template <typename Key>
+    requires (std::convertible_to<const char*, Key>)
+struct __explicit_init__<FrozenSet<Key>, const char*>       : Returns<FrozenSet<Key>> {
+    static auto operator()(const char* string) {
+        PyObject* result = PyFrozenSet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            for (const char* ptr = string; *ptr != '\0'; ++ptr) {
+                if (PySet_Add(result, Key(ptr).ptr())) {
+                    Exception::from_python();
+                }
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<FrozenSet<Key>>(result);
+    }
+};
+
+
+/* Construct a new py::FrozenSet from a pair of input iterators. */
+template <typename Key, typename Iter, std::sentinel_for<Iter> Sentinel>
+    requires (std::constructible_from<Key, decltype(*std::declval<Iter>())>)
+struct __explicit_init__<FrozenSet<Key>, Iter, Sentinel>    : Returns<FrozenSet<Key>> {
+    static auto operator()(Iter first, Sentinel last) {
+        PyObject* result = PyFrozenSet_New(nullptr);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            while (first != last) {
+                if (PySet_Add(result, Key(*first).ptr())) {
+                    Exception::from_python();
+                }
+                ++first;
+            }
+        } catch (...) {
+            Py_DECREF(result);
+            throw;
+        }
+        return reinterpret_steal<FrozenSet<Key>>(result);
+    }
+};
 
 
 template <std::derived_from<impl::FrozenSetTag> From, impl::cpp_like To>

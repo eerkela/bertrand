@@ -637,13 +637,6 @@ struct __explicit_init__<List<Value>, Iter, Sentinel>       : Returns<List<Value
 };
 
 
-
-
-
-
-
-
-
 /* Implicitly convert a py::List into a pybind11::list regardless of the templated
 value type. */
 template <std::derived_from<impl::ListTag> From, impl::list_like To>
