@@ -22,6 +22,9 @@ from pdcast.util.round cimport Tolerance
 ######################
 
 
+__init_subclass__
+
+
 cpdef object boundscheck(
     object series,
     types.ScalarType dtype,

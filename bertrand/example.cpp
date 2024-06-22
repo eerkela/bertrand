@@ -85,7 +85,8 @@ using namespace py::literals;
 #include <string>
 
 
-// import example;
+// import numpy;
+
 
 
 void run() {
@@ -104,6 +105,7 @@ void run() {
 
     // constexpr auto x = py::arg<"x">;
     // constexpr auto y = py::arg<"y">;
+    // constexpr auto z = py::arg<"z">;
 
     // py::Function func("subtract", lambda, y = 2, x = 1);
 
@@ -117,17 +119,6 @@ void run() {
     // py::print(func(1, y = 2));
     // py::print(func(x = 1, y = 2));
     // py::print(func(y = 2, x = 1));
-
-
-
-
-    std::array<int, 3> arr{1, 2, 3};
-    py::Tuple<py::Int> tuple = arr;
-    py::print(tuple);
-
-
-
-
 
 
 
@@ -178,6 +169,8 @@ void run() {
     // for (auto&& x : view) {
     //     py::print(x);
     // }
+
+
 
 
     std::chrono::time_point<Clock> end = Clock::now();

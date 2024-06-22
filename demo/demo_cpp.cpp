@@ -3,6 +3,9 @@ namespace py = bertrand::py;
 using namespace py::literals;
 
 
+
+
+// 1
 static const py::Code script = R"(
     import numpy as np
 
@@ -40,12 +43,15 @@ static const py::Code script = R"(
 )"_python;
 
 
+
+
+// 2
 static const py::Function fibonacci3(
     "fibonacci3",
     [](
-        py::Arg<"n", int>::opt n = 0,
-        py::Arg<"m", int>::opt m = 1,
-        py::Arg<"steps", int>::opt steps = 10
+        py::Arg<"n", int>::opt n,
+        py::Arg<"m", int>::opt m,
+        py::Arg<"steps", int>::opt steps
     ) {
         std::vector<int> result = {n, m};
 
@@ -66,6 +72,8 @@ static const py::Function fibonacci3(
 );
 
 
+
+
 std::vector<int> fibonacci4(int n = 0, int m = 1, int steps = 10) {
     std::vector<int> result = {n, m};
 
@@ -82,6 +90,9 @@ std::vector<int> fibonacci4(int n = 0, int m = 1, int steps = 10) {
 }
 
 
+
+
+
 void run() {
     static const auto demo_py = py::import<"demo_py">();
     static const auto fibonacci1 = demo_py.attr<"fibonacci1">();
@@ -92,6 +103,9 @@ void run() {
     py::print(fibonacci3());
     py::print(fibonacci4());
 }
+
+
+
 
 
 BERTRAND_MODULE(demo_cpp, m) {
