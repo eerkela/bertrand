@@ -154,9 +154,10 @@ public:
             std::is_invocable_r_v<Tuple, __init__<Tuple, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Tuple, std::remove_cvref_t<Args>...>::enable
         )
-    Tuple(Args&&... args) : Base(
+    Tuple(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Tuple, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -164,13 +165,14 @@ public:
             std::is_invocable_r_v<Tuple, __explicit_init__<Tuple, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Tuple, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Tuple(Args&&... args) : Base(
+    explicit Tuple(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Tuple, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Pack the contents of a braced initializer into a new Python tuple. */
     Tuple(const std::initializer_list<value_type>& contents) :
-        Base(PyTuple_New(contents.size()), stolen_t{})
+        Base((Interpreter::init(), PyTuple_New(contents.size())), stolen_t{})
     {
         if (m_ptr == nullptr) {
             Exception::from_python();

@@ -50,10 +50,31 @@ namespace bertrand {
 namespace py {
 
 
-/* A static guard that initializes and uninitializes the Python interpreter
-automatically when bertrand/python.h is imported.  Allows use of static initialization
-without segfaulting. */
-struct Interpreter {
+namespace impl {
+    /* Identifies all types that are part of the bertrand library. */
+    struct BertrandTag {};
+}
+
+
+/* A static RAII guard that automatically initializes the Python interpreter the first
+time a Python object is created and finalizes it when the program exits. */
+struct Interpreter : public impl::BertrandTag {
+
+    /* Ensure that the interpreter is active within the given context.  This is
+    called internally whenever a Python object is created from pure C++ inputs, and is
+    not called in any other context in order to avoid unnecessary overhead.  It must be
+    implemented as a function in order to avoid C++'s static initialization order
+    fiasco.*/
+    static const Interpreter& init() {
+        static Interpreter instance{};
+        return instance;
+    }
+
+    Interpreter(const Interpreter&) = delete;
+    Interpreter(Interpreter&&) = delete;
+
+private:
+
     Interpreter() {
         if (!Py_IsInitialized()) {
             Py_Initialize();
@@ -68,12 +89,6 @@ struct Interpreter {
 };
 
 
-/* Global interpreter object.  Subinterpreters may be spawned, but this interpreter
-must always exist before initializing any Python objects to allow for static storage
-duration. */
-static Interpreter interpreter;
-
-
 ///////////////////////////////////////
 ////    INHERITED FROM PYBIND11    ////
 ///////////////////////////////////////
@@ -83,14 +98,11 @@ static Interpreter interpreter;
 *     https://pybind11.readthedocs.io/en/stable/
 */
 
-// TODO: account for all relevant binding functions inherited from pybind11
 
 // binding functions
-using pybind11::init;
-using pybind11::init_alias;
-using pybind11::implicitly_convertible;
-using pybind11::initialize_interpreter;
-using pybind11::scoped_interpreter;
+using pybind11::init;  // TODO: can be automatically inferred via AST parsing
+using pybind11::init_alias;  // TODO: not needed
+using pybind11::implicitly_convertible;  // Do not use
 // PYBIND11_MODULE                      <- macros don't respect namespaces
 // PYBIND11_EMBEDDED_MODULE
 // PYBIND11_OVERRIDE
@@ -143,7 +155,7 @@ using pybind11::call_guard;
 
 
 namespace impl {
-    struct ArgTag {};
+    struct ArgTag : public BertrandTag {};
 }
 
 
@@ -463,7 +475,7 @@ static constexpr impl::UnboundArg<name> arg {};
 
 
 template <typename... Args>
-using Class = pybind11::class_<Args...>;
+using Class = pybind11::class_<Args...>;  // TODO: these don't inherit from BertrandTag, but should
 using Handle = pybind11::handle;
 using WeakRef = pybind11::weakref;
 using Capsule = pybind11::capsule;
@@ -518,18 +530,19 @@ class Datetime;
 
 
 namespace impl {
-    struct ProxyTag {};
-    struct FunctionTag { static const Type type; };
-    struct TupleTag { static const Type type; };
-    struct StructTag : public TupleTag {};
-    struct ListTag { static const Type type; };
-    struct SetTag { static const Type type; };
-    struct FrozenSetTag { static const Type type; };
-    struct KeyTag { static const Type type; };
-    struct ValueTag { static const Type type; };
-    struct ItemTag { static const Type type; };
-    struct DictTag { static const Type type; };
-    struct MappingProxyTag { static const Type type; };
+    struct ProxyTag : public BertrandTag {};
+    struct FunctionTag : public BertrandTag { static const Type type; };
+    struct TupleTag : public BertrandTag { static const Type type; };
+    struct ListTag : public BertrandTag{ static const Type type; };
+    struct SetTag : public BertrandTag { static const Type type; };
+    struct FrozenSetTag : public BertrandTag { static const Type type; };
+    struct KeyTag : public BertrandTag { static const Type type; };
+    struct ValueTag : public BertrandTag { static const Type type; };
+    struct ItemTag : public BertrandTag { static const Type type; };
+    struct DictTag : public BertrandTag { static const Type type; };
+    struct MappingProxyTag : public BertrandTag { static const Type type; };
+
+    struct StructTag : TupleTag {};
 }
 
 
@@ -539,7 +552,7 @@ namespace impl {
 
 
 /* Base class for disabled control structures. */
-struct Disable {
+struct Disable : public impl::BertrandTag {
     static constexpr bool enable = false;
 };
 
@@ -547,7 +560,7 @@ struct Disable {
 /* Base class for enabled control structures.  Encodes the return type as a template
 parameter. */
 template <typename T>
-struct Returns {
+struct Returns : public impl::BertrandTag {
     static constexpr bool enable = true;
     using type = T;
 };
@@ -685,15 +698,12 @@ namespace impl {
     Separating this into its own class ensures that only one string is allocated per
     attribute name, even if that attribute name is repeated across multiple contexts. */
     template <StaticStr name>
-    struct TemplateString {
-        static PyObject* ptr;
+    struct TemplateString : public BertrandTag {
+        inline static PyObject* ptr = (Interpreter::init(), PyUnicode_FromStringAndSize(
+            name,
+            name.size()
+        ));  // NOTE: string will be garbage collected at shutdown
     };
-
-    template <StaticStr name>
-    inline PyObject* TemplateString<name>::ptr = PyUnicode_FromStringAndSize(
-        name,
-        name.size()
-    );  // NOTE: string will be garbage collected at shutdown
 
     template <typename T>
     using as_object_t = __as_object__<std::remove_cvref_t<T>>::type;
@@ -852,6 +862,16 @@ namespace impl {
         std::is_member_function_pointer_v<std::decay_t<T>> ||
         has_call_operator<T>;
 
+
+
+    // TODO: bertrand_like, pybind11_like are mutually orthogonal, and pybind11_like
+    // matches all types exposed by pybind11.
+
+
+
+    template <typename T>
+    concept bertrand_like = std::derived_from<std::decay_t<T>, BertrandTag>;
+
     template <typename T>
     concept proxy_like = std::derived_from<std::decay_t<T>, ProxyTag>;
 
@@ -880,42 +900,42 @@ namespace impl {
     concept cpp_like = !python_like<T>;
 
     template <typename L, typename R>
-    struct lt_comparable {
+    struct lt_comparable : public BertrandTag {
         static constexpr bool value = requires(L&& a, R&& b) {
             { std::forward<L>(a) < std::forward<R>(b) } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct le_comparable {
+    struct le_comparable : public BertrandTag {
         static constexpr bool value = requires(L&& a, R&& b) {
             { std::forward<L>(a) <= std::forward<R>(b) } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct eq_comparable {
+    struct eq_comparable : public BertrandTag {
         static constexpr bool value = requires(L&& a, R&& b) {
             { std::forward<L>(a) == std::forward<R>(b) } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct ne_comparable {
+    struct ne_comparable : public BertrandTag {
         static constexpr bool value = requires(L&& a, R&& b) {
             { std::forward<L>(a) != std::forward<R>(b) } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct ge_comparable {
+    struct ge_comparable : public BertrandTag {
         static constexpr bool value = requires(L&& a, R&& b) {
             { std::forward<L>(a) >= std::forward<R>(b) } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct gt_comparable {
+    struct gt_comparable : public BertrandTag {
         static constexpr bool value = requires(L&& a, R&& b) {
             { std::forward<L>(a) > std::forward<R>(b) } -> std::convertible_to<bool>;
         };
@@ -1029,7 +1049,7 @@ namespace impl {
         typename L,
         typename R
     >
-    struct Broadcast {
+    struct Broadcast : public BertrandTag {
         template <typename T>
         struct deref { using type = T; };
         template <is_iterable T>
@@ -1050,7 +1070,7 @@ namespace impl {
         typename T3,
         typename T4
     >
-    struct Broadcast<Condition, std::pair<T1, T2>, std::pair<T3, T4>> {
+    struct Broadcast<Condition, std::pair<T1, T2>, std::pair<T3, T4>> : public BertrandTag {
         static constexpr bool value =
             Broadcast<Condition, T1, std::pair<T3, T4>>::value &&
             Broadcast<Condition, T2, std::pair<T3, T4>>::value;
@@ -1062,7 +1082,7 @@ namespace impl {
         typename T1,
         typename T2
     >
-    struct Broadcast<Condition, L, std::pair<T1, T2>> {
+    struct Broadcast<Condition, L, std::pair<T1, T2>> : public BertrandTag {
         static constexpr bool value =
             Broadcast<Condition, L, T1>::value && Broadcast<Condition, L, T2>::value;
     };
@@ -1073,7 +1093,7 @@ namespace impl {
         typename T2,
         typename R
     >
-    struct Broadcast<Condition, std::pair<T1, T2>, R> {
+    struct Broadcast<Condition, std::pair<T1, T2>, R> : public BertrandTag {
         static constexpr bool value =
             Broadcast<Condition, T1, R>::value && Broadcast<Condition, T2, R>::value;
     };
@@ -1083,7 +1103,7 @@ namespace impl {
         typename... Ts1,
         typename... Ts2
     >
-    struct Broadcast<Condition, std::tuple<Ts1...>, std::tuple<Ts2...>> {
+    struct Broadcast<Condition, std::tuple<Ts1...>, std::tuple<Ts2...>> : public BertrandTag {
         static constexpr bool value =
             (Broadcast<Condition, Ts1, std::tuple<Ts2...>>::value && ...);
     };
@@ -1093,7 +1113,7 @@ namespace impl {
         typename L,
         typename... Ts
     >
-    struct Broadcast<Condition, L, std::tuple<Ts...>> {
+    struct Broadcast<Condition, L, std::tuple<Ts...>> : public BertrandTag {
         static constexpr bool value =
             (Broadcast<Condition, L, Ts>::value && ...);
     };
@@ -1103,7 +1123,7 @@ namespace impl {
         typename... Ts,
         typename R
     >
-    struct Broadcast<Condition, std::tuple<Ts...>, R> {
+    struct Broadcast<Condition, std::tuple<Ts...>, R> : public BertrandTag {
         static constexpr bool value =
             (Broadcast<Condition, Ts, R>::value && ...);
     };
@@ -1119,9 +1139,9 @@ namespace impl {
 namespace impl {
 
     template <typename T>
-    struct unwrap_proxy_helper { using type = T; };
+    struct unwrap_proxy_helper : public BertrandTag { using type = T; };
     template <proxy_like T>
-    struct unwrap_proxy_helper<T> { using type = typename T::type; };
+    struct unwrap_proxy_helper<T> : public BertrandTag { using type = typename T::type; };
     template <typename T>
     using unwrap_proxy = typename unwrap_proxy_helper<T>::type;
 

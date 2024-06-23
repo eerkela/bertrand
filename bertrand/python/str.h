@@ -59,9 +59,10 @@ public:
             std::is_invocable_r_v<Str, __init__<Str, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Str, std::remove_cvref_t<Args>...>::enable
         )
-    Str(Args&&... args) : Base(
+    Str(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Str, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -69,9 +70,10 @@ public:
             std::is_invocable_r_v<Str, __explicit_init__<Str, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Str, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Str(Args&&... args) : Base(
+    explicit Str(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Str, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Make an explicit copy of the string. */
     [[nodiscard]] Str copy() const {
@@ -248,7 +250,7 @@ public:
 
     BERTRAND_METHOD([[nodiscard]], isalnum, const)
     BERTRAND_METHOD([[nodiscard]], isalpha, const)
-    BERTRAND_METHOD([[nodiscard]], isascii, const)
+    BERTRAND_METHOD([[nodiscard]], isascii_, const)
     BERTRAND_METHOD([[nodiscard]], isdecimal, const)
     BERTRAND_METHOD([[nodiscard]], isdigit, const)
     BERTRAND_METHOD([[nodiscard]], isidentifier, const)

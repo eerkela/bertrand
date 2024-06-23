@@ -31,7 +31,7 @@ concept bidirectional = random_access<Policy> ||
 /* An optimized iterator that directly accesses tuple or list elements through the
 CPython API. */
 template <typename Policy>
-class Iterator {
+class Iterator : public BertrandTag {
     static_assert(
         std::derived_from<typename Policy::value_type, Object>,
         "Iterator must dereference to a subclass of py::Object.  Check your "
@@ -279,7 +279,7 @@ public:
 
 /* A generic iterator policy that uses Python's existing iterator protocol. */
 template <typename Deref>
-class GenericIter {
+class GenericIter : public BertrandTag {
     Object iter;
     PyObject* curr;
 
@@ -372,7 +372,7 @@ public:
 /* A random access iterator policy that directly addresses tuple elements using the
 CPython API. */
 template <typename Deref>
-class TupleIter {
+class TupleIter : public BertrandTag {
     Object tuple;
     PyObject* curr;
     Py_ssize_t index;
@@ -484,7 +484,7 @@ public:
 /* A random access iterator policy that directly addresses list elements using the
 CPython API. */
 template <typename Deref>
-class ListIter {
+class ListIter : public BertrandTag {
     Object list;
     PyObject* curr;
     Py_ssize_t index;
@@ -595,7 +595,7 @@ public:
 
 /* An iterator policy that extracts keys from a dictionary using PyDict_Next(). */
 template <typename Deref>
-class KeyIter {
+class KeyIter : public BertrandTag {
     Object dict;
     PyObject* curr = nullptr;
     Py_ssize_t pos = 0;
@@ -677,7 +677,7 @@ public:
 
 /* An iterator policy that extracts values from a dictionary using PyDict_Next(). */
 template <typename Deref>
-class ValueIter {
+class ValueIter : public BertrandTag {
     Object dict;
     PyObject* curr = nullptr;
     Py_ssize_t pos = 0;
@@ -760,7 +760,7 @@ public:
 /* An iterator policy that extracts key-value pairs from a dictionary using
 PyDict_Next(). */
 template <typename Deref>
-class ItemIter {
+class ItemIter : public BertrandTag {
     Object dict;
     PyObject* key = nullptr;
     PyObject* value = nullptr;

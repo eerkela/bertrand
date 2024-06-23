@@ -8,6 +8,10 @@
 #include "common.h"
 
 
+// TODO: prevent int overflow during conversion to C++ integers.  Raise an OverflowError
+// if this occurs.
+
+
 namespace bertrand {
 namespace py {
 
@@ -51,9 +55,10 @@ public:
             std::is_invocable_r_v<Int, __init__<Int, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Int, std::remove_cvref_t<Args>...>::enable
         )
-    Int(Args&&... args) : Base(
+    Int(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Int, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -61,9 +66,10 @@ public:
             std::is_invocable_r_v<Int, __explicit_init__<Int, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Int, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Int(Args&&... args) : Base(
+    explicit Int(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Int, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     BERTRAND_METHOD([[nodiscard]], bit_length, const)
     BERTRAND_METHOD([[nodiscard]], bit_count, const)

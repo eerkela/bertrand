@@ -277,9 +277,10 @@ public:
             std::is_invocable_r_v<Code, __init__<Code, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Code, std::remove_cvref_t<Args>...>::enable
         )
-    Code(Args&&... args) : Base(
+    Code(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Code, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -287,9 +288,10 @@ public:
             std::is_invocable_r_v<Code, __explicit_init__<Code, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Code, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Code(Args&&... args) : Base(
+    explicit Code(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Code, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Parse and compile a source string into a Python code object. */
     [[nodiscard]] static Code compile(const char* source) {
@@ -535,9 +537,10 @@ public:
             std::is_invocable_r_v<Frame, __init__<Frame, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Frame, std::remove_cvref_t<Args>...>::enable
         )
-    Frame(Args&&... args) : Base(
+    Frame(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Frame, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -545,9 +548,10 @@ public:
             std::is_invocable_r_v<Frame, __explicit_init__<Frame, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Frame, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Frame(Args&&... args) : Base(
+    explicit Frame(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Frame, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Get the next outer frame from this one. */
     [[nodiscard]] Frame back() const {

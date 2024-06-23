@@ -64,9 +64,10 @@ public:
             std::is_invocable_r_v<NoneType, __init__<NoneType, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<NoneType, std::remove_cvref_t<Args>...>::enable
         )
-    NoneType(Args&&... args) : Base(
+    NoneType(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<NoneType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -74,9 +75,10 @@ public:
             std::is_invocable_r_v<NoneType, __explicit_init__<NoneType, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<NoneType, std::remove_cvref_t<Args>...>::enable
         )
-    explicit NoneType(Args&&... args) : Base(
+    explicit NoneType(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<NoneType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
 };
 
@@ -149,9 +151,10 @@ public:
             std::is_invocable_r_v<NotImplementedType, __init__<NotImplementedType, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<NotImplementedType, std::remove_cvref_t<Args>...>::enable
         )
-    NotImplementedType(Args&&... args) : Base(
+    NotImplementedType(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<NotImplementedType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -159,9 +162,10 @@ public:
             std::is_invocable_r_v<NotImplementedType, __explicit_init__<NotImplementedType, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<NotImplementedType, std::remove_cvref_t<Args>...>::enable
         )
-    explicit NotImplementedType(Args&&... args) : Base(
+    explicit NotImplementedType(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<NotImplementedType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
 };
 
@@ -234,9 +238,10 @@ public:
             std::is_invocable_r_v<EllipsisType, __init__<EllipsisType, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<EllipsisType, std::remove_cvref_t<Args>...>::enable
         )
-    EllipsisType(Args&&... args) : Base(
+    EllipsisType(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<EllipsisType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -244,9 +249,10 @@ public:
             std::is_invocable_r_v<EllipsisType, __explicit_init__<EllipsisType, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<EllipsisType, std::remove_cvref_t<Args>...>::enable
         )
-    explicit EllipsisType(Args&&... args) : Base(
+    explicit EllipsisType(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<EllipsisType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
 };
 
@@ -328,9 +334,10 @@ public:
             std::is_invocable_r_v<Slice, __init__<Slice, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Slice, std::remove_cvref_t<Args>...>::enable
         )
-    Slice(Args&&... args) : Base(
+    Slice(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Slice, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -338,9 +345,10 @@ public:
             std::is_invocable_r_v<Slice, __explicit_init__<Slice, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Slice, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Slice(Args&&... args) : Base(
+    explicit Slice(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Slice, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Initializer list constructor.  Unlike the other constructors (which can accept
     any kind of object), this syntax is restricted only to integers, py::None, and
@@ -526,9 +534,10 @@ public:
             std::is_invocable_r_v<Module, __init__<Module, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Module, std::remove_cvref_t<Args>...>::enable
         )
-    Module(Args&&... args) : Base(
+    Module(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Module, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -536,9 +545,10 @@ public:
             std::is_invocable_r_v<Module, __explicit_init__<Module, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Module, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Module(Args&&... args) : Base(
+    explicit Module(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Module, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     // TODO: there may be no need to have a special case for overloading, either.  This
     // would just be handled automatically by the modular descriptor objects.  If the
@@ -608,7 +618,8 @@ Module import() {
 
 
 /* A replacement for PYBIND11_MODULE that reinterprets the resulting module as a
-py::Module object. */
+py::Module object.  The contents are taken directly from PYBIND11_MODULE, except that
+we exchange their module type for our own. */
 #define BERTRAND_MODULE(name, variable) \
     static ::pybind11::module_::module_def PYBIND11_CONCAT(pybind11_module_def_, name)            \
         PYBIND11_MAYBE_UNUSED;                                                                    \

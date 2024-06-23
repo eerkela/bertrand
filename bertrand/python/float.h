@@ -52,9 +52,10 @@ public:
             std::is_invocable_r_v<Float, __init__<Float, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Float, std::remove_cvref_t<Args>...>::enable
         )
-    Float(Args&&... args) : Base(
+    Float(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Float, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -62,9 +63,10 @@ public:
             std::is_invocable_r_v<Float, __explicit_init__<Float, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Float, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Float(Args&&... args) : Base(
+    explicit Float(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Float, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     BERTRAND_METHOD([[nodiscard]], as_integer_ratio, const)
     BERTRAND_METHOD([[nodiscard]], is_integer, const)
@@ -170,11 +172,11 @@ struct __cast__<From, To> : Returns<To> {
 };
 
 
-inline const Float Float::neg_one = -1.0;
-inline const Float Float::neg_half = -0.5;
-inline const Float Float::zero = 0.0;
-inline const Float Float::half = 0.5;
-inline const Float Float::one = 1.0;
+const Float Float::neg_one = -1.0;
+const Float Float::neg_half = -0.5;
+const Float Float::zero = 0.0;
+const Float Float::half = 0.5;
+const Float Float::one = 1.0;
 
 
 }  // namespace py

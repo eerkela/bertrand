@@ -118,9 +118,10 @@ public:
             std::is_invocable_r_v<KeyView, __init__<KeyView, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<KeyView, std::remove_cvref_t<Args>...>::enable
         )
-    KeyView(Args&&... args) : Base(
+    KeyView(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<KeyView, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -128,9 +129,10 @@ public:
             std::is_invocable_r_v<KeyView, __explicit_init__<KeyView, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<KeyView, std::remove_cvref_t<Args>...>::enable
         )
-    explicit KeyView(Args&&... args) : Base(
+    explicit KeyView(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<KeyView, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Equivalent to Python `dict.keys().mapping`. */
     [[nodiscard]] auto mapping() const;
@@ -304,9 +306,10 @@ public:
             std::is_invocable_r_v<ValueView, __init__<ValueView, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<ValueView, std::remove_cvref_t<Args>...>::enable
         )
-    ValueView(Args&&... args) : Base(
+    ValueView(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<ValueView, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -314,9 +317,10 @@ public:
             std::is_invocable_r_v<ValueView, __explicit_init__<ValueView, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<ValueView, std::remove_cvref_t<Args>...>::enable
         )
-    explicit ValueView(Args&&... args) : Base(
+    explicit ValueView(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<ValueView, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Equivalent to Python `dict.values().mapping`. */
     [[nodiscard]] auto mapping() const;
@@ -435,9 +439,10 @@ public:
             std::is_invocable_r_v<ItemView, __init__<ItemView, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<ItemView, std::remove_cvref_t<Args>...>::enable
         )
-    ItemView(Args&&... args) : Base(
+    ItemView(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<ItemView, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -445,9 +450,10 @@ public:
             std::is_invocable_r_v<ItemView, __explicit_init__<ItemView, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<ItemView, std::remove_cvref_t<Args>...>::enable
         )
-    explicit ItemView(Args&&... args) : Base(
+    explicit ItemView(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<ItemView, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Equivalent to Python `dict.items().mapping`. */
     [[nodiscard]] auto mapping() const;
@@ -691,9 +697,10 @@ public:
             std::is_invocable_r_v<Dict, __init__<Dict, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Dict, std::remove_cvref_t<Args>...>::enable
         )
-    Dict(Args&&... args) : Base(
+    Dict(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Dict, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -701,13 +708,14 @@ public:
             std::is_invocable_r_v<Dict, __explicit_init__<Dict, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Dict, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Dict(Args&&... args) : Base(
+    explicit Dict(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Dict, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Pack the given arguments into a dictionary using an initializer list. */
     Dict(const std::initializer_list<std::pair<key_type, mapped_type>>& contents) :
-        Base(PyDict_New(), stolen_t{})
+        Base((Interpreter::init(), PyDict_New()), stolen_t{})
     {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -1237,9 +1245,10 @@ public:
             std::is_invocable_r_v<MappingProxy, __init__<MappingProxy, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<MappingProxy, std::remove_cvref_t<Args>...>::enable
         )
-    MappingProxy(Args&&... args) : Base(
+    MappingProxy(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<MappingProxy, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -1247,9 +1256,10 @@ public:
             std::is_invocable_r_v<MappingProxy, __explicit_init__<MappingProxy, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<MappingProxy, std::remove_cvref_t<Args>...>::enable
         )
-    explicit MappingProxy(Args&&... args) : Base(
+    explicit MappingProxy(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<MappingProxy, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Equivalent to Python `mappingproxy.copy()`. */
     [[nodiscard]] auto copy() const {

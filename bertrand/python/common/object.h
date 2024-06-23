@@ -91,7 +91,7 @@ namespace impl {
 /* A dynamically-typed Python object that allows implicit and explicit conversions to
 to arbitrary types via pybind11::cast(), as well as type-safe attribute access and
 operator overloads.  This is the base class for all Bertrand-enabled Python objects. */
-class Object {
+class Object : public impl::BertrandTag {
 protected:
     PyObject* m_ptr;
 
@@ -128,7 +128,7 @@ public:
     ////////////////////////////
 
     /* Default constructor.  Initializes to None. */
-    Object() : m_ptr(Py_NewRef(Py_None)) {}
+    Object() : m_ptr((Interpreter::init(), Py_NewRef(Py_None))) {}
 
     /* reinterpret_borrow() constructor.  Borrows a reference to a raw Python handle. */
     Object(Handle h, borrowed_t) : m_ptr(Py_XNewRef(h.ptr())) {}
@@ -522,6 +522,8 @@ struct __isinstance__<T, Object>                            : Returns<bool> {
 };
 
 
+/* Initialize a py::Object (or any of its subclasses) from a compatible pybind11
+type. */
 template <std::derived_from<Object> Self, impl::pybind11_like T>
     requires (issubclass<T, Self>())
 struct __init__<Self, T>                                    : Returns<Self> {
@@ -534,6 +536,8 @@ struct __init__<Self, T>                                    : Returns<Self> {
 };
 
 
+/* Initialize a py::Object (or any of its subclasses) from a compatible pybind11
+accessor. */
 template <std::derived_from<Object> Self, typename Policy>
 struct __init__<Self, pybind11::detail::accessor<Policy>>   : Returns<Self> {
     static auto operator()(const pybind11::detail::accessor<Policy>& accessor) {
@@ -547,9 +551,11 @@ struct __init__<Self, pybind11::detail::accessor<Policy>>   : Returns<Self> {
 };
 
 
+/* Convert any C++ value into a py::Object by invoking pybind11::cast(). */
 template <impl::cpp_like T>
 struct __init__<Object, T>                                  : Returns<Object> {
     static auto operator()(const T& value) {
+        Interpreter::init();  // ensure the interpreter is initialized
         try {
             return reinterpret_steal<Object>(pybind11::cast(value).release());
         } catch (...) {
@@ -559,6 +565,8 @@ struct __init__<Object, T>                                  : Returns<Object> {
 };
 
 
+/* Implicitly convert a py::Object (or any of its subclasses) into a
+pybind11::handle. */
 template <std::derived_from<Object> From>
 struct __cast__<From, pybind11::handle>                     : Returns<pybind11::handle> {
     static pybind11::handle operator()(const From& from) {
@@ -567,6 +575,8 @@ struct __cast__<From, pybind11::handle>                     : Returns<pybind11::
 };
 
 
+/* Implicitly convert a py::Object (or any of its subclasses) into a
+pybind11::object. */
 template <std::derived_from<Object> From>
 struct __cast__<From, pybind11::object>                     : Returns<pybind11::object> {
     static auto operator()(const From& from) {
@@ -578,6 +588,8 @@ struct __cast__<From, pybind11::object>                     : Returns<pybind11::
 };
 
 
+/* Implicitly convert a py::Object (or any of its subclasses) into an equivalent
+pybind11 type. */
 template <std::derived_from<Object> From, impl::pybind11_like To>
     requires (
         !std::same_as<To, pybind11::handle> &&
@@ -594,6 +606,8 @@ struct __cast__<From, To>                                   : Returns<To> {
 };
 
 
+/* Implicitly convert a py::Object (or any of its subclasses) into one of its
+subclasses by applying a runtime type check. */
 template <std::derived_from<Object> From, std::derived_from<From> To>
 struct __cast__<From, To>                                   : Returns<To> {
     static auto operator()(const From& from) {
@@ -613,22 +627,13 @@ struct __cast__<From, To>                                   : Returns<To> {
 };
 
 
-template <std::derived_from<Object> From, impl::proxy_like To>
-    requires (__cast__<From, impl::unwrap_proxy<To>>::enable)
-struct __cast__<From, To>                                   : Returns<To> {
-    static auto operator()(const From& from) {
-        return To(impl::implicit_cast<impl::unwrap_proxy<To>>(from));
-    }
-};
-
-
-template <impl::not_proxy_like To>
+/* Implicitly convert a py::Object into any C++ type by invoking pybind11::cast(). */
+template <typename To>
     requires (
         !std::is_pointer_v<To> &&
         !std::is_reference_v<To> &&
-        !std::derived_from<To, pybind11::handle> &&
-        !std::derived_from<To, pybind11::arg> &&
-        !std::derived_from<To, Object>  // TODO: all internal objects should inherit from a shared tag
+        !impl::pybind11_like<To> &&
+        !impl::bertrand_like<To>
     )
 struct __cast__<Object, To>                                 : Returns<To> {
     static auto operator()(const Object& self) {
@@ -641,23 +646,60 @@ struct __cast__<Object, To>                                 : Returns<To> {
 };
 
 
-
-// TODO: default explicit conversion to integer, float, complex, void*, etc. ??
-
-
-
-template <std::derived_from<Object> From, typename To>
+/* Explicitly convert a py::Object (or any of its subclasses) into a C++ integer by
+calling `int(obj)` at the Python level. */
+template <std::derived_from<Object> From, std::integral To>
 struct __explicit_cast__<From, To>                          : Returns<To> {
-    static auto operator()(const From& from) {
-        try {
-            return Handle(from.ptr()).template cast<To>();
-        } catch (...) {
-            Exception::from_pybind11();
+    static To operator()(const From& from) {
+        long long result = PyLong_AsLongLong(from.ptr());
+        if (result == -1 && PyErr_Occurred()) {
+            Exception::from_python();
         }
+        constexpr auto min = std::numeric_limits<To>::min();
+        constexpr auto max = std::numeric_limits<To>::max();
+        if (result < min || result > max) {
+            std::string message = "integer out of range for ";
+            message += BERTRAND_STRINGIFY(To);
+            message += ": ";
+            message += std::to_string(result);
+            throw OverflowError(message);
+        }
+        return result;
     }
 };
 
 
+/* Explicitly convert a py::Object (or any of its subclasses) into a C++ floating-point
+number by calling `float(obj)` at the Python level. */
+template <std::derived_from<Object> From, std::floating_point To>
+struct __explicit_cast__<From, To>                          : Returns<To> {
+    static To operator()(const From& from) {
+        double result = PyFloat_AsDouble(from.ptr());
+        if (result == -1.0 && PyErr_Occurred()) {
+            Exception::from_python();
+        }
+        return result;
+    }
+};
+
+
+/* Explicitly convert a py::Object (or any of its subclasses) into a C++ complex number
+by calling `complex(obj)` at the Python level. */
+template <std::derived_from<Object> From, impl::cpp_like To>
+    requires (impl::complex_like<To>)
+struct __explicit_cast__<From, To>                          : Returns<To> {
+    static To operator()(const From& from) {
+        Py_complex result = PyComplex_AsCComplex(from.ptr());
+        if (result.real == -1.0 && PyErr_Occurred()) {
+            Exception::from_python();
+        }
+        return To(result.real, result.imag);
+    }
+};
+
+
+/* Explicitly convert a py::Object (or any of its subclasses) into a C++ sd::string
+representation by calling `str(obj)` at the Python level. */
 template <std::derived_from<Object> From> 
 struct __explicit_cast__<From, std::string>                 : Returns<std::string> {
     static auto operator()(const From& from) {
@@ -674,6 +716,26 @@ struct __explicit_cast__<From, std::string>                 : Returns<std::strin
         std::string result(data, size);
         Py_DECREF(str);
         return result;
+    }
+};
+
+
+/* Explicitly convert a py::Object (or any of its subclasses) into any other C++ type
+by invoking pybind11::cast(). */
+template <std::derived_from<Object> From, typename To>
+    requires (
+        !std::is_pointer_v<To> &&
+        !std::is_reference_v<To> &&
+        !impl::pybind11_like<To> &&
+        !impl::bertrand_like<To>
+    )
+struct __explicit_cast__<From, To>                          : Returns<To> {
+    static auto operator()(const From& from) {
+        try {
+            return Handle(from.ptr()).template cast<To>();
+        } catch (...) {
+            Exception::from_pybind11();
+        }
     }
 };
 

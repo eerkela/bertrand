@@ -85,7 +85,7 @@ using namespace py::literals;
 #include <string>
 
 
-// import numpy;
+// import example;
 
 
 
@@ -119,6 +119,12 @@ void run() {
     // py::print(func(1, y = 2));
     // py::print(func(x = 1, y = 2));
     // py::print(func(y = 2, x = 1));
+
+
+    py::print("hello, world!");
+
+
+
 
 
 

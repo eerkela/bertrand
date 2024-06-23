@@ -51,9 +51,10 @@ public:
             std::is_invocable_r_v<Bool, __init__<Bool, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Bool, std::remove_cvref_t<Args>...>::enable
         )
-    Bool(Args&&... args) : Base(
+    Bool(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Bool, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -61,9 +62,10 @@ public:
             std::is_invocable_r_v<Bool, __explicit_init__<Bool, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Bool, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Bool(Args&&... args) : Base(
+    explicit Bool(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Bool, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     BERTRAND_METHOD([[nodiscard]], bit_length, const)
     BERTRAND_METHOD([[nodiscard]], bit_count, const)

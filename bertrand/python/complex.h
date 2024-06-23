@@ -52,9 +52,10 @@ public:
             std::is_invocable_r_v<Complex, __init__<Complex, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Complex, std::remove_cvref_t<Args>...>::enable
         )
-    Complex(Args&&... args) : Base(
+    Complex(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Complex, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -62,9 +63,10 @@ public:
             std::is_invocable_r_v<Complex, __explicit_init__<Complex, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Complex, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Complex(Args&&... args) : Base(
+    explicit Complex(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Complex, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Get the real part of the Complex number. */
     [[nodiscard]] double real() const noexcept {

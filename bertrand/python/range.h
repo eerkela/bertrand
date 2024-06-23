@@ -62,9 +62,10 @@ public:
             std::is_invocable_r_v<Range, __init__<Range, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Range, std::remove_cvref_t<Args>...>::enable
         )
-    Range(Args&&... args) : Base(
+    Range(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Range, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -72,9 +73,10 @@ public:
             std::is_invocable_r_v<Range, __explicit_init__<Range, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Range, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Range(Args&&... args) : Base(
+    explicit Range(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Range, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Get the number of occurrences of a given number within the range. */
     [[nodiscard]] Py_ssize_t count(

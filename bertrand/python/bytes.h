@@ -1,3 +1,4 @@
+#include "bertrand/python.h"
 #if !defined(BERTRAND_PYTHON_INCLUDED) && !defined(LINTER)
 #error "This file should not be included directly.  Please include bertrand/python.h instead."
 #endif
@@ -62,9 +63,10 @@ public:
             std::is_invocable_r_v<Bytes, __init__<Bytes, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Bytes, std::remove_cvref_t<Args>...>::enable
         )
-    Bytes(Args&&... args) : Base(
+    Bytes(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Bytes, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -72,9 +74,10 @@ public:
             std::is_invocable_r_v<Bytes, __explicit_init__<Bytes, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Bytes, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Bytes(Args&&... args) : Base(
+    explicit Bytes(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Bytes, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Access the internal buffer of the bytes object.  Note that this implicitly
     includes an extra null byte at the end of the buffer, regardless of any nulls that
@@ -158,7 +161,7 @@ public:
 
     BERTRAND_METHOD([[nodiscard]], isalnum, const)
     BERTRAND_METHOD([[nodiscard]], isalpha, const)
-    BERTRAND_METHOD([[nodiscard]], isascii, const)
+    BERTRAND_METHOD([[nodiscard]], isascii_, const)
     BERTRAND_METHOD([[nodiscard]], isdigit, const)
     BERTRAND_METHOD([[nodiscard]], islower, const)
     BERTRAND_METHOD([[nodiscard]], isspace, const)
@@ -354,9 +357,10 @@ public:
             std::is_invocable_r_v<ByteArray, __init__<ByteArray, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<ByteArray, std::remove_cvref_t<Args>...>::enable
         )
-    ByteArray(Args&&... args) : Base(
+    ByteArray(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<ByteArray, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -364,9 +368,10 @@ public:
             std::is_invocable_r_v<ByteArray, __explicit_init__<ByteArray, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<ByteArray, std::remove_cvref_t<Args>...>::enable
         )
-    explicit ByteArray(Args&&... args) : Base(
+    explicit ByteArray(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<ByteArray, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Access the internal buffer of the bytearray object.  The data can be modified
     in-place, but should never be deallocated. */
@@ -448,7 +453,7 @@ public:
 
     BERTRAND_METHOD([[nodiscard]], isalnum, const)
     BERTRAND_METHOD([[nodiscard]], isalpha, const)
-    BERTRAND_METHOD([[nodiscard]], isascii, const)
+    BERTRAND_METHOD([[nodiscard]], isascii_, const)
     BERTRAND_METHOD([[nodiscard]], isdigit, const)
     BERTRAND_METHOD([[nodiscard]], islower, const)
     BERTRAND_METHOD([[nodiscard]], isspace, const)

@@ -549,7 +549,7 @@ namespace static_str {
             return isalpha(c) || isdigit(c);
         }
 
-        constexpr bool isascii(char c) {
+        constexpr bool isascii_(char c) {
             return c >= 0 && c <= 127;
         }
 
@@ -993,12 +993,12 @@ namespace static_str {
         return self.size() > 0;
     }();
 
-    /* Equivalent to Python `str.isascii()`, but evaluated statically at compile
+    /* Equivalent to Python `str.isascii_()`, but evaluated statically at compile
     time. */
     template <StaticStr self>
-    constexpr bool isascii = [] {
+    constexpr bool isascii_ = [] {
         for (size_t i = 0; i < self.size(); ++i) {
-            if (!detail::isascii(self.buffer[i])) {
+            if (!detail::isascii_(self.buffer[i])) {
                 return false;
             }
         }

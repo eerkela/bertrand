@@ -138,9 +138,10 @@ public:
             std::is_invocable_r_v<List, __init__<List, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<List, std::remove_cvref_t<Args>...>::enable
         )
-    List(Args&&... args) : Base(
+    List(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<List, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -148,13 +149,14 @@ public:
             std::is_invocable_r_v<List, __explicit_init__<List, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<List, std::remove_cvref_t<Args>...>::enable
         )
-    explicit List(Args&&... args) : Base(
+    explicit List(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<List, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Pack the contents of a braced initializer list into a new Python list. */
     List(const std::initializer_list<value_type>& contents) :
-        Base(PyList_New(contents.size()), stolen_t{})
+        Base((Interpreter::init(), PyList_New(contents.size())), stolen_t{})
     {
         if (m_ptr == nullptr) {
             Exception::from_python();

@@ -20,6 +20,10 @@
 #endif
 
 
+// TODO: ensure interpreter is properly initialized when a C++ function is converted
+// into a Python equivalent.
+
+
 // TODO: not sure if Arg.value() is being used correctly everywhere.
 
 
@@ -2142,6 +2146,13 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
+    /* Copy/move constructors.  Passes a shared_ptr reference to the capsule in tandem
+    with the PyObject* pointer. */
+    Function(const Function& other) : Base(other), contents(other.contents) {}
+    Function(Function&& other) : Base(std::move(other)), contents(std::move(other.contents)) {}
+
+    /* Reinterpret_borrow/reinterpret_steal constructors.  Attempts to unpack a
+    shared_ptr to the function's capsule, if it has one. */
     Function(Handle h, borrowed_t t) : Base(h, t), contents(Capsule::from_python(h.ptr())) {}
     Function(Handle h, stolen_t t) : Base(h, t), contents(Capsule::from_python(h.ptr())) {}
 
@@ -2150,9 +2161,10 @@ public:
             std::is_invocable_r_v<Function, __init__<Function, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Function, std::remove_cvref_t<Args>...>::enable
         )
-    Function(Args&&... args) : Base(
+    Function(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Function, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -2160,14 +2172,11 @@ public:
             std::is_invocable_r_v<Function, __explicit_init__<Function, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Function, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Function(Args&&... args) : Base(
+    explicit Function(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Function, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
-    /* Copy/move constructors.  Passes a shared_ptr reference to the capsule in tandem
-    with the PyObject* pointer. */
-    Function(const Function& other) : Base(other), contents(other.contents) {}
-    Function(Function&& other) : Base(std::move(other)), contents(std::move(other.contents)) {}
 
 
 

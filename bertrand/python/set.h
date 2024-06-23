@@ -146,9 +146,10 @@ public:
             std::is_invocable_r_v<Set, __init__<Set, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Set, std::remove_cvref_t<Args>...>::enable
         )
-    Set(Args&&... args) : Base(
+    Set(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Set, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -156,13 +157,14 @@ public:
             std::is_invocable_r_v<Set, __explicit_init__<Set, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Set, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Set(Args&&... args) : Base(
+    explicit Set(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Set, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Pack the contents of a braced initializer list into a new Python set. */
     Set(const std::initializer_list<key_type>& contents) :
-        Base(PySet_New(nullptr), stolen_t{})
+        Base((Interpreter::init(), PySet_New(nullptr)), stolen_t{})
     {
         if (m_ptr == nullptr) {
             Exception::from_python();
@@ -913,9 +915,10 @@ public:
             std::is_invocable_r_v<FrozenSet, __init__<FrozenSet, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<FrozenSet, std::remove_cvref_t<Args>...>::enable
         )
-    FrozenSet(Args&&... args) : Base(
+    FrozenSet(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<FrozenSet, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -923,13 +926,14 @@ public:
             std::is_invocable_r_v<FrozenSet, __explicit_init__<FrozenSet, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<FrozenSet, std::remove_cvref_t<Args>...>::enable
         )
-    explicit FrozenSet(Args&&... args) : Base(
+    explicit FrozenSet(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<FrozenSet, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Pack the contents of a braced initializer list into a new Python frozenset. */
     FrozenSet(const std::initializer_list<key_type>& contents) :
-        Base(PyFrozenSet_New(nullptr), stolen_t{})
+        Base((Interpreter::init(), PyFrozenSet_New(nullptr)), stolen_t{})
     {
         if (m_ptr == nullptr) {
             Exception::from_python();

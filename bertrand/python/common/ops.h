@@ -13,33 +13,16 @@ namespace bertrand {
 namespace py {
 
 
-// template <typename Derived, typename Base>
-// inline constexpr bool __issubclass__<Derived, Base>::operator()(const Derived& obj) {
-//     if constexpr (impl::cpp_like<Derived>) {
-//         return operator()<Derived>();
-
-//     } else if constexpr (operator()<Derived>()) {
-//         return obj.ptr() != nullptr;
-
-//     } else if constexpr (impl::is_object_exact<Derived>) {
-//         if (obj.ptr() == nullptr) {
-//             return false;
-//         }
-//         int result = PyObject_IsInstance(obj.ptr(), Base::type.ptr());
-//         if (result == -1) {
-//             Exception::from_python();
-//         }
-//         return result;
-
-//     } else {
-//         return false;
-//     }
-// }
+// TODO: what would be really nice is if these can be rolled into the control structs
+// just like the __init__, __cast__, __isinstance__, and __issubclass structs.  This
+// would make the codebase more internally consistent and easier to understand.  It
+// does require the control structures to be defined alongside the classes rather than
+// in control.h, however.
 
 
 namespace ops {
 
-    static const pybind11::int_ one = 1;
+    static PyObject* one = (Interpreter::init(), PyLong_FromLong(1));
 
     namespace sequence {
 
@@ -298,7 +281,7 @@ namespace ops {
     template <typename Return, typename Self>
     struct increment {
         static void operator()(Self& self) {
-            PyObject* result = PyNumber_InPlaceAdd(self.ptr(), one.ptr());
+            PyObject* result = PyNumber_InPlaceAdd(self.ptr(), one);
             if (result == nullptr) {
                 Exception::from_python();
             }
@@ -313,7 +296,7 @@ namespace ops {
     template <typename Return, typename Self>
     struct decrement {
         static void operator()(Self& self) {
-            PyObject* result = PyNumber_InPlaceSubtract(self.ptr(), one.ptr());
+            PyObject* result = PyNumber_InPlaceSubtract(self.ptr(), one);
             if (result == nullptr) {
                 Exception::from_python();
             }
@@ -737,7 +720,7 @@ template <typename Derived, typename Base> requires (
 template <typename... Args>
 void print(Args&&... args) {
     try {
-        pybind11::print(std::forward<Args>(args)...);
+        pybind11::print(as_object(std::forward<Args>(args))...);
     } catch (...) {
         Exception::from_pybind11();
     }
@@ -759,7 +742,19 @@ template <typename T>
 
     } else {
         try {
-            return pybind11::repr(obj).template cast<std::string>();
+            PyObject* str = PyObject_Repr(as_object(obj).ptr());
+            if (str == nullptr) {
+                Exception::from_python();
+            }
+            Py_ssize_t size;
+            const char* data = PyUnicode_AsUTF8AndSize(str, &size);
+            if (data == nullptr) {
+                Py_DECREF(str);
+                Exception::from_python();
+            }
+            std::string result(data, size);
+            Py_DECREF(str);
+            return result;
         } catch (...) {
             return typeid(obj).name();
         }
@@ -772,7 +767,7 @@ for the relevant Python types.  This promotes hash-not-implemented exceptions in
 compile-time equivalents. */
 template <impl::is_hashable T>
 [[nodiscard]] size_t hash(const T& obj) {
-    return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
+    return std::hash<T>{}(obj);
 }
 
 
@@ -784,7 +779,11 @@ template <typename T> requires (impl::has_size<T> || std::derived_from<T, pybind
         if constexpr (impl::has_size<T>) {
             return std::size(obj);
         } else {
-            return pybind11::len(obj);
+            Py_ssize_t size = PyObject_Length(as_object(obj).ptr());
+            if (size < 0) {
+                Exception::from_python();
+            }
+            return size;
         }
     } catch (...) {
         Exception::from_pybind11();
@@ -801,6 +800,7 @@ template <impl::is_iterable T>
         !std::is_rvalue_reference_v<T>,
         "passing a temporary container to py::iter() is unsafe"
     );
+    Interpreter::init();
     try {
         return pybind11::make_iterator(std::begin(obj), std::end(obj));
     } catch (...) {
@@ -813,6 +813,7 @@ template <impl::is_iterable T>
 them into a valid Python iterator object. */
 template <typename Iter, std::sentinel_for<Iter> Sentinel>
 [[nodiscard]] pybind11::iterator iter(Iter&& begin, Sentinel&& end) {
+    Interpreter::init();
     try {
         return pybind11::make_iterator(
             std::forward<Iter>(begin),
@@ -833,6 +834,7 @@ template <impl::is_reverse_iterable T>
         !std::is_rvalue_reference_v<T>,
         "passing a temporary container to py::reversed() is unsafe"
     );
+    Interpreter::init();
     try {
         if constexpr (std::derived_from<std::decay_t<T>, pybind11::object>) {
             return reinterpret_steal<pybind11::iterator>(
@@ -851,6 +853,7 @@ template <impl::is_reverse_iterable T>
 converts them into a valid Python iterator object. */
 template <typename Iter, std::sentinel_for<Iter> Sentinel>
 [[nodiscard]] pybind11::iterator reversed(Iter&& begin, Sentinel&& end) {
+    Interpreter::init();
     try {
         return pybind11::make_iterator(
             std::forward<Iter>(begin),

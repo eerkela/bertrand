@@ -60,9 +60,10 @@ public:
             std::is_invocable_r_v<Type, __init__<Type, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Type, std::remove_cvref_t<Args>...>::enable
         )
-    Type(Args&&... args) : Base(
+    Type(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Type, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -70,9 +71,10 @@ public:
             std::is_invocable_r_v<Type, __explicit_init__<Type, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Type, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Type(Args&&... args) : Base(
+    explicit Type(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Type, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     /* Get the Python type of a registered pybind11 extension type. */
     template <typename T>
@@ -428,9 +430,10 @@ public:
             std::is_invocable_r_v<Super, __init__<Super, std::remove_cvref_t<Args>...>, Args...> &&
             __init__<Super, std::remove_cvref_t<Args>...>::enable
         )
-    Super(Args&&... args) : Base(
+    Super(Args&&... args) : Base((
+        Interpreter::init(),
         __init__<Super, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
     template <typename... Args>
         requires (
@@ -438,9 +441,10 @@ public:
             std::is_invocable_r_v<Super, __explicit_init__<Super, std::remove_cvref_t<Args>...>, Args...> &&
             __explicit_init__<Super, std::remove_cvref_t<Args>...>::enable
         )
-    explicit Super(Args&&... args) : Base(
+    explicit Super(Args&&... args) : Base((
+        Interpreter::init(),
         __explicit_init__<Super, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
 };
 

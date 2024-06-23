@@ -866,6 +866,7 @@ py::Object zip(First&& first, Rest&&... rest) {
 Python, but makes it much more convenient to interact with the standard library from
 C++. */
 [[nodiscard]] inline Dict<Str, Object> builtins() {
+    Interpreter::init();
     PyObject* result = PyEval_GetBuiltins();
     if (result == nullptr) {
         Exception::from_python();
@@ -876,6 +877,7 @@ C++. */
 
 /* Equivalent to Python `globals()`. */
 [[nodiscard]] inline Dict<Str, Object> globals() {
+    Interpreter::init();
     PyObject* result = PyEval_GetGlobals();
     if (result == nullptr) {
         throw RuntimeError("cannot get globals - no frame is currently executing");
@@ -886,6 +888,7 @@ C++. */
 
 /* Equivalent to Python `locals()`. */
 [[nodiscard]] inline Dict<Str, Object> locals() {
+    Interpreter::init();
     PyObject* result = PyEval_GetLocals();
     if (result == nullptr) {
         throw RuntimeError("cannot get locals - no frame is currently executing");
@@ -961,6 +964,7 @@ inline void delattr(const Object& obj, const Str& name) {
 /* Equivalent to Python `dir()` with no arguments.  Returns a list of names in the
 current local scope. */
 [[nodiscard]] inline List<Str> dir() {
+    Interpreter::init();
     PyObject* result = PyObject_Dir(nullptr);
     if (result == nullptr) {
         Exception::from_python();
@@ -1068,7 +1072,11 @@ inline void exec(const Code& code) {
 
 /* Equivalent to Python `getattr(obj, name, default)` with a dynamic attribute name and
 default value. */
-[[nodiscard]] inline Object getattr(const Handle& obj, const Str& name, const Object& default_value) {
+[[nodiscard]] inline Object getattr(
+    const Handle& obj,
+    const Str& name,
+    const Object& default_value
+) {
     PyObject* result = PyObject_GetAttr(obj.ptr(), name.ptr());
     if (result == nullptr) {
         PyErr_Clear();
@@ -1081,20 +1089,6 @@ default value. */
 /* Equivalent to Python `hasattr(obj, name)`. */
 [[nodiscard]] inline bool hasattr(const Handle& obj, const Str& name) {
     return PyObject_HasAttr(obj.ptr(), name.ptr());
-}
-
-
-/* Equivalent to Python `hash(obj)`, but delegates to std::hash, which is overloaded
-for the relevant Python types.  This promotes hash-not-implemented exceptions into
-compile-time equivalents. */
-template <typename T> requires (impl::is_hashable<T> || std::derived_from<T, Object>)
-[[nodiscard]] size_t hash(T&& obj) {
-    static_assert(
-        impl::is_hashable<T>,
-        "hash() is not supported for this type.  Did you forget to specialize "
-        "py::__hash__<T>?"
-    );
-    return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
 }
 
 
