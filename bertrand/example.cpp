@@ -177,8 +177,6 @@ void run() {
     // }
 
 
-
-
     std::chrono::time_point<Clock> end = Clock::now();
     std::chrono::duration<double> elapsed = end - start;
     std::cout << "Elapsed time: " << elapsed.count() << "s\n";

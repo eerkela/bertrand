@@ -9,7 +9,7 @@
 !/Makefile
 !/MANIFEST.in
 !/pyproject.toml
-!/README.rst
+!/README*
 !/setup.py
 
 # the source directory...
@@ -33,22 +33,20 @@
 !/test/**/*.pxd
 
 # documentation...
+!/docs/source/_static/**
 !/docs/source/content/**
-!/docs/source/images/**/*.html
-!/docs/source/images/**/*.png
-!/docs/source/images/**/*.svg
-!/docs/source/images/**/*.jpg
-!/docs/source/images/**/*.jpeg
-!/docs/source/images/**/*.gif
-!/docs/source/images/**/*.tiff
+!/docs/source/images/**
+!/docs/source/conf.py
+!/docs/source/index.rst
 !/docs/Makefile
 !/docs/make.bat
 
-# and CI/CD workflows...
+# CI/CD workflows...
 !/.github/workflows/**
 
-# but excluding any files/directories that match these patterns...
-build/
-__pycache__/
+# ...but excluding any files/directories that match these patterns
 /*.*/
 /venv/
+build/
+__pycache__/
+*Zone.Identifier

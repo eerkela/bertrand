@@ -560,11 +560,13 @@ class Clang(Target):
                     "Ninja",
                     "-C",
                     str(source / "clang" / "cmake" / "caches" / "BOLT-PGO.cmake"),
-                    f"-DLLVM_BINUTILS_INCDIR={env / 'include'}",
                     f"-DCMAKE_INSTALL_PREFIX={env.dir}",
                     "-DCMAKE_BUILD_TYPE=Release",
-                    "-DLLVM_ENABLE_RUNTIMES=compiler-rt;libcxx;libcxxabi;libunwind",
                     "-DPGO_INSTRUMENT_LTO=Thin",
+
+                    # stage 1
+                    f"-DLLVM_BINUTILS_INCDIR={env / 'include'}",
+                    "-DLLVM_ENABLE_RUNTIMES=compiler-rt;libcxx;libcxxabi;libunwind",
 
                     # stage 2
                     f"-DBOOTSTRAP_LLVM_BINUTILS_INCDIR={env / 'include'}",
@@ -608,6 +610,8 @@ class Clang(Target):
         env.vars["AR"] = str(env / "bin" / "llvm-ar")
         env.vars["NM"] = str(env / "bin" / "llvm-nm")
         env.vars["RANLIB"] = str(env / "bin" / "llvm-ranlib")
+        env.flags["CXXFLAGS"].append("-stdlib=libc++")
+        env.flags["LDFLAGS"].append("-stdlib=libc++")
 
 
 class CMake(Target):
@@ -860,6 +864,8 @@ class Conan(Target):
                 )
             super().__init__(v)
 
+    # TODO: conan needs to use compiler.libcxx=libc++
+
     def __call__(self, workers: int) -> None:
         os.environ["CONAN_HOME"] = str(env / ".conan")
 
@@ -870,9 +876,22 @@ class Conan(Target):
         subprocess.check_call(
             [str(env / "bin" / "pip"), "install", f"conan=={self.version}"],
         )
-        subprocess.check_call(
-            [str(env / "bin" / "conan"), "profile", "detect"]
-        )
+
+        profile_path = env / ".conan" / "profiles" / "default"
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        with profile_path.open("w") as f:
+            f.write("""
+{% set compiler, version, _ = detect_api.detect_clang_compiler("clang") %}
+
+[settings]
+os={{detect_api.detect_os()}}
+arch={{detect_api.detect_arch()}}
+build_type=Release
+compiler={{compiler}}
+compiler.version={{detect_api.default_compiler_version(compiler, version)}}
+compiler.cppstd={{detect_api.default_cppstd(compiler, version)}}
+compiler.libcxx=libc++
+            """)
 
     def push(self) -> None:
         """Update the environment with the config for Conan."""
@@ -1131,7 +1150,6 @@ def init(
     call from Python, but can take a long time to run, and is mostly intended for
     command-line use.
     """
-    start = time.time()
     if "BERTRAND_HOME" in os.environ:
         raise RuntimeError(
             "`$ bertrand init` should not be run from inside a virtual environment. "
@@ -1157,6 +1175,8 @@ def init(
 
     try:
 
+        start = time.time()
+
         # remove old environment if force installing
         if force and env.dir.exists():
             shutil.rmtree(env.dir)
@@ -1166,31 +1186,33 @@ def init(
         swapfile = env / "swapfile"
         size: int | None = None
         print(
-            "\n======================================================================\n"
+            "\n========================================================================\n"
             "Compiling a virtual environment from source is resource-intensive and\n"
             "can take a long time to complete.  It is therefore recommended to create\n"
             "a temporary swap file to ensure that the build process does not run out\n"
             "of memory at any point.\n"
             "\n"
-            "How much disk space (in GB) should be allocated for this file\n"
-            "(0 avoids creating a swap file)? "
+            "How much disk space (in GB) should be allocated for this file?\n"
+            "(0 avoids creating a swap file)"
         )
         while size is None:
             try:
-                size = int(input())
+                size = int(input("\t"))
                 if size < 0:
-                    print("Please enter a non-negative integer: ")
+                    print("Swap size must not be negative:")
                     size = None
-            except:
-                print("Please enter a valid integer: ")
+            except:  # pylint: disable=bare-except
+                print("Please enter a valid integer:")
                 size = None
         if size:
             subprocess.check_call(["sudo", "fallocate", "-l", f"{size}G", str(swapfile)])
             subprocess.check_call(["sudo", "chmod", "600", str(swapfile)])
             subprocess.check_call(["sudo", "mkswap", str(swapfile)])
             subprocess.check_call(["sudo", "swapon", str(swapfile)])
+            print("Forgetting sudo credentials...")
+            subprocess.check_call(["sudo", "-k"])
         print(
-            "\n======================================================================\n"
+            "\n========================================================================\n"
         )
 
         # initialize env.toml
@@ -1274,16 +1296,27 @@ def init(
         # install the recipe
         recipe.install(workers)
 
-    finally:
+        # print elapsed time
+        elapsed = time.time() - start
+        hours = elapsed // 3600
+        if not hours:
+            hour_str = ""
+        if hours == 1:
+            hour_str = f"{hours:.0f} hour, "
+        else:
+            hour_str = f"{hours:.0f} hours, "
+        minutes = (elapsed % 3600) // 60
+        if not minutes:
+            minute_str = ""
+        if minutes == 1:
+            minute_str = f"{minutes:.0f} minute, "
+        else:
+            minute_str = f"{minutes:.0f} minutes, "
+        print(
+            f"Elapsed time: {hour_str}{minute_str}{elapsed % 60:.2f} seconds"
+        )
 
-        # remove swap memory
-        if swapfile.exists():
-            print("\nRemoving temporary swap file...")
-            try:
-                subprocess.check_call(["sudo", "swapoff", str(swapfile)])
-            except subprocess.CalledProcessError:
-                pass
-            swapfile.unlink(missing_ok=True)
+    finally:
 
         # restore previous environment
         for k in os.environ:
@@ -1292,17 +1325,19 @@ def init(
             else:
                 del os.environ[k]
 
-    # print elapsed time
-    elapsed = time.time() - start
-    hours = elapsed // 3600
-    minutes = (elapsed % 3600) // 60
-    seconds = elapsed % 60
-    if hours:
-        print(
-            f"Elapsed time: {hours:.0f} hours, {minutes:.0f} minutes, "
-            f"{seconds:.2f} seconds"
-        )
-    elif minutes:
-        print(f"Elapsed time: {minutes:.0f} minutes, {seconds:.2f} seconds")
-    else:
-        print(f"Elapsed time: {seconds:.2f} seconds")
+        # remove swap memory
+        if swapfile.exists():
+            print(
+                "\n====================================================================\n"
+                "Removing temporary swap file..."
+            )
+            try:
+                subprocess.check_call(["sudo", "swapoff", str(swapfile)])
+                print("Forgetting sudo credentials...")
+                subprocess.check_call(["sudo", "-k"])
+            except subprocess.CalledProcessError:
+                pass
+            swapfile.unlink(missing_ok=True)
+            print(
+                "\n====================================================================\n"
+            )
