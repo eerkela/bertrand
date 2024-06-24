@@ -121,9 +121,9 @@ void run() {
     // py::print(func(y = 2, x = 1));
 
 
-    py::print("hello, world!");
+    // py::print("123");
 
-
+    throw py::TypeError("hello, world!");
 
 
 

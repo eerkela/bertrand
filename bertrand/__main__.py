@@ -200,18 +200,6 @@ class Parser:
             ),
             metavar="X.Y.Z",
         )
-        command.add_argument(
-            "--valgrind",
-            nargs=1,
-            default=None,
-            help=(
-                "Configure the virtual environment to enable valgrind support.  This "
-                "is a memory leak detector that can be used to profile C/C++ code "
-                "to ensure that it is free of memory errors.  Considerably reduces "
-                "performance, and uses the same version scheme as the compiler."
-            ),
-            metavar="X.Y.Z",
-        )
 
     def activate(self) -> None:
         """Add the 'activate' command to the parser."""
