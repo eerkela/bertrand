@@ -9,7 +9,6 @@ import sysconfig
 import tarfile
 import time
 from pathlib import Path
-from typing import Any
 
 import packaging.version
 import requests
@@ -545,7 +544,7 @@ class Clang(Target):
             raise ValueError(f"Clang version {self.version} not found.")
         print(f"Clang URL: {self.url}")
 
-    def _lto_bootstrap(self, workers: int) -> None:
+    def __call__(self, workers: int) -> None:
         archive = env / f"llvm-{self.version}.tar.gz"
         source = env / f"llvm-project-llvmorg-{self.version}"
         build = env / f"llvm-{self.version}-build"
@@ -572,56 +571,23 @@ class Clang(Target):
                         'CMAKE_INSTALL_PREFIX',
                         'CMAKE_BUILD_TYPE',
                         'LLVM_PARALLEL_LINK_JOBS',
-                        # 'LLVM_BUILD_TOOLS',
-                        # 'LLVM_INCLUDE_EXAMPLES',
-                        # 'LLVM_INCLUDE_TESTS',
-                        # 'LLVM_INCLUDE_BENCHMARKS',
-                        # 'LLVM_ENABLE_EH',
-                        # 'LLVM_ENABLE_PIC',
-                        # 'LLVM_ENABLE_FFI',
-                        # 'LLVM_ENABLE_RTTI',
-                        # 'LIBCXX_ENABLE_EXCEPTIONS',
-                        # 'LIBCXX_ENABLE_RTTI',
-                        # 'LIBCXX_ENABLE_FILESYSTEM',
-                        # 'LIBCXX_CXX_ABI',
-                        # 'LIBCXX_USE_COMPILER_RT',
-                        # 'LIBCXXABI_USE_COMPILER_RT',
-                        # 'LIBCXXABI_USE_LLVM_UNWINDER',
-                        # 'COMPILER_RT_USE_BUILTINS_LIBRARY',
+                        'LLVM_INCLUDE_EXAMPLES',
+                        'LLVM_INCLUDE_TESTS',
+                        'LLVM_INCLUDE_BENCHMARKS',
                     ])}\"",
                     f"-DCMAKE_INSTALL_PREFIX={env.dir}",
                     "-DCMAKE_BUILD_TYPE=Release",
                     "-DLLVM_PARALLEL_LINK_JOBS=1",
-                    # "-DLLVM_BUILD_TOOLS=OFF",
-                    # "-DLLVM_INCLUDE_EXAMPLES=OFF",
-                    # "-DLLVM_INCLUDE_TESTS=OFF",
-                    # "-DLLVM_INCLUDE_BENCHMARKS=OFF",
-                    # "-DLLVM_ENABLE_EH=ON",
-                    # "-DLLVM_ENABLE_PIC=ON",
-                    # "-DLLVM_ENABLE_FFI=ON",
-                    # "-DLLVM_ENABLE_RTTI=ON",
-                    # "-DLIBCXX_ENABLE_EXCEPTIONS=ON",
-                    # "-DLIBCXX_ENABLE_RTTI=ON",
-                    # "-DLIBCXX_ENABLE_FILESYSTEM=ON",
-                    # "-DLIBCXX_CXX_ABI=libcxxabi",
-                    # "-DLIBCXX_USE_COMPILER_RT=YES",
-                    # "-DLIBCXXABI_USE_COMPILER_RT=YES",
-                    # "-DLIBCXXABI_USE_LLVM_UNWINDER=YES",
-                    # "-DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON",
-
-                    # stage 1: build clang + runtimes using host compiler
-                    "-DLLVM_TARGETS_TO_BUILD=Native",
-                    "-DLLVM_BUILD_TOOLS=OFF",
                     "-DLLVM_INCLUDE_EXAMPLES=OFF",
                     "-DLLVM_INCLUDE_TESTS=OFF",
                     "-DLLVM_INCLUDE_BENCHMARKS=OFF",
 
+                    # stage 1: build clang + runtimes using host compiler
+                    "-DLLVM_TARGETS_TO_BUILD=Native",
+
                     # stage 2: rebuild clang using stage 1 runtimes
-                    "-DBOOTSTRAP_LLVM_TARGETS_TO_BUILD=Native",  # TODO: swap to all
-                    "-DBOOTSTRAP_LLVM_BUILD_TOOLS=OFF",
-                    "-DBOOTSTRAP_LLVM_INCLUDE_EXAMPLES=OFF",
-                    "-DBOOTSTRAP_LLVM_INCLUDE_TESTS=OFF",
-                    "-DBOOTSTRAP_LLVM_INCLUDE_BENCHMARKS=OFF",
+                    "-DBOOTSTRAP_LLVM_APPEND_VC_REV=OFF",  # displayed in python prompt
+                    "-DBOOTSTRAP_LLVM_TARGETS_TO_BUILD=all",
                     "-DBOOTSTRAP_LLVM_BUILD_LLVM_DYLIB=ON",
                     "-DBOOTSTRAP_LLVM_LINK_LLVM_DYLIB=ON",
                     "-DBOOTSTRAP_CLANG_LINK_CLANG_DYLIB=ON",
@@ -632,7 +598,6 @@ class Clang(Target):
                     "-DBOOTSTRAP_LLVM_ENABLE_LTO=Thin",
                     "-DBOOTSTRAP_LLVM_ENABLE_LLD=ON",
                     "-DBOOTSTRAP_LLVM_ENABLE_LIBCXX=ON",
-                    # "-DBOOTSTRAP_LLVM_STATIC_LINK_CXX_STDLIB=ON",
                     "-DBOOTSTRAP_CLANG_DEFAULT_CXX_STDLIB=libc++",
                     "-DBOOTSTRAP_CLANG_DEFAULT_LINKER=lld",
                     "-DBOOTSTRAP_CLANG_DEFAULT_RTLIB=compiler-rt",
@@ -644,13 +609,6 @@ class Clang(Target):
                     "-DBOOTSTRAP_LIBCXX_USE_COMPILER_RT=YES",
                     "-DBOOTSTRAP_LIBCXXABI_USE_COMPILER_RT=YES",
                     "-DBOOTSTRAP_LIBCXXABI_USE_LLVM_UNWINDER=YES",
-                    "-DBOOTSTRAP_LLVM_INSTALL_TOOLCHAIN_ONLY=ON",
-                    # "-DBOOTSTRAP_LLVM_USE_SPLIT_DWARF=ON",
-
-                    # "-DLIBCXX_ENABLE_EXCEPTIONS=ON",
-                    # "-DLIBCXX_ENABLE_RTTI=ON",
-                    # "-DLIBCXX_ENABLE_FILESYSTEM=ON",
-                    # "-DLIBCXX_CXX_ABI=libcxxabi",
 
                     str(source / "llvm"),
                 ],
@@ -695,17 +653,16 @@ class Clang(Target):
                 [str(env / "bin" / "ninja"), "stage2", f"-j{workers}"],
                 cwd=build
             )
+
+            # install
             subprocess.check_call(
                 [str(env / "bin" / "ninja"), "stage2-install"],
                 cwd=build
             )
-
-            # symlink runtimes to venv/lib so that they are recognized
             for lib in (env / "lib" / self.host_target).iterdir():
                 os.symlink(lib, env / "lib" / lib.name)
 
         finally:
-            breakpoint()
             for k in os.environ:
                 if k in old_env:
                     os.environ[k] = old_env[k]
@@ -717,9 +674,6 @@ class Clang(Target):
             if build.exists():
                 shutil.rmtree(build)
 
-    def __call__(self, workers: int) -> None:
-        self._lto_bootstrap(workers)
-
     def push(self) -> None:
         """Update the environment with the config for the Clang compiler."""
         env.info["clang"] = str(self.version)
@@ -729,11 +683,7 @@ class Clang(Target):
         env.vars["NM"] = str(env / "bin" / "llvm-nm")
         env.vars["RANLIB"] = str(env / "bin" / "llvm-ranlib")
         env.vars["LD"] = str(env / "bin" / "ld.lld")
-        env.flags["LDFLAGS"].extend([
-            # f"-L{env / 'lib' / self.host_target}",
-            "-fuse-ld=lld",
-        ])
-        # env.paths["LD_LIBRARY_PATH"].appendleft(str(env / "lib" / self.host_target))
+        env.flags["LDFLAGS"].append("-fuse-ld=lld")
 
 
 class CMake(Target):
