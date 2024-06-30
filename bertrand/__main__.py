@@ -105,12 +105,10 @@ class Parser:
         )
         command.add_argument(  # TODO: this should be required?
             "name",
-            nargs="?",
-            default="venv",
+            nargs=1,
             help=(
                 "The name of the virtual environment to create.  This sets both the "
-                "environment's directory name and the command-line prompt within the "
-                "virtual environment.  Defaults to 'venv'."
+                "environment's directory name and the command-line prompt within it."
             ),
         )
         command.add_argument(
@@ -136,9 +134,50 @@ class Parser:
             metavar="N",
         )
         command.add_argument(
+            "--swap",
+            type=int,
+            nargs=1,
+            default=[0],
+            help=(
+                "Allocate a temporary swap file with the specified size in GB.  This "
+                "is commonly used when bootstrapping a local environment from source, "
+                "as doing so is very resource intensive.  Allocating a large enough "
+                "swap file can allow environments to be built on systems with limited "
+                "RAM.  Defaults to 0, which disables swap file creation.  Requires "
+                "root privileges if set to a non-zero value."
+            )
+        )
+        command.add_argument(
+            "--bootstrap",
+            action="store_true",
+            help=(
+                "Bootstrap a virtual environment from source, rather than downloading "
+                "a precompiled image.  This is the default behavior if no image can "
+                "be found for the current system, or if manually forced through the "
+                "use of this flag.  Most of the time, there's no benefit to building "
+                "this way, and doing so can be time-consuming and brittle, so it's "
+                "not recommended in general.  It can potentially lead to faster "
+                "binaries, however, as the compiler will be built in situ and "
+                "optimized for the host architecture, rather than a generic one.  "
+                "Note that bootstrapping requires the host system to have a working "
+                "C/C++ compiler, Python, Make, and CMake preinstalled, which can be "
+                "done through the system's package manager."
+            )
+        )
+        command.add_argument(
+            "--ninja",
+            nargs=1,
+            default=["latest"],
+            help=(
+                "Set the ninja version to use within the virtual environment.  Uses "
+                "the same version scheme as the compiler, and must be >=1.11."
+            ),
+            metavar="X.Y.Z",
+        )
+        command.add_argument(
             "--clang",
             nargs=1,
-            default=None,
+            default=["latest"],
             help=(
                 "Use the specified Clang version as the environment's compiler.  The "
                 "version must be >=18.0.0.  If set to 'latest', then the most recent "
@@ -147,19 +186,9 @@ class Parser:
             metavar="X.Y.Z",
         )
         command.add_argument(
-            "--ninja",
-            nargs=1,
-            default=None,
-            help=(
-                "Set the ninja version to use within the virtual environment.  Uses "
-                "the same version scheme as the compiler, and must be >=1.11."
-            ),
-            metavar="X.Y.Z",
-        )
-        command.add_argument(
             "--cmake",
             nargs=1,
-            default=None,
+            default=["latest"],
             help=(
                 "Set the CMake version to use within the virtual environment.  Uses "
                 "the same version scheme as the compiler, and must be >=3.28."
@@ -169,7 +198,7 @@ class Parser:
         command.add_argument(
             "--mold",
             nargs=1,
-            default=None,
+            default=["latest"],
             help=(
                 "Set the default linker within the virtual environment to mold.  Uses "
                 "the same version scheme as the compiler.  This is the most efficient "
@@ -180,7 +209,7 @@ class Parser:
         command.add_argument(
             "--python",
             nargs=1,
-            default=None,
+            default=["latest"],
             help=(
                 "Set the Python version to use within the virtual environment.  Uses "
                 "the same version scheme as the compiler, and must be >=3.9."
@@ -190,7 +219,7 @@ class Parser:
         command.add_argument(
             "--conan",
             nargs=1,
-            default=None,
+            default=["latest"],
             help=(
                 "Install the Conan package manager within the virtual environment.  "
                 "This is necessary for installing C++ dependencies into the "
@@ -372,18 +401,26 @@ def main() -> None:
     args = parser()
 
     if args.command == "init":
-        init(
-            Path.cwd(),
-            args.name or "venv",
-            clang_version=args.clang[0] if args.clang else "latest",
-            ninja_version=args.ninja[0] if args.ninja else "latest",
-            cmake_version=args.cmake[0] if args.cmake else "latest",
-            mold_version=args.mold[0] if args.mold else "latest",
-            python_version=args.python[0] if args.python else "latest",
-            conan_version=args.conan[0] if args.conan else "latest",
-            workers=args.jobs[0],
-            force=args.force,
-        )
+        # TODO: generate a matching image URL
+        if args.bootstrap:  # or not ping(url)
+            init(
+                Path.cwd(),
+                args.name[0],
+                clang_version=args.clang[0],
+                ninja_version=args.ninja[0],
+                cmake_version=args.cmake[0],
+                mold_version=args.mold[0],
+                python_version=args.python[0],
+                conan_version=args.conan[0],
+                swap=args.swap[0],
+                workers=args.jobs[0],
+                force=args.force,
+            )
+        else:
+            print("Currently, environments can only be initialized by bootstrapping from")
+            print("source.  Eventually, precompiled images will be available for download")
+            print("from a remote server, but this has not yet been set up.  Please try")
+            print("again with the --bootstrap (and possibly --swap=N) flag.")
 
     elif args.command == "activate":
         for command in activate(args.file[0]):
@@ -396,6 +433,13 @@ def main() -> None:
     elif args.command == "compile":
         # TODO: pass the compiler options to the compiler as an environment variable
         # that gets caught in the setup.py script.
+        # -> inplace is always on by default?  If you're executing this command, then
+        # presumably you want to be able to run executables and import modules inplace.
+        # Use pip install if you want things to be installed globally within the
+        # environment.
+        # TODO: I can just append the compiler options to CFLAGS and LDFLAGS directly,
+        # which avoids the need to modify the setup.py script at all.  That also makes
+        # it simple to pass extra options like --inplace or --debug, etc.
         subprocess.check_call(
             ["python", "setup.py", "build_ext", *args.compiler_options],
             cwd=args.path[0]

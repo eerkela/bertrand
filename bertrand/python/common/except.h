@@ -295,14 +295,14 @@ namespace impl {
         mutable PyTracebackObject* py_traceback = nullptr;
         PyThreadState* thread;
 
-        /* Return true if a C++ stack frame does not originate from a blacklisted
-        context. */
+        inline static const char* virtualenv = std::getenv("BERTRAND_HOME");
+
+        /* Return true if a C++ stack frame originates from a blacklisted context. */
         static bool ignore(const cpptrace::stacktrace_frame& frame) {
-            if (frame.symbol.starts_with("__")) {
-                return true;
-            }
-            const char* home = std::getenv("BERTRAND_HOME");
-            return home != nullptr && frame.filename.starts_with(home);
+            return (
+                frame.symbol.starts_with("__") ||
+                (virtualenv != nullptr && frame.filename.starts_with(virtualenv))
+            );
         }
 
     public:

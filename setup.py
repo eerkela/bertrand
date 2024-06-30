@@ -1,8 +1,8 @@
 """Setup script for Bertrand."""
 import os
-from typing import Any
+import subprocess
 
-from bertrand import BuildExt, Extension, setup
+from bertrand import BuildExt, Extension, setup, env
 
 
 # TODO: for headless installation, use pipx to install bertrand:
@@ -241,13 +241,67 @@ class BuildExtHeadless(BuildExt):
             super().build_extensions()
 
 
+# TODO: the AST parser 
+
+
 setup(
     conan=[
         "pcre2/10.43@PCRE2/pcre2::pcre2",
         "cpptrace/0.6.1@cpptrace/cpptrace::cpptrace",
     ],
     ext_modules=[
-        Extension("example", ["bertrand/example.cpp", "bertrand/example_module.cpp"]),
+        # Extension(
+        #     "example",
+        #     ["bertrand/example.cpp", "bertrand/example_module.cpp"],
+        # ),
+        Extension(
+            "bertrand.env.ast",
+            ["bertrand/env/ast.cpp"],
+            extra_compile_args=[
+                "-std=c++17",
+                # "-stdlib=libstdc++",  # TODO: there's an ABI incompatibility with default libc++
+            ],
+            extra_link_args=[
+                # "/home/eerkela/data/bertrand/venv/lib/libclang-cpp.so",
+                "-lclang-cpp",
+                # "-lclangAST",
+                # "-lclangASTMatchers",
+                # "-lclangBasic",
+                # "-lclangFrontend",
+                # "-lclangFrontendTool",
+                # "-lclangRewrite",
+                # "-lclangSerialization",
+                # "-lclangTooling",
+                # "-lclangParse",
+                # "-lclangSema",
+                # "-lclangAnalysis",
+                # "-lclangEdit",
+                # "-lclangDriver",
+                # "-lclangLex",
+                # "-lclangDynamicASTMatchers",
+                # "-lclangToolingCore",
+                # # "/home/eerkela/data/bertrand/venv/lib/libclangAST.a",
+                # *subprocess.run(
+                #     ["./llvm-config", "--libs"],
+                #     check=True,
+                #     capture_output=True,
+                #     cwd=env / "bin",
+                # ).stdout.decode("utf-8").split(),
+                # *subprocess.run(
+                #     ["./llvm-config", "--system-libs"],
+                #     check=True,
+                #     capture_output=True,
+                #     cwd=env / "bin",
+                # ).stdout.decode("utf-8").split(),
+            ]
+        ),
+        # Extension(
+        #     "ast_test",
+        #     ["ast_test.cpp"],
+        #     extra_compile_args=[
+        #         "-fplugin=/home/eerkela/data/bertrand/bertrand/env/ast.cpython-312-x86_64-linux-gnu.so"
+        #     ]
+        # ),
     ],
     cmdclass={"build_ext": BuildExtHeadless},
 )

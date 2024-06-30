@@ -488,6 +488,7 @@ class Ninja(Target):
     def __call__(self, workers: int) -> None:
         archive = env / f"ninja-{self.version}.tar.gz"
         install = env / f"ninja-{self.version}"
+        target = env / "bin" / "ninja"
         try:
             download(self.url, archive, "Downloading Ninja")
             extract(archive, env.dir, " Extracting Ninja")
@@ -496,7 +497,8 @@ class Ninja(Target):
                 [str(install / "configure.py"), "--bootstrap"],
                 cwd=install
             )
-            shutil.move(install / "ninja", env / "bin" / "ninja")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(install / "ninja", target)
         finally:
             archive.unlink(missing_ok=True)
             if install.exists():
@@ -543,64 +545,180 @@ class Clang(Target):
             raise ValueError(f"Clang version {self.version} not found.")
         print(f"Clang URL: {self.url}")
 
-    def __call__(self, workers: int) -> None:
-        archive = env / f"clang-{self.version}.tar.gz"
+    def _lto_bootstrap(self, workers: int) -> None:
+        archive = env / f"llvm-{self.version}.tar.gz"
         source = env / f"llvm-project-llvmorg-{self.version}"
-        build = env / f"clang-{self.version}-build"
+        build = env / f"llvm-{self.version}-build"
+        old_env = os.environ.copy()
+
         try:
             download(self.url, archive, "Downloading Clang")
             extract(archive, env.dir, " Extracting Clang")
             archive.unlink()
 
+            # configure
             build.mkdir(parents=True, exist_ok=True)
             subprocess.check_call(
                 [
                     "cmake",
                     "-G",
                     "Ninja",
-                    "-C",
-                    str(source / "clang" / "cmake" / "caches" / "BOLT-PGO.cmake"),
+
+                    # stage 0: common
+                    "-DLLVM_ENABLE_PROJECTS=clang;clang-tools-extra;libclc;lld;lldb;polly;bolt",
+                    "-DLLVM_ENABLE_RUNTIMES=compiler-rt;libc;libcxx;libcxxabi;libunwind;openmp",
+                    "-DCLANG_ENABLE_BOOTSTRAP=ON",
+                    f"-DCLANG_BOOTSTRAP_PASSTHROUGH=\"{';'.join([
+                        'CMAKE_INSTALL_PREFIX',
+                        'CMAKE_BUILD_TYPE',
+                        'LLVM_PARALLEL_LINK_JOBS',
+                        # 'LLVM_BUILD_TOOLS',
+                        # 'LLVM_INCLUDE_EXAMPLES',
+                        # 'LLVM_INCLUDE_TESTS',
+                        # 'LLVM_INCLUDE_BENCHMARKS',
+                        # 'LLVM_ENABLE_EH',
+                        # 'LLVM_ENABLE_PIC',
+                        # 'LLVM_ENABLE_FFI',
+                        # 'LLVM_ENABLE_RTTI',
+                        # 'LIBCXX_ENABLE_EXCEPTIONS',
+                        # 'LIBCXX_ENABLE_RTTI',
+                        # 'LIBCXX_ENABLE_FILESYSTEM',
+                        # 'LIBCXX_CXX_ABI',
+                        # 'LIBCXX_USE_COMPILER_RT',
+                        # 'LIBCXXABI_USE_COMPILER_RT',
+                        # 'LIBCXXABI_USE_LLVM_UNWINDER',
+                        # 'COMPILER_RT_USE_BUILTINS_LIBRARY',
+                    ])}\"",
                     f"-DCMAKE_INSTALL_PREFIX={env.dir}",
                     "-DCMAKE_BUILD_TYPE=Release",
-                    "-DPGO_INSTRUMENT_LTO=Thin",
+                    "-DLLVM_PARALLEL_LINK_JOBS=1",
+                    # "-DLLVM_BUILD_TOOLS=OFF",
+                    # "-DLLVM_INCLUDE_EXAMPLES=OFF",
+                    # "-DLLVM_INCLUDE_TESTS=OFF",
+                    # "-DLLVM_INCLUDE_BENCHMARKS=OFF",
+                    # "-DLLVM_ENABLE_EH=ON",
+                    # "-DLLVM_ENABLE_PIC=ON",
+                    # "-DLLVM_ENABLE_FFI=ON",
+                    # "-DLLVM_ENABLE_RTTI=ON",
+                    # "-DLIBCXX_ENABLE_EXCEPTIONS=ON",
+                    # "-DLIBCXX_ENABLE_RTTI=ON",
+                    # "-DLIBCXX_ENABLE_FILESYSTEM=ON",
+                    # "-DLIBCXX_CXX_ABI=libcxxabi",
+                    # "-DLIBCXX_USE_COMPILER_RT=YES",
+                    # "-DLIBCXXABI_USE_COMPILER_RT=YES",
+                    # "-DLIBCXXABI_USE_LLVM_UNWINDER=YES",
+                    # "-DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON",
 
-                    # stage 1
-                    f"-DLLVM_BINUTILS_INCDIR={env / 'include'}",
-                    "-DLLVM_ENABLE_RUNTIMES=compiler-rt;libcxx;libcxxabi;libunwind",
+                    # stage 1: build clang + runtimes using host compiler
+                    "-DLLVM_TARGETS_TO_BUILD=Native",
+                    "-DLLVM_BUILD_TOOLS=OFF",
+                    "-DLLVM_INCLUDE_EXAMPLES=OFF",
+                    "-DLLVM_INCLUDE_TESTS=OFF",
+                    "-DLLVM_INCLUDE_BENCHMARKS=OFF",
 
-                    # stage 2
-                    f"-DBOOTSTRAP_LLVM_BINUTILS_INCDIR={env / 'include'}",
-                    "-DBOOTSTRAP_LLVM_ENABLE_RUNTIMES=compiler-rt;libcxx;libcxxabi;libunwind",
+                    # stage 2: rebuild clang using stage 1 runtimes
+                    "-DBOOTSTRAP_LLVM_TARGETS_TO_BUILD=Native",  # TODO: swap to all
+                    "-DBOOTSTRAP_LLVM_BUILD_TOOLS=OFF",
+                    "-DBOOTSTRAP_LLVM_INCLUDE_EXAMPLES=OFF",
+                    "-DBOOTSTRAP_LLVM_INCLUDE_TESTS=OFF",
+                    "-DBOOTSTRAP_LLVM_INCLUDE_BENCHMARKS=OFF",
+                    "-DBOOTSTRAP_LLVM_BUILD_LLVM_DYLIB=ON",
+                    "-DBOOTSTRAP_LLVM_LINK_LLVM_DYLIB=ON",
+                    "-DBOOTSTRAP_CLANG_LINK_CLANG_DYLIB=ON",
+                    "-DBOOTSTRAP_LLVM_ENABLE_EH=ON",
+                    "-DBOOTSTRAP_LLVM_ENABLE_PIC=ON",
+                    "-DBOOTSTRAP_LLVM_ENABLE_FFI=ON",
+                    "-DBOOTSTRAP_LLVM_ENABLE_RTTI=ON",
+                    "-DBOOTSTRAP_LLVM_ENABLE_LTO=Thin",
                     "-DBOOTSTRAP_LLVM_ENABLE_LLD=ON",
                     "-DBOOTSTRAP_LLVM_ENABLE_LIBCXX=ON",
+                    # "-DBOOTSTRAP_LLVM_STATIC_LINK_CXX_STDLIB=ON",
+                    "-DBOOTSTRAP_CLANG_DEFAULT_CXX_STDLIB=libc++",
+                    "-DBOOTSTRAP_CLANG_DEFAULT_LINKER=lld",
+                    "-DBOOTSTRAP_CLANG_DEFAULT_RTLIB=compiler-rt",
+                    "-DBOOTSTRAP_CLANG_DEFAULT_UNWINDLIB=libunwind",
+                    "-DBOOTSTRAP_COMPILER_RT_USE_BUILTINS_LIBRARY=ON",
+                    "-DBOOTSTRAP_SANITIZER_CXX_ABI=libc++",
+                    "-DBOOTSTRAP_SANITIZER_TEST_CXX=libc++",
+                    "-DBOOTSTRAP_LIBUNWIND_USE_COMPILER_RT=YES",
+                    "-DBOOTSTRAP_LIBCXX_USE_COMPILER_RT=YES",
+                    "-DBOOTSTRAP_LIBCXXABI_USE_COMPILER_RT=YES",
+                    "-DBOOTSTRAP_LIBCXXABI_USE_LLVM_UNWINDER=YES",
+                    "-DBOOTSTRAP_LLVM_INSTALL_TOOLCHAIN_ONLY=ON",
+                    # "-DBOOTSTRAP_LLVM_USE_SPLIT_DWARF=ON",
 
-                    # stage 3
-                    f"-DBOOTSTRAP_BOOTSTRAP_LLVM_BINUTILS_INCDIR={env / 'include'}",
-                    "-DBOOTSTRAP_BOOTSTRAP_LLVM_ENABLE_PROJECTS=all",
-                    "-DBOOTSTRAP_BOOTSTRAP_LLVM_ENABLE_RUNTIMES=all",
-                    "-DBOOTSTRAP_BOOTSTRAP_LLVM_ENABLE_LIBCXX=ON",
-                    "-DBOOTSTRAP_BOOTSTRAP_LLVM_ENABLE_LLD=ON",
-                    "-DBOOTSTRAP_BOOTSTRAP_LLVM_ENABLE_PIC=ON",
-                    "-DBOOTSTRAP_BOOTSTRAP_LLVM_ENABLE_FFI=ON",
-                    "-DBOOTSTRAP_BOOTSTRAP_LLVM_ENABLE_RTTI=ON",
-                    str(source / 'llvm'),
+                    # "-DLIBCXX_ENABLE_EXCEPTIONS=ON",
+                    # "-DLIBCXX_ENABLE_RTTI=ON",
+                    # "-DLIBCXX_ENABLE_FILESYSTEM=ON",
+                    # "-DLIBCXX_CXX_ABI=libcxxabi",
+
+                    str(source / "llvm"),
                 ],
                 cwd=build
             )
+
+            # build stage 1
             subprocess.check_call(
-                [str(env / "bin" / "ninja"), "stage2-clang-bolt", f"-j{workers}"],
+                [str(env / "bin" / "ninja"), "clang-bootstrap-deps", f"-j{workers}"],
+                cwd=build
+            )
+
+            # stage 1.5: forward correct paths of the stage 1 runtimes to stage 2
+            self.host_target = subprocess.run(
+                [str(build / "bin" / "llvm-config"), "--host-target"],
+                check=True,
+                capture_output=True,
+                cwd=build,
+            ).stdout.decode("utf-8").strip()
+            stage1_lib = build / "lib"
+            stage2_lib = build / "tools" / "clang" / "stage2-bins" / "lib"
+            libraries = [
+                str(stage2_lib / self.host_target),
+                str(stage2_lib),
+                str(stage1_lib / self.host_target),
+                str(stage1_lib),
+            ]
+            ldflags = [f"-L{lib}" for lib in libraries]
+            os.environ["LDFLAGS"] = " ".join(
+                [*ldflags, *os.environ["LDFLAGS"].split()]
+                if "LDFLAGS" in os.environ else
+                ldflags
+            )
+            os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(
+                [*libraries, *os.environ["LD_LIBRARY_PATH"].split(os.pathsep)]
+                if "LD_LIBRARY_PATH" in os.environ else
+                libraries
+            )
+
+            # build stage 2
+            subprocess.check_call(
+                [str(env / "bin" / "ninja"), "stage2", f"-j{workers}"],
                 cwd=build
             )
             subprocess.check_call(
-                [str(env / "bin" / "ninja"), "install"],
+                [str(env / "bin" / "ninja"), "stage2-install"],
                 cwd=build
             )
+
+            # symlink runtimes to venv/lib so that they are recognized
+            for lib in (env / "lib" / self.host_target).iterdir():
+                os.symlink(lib, env / "lib" / lib.name)
+
         finally:
+            breakpoint()
+            for k in os.environ:
+                if k in old_env:
+                    os.environ[k] = old_env[k]
+                else:
+                    os.environ.pop(k)
             archive.unlink(missing_ok=True)
             if source.exists():
                 shutil.rmtree(source)
             if build.exists():
                 shutil.rmtree(build)
+
+    def __call__(self, workers: int) -> None:
+        self._lto_bootstrap(workers)
 
     def push(self) -> None:
         """Update the environment with the config for the Clang compiler."""
@@ -610,8 +728,12 @@ class Clang(Target):
         env.vars["AR"] = str(env / "bin" / "llvm-ar")
         env.vars["NM"] = str(env / "bin" / "llvm-nm")
         env.vars["RANLIB"] = str(env / "bin" / "llvm-ranlib")
-        env.flags["CXXFLAGS"].append("-stdlib=libc++")
-        env.flags["LDFLAGS"].append("-stdlib=libc++")
+        env.vars["LD"] = str(env / "bin" / "ld.lld")
+        env.flags["LDFLAGS"].extend([
+            # f"-L{env / 'lib' / self.host_target}",
+            "-fuse-ld=lld",
+        ])
+        # env.paths["LD_LIBRARY_PATH"].appendleft(str(env / "lib" / self.host_target))
 
 
 class CMake(Target):
@@ -807,7 +929,7 @@ class Python(Target):
                 "--prefix",
                 str(env.dir),
                 "--with-ensurepip=upgrade",
-                "--enable-shared",
+                # "--enable-shared",
                 "--enable-optimizations",
                 "--with-lto",
             ]
@@ -985,11 +1107,11 @@ class Recipe:
         python_version: str,
         conan_version: str,
     ) -> None:
-        self.gold = Gold("latest")
+        # self.gold = Gold("latest")
         self.clang = Clang(clang_version)
         self.ninja = Ninja(ninja_version)
         self.cmake = CMake(cmake_version)
-        self.mold = Mold(mold_version)
+        # self.mold = Mold(mold_version)
         self.python = Python(python_version)
         self.conan = Conan(conan_version)
         self.bertrand = Bertrand(__version__)
@@ -1006,11 +1128,11 @@ class Recipe:
         # Clang, even if we end up using mold in the final environment.  This appears
         # to be a bug in the Python build system itself.
         order = [
-            self.gold,
             self.ninja,
+            # self.gold,
             self.clang,
             self.cmake,
-            self.mold,
+            # self.mold,
             self.python,
             self.conan,
             self.bertrand,
@@ -1105,8 +1227,9 @@ def init(
     mold_version: str = "latest",
     python_version: str = "latest",
     conan_version: str = "latest",
+    swap: int = 0,
     workers: int = 0,
-    force: bool = False
+    force: bool = False,
 ) -> None:
     """Initialize a virtual environment in the current directory.
 
@@ -1115,23 +1238,27 @@ def init(
     cwd : Path
         The path to the current working directory.
     name : str
-        The name of the virtual environment.
+        The name of the virtual environment.  Defaults to "venv".
     clang_version : str
-        The version of the clang compiler.
+        The version of the clang compiler.  Defaults to "latest".
     ninja_version : str
-        The version of the ninja build system.
+        The version of the ninja build system.  Defaults to "latest".
     cmake_version : str
-        The version of the cmake build tool.
+        The version of the cmake build tool.  Defaults to "latest".
     mold_version : str
-        The version of the mold linker.
+        The version of the mold linker.  Defaults to "latest".
     python_version : str
-        The version of Python.
+        The version of Python.  Defaults to "latest".
     conan_version : str
-        The Conan version to install.
+        The Conan version to install.  Defaults to "latest".
+    swap : int
+        The number of gigabytes to allocate for a swap file.  Defaults to 0, which
+        avoids creating a swap file.
     workers : int
-        The number of workers to use when building the tools.
+        The number of workers to use when building the tools.  Defaults to 0, which
+        uses all available cores.
     force : bool
-        If true, remove the existing virtual environment and create a new one.
+        If set, remove the existing virtual environment and create a new one.
 
     Raises
     ------
@@ -1156,24 +1283,28 @@ def init(
             "Exit the virtual environment before running this command."
         )
 
-    # validate and normalize inputs
-    recipe = Recipe(
-        clang_version,
-        ninja_version,
-        cmake_version,
-        mold_version,
-        python_version,
-        conan_version,
-    )
-    workers = workers or os.cpu_count() or 1
-    if workers < 1:
-        raise ValueError("workers must be a positive integer.")
+    # prompt for sudo credentials if creating a swap file
+    if swap:
+        subprocess.check_call(["sudo", "-v"])
 
     # set up the environment
     old_environment = os.environ.copy()
     os.environ["BERTRAND_HOME"] = str(cwd / name)
 
     try:
+
+        # validate and normalize inputs
+        recipe = Recipe(
+            clang_version,
+            ninja_version,
+            cmake_version,
+            mold_version,
+            python_version,
+            conan_version,
+        )
+        workers = workers or os.cpu_count() or 1
+        if workers < 1:
+            raise ValueError("workers must be a positive integer.")
 
         start = time.time()
 
@@ -1184,36 +1315,15 @@ def init(
 
         # create swap memory for large builds
         swapfile = env / "swapfile"
-        size: int | None = None
-        print(
-            "\n========================================================================\n"
-            "Compiling a virtual environment from source is resource-intensive and\n"
-            "can take a long time to complete.  It is therefore recommended to create\n"
-            "a temporary swap file to ensure that the build process does not run out\n"
-            "of memory at any point.\n"
-            "\n"
-            "How much disk space (in GB) should be allocated for this file?\n"
-            "(0 avoids creating a swap file)"
-        )
-        while size is None:
-            try:
-                size = int(input("\t"))
-                if size < 0:
-                    print("Swap size must not be negative:")
-                    size = None
-            except:  # pylint: disable=bare-except
-                print("Please enter a valid integer:")
-                size = None
-        if size:
-            subprocess.check_call(["sudo", "fallocate", "-l", f"{size}G", str(swapfile)])
+        if swap:
+            print()
+            subprocess.check_call(["sudo", "fallocate", "-l", f"{swap}G", str(swapfile)])
             subprocess.check_call(["sudo", "chmod", "600", str(swapfile)])
             subprocess.check_call(["sudo", "mkswap", str(swapfile)])
             subprocess.check_call(["sudo", "swapon", str(swapfile)])
             print("Forgetting sudo credentials...")
+            print()
             subprocess.check_call(["sudo", "-k"])
-        print(
-            "\n========================================================================\n"
-        )
 
         # initialize env.toml
         if not env.toml.exists():
@@ -1312,6 +1422,7 @@ def init(
             minute_str = f"{minutes:.0f} minute, "
         else:
             minute_str = f"{minutes:.0f} minutes, "
+        print()
         print(
             f"Elapsed time: {hour_str}{minute_str}{elapsed % 60:.2f} seconds"
         )
@@ -1325,12 +1436,11 @@ def init(
             else:
                 del os.environ[k]
 
-        # remove swap memory
+        # clear swap memory
         if swapfile.exists():
-            print(
-                "\n====================================================================\n"
-                "Removing temporary swap file..."
-            )
+            print()
+            print("===================================================================")
+            print("Removing temporary swap file...")
             try:
                 subprocess.check_call(["sudo", "swapoff", str(swapfile)])
                 print("Forgetting sudo credentials...")
@@ -1338,6 +1448,6 @@ def init(
             except subprocess.CalledProcessError:
                 pass
             swapfile.unlink(missing_ok=True)
-            print(
-                "\n====================================================================\n"
-            )
+            print()
+            print("===================================================================")
+            print()

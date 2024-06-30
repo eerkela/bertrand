@@ -160,12 +160,11 @@ class CMakeLists:
                     f.write(f"    {lib_dir}\n")
                 f.write(")\n")
 
-            f.write("link_libraries(\n")
-            f.write(f"    python{sysconfig.get_python_version()}\n")
             if libraries:
+                f.write("link_libraries(\n")
                 for lib in libraries:
                     f.write(f"    {lib}\n")
-            f.write(")\n")
+                f.write(")\n")
 
     def _modules(self, f: TextIO, target: str, ext: Extension) -> None:
         f.write(f"target_sources({target} PRIVATE\n")
@@ -440,11 +439,23 @@ class BuildExt(pybind11_build_ext):
         """Copy executables as well as shared libraries to the source directory if
         setup.py was invoked with the --inplace option.
         """
-        super().copy_extensions_to_source()
         for ext in self.extensions:
-            if isinstance(ext, Extension) and ext.executable:
-                build_path = Path(self.build_lib) / ext.name
-                self.copy_file(build_path, ext.name, level=self.verbose)  # type: ignore
+            lib_path = Path(self.build_lib) / f"{ext.name}{sysconfig.get_config_var('EXT_SUFFIX')}"
+            exe_path = Path(self.build_lib) / ext.name
+            if lib_path.exists():
+                self.copy_file(
+                    lib_path,
+                    self.get_ext_fullpath(ext.name),
+                    level=self.verbose,  # type: ignore
+                )
+            if exe_path.exists():
+                new_path = Path(self.get_ext_fullpath(ext.name)).parent
+                idx = ext.name.rfind(".")
+                if idx < 0:
+                    new_path /= ext.name
+                else:
+                    new_path /= ext.name[idx + 1:]
+                self.copy_file(exe_path, new_path, level=self.verbose)  # type: ignore
 
 
 def setup(
