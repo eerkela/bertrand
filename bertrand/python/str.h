@@ -39,6 +39,14 @@ struct __isinstance__<T, Str>                               : Returns<bool> {
 };
 
 
+template <std::derived_from<Str> Self>
+struct __len__<Self>                                        : Returns<size_t> {
+    static size_t operator()(const Self& self) {
+        return PyUnicode_GET_LENGTH(self.ptr());
+    }
+};
+
+
 /* Represents a statically-typed Python string in C++. */
 class Str : public Object {
     using Base = Object;
@@ -73,7 +81,8 @@ public:
 
     /* Make an explicit copy of the string. */
     [[nodiscard]] Str copy() const {
-        PyObject* result = PyUnicode_New(size(), max_char());
+        size_t size = len(*this);
+        PyObject* result = PyUnicode_New(size, max_char());
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -82,7 +91,7 @@ public:
             0,
             this->ptr(),
             0,
-            size()
+            size
         )) {
             Py_DECREF(result);
             Exception::from_python();
@@ -98,7 +107,7 @@ public:
     /* Fill the string with a given character.  The input must be convertible to a
     string with a single character. */
     void fill(const Str& str) {
-        if (str.size() != 1) {
+        if (len(str) != 1) {
             std::ostringstream msg;
             msg << "fill character must be a single character, not '" << str << "'";
             throw ValueError(msg.str());
@@ -107,14 +116,24 @@ public:
         if (code == (Py_UCS4)-1 && PyErr_Occurred()) {
             Exception::from_python();
         }
-        if (PyUnicode_Fill(this->ptr(), 0, size(), code) == -1) {
+        if (PyUnicode_Fill(
+            this->ptr(),
+            0,
+            len(*this),
+            code
+        ) < 0) {
             Exception::from_python();
         }
     }
 
     /* Fill the string with a given character, given as a raw Python unicode point. */
     void fill(Py_UCS4 ch) {
-        if (PyUnicode_Fill(this->ptr(), 0, size(), ch) == -1) {
+        if (PyUnicode_Fill(
+            this->ptr(),
+            0,
+            len(*this),
+            ch
+        ) < 0) {
             Exception::from_python();
         }
     }
@@ -440,56 +459,6 @@ public:
 };
 
 
-namespace ops {
-
-    template <typename Return, std::derived_from<Str> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            return static_cast<size_t>(PyUnicode_GET_LENGTH(self.ptr()));
-        }
-    };
-
-    template <typename Return, std::derived_from<Str> Self, typename Key>
-    struct contains<Return, Self, Key> {
-        static bool operator()(const Self& self, const impl::as_object_t<Key>& key) {
-            int result = PyUnicode_Contains(self.ptr(), key.ptr());
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-        }
-    };
-
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, Str> || std::derived_from<R, Str>)
-    struct add<Return, L, R> {
-        static Return operator()(const impl::as_object_t<L>& lhs, impl::as_object_t<R>& rhs) {
-            PyObject* result = PyUnicode_Concat(lhs.ptr(), rhs.ptr());
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Return>(result);
-        }
-
-    };
-
-    template <typename Return, std::derived_from<Str> L, typename R>
-    struct iadd<Return, L, R> {
-        static void operator()(L& lhs, const R& rhs) {
-            lhs = add<Return, L, R>{}(lhs, rhs);
-        }
-    };
-
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, Str> || std::derived_from<R, Str>)
-    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
-
-    template <typename Return, std::derived_from<Str> L, typename R>
-    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
-
-}
-
-
 template <>
 struct __init__<Str>                                        : Returns<Str> {
     static auto operator()() {
@@ -678,6 +647,98 @@ struct __cast__<From, std::string> : Returns<std::string> {
             Exception::from_python();
         }
         return {result, static_cast<size_t>(length)};
+    }
+};
+
+
+template <std::derived_from<Str> Self, std::convertible_to<Str> Key>
+struct __contains__<Self, Key>                              : Returns<bool> {
+    static bool operator()(const Self& self, const Str& key) {
+        int result = PyUnicode_Contains(
+            self.ptr(),
+            key.ptr()
+        );
+        if (result == -1) {
+            Exception::from_python();
+        }
+        return result;
+    }
+};
+
+
+template <std::derived_from<Str> L, impl::str_like R>
+struct __add__<L, R>                                        : Returns<Str> {
+    static auto operator()(const L& lhs, R& rhs) {
+        PyObject* result = PyUnicode_Concat(
+            as_object(lhs).ptr(),
+            as_object(rhs).ptr()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+};
+
+
+template <impl::str_like L, std::derived_from<Str> R> requires (!std::derived_from<L, Str>)
+struct __add__<L, R>                                        : Returns<Str> {
+    static auto operator()(const L& lhs, R& rhs) {
+        PyObject* result = PyUnicode_Concat(
+            as_object(lhs).ptr(),
+            as_object(rhs).ptr()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+};
+
+
+template <std::derived_from<Str> L, impl::str_like R>
+struct __iadd__<L, R>                                       : Returns<Str&> {
+    static void operator()(L& lhs, const R& rhs) {
+        lhs = lhs + rhs;
+    }
+};
+
+
+template <std::derived_from<Str> L, impl::int_like R>
+struct __mul__<L, R>                                        : Returns<Str> {
+    static auto operator()(const L& lhs, const R& rhs) {
+        PyObject* result = PySequence_Repeat(as_object(lhs).ptr(), rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+};
+
+
+template <impl::int_like L, std::derived_from<Str> R>
+struct __mul__<L, R>                                        : Returns<Str> {
+    static auto operator()(const L& lhs, const R& rhs) {
+        PyObject* result = PySequence_Repeat(as_object(rhs).ptr(), lhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+};
+
+
+template <std::derived_from<Str> L, impl::int_like R>
+struct __imul__<L, R>                                       : Returns<Str&> {
+    static void operator()(L& lhs, const R& rhs) {
+        PyObject* result = PySequence_InPlaceRepeat(lhs.ptr(), rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == lhs.ptr()) {
+            Py_DECREF(result);
+        } else {
+            lhs = reinterpret_steal<L>(result);
+        }
     }
 };
 

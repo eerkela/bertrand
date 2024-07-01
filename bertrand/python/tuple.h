@@ -637,10 +637,11 @@ template <std::derived_from<impl::TupleTag> From, typename First, typename Secon
     )
 struct __cast__<From, std::pair<First, Second>> : Returns<std::pair<First, Second>> {
     static std::pair<First, Second> operator()(const From& from) {
-        if (from.size() != 2) {
+        size_t size = len(from);
+        if (size != 2) {
             throw IndexError(
                 "conversion to std::pair requires tuple of size 2, not " +
-                std::to_string(from.size())
+                std::to_string(size)
             );
         }
         return {
@@ -655,11 +656,12 @@ template <std::derived_from<impl::TupleTag> From, typename... Args>
     requires (std::convertible_to<typename From::value_type, Args> && ...)
 struct __cast__<From, std::tuple<Args...>> : Returns<std::tuple<Args...>> {
     static std::tuple<Args...> operator()(const From& from) {
-        if (from.size() != sizeof...(Args)) {
+        size_t size = len(from);
+        if (size != sizeof...(Args)) {
             throw IndexError(
                 "conversion to std::tuple requires tuple of size " +
                 std::to_string(sizeof...(Args)) + ", not " +
-                std::to_string(from.size())
+                std::to_string(size)
             );
         }
         return [&from]<size_t... N>(std::index_sequence<N...>) {
@@ -675,10 +677,11 @@ template <std::derived_from<impl::TupleTag> From, typename T, size_t N>
     requires (std::convertible_to<typename From::value_type, T>)
 struct __cast__<From, std::array<T, N>> : Returns<std::array<T, N>> {
     static auto operator()(const From& from) {
-        if (N != from.size()) {
+        size_t size = len(from);
+        if (size != N) {
             throw IndexError(
                 "conversion to std::array requires tuple of size " +
-                std::to_string(N) + ", not " + std::to_string(from.size())
+                std::to_string(N) + ", not " + std::to_string(size)
             );
         }
         std::array<T, N> result;
@@ -695,7 +698,7 @@ template <std::derived_from<impl::TupleTag> From, typename T, typename... Args>
 struct __cast__<From, std::vector<T, Args...>> : Returns<std::vector<T, Args...>> {
     static auto operator()(const From& from) {
         std::vector<T, Args...> result;
-        result.reserve(from.size());
+        result.reserve(len(from));
         for (const auto& item : from) {
             result.push_back(impl::implicit_cast<T>(item));
         }
@@ -746,61 +749,127 @@ struct __cast__<From, std::deque<T, Args...>> : Returns<std::deque<T, Args...>> 
 };
 
 
-namespace ops {
+template <std::derived_from<impl::TupleTag> Self>
+struct __len__<Self>                                        : Returns<size_t> {
+    static size_t operator()(const Self& self) {
+        return PyTuple_GET_SIZE(self.ptr());
+    }
+};
 
-    template <typename Return, std::derived_from<impl::TupleTag> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            return PyTuple_GET_SIZE(self.ptr());
+
+template <std::derived_from<impl::TupleTag> L, std::convertible_to<L> R>
+struct __add__<L, R>                                        : Returns<Tuple<typename L::value_type>> {
+    static auto operator()(const L& lhs, const R& rhs) {
+        PyObject* result = PySequence_Concat(
+            as_object(lhs).ptr(),
+            as_object(rhs).ptr()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
         }
-    };
+        return reinterpret_steal<Tuple<typename L::value_type>>(result);
+    }
+};
 
-    template <typename Return, std::derived_from<impl::TupleTag> Self>
-    struct begin<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::Iterator<impl::TupleIter<Return>>(self, 0);
+
+template <typename L, std::derived_from<impl::TupleTag> R>
+    requires (!std::convertible_to<R, L> && std::convertible_to<L, R>)
+struct __add__<L, R>                                        : Returns<Tuple<typename R::value_type>> {
+    static auto operator()(const L& lhs, const R& rhs) {
+        PyObject* result = PySequence_Concat(
+            as_object(lhs).ptr(),
+            as_object(rhs).ptr()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
         }
-    };
+        return reinterpret_steal<Tuple<typename L::value_type>>(result);
+    }
+};
 
-    template <typename Return, std::derived_from<impl::TupleTag> Self>
-    struct end<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::Iterator<impl::TupleIter<Return>>(PyTuple_GET_SIZE(self.ptr()));
+
+template <std::derived_from<impl::TupleTag> L, std::convertible_to<L> R>
+struct __iadd__<L, R>                                       : Returns<Tuple<typename L::value_type>&> {
+    static void operator()(L& lhs, const R& rhs) {
+        PyObject* result = PySequence_InPlaceConcat(
+            lhs.ptr(),
+            as_object(rhs).ptr()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == lhs.ptr()) {
+            Py_DECREF(result);
+        } else {
+            lhs = reinterpret_steal<L>(result);
         }
-    };
+    }
+};
 
-    template <typename Return, std::derived_from<impl::TupleTag> Self>
-    struct rbegin<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::ReverseIterator<impl::TupleIter<Return>>(
-                self,
-                PyTuple_GET_SIZE(self.ptr()) - 1
-            );
+
+template <std::derived_from<impl::TupleTag> L, impl::int_like R>
+struct __mul__<L, R>                                        : Returns<Tuple<typename L::value_type>> {
+    static auto operator()(const L& lhs, const R& rhs) {
+        PyObject* result = PySequence_Repeat(lhs.ptr(), rhs);
+        if (result == nullptr) {
+            Exception::from_python();
         }
-    };
+        return reinterpret_steal<Tuple<typename L::value_type>>(result);
+    }
+};
 
-    template <typename Return, std::derived_from<impl::TupleTag> Self>
-    struct rend<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::ReverseIterator<impl::TupleIter<Return>>(-1);
+
+template <impl::int_like L, std::derived_from<impl::TupleTag> R>
+struct __mul__<L, R>                                        : Returns<Tuple<typename R::value_type>> {
+    static auto operator()(const L& lhs, const R& rhs) {
+        PyObject* result = PySequence_Repeat(rhs.ptr(), lhs);
+        if (result == nullptr) {
+            Exception::from_python();
         }
-    };
+        return reinterpret_steal<Tuple<typename L::value_type>>(result);
+    }
+};
 
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, impl::TupleTag> || std::derived_from<R, impl::TupleTag>)
-    struct add<Return, L, R> : sequence::add<Return, L, R> {};
 
-    template <typename Return, std::derived_from<impl::TupleTag> L, typename R>
-    struct iadd<Return, L, R> : sequence::iadd<Return, L, R> {};
+template <std::derived_from<impl::TupleTag> L, impl::int_like R>
+struct __imul__<L, R>                                       : Returns<Tuple<typename L::value_type>&> {
+    static void operator()(L& lhs, Py_ssize_t rhs) {
+        PyObject* result = PySequence_InPlaceRepeat(lhs.ptr(), rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == lhs.ptr()) {
+            Py_DECREF(result);
+        } else {
+            lhs = reinterpret_steal<L>(result);
+        }
+    }
+};
 
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, impl::TupleTag> || std::derived_from<R, impl::TupleTag>)
-    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
 
-    template <typename Return, std::derived_from<impl::TupleTag> L, typename R>
-    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
+template <std::derived_from<impl::TupleTag> Self>
+struct __iter__<Self>                                       : Returns<typename Self::value_type> {
+    static auto begin(const Self& self) {
+        return impl::Iterator<impl::TupleIter<typename __iter__<Self>::type>>(self, 0);
+    }
+    static auto end(const Self& self) {
+        return impl::Iterator<impl::TupleIter<typename __iter__<Self>::type>>(
+            PyTuple_GET_SIZE(self.ptr())
+        );
+    }
+};
 
-}
+
+template <std::derived_from<impl::TupleTag> Self>
+struct __reversed__<Self>                                   : Returns<typename Self::value_type> {
+    static auto rbegin(const Self& self) {
+        return impl::ReverseIterator<impl::TupleIter<typename __reversed__<Self>::type>>(
+            self,
+            PyTuple_GET_SIZE(self.ptr()) - 1
+        );
+    }
+    static auto rend(const Self& self) {
+        return impl::ReverseIterator<impl::TupleIter<typename __reversed__<Self>::type>>(-1);
+    }
+};
 
 
 ///////////////////////////////////

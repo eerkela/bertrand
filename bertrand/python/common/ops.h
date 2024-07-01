@@ -9,125 +9,9 @@ namespace bertrand {
 namespace py {
 
 
-// TODO: what would be really nice is if these can be rolled into the control structs
-// just like the __init__, __cast__, __isinstance__, and __issubclass structs.  This
-// would make the codebase more internally consistent and easier to understand.  It
-// does require the control structures to be defined alongside the classes rather than
-// in control.h, however.
-
-
 namespace ops {
 
     static PyObject* one = (Interpreter::init(), PyLong_FromLong(1));
-
-    namespace sequence {
-
-        template <typename Return, typename L, typename R>
-        struct add {
-            static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
-                PyObject* result = PySequence_Concat(lhs.ptr(), rhs.ptr());
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct iadd {
-            static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
-                PyObject* result = PySequence_InPlaceConcat(
-                    lhs.ptr(),
-                    rhs.ptr()
-                );
-                if (result == nullptr) {
-                    Exception::from_python();
-                } else if (result == lhs.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    lhs = reinterpret_steal<L>(result);
-                }
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct mul {
-            static Return operator()(const L& lhs, const R& rhs) {
-                PyObject* result;
-                if constexpr (impl::int_like<L>) {
-                    result = PySequence_Repeat(rhs.ptr(), lhs);
-                } else {
-                    result = PySequence_Repeat(lhs.ptr(), rhs);
-                }
-                if (result == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<Return>(result);
-            }
-        };
-
-        template <typename Return, typename L, typename R>
-        struct imul {
-            static void operator()(L& lhs, Py_ssize_t rhs) {
-                PyObject* result = PySequence_InPlaceRepeat(lhs.ptr(), rhs);
-                if (result == nullptr) {
-                    Exception::from_python();
-                } else if (result == lhs.ptr()) {
-                    Py_DECREF(result);
-                } else {
-                    lhs = reinterpret_steal<L>(result);
-                }
-            }
-        };
-
-    }
-
-    template <typename Return, typename Self, typename Key>
-    struct getitem {
-        static auto operator()(const Self& self, auto&& key);
-    };
-
-    template <typename Return, typename Self, typename Key>
-    struct contains {
-        static bool operator()(const Self& self, const impl::as_object_t<Key>& key) {
-            int result = PySequence_Contains(self.ptr(), key.ptr());
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-        }
-    };
-
-    template <typename Return, typename Self>
-    struct len {
-        static size_t operator()(const Self& self) {
-            Py_ssize_t size = PyObject_Size(self.ptr());
-            if (size < 0) {
-                Exception::from_python();
-            }
-            return size;
-        }
-    };
-
-    template <typename Return, typename Self>
-    struct begin {
-        static auto operator()(const Self& self);
-    };
-
-    template <typename Return, typename Self>
-    struct end {
-        static auto operator()(const Self& self);
-    };
-
-    template <typename Return, typename Self>
-    struct rbegin {
-        static auto operator()(const Self& self);
-    };
-
-    template <typename Return, typename Self>
-    struct rend {
-        static auto operator()(const Self& self);
-    };
 
     // TODO: update dereference to use new unpacking architecture.  It should
     // also be renamed to unpack.
@@ -139,56 +23,6 @@ namespace ops {
                 return *Handle(self.ptr());
             } catch (...) {
                 Exception::from_pybind11();
-            }
-        }
-    };
-
-    template <typename Return, typename L, typename R>
-    struct add {
-        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
-            PyObject* result = PyNumber_Add(lhs.ptr(), rhs.ptr());
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Return>(result);
-        }
-    };
-
-    template <typename Return, typename L, typename R>
-    struct iadd {
-        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
-            PyObject* result = PyNumber_InPlaceAdd(lhs.ptr(), rhs.ptr());
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == lhs.ptr()) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<L>(result);
-            }
-        }
-    };
-
-    template <typename Return, typename L, typename R>
-    struct mul {
-        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
-            PyObject* result = PyNumber_Multiply(lhs.ptr(), rhs.ptr());
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Return>(result);
-        }
-    };
-
-    template <typename Return, typename L, typename R>
-    struct imul {
-        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
-            PyObject* result = PyNumber_InPlaceMultiply(lhs.ptr(), rhs.ptr());
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == lhs.ptr()) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<L>(result);
             }
         }
     };
@@ -239,80 +73,6 @@ namespace ops {
                 Py_DECREF(result);
             } else {
                 lhs = reinterpret_steal<L>(result);
-            }
-        }
-    };
-
-    template <typename Return, typename Base, typename Exp>
-    struct pow {
-        static Return operator()(const impl::as_object_t<Base>& base, const impl::as_object_t<Exp>& exp) {
-            PyObject* result = PyNumber_Power(
-                base.ptr(),
-                exp.ptr(),
-                Py_None
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Return>(result);
-        }
-    };
-
-    template <typename Return, typename Base, typename Exp, typename Mod>
-    struct powmod {
-        static Return operator()(
-            const impl::as_object_t<Base>& base,
-            const impl::as_object_t<Exp>& exp,
-            const impl::as_object_t<Mod>& mod
-        ) {
-            PyObject* result = PyNumber_Power(
-                base.ptr(),
-                exp.ptr(),
-                mod.ptr()
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Return>(result);
-        }
-    };
-
-    template <typename Return, typename Base, typename Exp>
-    struct ipow {
-        static void operator()(Base& base, const impl::as_object_t<Exp>& exp) {
-            PyObject* result = PyNumber_InPlacePower(
-                base.ptr(),
-                exp.ptr(),
-                Py_None
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == base.ptr()) {
-                Py_DECREF(result);
-            } else {
-                base = reinterpret_steal<Base>(result);
-            }
-        }
-    };
-
-    template <typename Return, typename Base, typename Exp, typename Mod>
-    struct ipowmod {
-        static void operator()(
-            Base& base,
-            const impl::as_object_t<Exp>& exp,
-            const impl::as_object_t<Mod>& mod
-        ) {
-            PyObject* result = PyNumber_InPlacePower(
-                base.ptr(),
-                exp.ptr(),
-                mod.ptr()
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == base.ptr()) {
-                Py_DECREF(result);
-            } else {
-                base = reinterpret_steal<Base>(result);
             }
         }
     };
@@ -466,6 +226,19 @@ void setattr(const T& obj, const V& value) {
 }
 
 
+/* Equivalent to Python `delattr(obj, name)` with a static attribute name. */
+template <StaticStr name, typename T> requires (__delattr__<T, name>::enable)
+void delattr(const T& obj) {
+    if constexpr (impl::has_call_operator<__delattr__<T, name>>) {
+        __delattr__<T, name>{}(obj);
+    } else {
+        if (PyObject_DelAttr(obj.ptr(), impl::TemplateString<name>::ptr) < 0) {
+            Exception::from_python();
+        }
+    }
+}
+
+
 /* Equivalent to Python `print(args...)`. */
 template <typename... Args>
 void print(Args&&... args) {
@@ -524,6 +297,13 @@ template <impl::is_hashable T>
 /* Equivalent to Python `len(obj)`. */
 template <typename T> requires (__len__<T>::enable)
 [[nodiscard]] size_t len(const T& obj) {
+    using Return = typename __len__<T>::type;
+    static_assert(
+        std::same_as<Return, size_t>,
+        "size() operator must return a size_t for compatibility with C++ "
+        "containers.  Check your specialization of __len__ for these types "
+        "and ensure the Return type is set to size_t."
+    );
     if constexpr (impl::has_call_operator<__len__<T>>) {
         return __len__<T>{}(obj);
     } else {
@@ -598,16 +378,7 @@ template <typename Iter, std::sentinel_for<Iter> Sentinel>
 controlled by the __iter__ control struct, whose return type dictates the
 iterator's dereference type. */
 template <typename Self> requires (__iter__<Self>::enable)
-[[nodiscard]] auto begin(const Self& self) {
-    using Return = typename __iter__<Self>::type;
-    static_assert(
-        std::derived_from<Return, Object>,
-        "iterator must dereference to a subclass of Object.  Check your "
-        "specialization of __iter__ for this types and ensure the Return type "
-        "is a subclass of py::Object."
-    );
-    return ops::begin<Return, Self>{}(self);
-}
+[[nodiscard]] auto begin(const Self& self);
 
 
 /* Const iteration operator.  Python has no distinction between mutable and
@@ -622,16 +393,7 @@ template <typename Self> requires (__iter__<Self>::enable)
 /* End iteration operator.  This terminates the iteration and is controlled by the
 __iter__ control struct. */
 template <typename Self> requires (__iter__<Self>::enable)
-[[nodiscard]] auto end(const Self& self) {
-    using Return = typename __iter__<Self>::type;
-    static_assert(
-        std::derived_from<Return, Object>,
-        "iterator must dereference to a subclass of Object.  Check your "
-        "specialization of __iter__ for this types and ensure the Return type "
-        "is a subclass of py::Object."
-    );
-    return ops::end<Return, Self>{}(self);
-}
+[[nodiscard]] auto end(const Self& self);
 
 
 /* Const end operator.  Similar to `cbegin()`, this is identical to `end()`. */
@@ -685,16 +447,7 @@ template <typename Iter, std::sentinel_for<Iter> Sentinel>
 controlled by the __reversed__ control struct, whose return type dictates the
 iterator's dereference type. */
 template <typename Self> requires (__reversed__<Self>::enable)
-[[nodiscard]] auto rbegin(const Self& self) {
-    using Return = typename __reversed__<Self>::type;
-    static_assert(
-        std::derived_from<Return, Object>,
-        "iterator must dereference to a subclass of Object.  Check your "
-        "specialization of __reversed__ for this types and ensure the Return "
-        "type is a subclass of py::Object."
-    );
-    return ops::rbegin<Return, Self>{}(self);
-}
+[[nodiscard]] auto rbegin(const Self& self);
 
 
 /* Const reverse iteration operator.  Python has no distinction between mutable
@@ -709,16 +462,7 @@ template <typename Self> requires (__reversed__<Self>::enable)
 /* Reverse end operator.  This terminates the reverse iteration and is controlled
 by the __reversed__ control struct. */
 template <typename Self> requires (__reversed__<Self>::enable)
-[[nodiscard]] auto rend(const Self& self) {
-    using Return = typename __reversed__<Self>::type;
-    static_assert(
-        std::derived_from<Return, Object>,
-        "iterator must dereference to a subclass of Object.  Check your "
-        "specialization of __reversed__ for this types and ensure the Return "
-        "type is a subclass of py::Object."
-    );
-    return ops::rend<Return, Self>{}(self);
-}
+[[nodiscard]] auto rend(const Self& self);
 
 
 /* Const reverse end operator.  Similar to `crbegin()`, this is identical to
@@ -776,8 +520,18 @@ template <typename Base, typename Exp> requires (__pow__<Base, Exp>::enable)
         return pow(base.value(), exp);
     } else if constexpr (impl::proxy_like<Exp>) {
         return pow(base, exp.value());
+    } else if constexpr (impl::has_call_operator<__pow__<Base, Exp>>) {
+        return __pow__<Base, Exp>{}(base, exp);
     } else {
-        return ops::pow<Return, Base, Exp>{}(base, exp);
+        PyObject* result = PyNumber_Power(
+            as_object(base).ptr(),
+            as_object(exp).ptr(),
+            Py_None
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Return>(result);
     }
 }
 
@@ -823,7 +577,15 @@ template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
     } else if constexpr (impl::proxy_like<Exp>) {
         return pow(base, exp.value(), mod);
     } else {
-        return ops::powmod<Return, Base, Exp, Mod>{}(base, exp, mod);
+        PyObject* result = PyNumber_Power(
+            as_object(base).ptr(),
+            as_object(exp).ptr(),
+            as_object(mod).ptr()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Return>(result);
     }
 }
 

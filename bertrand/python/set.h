@@ -757,27 +757,27 @@ struct __cast__<From, To> : Returns<To> {
 };
 
 
-namespace ops {
+template <std::derived_from<impl::SetTag> Self>
+struct __len__<Self>                                        : Returns<size_t> {
+    static size_t operator()(const Self& self) {
+        return PySet_GET_SIZE(self.ptr());
+    }
+};
 
-    template <typename Return, std::derived_from<impl::SetTag> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            return PySet_GET_SIZE(self.ptr());
+
+template <
+    std::derived_from<impl::SetTag> Self,
+    std::convertible_to<typename Self::key_type> Key
+>
+struct __contains__<Self, Key>                              : Returns<bool> {
+    static bool operator()(const Self& self, const Key& key) {
+        int result = PySet_Contains(self.ptr(), as_object(key).ptr());
+        if (result == -1) {
+            Exception::from_python();
         }
-    };
-
-    template <typename Return, std::derived_from<impl::SetTag> Self, typename Key>
-    struct contains<Return, Self, Key> {
-        static bool operator()(const Self& self, const impl::as_object_t<Key>& key) {
-            int result = PySet_Contains(self.ptr(), key.ptr());
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-        }
-    };
-
-}
+        return result;
+    }
+};
 
 
 /////////////////////////
@@ -1428,27 +1428,27 @@ struct __cast__<From, To> : Returns<To> {
 };
 
 
-namespace ops {
+template <std::derived_from<impl::FrozenSetTag> Self>
+struct __len__<Self>                                        : Returns<size_t> {
+    static size_t operator()(const Self& self) {
+        return PySet_GET_SIZE(self.ptr());
+    }
+};
 
-    template <typename Return, std::derived_from<impl::FrozenSetTag> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            return PySet_GET_SIZE(self.ptr());
+
+template <
+    std::derived_from<impl::FrozenSetTag> Self,
+    std::convertible_to<typename Self::key_type> Key
+>
+struct __contains__<Self, Key>                              : Returns<bool> {
+    static bool operator()(const Self& self, const Key& key) {
+        int result = PySet_Contains(self.ptr(), as_object(key).ptr());
+        if (result == -1) {
+            Exception::from_python();
         }
-    };
-
-    template <typename Return, std::derived_from<impl::FrozenSetTag> Self, typename Key>
-    struct contains<Return, Self, Key> {
-        static bool operator()(const Self& self, const impl::as_object_t<Key>& key) {
-            int result = PySet_Contains(self.ptr(), key.ptr());
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-        }
-    };
-
-}
+        return result;
+    }
+};
 
 
 }  // namespace py

@@ -250,20 +250,6 @@ public:
         }
     }
 
-    /* Length operator.  Equivalent to Python's `len()` function.  This can be enabled
-    via the __len__ control struct. */
-    template <typename Self> requires (__len__<Self>::enable)
-    [[nodiscard]] size_t size(this const Self& self) {
-        using Return = typename __len__<Self>::type;
-        static_assert(
-            std::same_as<Return, size_t>,
-            "size() operator must return a size_t for compatibility with C++ "
-            "containers.  Check your specialization of __len__ for these types "
-            "and ensure the Return type is set to size_t."
-        );
-        return ops::len<Return, Self>{}(self);
-    }
-
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
@@ -338,7 +324,7 @@ public:
         if constexpr (impl::proxy_like<Key>) {
             return self[key.value()];
         } else {
-            return ops::getitem<Return, Self, Key>{}(self, key);
+            return impl::Item<Self, Key>(self, key);
         }
     }
 

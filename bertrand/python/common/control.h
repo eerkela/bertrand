@@ -124,6 +124,10 @@ template <std::derived_from<pybind11::type> T>
 struct __as_object__<T>                                     : Returns<Type> {};
 
 
+// TODO: list __isinstance__ and __issubclass__ for all types here.  Many (most) will
+// be forward declarations.
+
+
 template <impl::proxy_like Self, StaticStr Name>
 struct __getattr__<Self, Name> : __getattr__<impl::unwrap_proxy<Self>, Name> {};
 // template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__init__")
@@ -2695,10 +2699,8 @@ template <std::convertible_to<Object> Key>
 struct __contains__<Object, Key>                            : Returns<bool> {};
 template <std::convertible_to<Object> Key>
 struct __contains__<Super, Key>                             : Returns<bool> {};
-template <std::derived_from<Str> Self>
-struct __contains__<Self, Object>                           : Returns<bool> {};
-template <std::derived_from<Str> Self, impl::str_like Key>
-struct __contains__<Self, Key>                              : Returns<bool> {};
+template <std::derived_from<Str> Self, std::convertible_to<Str> Key>
+struct __contains__<Self, Key>;                             // defined in str.h
 template <std::derived_from<Bytes> Self>
 struct __contains__<Self, Object>                           : Returns<bool> {};
 template <std::derived_from<Bytes> Self, impl::int_like Key>
@@ -2729,12 +2731,12 @@ template <
     std::derived_from<impl::SetTag> Self,
     std::convertible_to<typename Self::key_type> Key
 >
-struct __contains__<Self, Key>                              : Returns<bool> {};
+struct __contains__<Self, Key>;                             // defined in set.h
 template <
     std::derived_from<impl::FrozenSetTag> Self,
     std::convertible_to<typename Self::key_type> Key
 >
-struct __contains__<Self, Key>                              : Returns<bool> {};
+struct __contains__<Self, Key>;                             // defined in set.h
 template <
     std::derived_from<impl::KeyTag> Self,
     std::convertible_to<typename Self::key_type> Key
@@ -2751,7 +2753,7 @@ template <
     std::derived_from<impl::DictTag> Self,
     std::convertible_to<typename Self::key_type> Key
 >
-struct __contains__<Self, Key>                              : Returns<bool> {};
+struct __contains__<Self, Key>;                             // defined in dict.h
 template <
     std::derived_from<impl::MappingProxyTag> Self,
     std::convertible_to<typename Self::key_type> Key
@@ -2766,21 +2768,21 @@ struct __len__<Object>                                      : Returns<size_t> {}
 template <>
 struct __len__<Super>                                       : Returns<size_t> {};
 template <std::derived_from<Str> Self>
-struct __len__<Self>                                        : Returns<size_t> {};
+struct __len__<Self>;                                       // defined in str.h
 template <std::derived_from<Bytes> Self>
-struct __len__<Self>                                        : Returns<size_t> {};
+struct __len__<Self>;                                       // defined in bytes.h
 template <std::derived_from<ByteArray> Self>
-struct __len__<Self>                                        : Returns<size_t> {};
+struct __len__<Self>;                                       // defined in bytes.h
 template <std::derived_from<Range> Self>
 struct __len__<Self>                                        : Returns<size_t> {};
 template <std::derived_from<impl::TupleTag> Self>
-struct __len__<Self>                                        : Returns<size_t> {};
+struct __len__<Self>;                                       // defined in tuple.h
 template <std::derived_from<impl::ListTag> Self>
-struct __len__<Self>                                        : Returns<size_t> {};
+struct __len__<Self>;                                       // defined in list.h
 template <std::derived_from<impl::SetTag> Self>
-struct __len__<Self>                                        : Returns<size_t> {};
+struct __len__<Self>;                                       // defined in set.h
 template <std::derived_from<impl::FrozenSetTag> Self>
-struct __len__<Self>                                        : Returns<size_t> {};
+struct __len__<Self>;                                       // defined in set.h
 template <std::derived_from<impl::KeyTag> Self>
 struct __len__<Self>                                        : Returns<size_t> {};
 template <std::derived_from<impl::ValueTag> Self>
@@ -2788,7 +2790,7 @@ struct __len__<Self>                                        : Returns<size_t> {}
 template <std::derived_from<impl::ItemTag> Self>
 struct __len__<Self>                                        : Returns<size_t> {};
 template <std::derived_from<impl::DictTag> Self>
-struct __len__<Self>                                        : Returns<size_t> {};
+struct __len__<Self>;                                       // defined in dict.h
 template <std::derived_from<impl::MappingProxyTag> Self>
 struct __len__<Self>                                        : Returns<size_t> {};
 
@@ -2808,19 +2810,19 @@ struct __iter__<Self>                                       : Returns<Int> {};
 template <std::derived_from<Range> Self>
 struct __iter__<Self>                                       : Returns<Int> {};
 template <std::derived_from<impl::TupleTag> Self>
-struct __iter__<Self>                                       : Returns<typename Self::value_type> {};
+struct __iter__<Self>;                                      // defined in tuple.h
 template <std::derived_from<impl::ListTag> Self>
-struct __iter__<Self>                                       : Returns<typename Self::value_type> {};
+struct __iter__<Self>;                                      // defined in list.h
 template <std::derived_from<impl::KeyTag> Self>
-struct __iter__<Self>                                       : Returns<typename Self::key_type> {};
+struct __iter__<Self>;                                      // defined in dict.h
 template <std::derived_from<impl::ValueTag> Self>
-struct __iter__<Self>                                       : Returns<typename Self::value_type> {};
+struct __iter__<Self>;                                      // defined in dict.h
 template <std::derived_from<impl::ItemTag> Self>
-struct __iter__<Self>                                       : Returns<std::pair<typename Self::key_type, typename Self::mapped_type>> {};
+struct __iter__<Self>;                                      // defined in dict.h
 template <std::derived_from<impl::DictTag> Self>
-struct __iter__<Self>                                       : Returns<typename Self::key_type> {};
+struct __iter__<Self>;                                      // defined in dict.h
 template <std::derived_from<impl::MappingProxyTag> Self>
-struct __iter__<Self>                                       : Returns<typename Self::key_type> {};
+struct __iter__<Self>;                                      // defined in dict.h
 template <std::derived_from<impl::SetTag> Self>
 struct __iter__<Self>                                       : Returns<typename Self::key_type> {};
 template <std::derived_from<impl::FrozenSetTag> Self>
@@ -2842,9 +2844,9 @@ struct __reversed__<Self>                                   : Returns<Int> {};
 template <std::derived_from<Range> Self>
 struct __reversed__<Self>                                   : Returns<Int> {};
 template <std::derived_from<impl::TupleTag> Self>
-struct __reversed__<Self>                                   : Returns<typename Self::value_type> {};
+struct __reversed__<Self>;                                  // defined in tuple.h
 template <std::derived_from<impl::ListTag> Self>
-struct __reversed__<Self>                                   : Returns<typename Self::value_type> {};
+struct __reversed__<Self>;                                  // defined in list.h
 template <std::derived_from<impl::SetTag> Self>
 struct __reversed__<Self>                                   : Returns<typename Self::key_type> {};
 template <std::derived_from<impl::FrozenSetTag> Self>
@@ -2858,7 +2860,7 @@ struct __reversed__<Self>                                   : Returns<std::pair<
 template <std::derived_from<impl::DictTag> Self>
 struct __reversed__<Self>                                   : Returns<typename Self::key_type> {};
 template <std::derived_from<impl::MappingProxyTag> Self>
-struct __reversed__<Self>                                   : Returns<typename Self::key_type> {};
+struct __reversed__<Self>;                                  // defined in dict.h
 
 
 template <typename Self, typename... Args> requires (impl::proxy_like<Args> || ...)
@@ -3532,27 +3534,27 @@ struct __add__<L, R>                                        : Returns<Float> {};
 template <impl::complex_like L, std::derived_from<Complex> R> requires (!std::derived_from<L, Complex>)
 struct __add__<L, R>                                        : Returns<Complex> {};
 template <std::derived_from<Str> L, impl::str_like R>
-struct __add__<L, R>                                        : Returns<Str> {};
+struct __add__<L, R>;                                       // defined in str.h
 template <impl::str_like L, std::derived_from<Str> R> requires (!std::derived_from<L, Str>)
-struct __add__<L, R>                                        : Returns<Str> {};
+struct __add__<L, R>;                                       // defined in str.h
 template <std::derived_from<Bytes> L, impl::anybytes_like R>
-struct __add__<L, R>                                        : Returns<Bytes> {};
+struct __add__<L, R>;                                       // defined in bytes.h
 template <impl::anybytes_like L, std::derived_from<Bytes> R> requires (!std::derived_from<L, Bytes>)
-struct __add__<L, R>                                        : Returns<Bytes> {};
+struct __add__<L, R>;                                       // defined in bytes.h
 template <std::derived_from<ByteArray> L, impl::anybytes_like R>
-struct __add__<L, R>                                        : Returns<ByteArray> {};
+struct __add__<L, R>;                                       // defined in bytes.h
 template <impl::anybytes_like L, std::derived_from<ByteArray> R> requires (!std::derived_from<L, ByteArray>)
-struct __add__<L, R>                                        : Returns<ByteArray> {};
+struct __add__<L, R>;                                       // defined in bytes.h
 template <std::derived_from<impl::TupleTag> L, std::convertible_to<L> R>
-struct __add__<L, R>                                        : Returns<Tuple<typename L::value_type>> {};
+struct __add__<L, R>;                                       // defined in tuple.h
 template <typename L, std::derived_from<impl::TupleTag> R>
     requires (!std::convertible_to<R, L> && std::convertible_to<L, R>)
-struct __add__<L, R>                                        : Returns<Tuple<typename R::value_type>> {};
+struct __add__<L, R>;                                       // defined in tuple.h
 template <std::derived_from<impl::ListTag> L, std::convertible_to<L> R>
-struct __add__<L, R>                                        : Returns<List<typename L::value_type>> {};
+struct __add__<L, R>;                                       // defined in list.h
 template <typename L, std::derived_from<impl::ListTag> R>
     requires (!std::convertible_to<R, L> && std::convertible_to<L, R>)
-struct __add__<L, R>                                        : Returns<List<typename R::value_type>> {};
+struct __add__<L, R>;                                       // defined in list.h
 
 
 template <impl::proxy_like L, impl::not_proxy_like R>
@@ -3584,15 +3586,15 @@ struct __iadd__<L, R>                                       : Returns<Complex&> 
 template <std::derived_from<Complex> L, impl::complex_like R>
 struct __iadd__<L, R>                                       : Returns<Complex&> {};
 template <std::derived_from<Str> L, impl::str_like R>
-struct __iadd__<L, R>                                       : Returns<Str&> {};
+struct __iadd__<L, R>;                                      // defined in str.h
 template <std::derived_from<Bytes> L, impl::anybytes_like R>
-struct __iadd__<L, R>                                       : Returns<Bytes&> {};
+struct __iadd__<L, R>;                                      // defined in bytes.h
 template <std::derived_from<ByteArray> L, impl::anybytes_like R>
-struct __iadd__<L, R>                                       : Returns<ByteArray&> {};
+struct __iadd__<L, R>;                                      // defined in bytes.h
 template <std::derived_from<impl::TupleTag> L, std::convertible_to<L> R>
-struct __iadd__<L, R>                                       : Returns<Tuple<typename L::value_type>&> {};
+struct __iadd__<L, R>;                                      // defined in tuple.h
 template <std::derived_from<impl::ListTag> L, std::convertible_to<L> R>
-struct __iadd__<L, R>                                       : Returns<Tuple<typename L::value_type>&> {};
+struct __iadd__<L, R>;                                      // defined in list.h
 
 
 template <impl::proxy_like L, impl::not_proxy_like R>
@@ -3808,25 +3810,25 @@ struct __mul__<L, R>                                        : Returns<Complex> {
 template <impl::complex_like L, std::derived_from<Complex> R> requires (!std::derived_from<L, Complex>)
 struct __mul__<L, R>                                        : Returns<Complex> {};
 template <std::derived_from<Str> L, impl::int_like R>
-struct __mul__<L, R>                                        : Returns<Str> {};
+struct __mul__<L, R>;                                       // defined in str.h
 template <impl::int_like L, std::derived_from<Str> R>
-struct __mul__<L, R>                                        : Returns<Str> {};
+struct __mul__<L, R>;                                       // defined in str.h
 template <std::derived_from<Bytes> L, impl::int_like R>
-struct __mul__<L, R>                                        : Returns<Bytes> {};
+struct __mul__<L, R>;                                       // defined in bytes.h
 template <impl::int_like L, std::derived_from<Bytes> R>
-struct __mul__<L, R>                                        : Returns<Bytes> {};
+struct __mul__<L, R>;                                       // defined in bytes.h
 template <std::derived_from<ByteArray> L, impl::int_like R>
-struct __mul__<L, R>                                        : Returns<ByteArray> {};
+struct __mul__<L, R>;                                       // defined in bytes.h
 template <impl::int_like L, std::derived_from<ByteArray> R>
-struct __mul__<L, R>                                        : Returns<ByteArray> {};
+struct __mul__<L, R>;                                       // defined in bytes.h
 template <std::derived_from<impl::TupleTag> L, impl::int_like R>
-struct __mul__<L, R>                                        : Returns<Tuple<typename L::value_type>> {};
+struct __mul__<L, R>;                                       // defined in tuple.h
 template <impl::int_like L, std::derived_from<impl::TupleTag> R>
-struct __mul__<L, R>                                        : Returns<Tuple<typename R::value_type>> {};
+struct __mul__<L, R>;                                       // defined in tuple.h
 template <std::derived_from<impl::ListTag> L, impl::int_like R>
-struct __mul__<L, R>                                        : Returns<List<typename L::value_type>> {};
+struct __mul__<L, R>;                                       // defined in list.h
 template <impl::int_like L, std::derived_from<impl::ListTag> R>
-struct __mul__<L, R>                                        : Returns<List<typename R::value_type>> {};
+struct __mul__<L, R>;                                       // defined in list.h
 
 
 template <impl::proxy_like L, impl::not_proxy_like R>
@@ -3858,13 +3860,15 @@ struct __imul__<L, R>                                       : Returns<Complex&> 
 template <std::derived_from<Complex> L, impl::complex_like R>
 struct __imul__<L, R>                                       : Returns<Complex&> {};
 template <std::derived_from<Str> L, impl::int_like R>
-struct __imul__<L, R>                                       : Returns<Str&> {};
+struct __imul__<L, R>;                                      // defined in str.h
 template <std::derived_from<Bytes> L, impl::int_like R>
-struct __imul__<L, R>                                       : Returns<Bytes&> {};
+struct __imul__<L, R>;                                      // defined in bytes.h
+template <std::derived_from<ByteArray> L, impl::int_like R>
+struct __imul__<L, R>;                                      // defined in bytes.h
 template <std::derived_from<impl::TupleTag> L, impl::int_like R>
-struct __imul__<L, R>                                       : Returns<Tuple<typename L::value_type>&> {};
+struct __imul__<L, R>;                                      // defined in tuple.h
 template <std::derived_from<impl::ListTag> L, impl::int_like R>
-struct __imul__<L, R>                                       : Returns<Tuple<typename R::value_type>&> {};
+struct __imul__<L, R>;                                      // defined in list.h
 
 
 template <impl::proxy_like L, impl::not_proxy_like R>

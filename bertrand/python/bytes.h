@@ -262,50 +262,84 @@ struct __explicit_init__<Bytes, T>                          : Returns<Bytes> {
 };
 
 
-namespace ops {
+template <std::derived_from<Bytes> Self>
+struct __len__<Self>                                        : Returns<size_t> {
+    static size_t operator()(const Self& self) {
+        return PyBytes_GET_SIZE(self.ptr());
+    }
+};
 
-    template <typename Return, std::derived_from<Bytes> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            return PyBytes_GET_SIZE(self.ptr());
+
+template <std::derived_from<Bytes> L, impl::anybytes_like R>
+struct __add__<L, R>                                        : Returns<Bytes> {
+    static auto operator()(const L& lhs, const R& rhs) {
+        Bytes result = lhs.copy();
+        result += rhs;
+        return result;
+    }
+};
+
+
+template <impl::anybytes_like L, std::derived_from<Bytes> R>
+    requires (!std::derived_from<L, Bytes>)
+struct __add__<L, R>                                        : Returns<Bytes> {
+    static auto operator()(const L& lhs, const R& rhs) {
+        Bytes result = rhs.copy();
+        result += lhs;
+        return result;
+    }
+};
+
+
+template <std::derived_from<Bytes> L, impl::anybytes_like R>
+struct __iadd__<L, R>                                       : Returns<Bytes&> {
+    static void operator()(L& lhs, const R& rhs) {
+        PyObject* result = lhs.ptr();
+        PyBytes_Concat(&result, as_object(rhs).ptr());
+        if (result == nullptr) {
+            Exception::from_python();
         }
-    };
+    }
+};
 
-    template <typename Return, std::derived_from<Bytes> L, typename R>
-    struct iadd<Return, L, R> {
-        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
-            PyObject* result = lhs.ptr();
-            PyBytes_Concat(&result, Bytes(rhs).ptr());
-            if (result == nullptr) {
-                Exception::from_python();
-            }
+
+template <std::derived_from<Bytes> L, impl::int_like R>
+struct __mul__<L, R>                                        : Returns<Bytes> {
+    static auto operator()(const L& lhs, const R& rhs) {
+        PyObject* result = PySequence_Repeat(lhs.ptr(), rhs);
+        if (result == nullptr) {
+            Exception::from_python();
         }
-    };
+        return reinterpret_steal<Bytes>(result);
+    }
+};
 
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, Bytes> || std::derived_from<R, Bytes>)
-    struct add<Return, L, R> {
-        static Return operator()(const auto& lhs, const auto& rhs) {
-            if constexpr (std::derived_from<L, Bytes>) {
-                Return result = lhs.copy();
-                iadd<Return, L, R>{}(result, rhs);
-                return result;
-            } else {
-                Return result = rhs.copy();
-                iadd<Return, L, R>{}(result, lhs);
-                return result;
-            }
+
+template <impl::int_like L, std::derived_from<Bytes> R>
+struct __mul__<L, R>                                        : Returns<Bytes> {
+    static auto operator()(const L& lhs, const R& rhs) {
+        PyObject* result = PySequence_Repeat(rhs.ptr(), lhs);
+        if (result == nullptr) {
+            Exception::from_python();
         }
-    };
+        return reinterpret_steal<Bytes>(result);
+    }
+};
 
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, Bytes> || std::derived_from<R, Bytes>)
-    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
 
-    template <typename Return, std::derived_from<Bytes> L, typename R>
-    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
-
-}
+template <std::derived_from<Bytes> L, impl::int_like R>
+struct __imul__<L, R>                                       : Returns<Bytes&> {
+    static void operator()(L& lhs, Py_ssize_t rhs) {
+        PyObject* result = PySequence_InPlaceRepeat(lhs.ptr(), rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == lhs.ptr()) {
+            Py_DECREF(result);
+        } else {
+            lhs = reinterpret_steal<L>(result);
+        }
+    }
+};
 
 
 /////////////////////////
@@ -554,42 +588,84 @@ struct __explicit_init__<ByteArray, T>                       : Returns<ByteArray
 };
 
 
-namespace ops {
+template <std::derived_from<ByteArray> Self>
+struct __len__<Self>                                        : Returns<size_t> {
+    static size_t operator()(const Self& self) {
+        return PyByteArray_GET_SIZE(self.ptr());
+    }
+};
 
-    template <typename Return, std::derived_from<ByteArray> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            return PyByteArray_GET_SIZE(self.ptr());
+
+template <std::derived_from<ByteArray> L, impl::anybytes_like R>
+struct __add__<L, R>                                        : Returns<ByteArray> {
+    static auto operator()(const ByteArray& lhs, const ByteArray& rhs) {
+        PyObject* result = PyByteArray_Concat(lhs.ptr(), rhs.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
         }
-    };
+        return reinterpret_steal<ByteArray>(result);
+    }
+};
 
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, ByteArray> || std::derived_from<R, ByteArray>)
-    struct add<Return, L, R> {
-        static Return operator()(const ByteArray& lhs, const ByteArray& rhs) {
-            PyObject* result = PyByteArray_Concat(lhs.ptr(), rhs.ptr());
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Return>(result);
+
+template <impl::anybytes_like L, std::derived_from<ByteArray> R>
+    requires (!std::derived_from<L, ByteArray>)
+struct __add__<L, R>                                        : Returns<ByteArray> {
+    static auto operator()(const ByteArray& lhs, const ByteArray& rhs) {
+        PyObject* result = PyByteArray_Concat(lhs.ptr(), rhs.ptr());
+        if (result == nullptr) {
+            Exception::from_python();
         }
-    };
+        return reinterpret_steal<ByteArray>(result);
+    }
+};
 
-    template <typename Return, std::derived_from<ByteArray> L, typename R>
-    struct iadd<Return, L, R> {
-        static void operator()(L& lhs, const auto& rhs) {
-            lhs = add<Return, L, R>{}(lhs, rhs);
+
+template <std::derived_from<ByteArray> L, impl::anybytes_like R>
+struct __iadd__<L, R>                                       : Returns<ByteArray&> {
+    static void operator()(L& lhs, const R& rhs) {
+        lhs = lhs + rhs;
+    }
+};
+
+
+template <std::derived_from<ByteArray> L, impl::int_like R>
+struct __mul__<L, R>                                        : Returns<ByteArray> {
+    static auto operator()(const L& lhs, const R& rhs) {
+        PyObject* result = PySequence_Repeat(lhs.ptr(), rhs);
+        if (result == nullptr) {
+            Exception::from_python();
         }
-    };
+        return reinterpret_steal<ByteArray>(result);
+    }
+};
 
-    template <typename Return, typename L, typename R>
-        requires (std::derived_from<L, ByteArray> || std::derived_from<R, ByteArray>)
-    struct mul<Return, L, R> : sequence::mul<Return, L, R> {};
 
-    template <typename Return, std::derived_from<ByteArray> L, typename R>
-    struct imul<Return, L, R> : sequence::imul<Return, L, R> {};
+template <impl::int_like L, std::derived_from<ByteArray> R>
+struct __mul__<L, R>                                        : Returns<ByteArray> {
+    static auto operator()(const L& lhs, const R& rhs) {
+        PyObject* result = PySequence_Repeat(rhs.ptr(), lhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<ByteArray>(result);
+    }
+};
 
-}
+
+template <std::derived_from<ByteArray> L, impl::int_like R>
+struct __imul__<L, R>                                       : Returns<ByteArray&> {
+    static void operator()(L& lhs, const R& rhs) {
+        PyObject* result = PySequence_InPlaceRepeat(lhs.ptr(), rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == lhs.ptr()) {
+            Py_DECREF(result);
+        } else {
+            lhs = reinterpret_steal<L>(result);
+        }
+    }
+};
 
 
 }  // namespace py

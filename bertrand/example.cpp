@@ -94,12 +94,12 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
-    py::print(py::List{1, 2, 3});
-    py::print(py::Float(2.5));
-
-    for (auto&& x : py::List{1, 2, 3}) {
+    for (auto&& x : py::Tuple{1, 2, 3}) {
         py::print(x);
     }
+
+    // py::print(py::List{1, 2, 3, 4});
+    // py::print(py::Float(2.5));
 
     // py::print(example::add(4, 5));
 

@@ -202,28 +202,21 @@ struct __explicit_init__<KeyView<Map>, Map>                 : Returns<KeyView<Ma
 };
 
 
-namespace ops {
-
-    template <typename Return, std::derived_from<impl::KeyTag> Self>
-    struct begin<Return, Self> {
-        static auto operator()(const Self& self) {
-            PyObject* dict = reinterpret_cast<PyObject*>(
-                reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
-            );
-            return impl::Iterator<impl::KeyIter<Return>>(
-                reinterpret_borrow<typename Self::mapping_type>(dict)
-            );
-        };
-    };
-
-    template <typename Return, std::derived_from<impl::KeyTag> Self>
-    struct end<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::Iterator<impl::KeyIter<Return>>();
-        };
-    };
-
-}
+template <std::derived_from<impl::KeyTag> Self>
+struct __iter__<Self>                                       : Returns<typename Self::key_type> {
+    using Return = typename Self::key_type;
+    static auto begin(const Self& self) {
+        PyObject* dict = reinterpret_cast<PyObject*>(
+            reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
+        );
+        return impl::Iterator<impl::KeyIter<Return>>(
+            reinterpret_borrow<typename Self::mapping_type>(dict)
+        );
+    }
+    static auto end(const Self& self) {
+        return impl::Iterator<impl::KeyIter<Return>>();
+    }
+};
 
 
 //////////////////////
@@ -334,28 +327,21 @@ struct __explicit_init__<ValueView<Map>, Map>               : Returns<ValueView<
 };
 
 
-namespace ops {
-
-    template <typename Return, std::derived_from<impl::ValueTag> Self>
-    struct begin<Return, Self> {
-        static auto operator()(const Self& self) {
-            PyObject* dict = reinterpret_cast<PyObject*>(
-                reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
-            );
-            return impl::Iterator<impl::ValueIter<Return>>(
-                reinterpret_borrow<typename Self::mapping_type>(dict)
-            );
-        };
-    };
-
-    template <typename Return, std::derived_from<impl::ValueTag> Self>
-    struct end<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::Iterator<impl::ValueIter<Return>>();
-        };
-    };
-
-}
+template <std::derived_from<impl::ValueTag> Self>
+struct __iter__<Self>                                       : Returns<typename Self::mapped_type> {
+    using Return = typename Self::mapped_type;
+    static auto begin(const Self& self) {
+        PyObject* dict = reinterpret_cast<PyObject*>(
+            reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
+        );
+        return impl::Iterator<impl::ValueIter<Return>>(
+            reinterpret_borrow<typename Self::mapping_type>(dict)
+        );
+    }
+    static auto end(const Self& self) {
+        return impl::Iterator<impl::ValueIter<Return>>();
+    }
+};
 
 
 /////////////////////
@@ -467,37 +453,30 @@ struct __explicit_init__<ItemView<Map>, Map>                : Returns<ItemView<M
 };
 
 
-namespace ops {
+// TODO: Item iterator can use an internal tuple object that it can reuse to
+// store the key and value, rather than creating a new tuple each time.  This
+// should have no extra overhead over std::pair, and would be more consistent with
+// the Python implementation.  It requires a py::Struct class though.
 
-    template <typename Return, std::derived_from<impl::ItemTag> Self>
-    struct begin<Return, Self> {
-        static auto operator()(const Self& self) {
-            PyObject* dict = reinterpret_cast<PyObject*>(
-                reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
-            );
-            return impl::Iterator<impl::ItemIter<Return>>(
-                reinterpret_borrow<typename Self::mapping_type>(dict)
-            );
-        };
-    };
-
-    template <typename Return, std::derived_from<impl::ItemTag> Self>
-    struct end<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::Iterator<impl::ItemIter<Return>>();
-        };
-    };
+// -> This is the exact use case for py::Struct, but py::Struct requires elements
+// from the function refactor (namely py::arg<name, type>)
 
 
-    // TODO: Item iterator can use an internal tuple object that it can reuse to
-    // store the key and value, rather than creating a new tuple each time.  This
-    // should have no extra overhead over std::pair, and would be more consistent with
-    // the Python implementation.  It requires a py::Struct class though.
-
-    // -> This is the exact use case for py::Struct, but py::Struct requires elements
-    // from the function refactor (namely py::arg<name, type>)
-
-}
+template <std::derived_from<impl::ItemTag> Self>
+struct __iter__<Self>                                       : Returns<std::pair<typename Self::key_type, typename Self::mapped_type>> {
+    using Return = std::pair<typename Self::key_type, typename Self::mapped_type>;
+    static auto begin(const Self& self) {
+        PyObject* dict = reinterpret_cast<PyObject*>(
+            reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
+        );
+        return impl::Iterator<impl::ItemIter<Return>>(
+            reinterpret_borrow<typename Self::mapping_type>(dict)
+        );
+    }
+    static auto end(const Self& self) {
+        return impl::Iterator<impl::ItemIter<Return>>();
+    }
+};
 
 
 ////////////////////
@@ -1118,41 +1097,39 @@ struct __cast__<From, To> {
 };
 
 
-namespace ops {
-
-    template <typename Return, std::derived_from<impl::DictTag> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            return static_cast<size_t>(PyDict_Size(self.ptr()));
+template <
+    std::derived_from<impl::DictTag> Self,
+    std::convertible_to<typename Self::key_type> Key
+>
+struct __contains__<Self, Key>                              : Returns<bool> {
+    static bool operator()(const Self& self, const Key& key) {
+        int result = PyDict_Contains(self.ptr(), as_object(key).ptr());
+        if (result == -1) {
+            Exception::from_python();
         }
-    };
+        return result;
+    }
+};
 
-    template <typename Return, std::derived_from<impl::DictTag> Self>
-    struct begin<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::Iterator<impl::KeyIter<Return>>(self);
-        };
-    };
 
-    template <typename Return, std::derived_from<impl::DictTag> Self>
-    struct end<Return, Self> {
-        static auto operator()(const Self& self) {
-            return impl::Iterator<impl::KeyIter<Return>>();
-        };
-    };
+template <std::derived_from<impl::DictTag> Self>
+struct __len__<Self>                                        : Returns<size_t> {
+    static size_t operator()(const Self& self) {
+        return PyDict_Size(self.ptr());
+    }
+};
 
-    template <typename Return, std::derived_from<impl::DictTag> Self, typename Key>
-    struct contains<Return, Self, Key> {
-        static bool operator()(const Self& self, const impl::as_object_t<Key>& key) {
-            int result = PyDict_Contains(self.ptr(), key.ptr());
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-        }
-    };
 
-}
+template <std::derived_from<impl::DictTag> Self>
+struct __iter__<Self>                                       : Returns<typename Self::key_type> {
+    using Return = Self::key_type;
+    static auto begin(const Self& self) {
+        return impl::Iterator<impl::KeyIter<Return>>(self);
+    }
+    static auto end(const Self& self) {
+        return impl::Iterator<impl::KeyIter<Return>>();
+    }
+};
 
 
 ////////////////////////////
@@ -1307,82 +1284,38 @@ struct __explicit_init__<MappingProxy<Map>, Map>            : Returns<MappingPro
 };
 
 
-namespace ops {
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __iter__<Self>                                       : Returns<typename Self::key_type> {
+    static auto begin(const Self& self) {
+        PyObject* dict = reinterpret_cast<PyObject*>(
+            reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
+        );
+        return py::begin(reinterpret_borrow<typename Self::mapping_type>(dict));
+    }
+    static auto end(const Self& self) {
+        PyObject* dict = reinterpret_cast<PyObject*>(
+            reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
+        );
+        return py::end(reinterpret_borrow<typename Self::mapping_type>(dict));
+    }
+};
 
-    template <typename Return, std::derived_from<impl::MappingProxyTag> Self>
-    struct len<Return, Self> {
-        static size_t operator()(const Self& self) {
-            PyObject* dict = reinterpret_cast<PyObject*>(
-                reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
-            );
-            return len<Return, typename Self::mapping_type>{}(
-                reinterpret_borrow<typename Self::mapping_type>(dict)
-            );
-        }
-    };
 
-    template <typename Return, std::derived_from<impl::MappingProxyTag> Self>
-    struct begin<Return, Self> {
-        static auto operator()(const Self& self) {
-            PyObject* dict = reinterpret_cast<PyObject*>(
-                reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
-            );
-            return begin<Return, typename Self::mapping_type>{}(
-                reinterpret_borrow<typename Self::mapping_type>(dict)
-            );
-        };
-    };
-
-    template <typename Return, std::derived_from<impl::MappingProxyTag> Self>
-    struct end<Return, Self> {
-        static auto operator()(const Self& self) {
-            PyObject* dict = reinterpret_cast<PyObject*>(
-                reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
-            );
-            return end<Return, typename Self::mapping_type>{}(
-                reinterpret_borrow<typename Self::mapping_type>(dict)
-            );
-        };
-    };
-
-    template <typename Return, std::derived_from<impl::MappingProxyTag> Self>
-    struct rbegin<Return, Self> {
-        static auto operator()(const Self& self) {
-            PyObject* dict = reinterpret_cast<PyObject*>(
-                reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
-            );
-            return rbegin<Return, typename Self::mapping_type>{}(
-                reinterpret_borrow<typename Self::mapping_type>(dict)
-            );
-        };
-    };
-
-    template <typename Return, std::derived_from<impl::MappingProxyTag> Self>
-    struct rend<Return, Self> {
-        static auto operator()(const Self& self) {
-            PyObject* dict = reinterpret_cast<PyObject*>(
-                reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
-            );
-            return rend<Return, typename Self::mapping_type>{}(
-                reinterpret_borrow<typename Self::mapping_type>(dict)
-            );
-        };
-    };
-
-    template <typename Return, std::derived_from<impl::MappingProxyTag> Self, typename Key>
-    struct contains<Return, Self, Key> {
-        static bool operator()(const Self& self, const Key& key) {
-            PyObject* dict = reinterpret_cast<PyObject*>(
-                reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
-            );
-            return contains<Return, typename Self::mapping_type, Key>{}(
-                reinterpret_borrow<typename Self::mapping_type>(dict),
-                key
-            );
-        }
-    };
-
-}
+template <std::derived_from<impl::MappingProxyTag> Self>
+struct __reversed__<Self>                                   : Returns<typename Self::key_type> {
+    static auto rbegin(const Self& self) {
+        PyObject* dict = reinterpret_cast<PyObject*>(
+            reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
+        );
+        return py::rbegin(reinterpret_borrow<typename Self::mapping_type>(dict));
+    }
+    static auto rend(const Self& self) {
+        PyObject* dict = reinterpret_cast<PyObject*>(
+            reinterpret_cast<impl::mappingproxyobject*>(self.ptr())->mapping
+        );
+        return py::rend(reinterpret_borrow<typename Self::mapping_type>(dict));
+    }
+};
 
 
 template <typename Map>

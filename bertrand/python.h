@@ -1212,7 +1212,7 @@ auto Regex::Match::group(const py::args& args) const
 {
     py::Tuple tuple = args;
     std::vector<std::optional<std::string>> result;
-    result.reserve(tuple.size());
+    result.reserve(len(tuple));
 
     for (const auto& arg : tuple) {
         if (py::isinstance<py::Str>(arg)) {

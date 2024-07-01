@@ -639,49 +639,88 @@ we exchange their module type for our own. */
 ////////////////////////////////////
 
 
-template <typename Return, typename Self, typename Key>
-auto ops::getitem<Return, Self, Key>::operator()(const Self& self, auto&& key) {
-    return impl::Item<Self, Key>(self, std::forward<decltype(key)>(key));
-}
-
-
 template <typename Self> requires (__getitem__<Self, Slice>::enable)
 auto Object::operator[](
     this const Self& self,
     const std::initializer_list<impl::SliceInitializer>& slice
 ) {
-    using Return = typename __getitem__<Self, Slice>::type;
-    return ops::getitem<Return, Self, Slice>{}(self, Slice(slice));
+    return impl::Item<Self, Slice>(self, Slice(slice));
 }
 
 
-template <typename Return, typename Self>
-auto ops::begin<Return, Self>::operator()(const Self& self) {
-    PyObject* iter = PyObject_GetIter(self.ptr());
-    if (iter == nullptr) {
-        Exception::from_python();
-    }
-    return impl::Iterator<impl::GenericIter<Return>>(reinterpret_steal<Object>(iter));
-}
-
-
-template <typename Return, typename Self>
-auto ops::end<Return, Self>::operator()(const Self& self) {
-    return impl::Iterator<impl::GenericIter<Return>>();
-}
-
-
-template <typename Return, typename Self>
-auto ops::rbegin<Return, Self>::operator()(const Self& self) {
-    return impl::Iterator<impl::GenericIter<Return>>(
-        impl::call_method<"__reversed__">(self)
+template <typename Self> requires (__iter__<Self>::enable)
+[[nodiscard]] auto begin(const Self& self) {
+    using Return = typename __iter__<Self>::type;
+    static_assert(
+        std::derived_from<Return, Object>,
+        "iterator must dereference to a subclass of Object.  Check your "
+        "specialization of __iter__ for this types and ensure the Return type "
+        "is a subclass of py::Object."
     );
+    if constexpr (impl::has_static_begin<__iter__<Self>, Self>) {
+        return __iter__<Self>{}.begin(self);
+    } else {
+        PyObject* iter = PyObject_GetIter(self.ptr());
+        if (iter == nullptr) {
+            Exception::from_python();
+        }
+        return impl::Iterator<impl::GenericIter<Return>>(
+            reinterpret_steal<Object>(iter)
+        );
+    }
 }
 
 
-template <typename Return, typename Self>
-auto ops::rend<Return, Self>::operator()(const Self& self) {
-    return impl::Iterator<impl::GenericIter<Return>>();
+template <typename Self> requires (__iter__<Self>::enable)
+[[nodiscard]] auto end(const Self& self) {
+    using Return = typename __iter__<Self>::type;
+    static_assert(
+        std::derived_from<Return, Object>,
+        "iterator must dereference to a subclass of Object.  Check your "
+        "specialization of __iter__ for this types and ensure the Return type "
+        "is a subclass of py::Object."
+    );
+    if constexpr (impl::has_static_end<__iter__<Self>, Self>) {
+        return __iter__<Self>{}.end(self);
+    } else {
+        return impl::Iterator<impl::GenericIter<Return>>();
+    }
+}
+
+
+template <typename Self> requires (__reversed__<Self>::enable)
+[[nodiscard]] auto rbegin(const Self& self) {
+    using Return = typename __reversed__<Self>::type;
+    static_assert(
+        std::derived_from<Return, Object>,
+        "iterator must dereference to a subclass of Object.  Check your "
+        "specialization of __reversed__ for this types and ensure the Return "
+        "type is a subclass of py::Object."
+    );
+    if constexpr (impl::has_static_rbegin<__reversed__<Self>, Self>) {
+        return __reversed__<Self>{}.rbegin(self);
+    } else {
+        return impl::Iterator<impl::GenericIter<Return>>(
+            impl::call_method<"__reversed__">(self)
+        );
+    }
+}
+
+
+template <typename Self> requires (__reversed__<Self>::enable)
+[[nodiscard]] auto rend(const Self& self) {
+    using Return = typename __reversed__<Self>::type;
+    static_assert(
+        std::derived_from<Return, Object>,
+        "iterator must dereference to a subclass of Object.  Check your "
+        "specialization of __reversed__ for this types and ensure the Return "
+        "type is a subclass of py::Object."
+    );
+    if constexpr (impl::has_static_rend<__reversed__<Self>, Self>) {
+        return __reversed__<Self>{}.rend(self);
+    } else {
+        return impl::Iterator<impl::GenericIter<Return>>();
+    }
 }
 
 

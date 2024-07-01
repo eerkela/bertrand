@@ -761,6 +761,26 @@ namespace impl {
         { rend(std::forward<T>(t)) } -> std::input_or_output_iterator;
     };
 
+    template <typename T, typename U>
+    concept has_static_begin = requires(T&& t, U&& u) {
+        { std::forward<T>(t).begin(std::forward<U>(u)) } -> std::input_or_output_iterator;
+    };
+
+    template <typename T, typename U>
+    concept has_static_end = requires(T&& t, U&& u) {
+        { std::forward<T>(t).end(std::forward<U>(u)) } -> std::input_or_output_iterator;
+    };
+
+    template <typename T, typename U>
+    concept has_static_rbegin = requires(T&& t, U&& u) {
+        { std::forward<T>(t).rbegin(std::forward<U>(u)) } -> std::input_or_output_iterator;
+    };
+
+    template <typename T, typename U>
+    concept has_static_rend = requires(T&& t, U&& u) {
+        { std::forward<T>(t).rend(std::forward<U>(u)) } -> std::input_or_output_iterator;
+    };
+
     template <typename T>
     concept iterator_like = requires(T&& it, T&& end) {
         { *std::forward<T>(it) } -> std::convertible_to<typename std::decay_t<T>::value_type>;
