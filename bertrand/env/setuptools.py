@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 import os
 import re
 import shutil
@@ -175,6 +176,124 @@ class ConanFile:
         env.packages.extend(p for p in self.packages if p not in env.packages)
 
 
+class Modules:
+    """Handles module dependencies and AST parsing for C++20 modules."""
+
+    def __init__(self, compile_commands: Path) -> None:
+        self.commands = compile_commands.parent / "p1689_commands.json"
+
+        # rewrite compile_commands.json file to remove any lazily-evaluated cmake
+        # arguments that are not supported by clang-scan-deps
+        with self.commands.open("w") as outfile:
+            with compile_commands.open("r") as infile:
+                filtered = [
+                    {
+                        "directory": cmd["directory"],
+                        "command": " ".join(
+                            c for c in cmd["command"].split() if not c.startswith("@")
+                        ),
+                        "file": cmd["file"],
+                        "output": cmd["output"],
+                    }
+                    for cmd in json.load(infile)
+                ]
+            json.dump(filtered, outfile, indent=4)
+
+        # invoke clang-scan-deps to generate the p1689 dependency graph
+        self.p1689 = json.loads(subprocess.run(
+            [
+                str(env / "bin" / "clang-scan-deps"),
+                "-format=p1689",
+                "-compilation-database",
+                str(self.commands),
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout.decode("utf-8").strip())
+
+        # extract exported C++ modules and generate equivalent Python bindings
+        self.cpp: dict[str, Path] = {}
+        self.python: dict[str, Path] = {}
+        for module in self.p1689["rules"]:
+            for source in module.get("provides", []):
+                name = source["logical-name"]
+                path = Path(source["source-path"])
+                self.cpp[name] = path
+                self.python[name] = self.emit_python(path)
+
+        # fill in unresolved C++20 imports with Python modules
+        for module in self.p1689["rules"]:
+            for source in module.get("requires", []):
+                name = source["logical-name"]
+                if name not in self.cpp:
+                    try:
+                        py_module = importlib.import_module(name)
+                    except ImportError:
+                        # TODO: print a better error message
+                        print("Unresolved import:", name)
+                        sys.exit()
+                    self.cpp[name] = path
+
+    def emit_python(self, path: Path) -> Path:
+        """Emit a C++ to Python binding file so that the module can a C++20 module
+        can be imported from Python.
+
+        Parameters
+        ----------
+        path : Path
+            The path to the C++20 module file to generate a Python binding for.
+
+        Returns
+        -------
+        Path
+            The path to the generated C++ binding file, which can be reused to
+            resolve future imports.
+        """
+        # TODO: this is where AST parsing happens.  Since the AST parser is based on
+        # libTooling, this will be a separate binary that emits the correct binding
+        # file.  This function just invokes the tool with the input file and the path
+        # to the output file, and then the libTooling tool does the rest.
+        return Path("path/to/some/python/module.cpp")
+
+    def emit_cpp(self, module_name: str) -> Path:
+        """Emit a Python to C++ binding file for an unresolved C++ import.
+
+        Parameters
+        ----------
+        module_name : str
+            The name of the unresolved C++20 module to generate a binding for.
+
+        Returns
+        -------
+        Path
+            The path to the generated Python binding file, which can be reused to
+            resolve future imports.
+        """
+        # TODO: This would involve introspecting a Python module to emit an
+        # equivalent C++20 module.
+        # TODO: this is maybe the most reasonable place to start, since I can script
+        # everything in Python and then just add a source file to the project.
+        return Path("path/to/some/cpp/module.cpp")
+
+    def update_cmakelists(self, original: CMakeLists) -> None:
+        """Emit a new CMakeLists.txt file that includes the module dependencies.
+
+        Parameters
+        ----------
+        original : CMakeLists
+            The original CMakeLists.txt file to update with the module dependencies.
+        """
+        print()
+        print("C++ modules:")
+        print("\n".join(f"{k}: {v}" for k, v in self.cpp.items()))
+        print()
+        print("python modules:")
+        print("\n".join(f"{k}: {v}" for k, v in self.python.items()))
+        print()
+        # breakpoint()
+        # raise NotImplementedError("CMakeLists.txt generation is not yet supported")
+
+
 
 class CMakeLists:
     """A wrapper around a temporary CMakeLists.txt file generated by the build system
@@ -182,96 +301,6 @@ class CMakeLists:
     """
 
     MIN_VERSION = "3.28"  # CMake 3.28+ is necessary for C++20 module support
-
-    class Modules:
-        """Manages module dependencies and AST parsing for C++20 modules."""
-
-        def __init__(self, compile_commands: Path) -> None:
-            self.commands = compile_commands.parent / "p1689_commands.json"
-
-            # rewrite compile_commands.json file to remove any lazily-evaluated cmake
-            # arguments that are not supported by clang-scan-deps
-            with self.commands.open("w") as outfile:
-                with compile_commands.open("r") as infile:
-                    filtered = [
-                        {
-                            "directory": cmd["directory"],
-                            "command": " ".join(
-                                c for c in cmd["command"].split() if not c.startswith("@")
-                            ),
-                            "file": cmd["file"],
-                            "output": cmd["output"],
-                        }
-                        for cmd in json.load(infile)
-                    ]
-                json.dump(filtered, outfile, indent=4)
-
-            # invoke clang-scan-deps to generate the p1689 dependency graph
-            self.p1689 = json.loads(subprocess.run(
-                [
-                    str(env / "bin" / "clang-scan-deps"),
-                    "-format=p1689",
-                    "-compilation-database",
-                    str(self.commands),
-                ],
-                check=True,
-                capture_output=True,
-            ).stdout.decode("utf-8").strip())
-
-            # extract exported C++20 modules and generate equivalent Python bindings
-            self.cpp_modules: dict[str, Path] = {}
-            self.python_modules: dict[str, Path] = {}
-            for module in self.p1689["rules"]:
-                for source in module.get("provides", []):
-                    name = source["logical-name"]
-                    path = Path(source["source-path"])
-                    self.cpp_modules[name] = path
-                    self.python_modules[name] = self.emit_python(path)
-
-            # fill in unresolved C++20 modules with Python bindings
-            for module in self.p1689["rules"]:
-                for source in module.get("requires", []):
-                    name = source["logical-name"]
-                    if name not in self.cpp_modules:
-                        self.cpp_modules[name] = path
-
-        def emit_python(self, path: Path) -> Path:
-            """Emit a C++ to Python binding file so that the module can a C++20 module
-            can be imported from Python.
-
-            Parameters
-            ----------
-            path : Path
-                The path to the C++20 module file to generate a Python binding for.
-
-            Returns
-            -------
-            Path
-                The path to the generated C++ binding file, which can be reused to
-                resolve future imports.
-            """
-            breakpoint()
-            raise NotImplementedError("C++ -> Python bindings are not yet supported")
-
-        def emit_cpp(self, module_name: str) -> Path:
-            """Emit a Python to C++ binding file for an unresolved C++ import.
-
-            Parameters
-            ----------
-            module_name : str
-                The name of the unresolved C++20 module to generate a binding for.
-
-            Returns
-            -------
-            Path
-                The path to the generated Python binding file, which can be reused to
-                resolve future imports.
-            """
-            breakpoint()
-            raise NotImplementedError("Python -> C++ bindings are not yet supported")
-
-
-
 
     def __init__(
         self,
@@ -468,12 +497,26 @@ class CMakeLists:
             stdout=subprocess.PIPE,  # NOTE: silences noisy CMake/Conan output
         )
 
-        # TODO: it's possible to build a dependency graph by inserting --graphviz=filepath
-        # into this step.  This could be useful for debugging or for visualizing the
-        # build process.  It could generate some wicked art, too.
-
         # build module database using clang-scan-deps
-        # modules = CMakeLists.Modules(self.path.parent / "compile_commands.json")
+        modules = Modules(self.path.parent / "compile_commands.json")
+        modules.update_cmakelists(self)
+
+        # TODO: it's possible to build a dependency graph by inserting
+        # --graphviz=filepath into this second configure step.  This could be useful
+        # for debugging or for visualizing the build process.  It could generate some
+        # wicked art, too.
+
+        # reconfigure to use the updated module database
+        subprocess.check_call(
+            [
+                "cmake",
+                "-G",
+                "Ninja",
+                str(self.path.parent),
+            ],
+            cwd=self.path.parent,
+            stdout=subprocess.PIPE,
+        )
 
         # build the extensions using CMake
         try:
