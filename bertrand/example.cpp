@@ -94,9 +94,16 @@ void run() {
     using Clock = std::chrono::high_resolution_clock;
     std::chrono::time_point<Clock> start = Clock::now();
 
-    for (auto&& x : py::Tuple{1, 2, 3}) {
-        py::print(x);
-    }
+    // for (auto&& x : py::Tuple{1, 2, 3}) {
+    //     py::print(x);
+    // }
+
+    py::List list = {1, 2, 3, 4};
+    py::print(list[2]);
+    py::Int x = list[1];
+    list[0] = 10;
+    py::print(list);
+
 
     // py::print(py::List{1, 2, 3, 4});
     // py::print(py::Float(2.5));
@@ -212,8 +219,8 @@ int main() {
 
 
 BERTRAND_MODULE(example, m) {
-    m.attr<"__doc__">() = "bertrand example plugin";
-    m.attr<"func">() = func;
+    py::setattr<"__doc__">(m, "bertrand example plugin");
+    py::setattr<"func">(m, func);
     m.def("run", "example function to demonstrate bertrand", &run);
 }
 

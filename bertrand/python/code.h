@@ -393,20 +393,20 @@ public:
     /* Get a tuple containing the names of the local variables in the function,
     starting with parameter names. */
     [[nodiscard]] auto varnames() const {
-        return attr<"co_varnames">().value();
+        return getattr<"co_varnames">(*this);
     }
 
     /* Get a tuple containing the names of local variables that are referenced by
     nested functions within this function (i.e. those that are stored in a
     PyCell). */
     [[nodiscard]] auto cellvars() const {
-        return attr<"co_cellvars">().value();
+        return getattr<"co_cellvars">(*this);
     }
 
     /* Get a tuple containing the names of free variables in the function (i.e.
     those that are not stored in a PyCell). */
     [[nodiscard]] auto freevars() const {
-        return attr<"co_freevars">().value();
+        return getattr<"co_freevars">(*this);
     }
 
     /* Get the required stack space for the code object. */
@@ -417,7 +417,7 @@ public:
     /* Get the bytecode buffer representing the sequence of instructions in the
     function. */
     [[nodiscard]] Bytes bytecode() const {
-        return attr<"co_code">().value();
+        return getattr<"co_code">(*this);
     }
 
     /* Get a tuple containing the literals used by the bytecode in the function. */
@@ -825,7 +825,7 @@ struct __init__<Frame, File, Func, Line> : Returns<Frame> {
 
 //     /* Get the underlying function. */
 //     [[nodiscard]] Function function() const {
-//         return reinterpret_steal<Function>(attr<"__func__">()->release());
+//         return reinterpret_steal<Function>(getattr<"__func__">(*this).release());
 //     }
 
 // };
@@ -904,7 +904,7 @@ struct __init__<Frame, File, Func, Line> : Returns<Frame> {
 
 //     /* Get the underlying function. */
 //     [[nodiscard]] Function function() const {
-//         return reinterpret_steal<Function>(attr<"__func__">()->release());
+//         return reinterpret_steal<Function>(getattr<"__func__">(*this).release());
 //     }
 
 // };
@@ -1006,17 +1006,17 @@ struct __init__<Frame, File, Func, Line> : Returns<Frame> {
 
 //     /* Get the function being used as a getter. */
 //     [[nodiscard]] Function fget() const {
-//         return reinterpret_steal<Function>(attr<"fget">()->release());
+//         return reinterpret_steal<Function>(getattr<"fget">(*this).release());
 //     }
 
 //     /* Get the function being used as a setter. */
 //     [[nodiscard]] Function fset() const {
-//         return reinterpret_steal<Function>(attr<"fset">()->release());
+//         return reinterpret_steal<Function>(getattr<"fset">(*this).release());
 //     }
 
 //     /* Get the function being used as a deleter. */
 //     [[nodiscard]] Function fdel() const {
-//         return reinterpret_steal<Function>(attr<"fdel">()->release());
+//         return reinterpret_steal<Function>(getattr<"fdel">(*this).release());
 //     }
 
 // };

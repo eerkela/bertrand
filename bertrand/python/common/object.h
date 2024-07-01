@@ -264,13 +264,6 @@ public:
         return result;
     }
 
-    /* Attribute access operator.  Takes a template string for type safety using the
-    __getattr__, __setattr__, and __delattr__ control structs. */
-    template <StaticStr name, typename Self>
-    [[nodiscard]] impl::Attr<Self, name> attr(this const Self& self) {
-        return impl::Attr<Self, name>(self);
-    }
-
     /* Universal implicit conversion operator.  Implemented via the __cast__ control
     struct. */
     template <typename Self, typename T>

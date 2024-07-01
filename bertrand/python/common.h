@@ -367,17 +367,17 @@ public:
 
     /* Get the start object of the slice.  Note that this might not be an integer. */
     [[nodiscard]] auto start() const {
-        return attr<"start">().value();
+        return getattr<"start">(*this);
     }
 
     /* Get the stop object of the slice.  Note that this might not be an integer. */
     [[nodiscard]] auto stop() const {
-        return attr<"stop">().value();
+        return getattr<"stop">(*this);
     }
 
     /* Get the step object of the slice.  Note that this might not be an integer. */
     [[nodiscard]] auto step() const {
-        return attr<"step">().value();
+        return getattr<"step">(*this);
     }
 
     /* Normalize the indices of this slice against a container of the given length.
@@ -581,7 +581,7 @@ public:
         Module result = reinterpret_borrow<Module>(submodule);
         try {
             if (doc && pybind11::options::show_user_defined_docstrings()) {
-                result.template attr<"__doc__">() = pybind11::str(doc);
+                setattr<"__doc__">(result, pybind11::str(doc));
             }
             pybind11::setattr(*this, name, result);
             return result;
@@ -721,15 +721,6 @@ template <typename Self> requires (__reversed__<Self>::enable)
     } else {
         return impl::Iterator<impl::GenericIter<Return>>();
     }
-}
-
-
-template <typename Obj, typename T>
-template <typename Self> requires (__getitem__<Self, Slice>::enable)
-auto impl::Proxy<Obj, T>::operator[](
-    const std::initializer_list<impl::SliceInitializer>& slice
-) const {
-    return get_value()[slice];
 }
 
 

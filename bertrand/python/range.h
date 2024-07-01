@@ -129,17 +129,17 @@ public:
 
     /* Get the start index of the Range sequence. */
     [[nodiscard]] auto start() const {
-        return attr<"start">().value();
+        return getattr<"start">(*this);
     }
 
     /* Get the stop index of the Range sequence. */
     [[nodiscard]] auto stop() const {
-        return attr<"stop">().value();
+        return getattr<"stop">(*this);
     }
 
     /* Get the step size of the Range sequence. */
     [[nodiscard]] auto step() const {
-        return attr<"step">().value();
+        return getattr<"step">(*this);
     }
 
 };

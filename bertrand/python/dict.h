@@ -1320,19 +1320,19 @@ struct __reversed__<Self>                                   : Returns<typename S
 
 template <typename Map>
 [[nodiscard]] auto KeyView<Map>::mapping() const {
-    return attr<"mapping">().value();
+    return getattr<"mapping">(*this);
 }
 
 
 template <typename Map>
 [[nodiscard]] auto ValueView<Map>::mapping() const {
-    return attr<"mapping">().value();
+    return getattr<"mapping">(*this);
 }
 
 
 template <typename Map>
 [[nodiscard]] auto ItemView<Map>::mapping() const {
-    return attr<"mapping">().value();
+    return getattr<"mapping">(*this);
 }
 
 
