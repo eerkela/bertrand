@@ -257,49 +257,8 @@ setup(
         # Extension(
         #     "bertrand.env.ast",
         #     ["bertrand/env/ast.cpp"],
-        #     extra_compile_args=[
-        #         "-std=c++17",
-        #     ],
-        #     extra_link_args=[
-        #         # "/home/eerkela/data/bertrand/venv/lib/libclang-cpp.so",
-        #         "-lclang-cpp",
-        #         # "-lclangAST",
-        #         # "-lclangASTMatchers",
-        #         # "-lclangBasic",
-        #         # "-lclangFrontend",
-        #         # "-lclangFrontendTool",
-        #         # "-lclangRewrite",
-        #         # "-lclangSerialization",
-        #         # "-lclangTooling",
-        #         # "-lclangParse",
-        #         # "-lclangSema",
-        #         # "-lclangAnalysis",
-        #         # "-lclangEdit",
-        #         # "-lclangDriver",
-        #         # "-lclangLex",
-        #         # "-lclangDynamicASTMatchers",
-        #         # "-lclangToolingCore",
-        #         # # "/home/eerkela/data/bertrand/venv/lib/libclangAST.a",
-        #         # *subprocess.run(
-        #         #     ["./llvm-config", "--libs"],
-        #         #     check=True,
-        #         #     capture_output=True,
-        #         #     cwd=env / "bin",
-        #         # ).stdout.decode("utf-8").split(),
-        #         # *subprocess.run(
-        #         #     ["./llvm-config", "--system-libs"],
-        #         #     check=True,
-        #         #     capture_output=True,
-        #         #     cwd=env / "bin",
-        #         # ).stdout.decode("utf-8").split(),
-        #     ]
-        # ),
-        # Extension(
-        #     "ast_test",
-        #     ["ast_test.cpp"],
-        #     extra_compile_args=[
-        #         "-fplugin=/home/eerkela/data/bertrand/bertrand/env/ast.cpython-312-x86_64-linux-gnu.so"
-        #     ]
+        #     extra_compile_args=["-std=c++17"],
+        #     extra_link_args=["-lclang-cpp"]
         # ),
     ],
     cmdclass={"build_ext": BuildExtHeadless},

@@ -85,7 +85,8 @@ using namespace py::literals;
 #include <string>
 
 
-// import example;
+import example;
+// import xyz;
 
 
 
@@ -124,6 +125,8 @@ void run() {
     // py::print("123");
 
     throw py::TypeError("hello, world!");
+
+    // py::Bool x = 2;
 
 
 
