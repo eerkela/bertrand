@@ -1,7 +1,3 @@
-#if !defined(BERTRAND_PYTHON_COMMON_INCLUDED) && !defined(LINTER)
-#error "This file should not be included directly.  Please include <bertrand/common.h> instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_COMMON_DECLARATIONS_H
 #define BERTRAND_PYTHON_COMMON_DECLARATIONS_H
 
@@ -750,16 +746,19 @@ namespace impl {
         static_cast<To>(std::forward<From>(from));
     };
 
+    // TODO: note that is_iterable now checks for an ADL begin method, rather than
+    // specifically std::begin()/std::end().  This subtly changes their behavior.
+
     template <typename T>
     concept is_iterable = requires(T&& t) {
-        { std::begin(std::forward<T>(t)) } -> std::input_or_output_iterator;
-        { std::end(std::forward<T>(t)) } -> std::input_or_output_iterator;
+        { begin(std::forward<T>(t)) } -> std::input_or_output_iterator;
+        { end(std::forward<T>(t)) } -> std::input_or_output_iterator;
     };
 
     template <typename T>
     concept is_reverse_iterable = requires(T&& t) {
-        { std::rbegin(std::forward<T>(t)) } -> std::input_or_output_iterator;
-        { std::rend(std::forward<T>(t)) } -> std::input_or_output_iterator;
+        { rbegin(std::forward<T>(t)) } -> std::input_or_output_iterator;
+        { rend(std::forward<T>(t)) } -> std::input_or_output_iterator;
     };
 
     template <typename T>

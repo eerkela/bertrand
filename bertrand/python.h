@@ -1,6 +1,5 @@
 #ifndef BERTRAND_PYTHON_H
 #define BERTRAND_PYTHON_H
-#define BERTRAND_PYTHON_INCLUDED
 #define PYBIND11_DETAILED_ERROR_MESSAGES
 
 
@@ -1086,7 +1085,7 @@ default value. */
 }
 
 
-/* Equivalent to Python `hasattr(obj, name)`. */
+/* Equivalent to Python `hasattr(obj, name)` with a dynamic attribute name. */
 [[nodiscard]] inline bool hasattr(const Handle& obj, const Str& name) {
     return PyObject_HasAttr(obj.ptr(), name.ptr());
 }
@@ -1157,7 +1156,7 @@ representation. */
 }
 
 
-/* Equivalent to Python `setattr(obj, name, value)`. */
+/* Equivalent to Python `setattr(obj, name, value)` with a dynamic attribute name. */
 inline void setattr(const Handle& obj, const Str& name, const Object& value) {
     if (PyObject_SetAttr(obj.ptr(), name.ptr(), value.ptr()) < 0) {
         Exception::from_python();
@@ -1235,5 +1234,4 @@ auto Regex::Match::group(const py::args& args) const
 
 
 #undef PYBIND11_DETAILED_ERROR_MESSAGES
-#undef BERTRAND_PYTHON_INCLUDED
 #endif  // BERTRAND_PYTHON_H

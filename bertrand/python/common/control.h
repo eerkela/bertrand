@@ -1,7 +1,3 @@
-#if !defined(BERTRAND_PYTHON_COMMON_INCLUDED) && !defined(LINTER)
-#error "This file should not be included directly.  Please include <bertrand/common.h> instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_COMMON_CONTROL_H
 #define BERTRAND_PYTHON_COMMON_CONTROL_H
 

@@ -1,7 +1,3 @@
-#if !defined(BERTRAND_PYTHON_COMMON_INCLUDED) && !defined(LINTER)
-#error "This file should not be included directly.  Please include <bertrand/common.h> instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_COMMON_OBJECT_H
 #define BERTRAND_PYTHON_COMMON_OBJECT_H
 
@@ -178,6 +174,13 @@ public:
         )
     ) {}
 
+    /* Destructor.  Allows any object to be stored with static duration. */
+    ~Object() noexcept {
+        if (Py_IsInitialized()) {
+            Py_XDECREF(m_ptr);
+        }
+    }
+
     /* Copy assignment operator. */
     Object& operator=(const Object& other) {
         std::cout << "object copy assignment\n";  // TODO: remove print statement
@@ -201,60 +204,6 @@ public:
         return *this;
     }
 
-    /* Destructor.  Allows any object to be stored with static duration. */
-    ~Object() noexcept {
-        if (Py_IsInitialized()) {
-            Py_XDECREF(m_ptr);
-        }
-    }
-
-    ////////////////////////////
-    ////    BASE METHODS    ////
-    ////////////////////////////
-
-    /* NOTE: the Object wrapper can be implicitly converted to any of its subclasses by
-     * applying a runtime type check as part of the assignment.  This allows us to
-     * safely convert from a generic object to a more specialized type without worrying
-     * about type mismatches or triggering arbitrary conversion logic.  It allows us to
-     * write code like this:
-     *
-     *      py::Object obj = true;
-     *      py::Bool b = obj;
-     *
-     * But not like this:
-     *
-     *      py::Object obj = true;
-     *      py::Str s = obj;  // throws a TypeError
-     *
-     * While simultaneously preserving the ability to explicitly convert using a normal
-     * constructor call:
-     *
-     *      py::Object obj = true;
-     *      py::Str s(obj);
-     *
-     * Which is identical to calling `str()` at the python level.  Note that the
-     * implicit conversion operator is only enabled for Object itself, and is deleted
-     * in all of its subclasses.  This prevents implicit conversions between subclasses
-     * and promotes any attempt to do so into a compile-time error.  For instance:
-     *
-     *      py::Bool b = true;
-     *      py::Str s = b;  // fails to compile, calls a deleted function
-     *
-     * In general, this makes assignment via the `=` operator type-safe by default,
-     * while explicit constructors are reserved for non-trivial conversions and/or
-     * packing in the case of containers.
-     */
-
-    /* Contextually convert an Object into a boolean value for use in if/else 
-    statements, with the same semantics as in Python. */
-    [[nodiscard]] explicit operator bool() const {
-        int result = PyObject_IsTrue(m_ptr);
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-
     /* Return the underlying PyObject* pointer. */
     [[nodiscard]] PyObject* ptr() const {
         return m_ptr;
@@ -272,14 +221,62 @@ public:
         return m_ptr == other.ptr();
     }
 
-    /* Check for exact pointer identity. */
-    [[nodiscard]] bool is(const Object& other) const {
-        return m_ptr == other.ptr();
+    /* Contains operator.  Equivalent to Python's `in` keyword, but with reversed
+    operands (i.e. `x in y` -> `y.contains(x)`).  This is consistent with other STL
+    container types, and the allowable key types can be specified via the __contains__
+    control struct. */
+    template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
+    [[nodiscard]] bool contains(this const Self& self, const Key& key) {
+        using Return = typename __contains__<Self, Key>::type;
+        static_assert(
+            std::same_as<Return, bool>,
+            "contains() operator must return a boolean value.  Check your "
+            "specialization of __contains__ for these types and ensure the Return "
+            "type is set to bool."
+        );
+        if constexpr (impl::proxy_like<Key>) {
+            return self.contains(key.value());
+        } else if constexpr (impl::has_call_operator<__contains__<Self, Key>>) {
+            return __contains__<Self, Key>{}(self, key);
+        } else {
+            int result = PySequence_Contains(
+                self.ptr(),
+                as_object(key).ptr()
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    }
+
+    /* Length operator.  Equivalent to Python's `len()` function.  This can be enabled
+    via the __len__ control struct. */
+    template <typename Self> requires (__len__<Self>::enable)
+    [[nodiscard]] size_t size(this const Self& self) {
+        using Return = typename __len__<Self>::type;
+        static_assert(
+            std::same_as<Return, size_t>,
+            "size() operator must return a size_t for compatibility with C++ "
+            "containers.  Check your specialization of __len__ for these types "
+            "and ensure the Return type is set to size_t."
+        );
+        return ops::len<Return, Self>{}(self);
     }
 
     /////////////////////////
     ////    OPERATORS    ////
     /////////////////////////
+
+    /* Contextually convert an Object into a boolean value for use in if/else 
+    statements, with the same semantics as in Python. */
+    [[nodiscard]] explicit operator bool() const {
+        int result = PyObject_IsTrue(m_ptr);
+        if (result == -1) {
+            Exception::from_python();
+        }
+        return result;
+    }
 
     /* Attribute access operator.  Takes a template string for type safety using the
     __getattr__, __setattr__, and __delattr__ control structs. */
@@ -310,16 +307,27 @@ public:
     template <typename Self, typename... Args>
         requires (__call__<std::remove_cvref_t<Self>, Args...>::enable)
     auto operator()(this Self&& self, Args&&... args) {
-        using Return = typename __call__<std::remove_cvref_t<Self>, Args...>::type;
+        using call = __call__<std::remove_cvref_t<Self>, Args...>;
+        using Return = typename call::type;
         static_assert(
             std::is_void_v<Return> || std::derived_from<Return, Object>,
             "Call operator must return either void or a py::Object subclass.  "
             "Check your specialization of __call__ for the given arguments and "
             "ensure that it is derived from py::Object."
         );
-        return ops::call<Return, std::remove_cvref_t<Self>, Args...>{}(
-            self, std::forward<Args>(args)...
-        );
+        if constexpr (impl::has_call_operator<call>) {
+            return call{}(std::forward<Self>(self), std::forward<Args>(args)...);
+        } else if constexpr (std::is_void_v<Return>) {
+            Function<Return(Args...)>::template invoke_py<Return>(
+                self.ptr(),
+                std::forward<Args>(args)...
+            );
+        } else {
+            return Function<Return(Args...)>::template invoke_py<Return>(
+                self.ptr(),
+                std::forward<Args>(args)...
+            );
+        }
     }
 
     /* Index operator.  Specific key and element types can be controlled via the
@@ -342,127 +350,6 @@ public:
         this const Self& self,
         const std::initializer_list<impl::SliceInitializer>& slice
     );
-
-    /* Contains operator.  Equivalent to Python's `in` keyword, but with reversed
-    operands (i.e. `x in y` -> `y.contains(x)`).  This is consistent with other STL
-    container types, and the allowable key types can be specified via the __contains__
-    control struct. */
-    template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
-    [[nodiscard]] bool contains(this const Self& self, const Key& key) {
-        using Return = typename __contains__<Self, Key>::type;
-        static_assert(
-            std::same_as<Return, bool>,
-            "contains() operator must return a boolean value.  Check your "
-            "specialization of __contains__ for these types and ensure the Return "
-            "type is set to bool."
-        );
-        if constexpr (impl::proxy_like<Key>) {
-            return self.contains(key.value());
-        } else {
-            return ops::contains<Return, Self, Key>{}(self, key);
-        }
-    }
-
-    /* Length operator.  Equivalent to Python's `len()` function.  This can be enabled
-    via the __len__ control struct. */
-    template <typename Self> requires (__len__<Self>::enable)
-    [[nodiscard]] size_t size(this const Self& self) {
-        using Return = typename __len__<Self>::type;
-        static_assert(
-            std::same_as<Return, size_t>,
-            "size() operator must return a size_t for compatibility with C++ "
-            "containers.  Check your specialization of __len__ for these types "
-            "and ensure the Return type is set to size_t."
-        );
-        return ops::len<Return, Self>{}(self);
-    }
-
-    /* Begin iteration operator.  Both this and the end iteration operator are
-    controlled by the __iter__ control struct, whose return type dictates the
-    iterator's dereference type. */
-    template <typename Self> requires (__iter__<Self>::enable)
-    [[nodiscard]] auto begin(this const Self& self) {
-        using Return = typename __iter__<Self>::type;
-        static_assert(
-            std::derived_from<Return, Object>,
-            "iterator must dereference to a subclass of Object.  Check your "
-            "specialization of __iter__ for this types and ensure the Return type "
-            "is a subclass of py::Object."
-        );
-        return ops::begin<Return, Self>{}(self);
-    }
-
-    /* Const iteration operator.  Python has no distinction between mutable and
-    immutable iterators, so this is fundamentally the same as the ordinary begin()
-    method.  Some libraries assume the existence of this method. */
-    template <typename Self> requires (__iter__<Self>::enable)
-    [[nodiscard]] auto cbegin(this const Self& self) {
-        return self.begin();
-    }
-
-    /* End iteration operator.  This terminates the iteration and is controlled by the
-    __iter__ control struct. */
-    template <typename Self> requires (__iter__<Self>::enable)
-    [[nodiscard]] auto end(this const Self& self) {
-        using Return = typename __iter__<Self>::type;
-        static_assert(
-            std::derived_from<Return, Object>,
-            "iterator must dereference to a subclass of Object.  Check your "
-            "specialization of __iter__ for this types and ensure the Return type "
-            "is a subclass of py::Object."
-        );
-        return ops::end<Return, Self>{}(self);
-    }
-
-    /* Const end operator.  Similar to `cbegin()`, this is identical to `end()`. */
-    template <typename Self> requires (__iter__<Self>::enable)
-    [[nodiscard]] auto cend(this const Self& self) {
-        return self.end();
-    }
-
-    /* Reverse iteration operator.  Both this and the reverse end operator are
-    controlled by the __reversed__ control struct, whose return type dictates the
-    iterator's dereference type. */
-    template <typename Self> requires (__reversed__<Self>::enable)
-    [[nodiscard]] auto rbegin(this const Self& self) {
-        using Return = typename __reversed__<Self>::type;
-        static_assert(
-            std::derived_from<Return, Object>,
-            "iterator must dereference to a subclass of Object.  Check your "
-            "specialization of __reversed__ for this types and ensure the Return "
-            "type is a subclass of py::Object."
-        );
-        return ops::rbegin<Return, Self>{}(self);
-    }
-
-    /* Const reverse iteration operator.  Python has no distinction between mutable
-    and immutable iterators, so this is fundamentally the same as the ordinary
-    rbegin() method.  Some libraries assume the existence of this method. */
-    template <typename Self> requires (__reversed__<Self>::enable)
-    [[nodiscard]] auto crbegin(this const Self& self) {
-        return self.rbegin();
-    }
-
-    /* Reverse end operator.  This terminates the reverse iteration and is controlled
-    by the __reversed__ control struct. */
-    template <typename Self> requires (__reversed__<Self>::enable)
-    [[nodiscard]] auto rend(this const Self& self) {
-        using Return = typename __reversed__<Self>::type;
-        static_assert(
-            std::derived_from<Return, Object>,
-            "iterator must dereference to a subclass of Object.  Check your "
-            "specialization of __reversed__ for this types and ensure the Return "
-            "type is a subclass of py::Object."
-        );
-        return ops::rend<Return, Self>{}(self);
-    }
-
-    /* Const reverse end operator.  Similar to `crbegin()`, this is identical to
-    `rend()`. */
-    template <typename Self> requires (__reversed__<Self>::enable)
-    [[nodiscard]] auto crend(this const Self& self) {
-        return self.rend();
-    }
 
 };
 
