@@ -98,12 +98,17 @@ void run() {
     //     py::print(x);
     // }
 
-    py::List list = {1, 2, 3, 4};
-    py::print(list[2]);
-    py::Int x = list[1];
-    list[0] = 10;
-    py::print(list);
+    // py::List list = {1, 2, 3, 4};
+    // py::print(list[2]);
+    // py::Int x = list[1];
+    // list[0] = 10;
+    // py::print(list[{0, 2}]);  // TODO: slicing is broken
 
+
+    py::Slice slice = {0, 2, 1};
+    py::print(slice.start);
+    py::print(slice.stop);
+    py::print(slice.step);
 
     // py::print(py::List{1, 2, 3, 4});
     // py::print(py::Float(2.5));

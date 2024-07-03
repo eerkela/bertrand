@@ -253,6 +253,7 @@ setup(
         Extension(
             "example",
             ["bertrand/example.cpp", "bertrand/example_module.cpp"],
+            extra_compile_args=["-fdeclspec"]
         ),
         # Extension(
         #     "bertrand.env.ast",

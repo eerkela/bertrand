@@ -128,17 +128,20 @@ public:
     }
 
     /* Get the start index of the Range sequence. */
-    [[nodiscard]] auto start() const {
+    __declspec(property(get = _get_start)) Int start;
+    [[nodiscard]] Int _get_start() const {
         return getattr<"start">(*this);
     }
 
     /* Get the stop index of the Range sequence. */
-    [[nodiscard]] auto stop() const {
+    __declspec(property(get = _get_stop)) Int stop;
+    [[nodiscard]] Int _get_stop() const {
         return getattr<"stop">(*this);
     }
 
     /* Get the step size of the Range sequence. */
-    [[nodiscard]] auto step() const {
+    __declspec(property(get = _get_step)) Int step;
+    [[nodiscard]] Int _get_step() const {
         return getattr<"step">(*this);
     }
 

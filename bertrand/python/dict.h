@@ -131,7 +131,8 @@ public:
     )) {}
 
     /* Equivalent to Python `dict.keys().mapping`. */
-    [[nodiscard]] auto mapping() const;
+    __declspec(property(get=_get_mapping)) mapping_type mapping;
+    [[nodiscard]] mapping_type _get_mapping() const;
 
     /* Equivalent to Python `dict.keys().isdisjoint(other)`. */
     template <impl::is_iterable T>
@@ -312,7 +313,8 @@ public:
     )) {}
 
     /* Equivalent to Python `dict.values().mapping`. */
-    [[nodiscard]] auto mapping() const;
+    __declspec(property(get=_get_mapping)) mapping_type mapping;
+    [[nodiscard]] mapping_type _get_mapping() const;
 
 };
 
@@ -438,7 +440,8 @@ public:
     )) {}
 
     /* Equivalent to Python `dict.items().mapping`. */
-    [[nodiscard]] auto mapping() const;
+    __declspec(property(get=_get_mapping)) mapping_type mapping;
+    [[nodiscard]] mapping_type _get_mapping() const;
 
 };
 
@@ -1319,19 +1322,19 @@ struct __reversed__<Self>                                   : Returns<typename S
 
 
 template <typename Map>
-[[nodiscard]] auto KeyView<Map>::mapping() const {
+[[nodiscard]] Map KeyView<Map>::_get_mapping() const {
     return getattr<"mapping">(*this);
 }
 
 
 template <typename Map>
-[[nodiscard]] auto ValueView<Map>::mapping() const {
+[[nodiscard]] Map ValueView<Map>::_get_mapping() const {
     return getattr<"mapping">(*this);
 }
 
 
 template <typename Map>
-[[nodiscard]] auto ItemView<Map>::mapping() const {
+[[nodiscard]] Map ItemView<Map>::_get_mapping() const {
     return getattr<"mapping">(*this);
 }
 

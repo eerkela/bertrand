@@ -6,7 +6,7 @@
 #include "common/ops.h"
 #include "common/object.h"
 #include "common/func.h"
-#include "common/access.h"
+#include "common/item.h"
 #include "common/iter.h"
 #include "common/control.h"
 
@@ -366,17 +366,20 @@ public:
     }
 
     /* Get the start object of the slice.  Note that this might not be an integer. */
-    [[nodiscard]] auto start() const {
+    __declspec(property(get = _get_start)) Object start;
+    [[nodiscard]] Object _get_start() const {
         return getattr<"start">(*this);
     }
 
     /* Get the stop object of the slice.  Note that this might not be an integer. */
-    [[nodiscard]] auto stop() const {
+    __declspec(property(get = _get_stop)) Object stop;
+    [[nodiscard]] Object _get_stop() const {
         return getattr<"stop">(*this);
     }
 
     /* Get the step object of the slice.  Note that this might not be an integer. */
-    [[nodiscard]] auto step() const {
+    __declspec(property(get = _get_step)) Object step;
+    [[nodiscard]] Object _get_step() const {
         return getattr<"step">(*this);
     }
 

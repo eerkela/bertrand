@@ -344,94 +344,110 @@ public:
     /////////////////////
 
     /* Get the name of the file from which the code was compiled. */
-    [[nodiscard]] Str filename() const {
+    __declspec(property(get = _get_filename)) Str filename;
+    [[nodiscard]] Str _get_filename() const {
         return reinterpret_borrow<Str>(self()->co_filename);
     }
 
     /* Get the function's base name. */
-    [[nodiscard]] Str name() const {
+    __declspec(property(get = _get_name)) Str name;
+    [[nodiscard]] Str _get_name() const {
         return reinterpret_borrow<Str>(self()->co_name);
     }
 
     /* Get the function's qualified name. */
-    [[nodiscard]] Str qualname() const {
+    __declspec(property(get = _get_qualname)) Str qualname;
+    [[nodiscard]] Str _get_qualname() const {
         return reinterpret_borrow<Str>(self()->co_qualname);
     }
 
     /* Get the first line number of the function. */
-    [[nodiscard]] Py_ssize_t line_number() const noexcept {
+    __declspec(property(get = _get_line_number)) Py_ssize_t line_number;
+    [[nodiscard]] Py_ssize_t _get_line_number() const noexcept {
         return self()->co_firstlineno;
     }
 
     /* Get the total number of positional arguments for the function, including
     positional-only arguments and those with default values (but not variable
     or keyword-only arguments). */
-    [[nodiscard]] Py_ssize_t argcount() const noexcept {
+    __declspec(property(get = _get_argcount)) Py_ssize_t argcount;
+    [[nodiscard]] Py_ssize_t _get_argcount() const noexcept {
         return self()->co_argcount;
     }
 
     /* Get the number of positional-only arguments for the function, including
     those with default values.  Does not include variable positional or keyword
     arguments. */
-    [[nodiscard]] Py_ssize_t posonlyargcount() const noexcept {
+    __declspec(property(get = _get_posonlyargcount)) Py_ssize_t posonlyargcount;
+    [[nodiscard]] Py_ssize_t _get_posonlyargcount() const noexcept {
         return self()->co_posonlyargcount;
     }
 
     /* Get the number of keyword-only arguments for the function, including those
     with default values.  Does not include positional-only or variable
     positional/keyword arguments. */
-    [[nodiscard]] Py_ssize_t kwonlyargcount() const noexcept {
+    __declspec(property(get = _get_kwonlyargcount)) Py_ssize_t kwonlyargcount;
+    [[nodiscard]] Py_ssize_t _get_kwonlyargcount() const noexcept {
         return self()->co_kwonlyargcount;
     }
 
     /* Get the number of local variables used by the function (including all
     parameters). */
-    [[nodiscard]] Py_ssize_t nlocals() const noexcept {
+    __declspec(property(get = _get_nlocals)) Py_ssize_t nlocals;
+    [[nodiscard]] Py_ssize_t _get_nlocals() const noexcept {
         return self()->co_nlocals;
     }
 
     /* Get a tuple containing the names of the local variables in the function,
     starting with parameter names. */
-    [[nodiscard]] auto varnames() const {
+    __declspec(property(get = _get_varnames)) Tuple<Str> varnames;
+    [[nodiscard]] Tuple<Str> _get_varnames() const {
         return getattr<"co_varnames">(*this);
     }
 
     /* Get a tuple containing the names of local variables that are referenced by
     nested functions within this function (i.e. those that are stored in a
     PyCell). */
-    [[nodiscard]] auto cellvars() const {
+    __declspec(property(get = _get_cellvars)) Tuple<Str> cellvars;
+    [[nodiscard]] Tuple<Str> _get_cellvars() const {
         return getattr<"co_cellvars">(*this);
     }
 
     /* Get a tuple containing the names of free variables in the function (i.e.
     those that are not stored in a PyCell). */
-    [[nodiscard]] auto freevars() const {
+    __declspec(property(get = _get_freevars)) Tuple<Str> freevars;
+    [[nodiscard]] Tuple<Str> _get_freevars() const {
         return getattr<"co_freevars">(*this);
     }
 
     /* Get the required stack space for the code object. */
-    [[nodiscard]] Py_ssize_t stacksize() const noexcept {
+    __declspec(property(get = _get_stacksize)) Py_ssize_t stacksize;
+    [[nodiscard]] Py_ssize_t _get_stacksize() const noexcept {
         return self()->co_stacksize;
     }
 
     /* Get the bytecode buffer representing the sequence of instructions in the
     function. */
-    [[nodiscard]] Bytes bytecode() const {
+    __declspec(property(get = _get_bytecode)) Bytes bytecode;
+    [[nodiscard]] Bytes _get_bytecode() const {
         return getattr<"co_code">(*this);
     }
 
     /* Get a tuple containing the literals used by the bytecode in the function. */
-    [[nodiscard]] Tuple<Object> consts() const {
+    __declspec(property(get = _get_consts)) Tuple<Object> consts;
+    [[nodiscard]] Tuple<Object> _get_consts() const {
         return reinterpret_borrow<Tuple<Object>>(self()->co_consts);
     }
 
     /* Get a tuple containing the names used by the bytecode in the function. */
-    [[nodiscard]] Tuple<Str> names() const {
+    __declspec(property(get = _get_names)) Tuple<Str> names;
+    [[nodiscard]] Tuple<Str> _get_names() const {
         return reinterpret_borrow<Tuple<Str>>(self()->co_names);
     }
 
     /* Get an integer encoding flags for the Python interpreter. */
-    [[nodiscard]] int flags() const noexcept {
+    __declspec(property(get = _get_flags)) int flags;
+    [[nodiscard]] int _get_flags() const noexcept {
         return self()->co_flags;
     }
 

@@ -64,7 +64,7 @@ namespace impl {
             /* NOTE: functions and classes that accept static strings as template
              * arguments are decomposed into numeric character arrays in the symbol
              * name, which are be reconstructed here.  Here's an example:
-             *      File "/home/eerkela/data/bertrand/bertrand/python/common/access.h",
+             *      File "/home/eerkela/data/bertrand/bertrand/python/common/item.h",
              *      line 268, in bertrand::py::impl::Attr<bertrand::py::Object,
              *      bertrand::StaticStr<7ul>{char [8]{(char)95, (char)95, (char)103,
              *      (char)101, (char)116, (char)95, (char)95}}>::get_attr() const

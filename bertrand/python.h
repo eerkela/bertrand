@@ -231,7 +231,7 @@ template <typename Return, typename... Target>
 [[nodiscard]] inline std::optional<std::string> Function<Return(Target...)>::filename() const {
     std::optional<Code> code = this->code();
     if (code.has_value()) {
-        return code->filename();
+        return code->filename;
     }
     return std::nullopt;
 }
@@ -241,7 +241,7 @@ template <typename Return, typename... Target>
 [[nodiscard]] inline std::optional<size_t> Function<Return(Target...)>::lineno() const {
     std::optional<Code> code = this->code();
     if (code.has_value()) {
-        return code->line_number();
+        return code->line_number;
     }
     return std::nullopt;
 }

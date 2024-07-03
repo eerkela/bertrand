@@ -9,7 +9,7 @@ namespace bertrand {
 namespace py {
 
 
-namespace ops {
+namespace impl {
 
     static PyObject* one = (Interpreter::init(), PyLong_FromLong(1));
 
@@ -27,55 +27,63 @@ namespace ops {
         }
     };
 
-    template <typename Return, typename L, typename R>
-    struct floordiv {
-        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
-            PyObject* result = PyNumber_FloorDivide(lhs.ptr(), rhs.ptr());
+    template <typename L, typename R> requires (__floordiv__<L, R>::enable)
+    auto floordiv(const L& lhs, const R& rhs) {
+        using Return = typename __floordiv__<L, R>::type;
+        static_assert(
+            std::derived_from<Return, Object>,
+            "Floor division operator must return a py::Object subclass.  Check your "
+            "specialization of __floordiv__ for these types and ensure the Return "
+            "type is derived from py::Object."
+        );
+        if constexpr (impl::proxy_like<L>) {
+            return floordiv(lhs.value(), rhs);
+        } else if constexpr (impl::proxy_like<R>) {
+            return floordiv(lhs, rhs.value());
+        } else if constexpr (impl::has_call_operator<__floordiv__<L, R>>) {
+            return __floordiv__<L, R>{}(lhs, rhs);
+        } else {
+            PyObject* result = PyNumber_FloorDivide(
+                as_object(lhs).ptr(),
+                as_object(rhs).ptr()
+            );
             if (result == nullptr) {
                 Exception::from_python();
             }
             return reinterpret_steal<Return>(result);
         }
-    };
+    }
 
-    template <typename Return, typename L, typename R>
-    struct ifloordiv {
-        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
-            PyObject* result = PyNumber_InPlaceFloorDivide(lhs.ptr(), rhs.ptr());
+    template <std::derived_from<Object> L, typename R> requires (__ifloordiv__<L, R>::enable)
+    L& ifloordiv(L& lhs, const R& rhs) {
+        using Return = typename __ifloordiv__<L, R>::type;
+        static_assert(
+            std::same_as<Return, L&>,
+            "In-place floor division operator must return a mutable reference to the "
+            "left operand.  Check your specialization of __ifloordiv__ for these "
+            "types and ensure the Return type is set to the left operand."
+        );
+        if constexpr (impl::proxy_like<L>) {
+            ifloordiv(lhs.value(), rhs);
+        } else if constexpr (impl::proxy_like<R>) {
+            ifloordiv(lhs, rhs.value());
+        } else if constexpr (impl::has_call_operator<__ifloordiv__<L, R>>) {
+            __ifloordiv__<L, R>{}(lhs, rhs);
+        } else {
+            PyObject* result = PyNumber_InPlaceFloorDivide(
+                lhs.ptr(),
+                as_object(rhs).ptr()
+            );
             if (result == nullptr) {
                 Exception::from_python();
             } else if (result == lhs.ptr()) {
                 Py_DECREF(result);
             } else {
-                lhs = reinterpret_steal<L>(result);
+                lhs = reinterpret_steal<Return>(result);
             }
         }
-    };
-
-    template <typename Return, typename L, typename R>
-    struct mod {
-        static Return operator()(const impl::as_object_t<L>& lhs, const impl::as_object_t<R>& rhs) {
-            PyObject* result = PyNumber_Remainder(lhs.ptr(), rhs.ptr());
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Return>(result);
-        }
-    };
-
-    template <typename Return, typename L, typename R>
-    struct imod {
-        static void operator()(L& lhs, const impl::as_object_t<R>& rhs) {
-            PyObject* result = PyNumber_InPlaceRemainder(lhs.ptr(), rhs.ptr());
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == lhs.ptr()) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<L>(result);
-            }
-        }
-    };
+        return lhs;
+    }
 
 }
 
@@ -614,7 +622,7 @@ template <std::derived_from<Object> Self> requires (__iter__<Self>::enable)
     if constexpr (impl::proxy_like<Self>) {
         return *self.value();
     } else {
-        return ops::dereference<Self>{}(self);
+        return impl::dereference<Self>{}(self);
     }
 }
 
@@ -715,11 +723,10 @@ Self& operator++(Self& self) {
         if constexpr (impl::has_call_operator<__increment__<Self>>) {
             __increment__<Self>{}(self);
         } else {
-            PyObject* result = PyNumber_InPlaceAdd(self.ptr(), ops::one);
+            PyObject* result = PyNumber_InPlaceAdd(self.ptr(), impl::one);
             if (result == nullptr) {
                 Exception::from_python();
-            }
-            if (result == self.ptr()) {
+            } else if (result == self.ptr()) {
                 Py_DECREF(result);
             } else {
                 self = reinterpret_steal<Return>(result);
@@ -752,11 +759,10 @@ Self operator++(Self& self, int) {
         if constexpr (impl::has_call_operator<__increment__<Self>>) {
             __increment__<Self>{}(self);
         } else {
-            PyObject* result = PyNumber_InPlaceAdd(self.ptr(), ops::one);
+            PyObject* result = PyNumber_InPlaceAdd(self.ptr(), impl::one);
             if (result == nullptr) {
                 Exception::from_python();
-            }
-            if (result == self.ptr()) {
+            } else if (result == self.ptr()) {
                 Py_DECREF(result);
             } else {
                 self = reinterpret_steal<Return>(result);
@@ -788,11 +794,10 @@ Self& operator--(Self& self) {
         if constexpr (impl::has_call_operator<__decrement__<Self>>) {
             __decrement__<Self>{}(self);
         } else {
-            PyObject* result = PyNumber_InPlaceSubtract(self.ptr(), ops::one);
+            PyObject* result = PyNumber_InPlaceSubtract(self.ptr(), impl::one);
             if (result == nullptr) {
                 Exception::from_python();
-            }
-            if (result == self.ptr()) {
+            } else if (result == self.ptr()) {
                 Py_DECREF(result);
             } else {
                 self = reinterpret_steal<Return>(result);
@@ -825,11 +830,10 @@ Self operator--(Self& self, int) {
         if constexpr (impl::has_call_operator<__decrement__<Self>>) {
             __decrement__<Self>{}(self);
         } else {
-            PyObject* result = PyNumber_InPlaceSubtract(self.ptr(), ops::one);
+            PyObject* result = PyNumber_InPlaceSubtract(self.ptr(), impl::one);
             if (result == nullptr) {
                 Exception::from_python();
-            }
-            if (result == self.ptr()) {
+            } else if (result == self.ptr()) {
                 Py_DECREF(result);
             } else {
                 self = reinterpret_steal<Return>(result);
@@ -1099,8 +1103,7 @@ L& operator+=(L& lhs, const R& rhs) {
             );
             if (result == nullptr) {
                 Exception::from_python();
-            }
-            if (result == lhs.ptr()) {
+            } else if (result == lhs.ptr()) {
                 Py_DECREF(result);
             } else {
                 lhs = reinterpret_steal<Return>(result);
@@ -1172,8 +1175,7 @@ L& operator-=(L& lhs, const R& rhs) {
             );
             if (result == nullptr) {
                 Exception::from_python();
-            }
-            if (result == lhs.ptr()) {
+            } else if (result == lhs.ptr()) {
                 Py_DECREF(result);
             } else {
                 lhs = reinterpret_steal<Return>(result);
@@ -1247,8 +1249,7 @@ L& operator*=(L& lhs, const R& rhs) {
             );
             if (result == nullptr) {
                 Exception::from_python();
-            }
-            if (result == lhs.ptr()) {
+            } else if (result == lhs.ptr()) {
                 Py_DECREF(result);
             } else {
                 lhs = reinterpret_steal<Return>(result);
@@ -1320,8 +1321,7 @@ L& operator/=(L& lhs, const R& rhs) {
             );
             if (result == nullptr) {
                 Exception::from_python();
-            }
-            if (result == lhs.ptr()) {
+            } else if (result == lhs.ptr()) {
                 Py_DECREF(result);
             } else {
                 lhs = reinterpret_steal<Return>(result);
@@ -1393,8 +1393,7 @@ L& operator%=(L& lhs, const R& rhs) {
             );
             if (result == nullptr) {
                 Exception::from_python();
-            }
-            if (result == lhs.ptr()) {
+            } else if (result == lhs.ptr()) {
                 Py_DECREF(result);
             } else {
                 lhs = reinterpret_steal<Return>(result);
@@ -1499,8 +1498,7 @@ L& operator<<=(L& lhs, const R& rhs) {
             );
             if (result == nullptr) {
                 Exception::from_python();
-            }
-            if (result == lhs.ptr()) {
+            } else if (result == lhs.ptr()) {
                 Py_DECREF(result);
             } else {
                 lhs = reinterpret_steal<Return>(result);
@@ -1572,8 +1570,7 @@ L& operator>>=(L& lhs, const R& rhs) {
             );
             if (result == nullptr) {
                 Exception::from_python();
-            }
-            if (result == lhs.ptr()) {
+            } else if (result == lhs.ptr()) {
                 Py_DECREF(result);
             } else {
                 lhs = reinterpret_steal<Return>(result);
@@ -1645,8 +1642,7 @@ L& operator&=(L& lhs, const R& rhs) {
             );
             if (result == nullptr) {
                 Exception::from_python();
-            }
-            if (result == lhs.ptr()) {
+            } else if (result == lhs.ptr()) {
                 Py_DECREF(result);
             } else {
                 lhs = reinterpret_steal<Return>(result);
@@ -1739,8 +1735,7 @@ L& operator|=(L& lhs, const R& rhs) {
             );
             if (result == nullptr) {
                 Exception::from_python();
-            }
-            if (result == lhs.ptr()) {
+            } else if (result == lhs.ptr()) {
                 Py_DECREF(result);
             } else {
                 lhs = reinterpret_steal<Return>(result);
@@ -1812,8 +1807,7 @@ L& operator^=(L& lhs, const R& rhs) {
             );
             if (result == nullptr) {
                 Exception::from_python();
-            }
-            if (result == lhs.ptr()) {
+            } else if (result == lhs.ptr()) {
                 Py_DECREF(result);
             } else {
                 lhs = reinterpret_steal<Return>(result);
