@@ -105,10 +105,9 @@ void run() {
     // py::print(list[{0, 2}]);  // TODO: slicing is broken
 
 
-    py::Slice slice = {0, 2, 1};
-    py::print(slice.start);
-    py::print(slice.stop);
-    py::print(slice.step);
+
+    py::print(py::div<py::Round::HalfEven>(5, 2));
+
 
     // py::print(py::List{1, 2, 3, 4});
     // py::print(py::Float(2.5));

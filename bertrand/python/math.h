@@ -3,7 +3,6 @@
 
 #include <cmath>
 
-#include "bertrand/python/common/declarations.h"
 #include "common.h"
 #include "int.h"
 #include "float.h"
@@ -55,7 +54,7 @@ namespace impl {
 
 /* A collection of tag structs used to implement cross-language rounding strategies for
 basic `div()`, `mod()`, `divmod()`, and `round()` operators. */
-struct Round {
+struct Round : public impl::BertrandTag {
 
     struct True {
 
@@ -786,13 +785,28 @@ struct Round {
 
 
 /* Divide the left and right operands according to the specified rounding rule. */
-template <typename L, typename R, typename Mode = Round::Floor>
+template <typename Mode, typename L, typename R>
     requires (impl::div_mode<L, R, Mode>)
-[[nodiscard]] auto div(
-    const L& lhs,
-    const R& rhs,
-    const Mode& mode = Round::FLOOR
-) {
+[[nodiscard]] auto div(const L& lhs, const R& rhs) {
+    if constexpr (impl::proxy_like<L>) {
+        return div(lhs.value(), rhs);
+    } else if constexpr (impl::proxy_like<R>) {
+        return div(lhs, rhs.value());
+    } else {
+        if constexpr (!impl::any_are_python_like<L, R>) {
+            if (rhs == 0) {
+                throw ZeroDivisionError("division by zero");
+            }
+        }
+        return Mode::div(lhs, rhs);
+    }
+}
+
+
+/* Divide the left and right operands according to the specified rounding rule. */
+template <typename L, typename R, typename Mode>
+    requires (impl::div_mode<L, R, Mode>)
+[[nodiscard]] auto div(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
         return div(lhs.value(), rhs);
     } else if constexpr (impl::proxy_like<R>) {
@@ -809,13 +823,28 @@ template <typename L, typename R, typename Mode = Round::Floor>
 
 
 /* Divide the left and right operands according to the specified rounding rule. */
-template <typename L, typename R, typename Mode = Round::Floor>
+template <typename Mode, typename L, typename R>
     requires (impl::mod_mode<L, R, Mode>)
-[[nodiscard]] auto mod(
-    const L& lhs,
-    const R& rhs,
-    const Mode& mode = Round::FLOOR
-) {
+[[nodiscard]] auto mod(const L& lhs, const R& rhs) {
+    if constexpr (impl::proxy_like<L>) {
+        return mod(lhs.value(), rhs);
+    } else if constexpr (impl::proxy_like<R>) {
+        return mod(lhs, rhs.value());
+    } else {
+        if constexpr (!impl::any_are_python_like<L, R>) {
+            if (rhs == 0) {
+                throw ZeroDivisionError("division by zero");
+            }
+        }
+        return Mode::mod(lhs, rhs);
+    }
+}
+
+
+/* Divide the left and right operands according to the specified rounding rule. */
+template <typename L, typename R, typename Mode>
+    requires (impl::mod_mode<L, R, Mode>)
+[[nodiscard]] auto mod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
         return mod(lhs.value(), rhs);
     } else if constexpr (impl::proxy_like<R>) {
@@ -832,13 +861,28 @@ template <typename L, typename R, typename Mode = Round::Floor>
 
 
 /* Divide the left and right operands according to the specified rounding rule. */
-template <typename L, typename R, typename Mode = Round::Floor>
+template <typename Mode, typename L, typename R>
     requires (impl::divmod_mode<L, R, Mode>)
-[[nodiscard]] auto divmod(
-    const L& lhs,
-    const R& rhs,
-    const Mode& mode = Round::FLOOR
-) {
+[[nodiscard]] auto divmod(const L& lhs, const R& rhs) {
+    if constexpr (impl::proxy_like<L>) {
+        return divmod(lhs.value(), rhs);
+    } else if constexpr (impl::proxy_like<R>) {
+        return divmod(lhs, rhs.value());
+    } else {
+        if constexpr (!impl::any_are_python_like<L, R>) {
+            if (rhs == 0) {
+                throw ZeroDivisionError("division by zero");
+            }
+        }
+        return Mode::divmod(lhs, rhs);
+    }
+}
+
+
+/* Divide the left and right operands according to the specified rounding rule. */
+template <typename L, typename R, typename Mode>
+    requires (impl::divmod_mode<L, R, Mode>)
+[[nodiscard]] auto divmod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
         return divmod(lhs.value(), rhs);
     } else if constexpr (impl::proxy_like<R>) {
@@ -857,13 +901,62 @@ template <typename L, typename R, typename Mode = Round::Floor>
 /* Round the operand to a given number of digits according to the specified rounding
 rule.  Positive digits count to the right of the decimal point, while negative values
 count to the left. */
-template <typename T, typename Mode = Round::HalfEven>
+template <typename Mode, typename T>
     requires (impl::round_mode<T, Mode>)
-[[nodiscard]] auto round(
-    const T& obj,
-    int digits = 0,
-    const Mode& mode = Round::HALF_EVEN
-) {
+[[nodiscard]] auto round(const T& obj, int digits = 0) {
+    if constexpr (impl::proxy_like<T>) {
+        return round<Mode>(obj.value(), digits);
+    } else {
+        // negative digits uniformly divide by a power of 10 with rounding
+        if (digits < 0) {
+            if constexpr (std::derived_from<T, Object>) {
+                Int scale = impl::pow_int(10, -digits);
+                return Mode::div(obj, scale) * scale;
+            } else {
+                size_t scale = impl::pow_int(10, -digits);
+                return Mode::div(obj, scale) * scale;
+            }
+        }
+
+        // positive digits do not affect discrete values
+        if constexpr (impl::bool_like<T> || impl::int_like<T>) {
+            return obj;
+
+        // Python objects are split into whole/fractional parts to avoid precision loss
+        } else if constexpr (impl::python_like<T>) {
+            // dynamic objects are checked for bool/integer-ness
+            if constexpr (impl::is_object_exact<T>) {
+                if (PyLong_Check(obj.ptr())) {
+                    return obj;
+                }
+            }
+            Int scale = impl::pow_int(10, digits);
+            Object whole = Round::Floor::div(obj, Int::one);
+            return whole + (Mode::round((obj - whole) * scale) / scale);
+
+        // C++ floats can use an STL method to avoid precision loss
+        } else if constexpr (std::floating_point<T>) {
+            size_t scale = impl::pow_int(10, digits);
+            T whole, fract;
+            fract = std::modf(obj, &whole);
+            return whole + (Mode::round(fract * scale) / scale);
+
+        // all other C++ objects are handled similar to Python objects
+        } else {
+            size_t scale = impl::pow_int(10, digits);
+            auto whole = Round::Floor::div(obj, 1);
+            return whole + (Mode::round((obj - whole) * scale) / scale);
+        }
+    }
+}
+
+
+/* Round the operand to a given number of digits according to the specified rounding
+rule.  Positive digits count to the right of the decimal point, while negative values
+count to the left. */
+template <typename T, typename Mode>
+    requires (impl::round_mode<T, Mode>)
+[[nodiscard]] auto round(const T& obj, int digits = 0, const Mode& mode = Round::HALF_EVEN) {
     if constexpr (impl::proxy_like<T>) {
         return round(obj.value(), digits, mode);
     } else {
@@ -892,20 +985,20 @@ template <typename T, typename Mode = Round::HalfEven>
             }
             Int scale = impl::pow_int(10, digits);
             Object whole = Round::Floor::div(obj, Int::one);
-            return whole + (mode.py_round((obj - whole) * scale) / scale);
+            return whole + (mode.round((obj - whole) * scale) / scale);
 
         // C++ floats can use an STL method to avoid precision loss
         } else if constexpr (std::floating_point<T>) {
             size_t scale = impl::pow_int(10, digits);
             T whole, fract;
             fract = std::modf(obj, &whole);
-            return whole + (mode.cpp_round(fract * scale) / scale);
+            return whole + (mode.round(fract * scale) / scale);
 
         // all other C++ objects are handled similar to Python objects
         } else {
             size_t scale = impl::pow_int(10, digits);
             auto whole = Round::Floor::div(obj, 1);
-            return whole + (mode.cpp_round((obj - whole) * scale) / scale);
+            return whole + (mode.round((obj - whole) * scale) / scale);
         }
     }
 }
