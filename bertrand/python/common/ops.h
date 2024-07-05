@@ -129,10 +129,8 @@ template <typename Base, typename Derived> requires (
     //     if (obj.ptr() == nullptr) {
     //         return false;
     //     }
-    //     int result = PyObject_IsInstance(
-    //         obj.ptr(),
-    //         py::type(base).ptr()
-    //     );
+    //     // int result = PyObject_IsInstance(obj.ptr(), Base::type.ptr());
+    //     int result = PyObject_IsInstance(obj.ptr(), py::Type::of<Base>().ptr());
     //     if (result == -1) {
     //         Exception::from_python();
     //     }
@@ -146,6 +144,56 @@ template <typename Base, typename Derived> requires (
 }
 
 
+/* py::Type<T> specifically refers to the Python type of the templated C++ wrapper, so:
+ *
+ * py::Type<Int>() == PyLong_Type
+ * py::Type<Float>() == PyFloat_Type
+ * py::Type<Str>() == PyUnicode_Type
+ * etc.
+ *
+ * To represent a generic type, use py::Type<Object>() or py::Type<>().  If that is
+ * called with a python object `py::Type(obj)`, then it will detect the object's
+ * type at runtime.  If the object is statically typed, then a CTAD constructor will
+ * resolve to the right type at compile time, which would just borrow a reference to
+ * the right type.
+ *
+ * In order to get the type of a type (i.e. its metaclass), then you would just pass
+ * Type<Type<T>>().
+ *
+ * TODO: this still runs into conflicts with copy/move constructors, so that would need
+ * to be decided.  On the plus side, I would potentially be able to work this into the
+ * automated bindings such that py::Type<T> is specialized for every C++ class that is
+ * generated.  That way, py::Type<T> would always have the same interface as T itself,
+ * and would translate correctly to python type(obj) semantics.
+ *
+ * Creating a new type at runtime would be possible through
+ * py::Type<Object>(name, bases, dict).  This is not available from any other
+ * specialization.
+ *
+ * That would allow you to do something like this: py::Type<py::List>().append, which
+ * would be identical to the class-level list.append in Python.
+ *
+ * -> This is probably too complicated.  What if the templated type represented the
+ * bases of the type?  That would potentially be a lot simpler, and you could list as
+ * many as you wanted to reflect multiple inheritance.
+ *
+ * py::Type<Object> (the default) would represent a new subclass of object (i.e. a
+ * `class MyClass(Object):` statement in Python).  Creating a dynamic type is then as
+ * simple as specifying a supertype and the inheriting class's namespace.
+ *
+ *  py::Type<py::List<py::Int>> MyList(
+ *      "MyList",
+ *      {
+ *          {"append", [](const py::Int& value) {
+ *              // do some stuff
+ *              py::List<py::Int>::append(value);
+ *          }}
+ *      }
+ *  );
+ */
+
+
+
 /* Equivalent to Python `issubclass(obj, base)`. */
 template <typename Derived, typename Base> requires (
     std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, const Derived&, const Base&>
@@ -155,8 +203,8 @@ template <typename Derived, typename Base> requires (
 }
 
 
-/* Equivalent to Python `issubclass(obj, base)`, except that base is given as a
-template parameter for which __issubclass__ has been specialized. */
+/* Equivalent to Python `issubclass(obj, base)`, except that the base is given as a
+template parameter, marking the check as `constexpr`. */
 template <typename Base, typename Derived> requires (
     std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, const Derived&>
 )
@@ -166,7 +214,7 @@ template <typename Base, typename Derived> requires (
 
 
 /* Equivalent to Python `issubclass(obj, base)`, except that both arguments are given
-as template parameters for which __issubclass__ has been specialized. */
+as template parameters, marking the check as `consteval`. */
 template <typename Derived, typename Base> requires (
     std::is_invocable_r_v<bool, __issubclass__<Derived, Base>>
 )

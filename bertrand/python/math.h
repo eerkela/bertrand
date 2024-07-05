@@ -785,8 +785,7 @@ struct Round : public impl::BertrandTag {
 
 
 /* Divide the left and right operands according to the specified rounding rule. */
-template <typename Mode, typename L, typename R>
-    requires (impl::div_mode<L, R, Mode>)
+template <typename Mode, typename L, typename R> requires (impl::div_mode<L, R, Mode>)
 [[nodiscard]] auto div(const L& lhs, const R& rhs) {
     if constexpr (impl::proxy_like<L>) {
         return div(lhs.value(), rhs);
@@ -804,8 +803,7 @@ template <typename Mode, typename L, typename R>
 
 
 /* Divide the left and right operands according to the specified rounding rule. */
-template <typename L, typename R, typename Mode>
-    requires (impl::div_mode<L, R, Mode>)
+template <typename L, typename R, typename Mode> requires (impl::div_mode<L, R, Mode>)
 [[nodiscard]] auto div(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
         return div(lhs.value(), rhs);
@@ -823,8 +821,7 @@ template <typename L, typename R, typename Mode>
 
 
 /* Divide the left and right operands according to the specified rounding rule. */
-template <typename Mode, typename L, typename R>
-    requires (impl::mod_mode<L, R, Mode>)
+template <typename Mode, typename L, typename R> requires (impl::mod_mode<L, R, Mode>)
 [[nodiscard]] auto mod(const L& lhs, const R& rhs) {
     if constexpr (impl::proxy_like<L>) {
         return mod(lhs.value(), rhs);
@@ -842,8 +839,7 @@ template <typename Mode, typename L, typename R>
 
 
 /* Divide the left and right operands according to the specified rounding rule. */
-template <typename L, typename R, typename Mode>
-    requires (impl::mod_mode<L, R, Mode>)
+template <typename L, typename R, typename Mode> requires (impl::mod_mode<L, R, Mode>)
 [[nodiscard]] auto mod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
         return mod(lhs.value(), rhs);
@@ -861,8 +857,7 @@ template <typename L, typename R, typename Mode>
 
 
 /* Divide the left and right operands according to the specified rounding rule. */
-template <typename Mode, typename L, typename R>
-    requires (impl::divmod_mode<L, R, Mode>)
+template <typename Mode, typename L, typename R> requires (impl::divmod_mode<L, R, Mode>)
 [[nodiscard]] auto divmod(const L& lhs, const R& rhs) {
     if constexpr (impl::proxy_like<L>) {
         return divmod(lhs.value(), rhs);
@@ -880,8 +875,7 @@ template <typename Mode, typename L, typename R>
 
 
 /* Divide the left and right operands according to the specified rounding rule. */
-template <typename L, typename R, typename Mode>
-    requires (impl::divmod_mode<L, R, Mode>)
+template <typename L, typename R, typename Mode> requires (impl::divmod_mode<L, R, Mode>)
 [[nodiscard]] auto divmod(const L& lhs, const R& rhs, const Mode& mode = Round::FLOOR) {
     if constexpr (impl::proxy_like<L>) {
         return divmod(lhs.value(), rhs);
@@ -901,8 +895,7 @@ template <typename L, typename R, typename Mode>
 /* Round the operand to a given number of digits according to the specified rounding
 rule.  Positive digits count to the right of the decimal point, while negative values
 count to the left. */
-template <typename Mode, typename T>
-    requires (impl::round_mode<T, Mode>)
+template <typename Mode, typename T> requires (impl::round_mode<T, Mode>)
 [[nodiscard]] auto round(const T& obj, int digits = 0) {
     if constexpr (impl::proxy_like<T>) {
         return round<Mode>(obj.value(), digits);
@@ -954,8 +947,7 @@ template <typename Mode, typename T>
 /* Round the operand to a given number of digits according to the specified rounding
 rule.  Positive digits count to the right of the decimal point, while negative values
 count to the left. */
-template <typename T, typename Mode>
-    requires (impl::round_mode<T, Mode>)
+template <typename T, typename Mode> requires (impl::round_mode<T, Mode>)
 [[nodiscard]] auto round(const T& obj, int digits = 0, const Mode& mode = Round::HALF_EVEN) {
     if constexpr (impl::proxy_like<T>) {
         return round(obj.value(), digits, mode);
