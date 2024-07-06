@@ -1,5 +1,6 @@
 """Setup script for Bertrand."""
 import os
+from pathlib import Path
 import subprocess
 
 from bertrand import BuildExt, Extension, setup, env
@@ -237,30 +238,62 @@ class BuildExtHeadless(BuildExt):
 
     def build_extensions(self) -> None:
         """Build if in a virtual environment, otherwise skip."""
-        if os.environ.get("BERTRAND_HOME", None):
+        if env:
+            # build clang AST parser first
+            build = Path.cwd() / "bertrand" / "ast" / "build"
+            build.mkdir(exist_ok=True)
+            subprocess.check_call(
+                [
+                    str(env / "bin" / "cmake"),
+                    "-G",
+                    "Ninja",
+                    f"-DCMAKE_INSTALL_PREFIX={env.dir}",
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "..",
+                ],
+                cwd=build,
+            )
+            subprocess.check_call(["ninja"], cwd=build)
+            subprocess.check_call(["ninja", "install"], cwd=build)
+
+            # then build extensions using it
             super().build_extensions()
 
 
-# TODO: the AST parser 
+
+
+# setup(
+#     conan=[
+#         "pcre2/10.43@PCRE2/pcre2::pcre2",
+#         "cpptrace/0.6.1@cpptrace/cpptrace::cpptrace",
+#     ],
+#     ext_modules=[
+#         Extension(
+#             "example",
+#             ["bertrand/example.cpp", "bertrand/example_module.cpp"],
+#             extra_compile_args=["-fdeclspec"]
+#         ),
+#         # Extension(
+#         #     "bertrand.env.ast",
+#         #     ["bertrand/env/ast.cpp"],
+#         #     extra_compile_args=["-std=c++17"],
+#         #     extra_link_args=["-lclang-cpp"]
+#         # ),
+#     ],
+#     cmdclass={"build_ext": BuildExtHeadless},
+# )
+
+
 
 
 setup(
-    conan=[
+    cpp_deps=[
         "pcre2/10.43@PCRE2/pcre2::pcre2",
         "cpptrace/0.6.1@cpptrace/cpptrace::cpptrace",
     ],
-    ext_modules=[
-        Extension(
-            "example",
-            ["bertrand/example.cpp", "bertrand/example_module.cpp"],
-            extra_compile_args=["-fdeclspec"]
-        ),
-        # Extension(
-        #     "bertrand.env.ast",
-        #     ["bertrand/env/ast.cpp"],
-        #     extra_compile_args=["-std=c++17"],
-        #     extra_link_args=["-lclang-cpp"]
-        # ),
+    sources=[
+        Extension(Path("bertrand") / "example.cpp"),
+        Extension(Path("bertrand") / "example_module.cpp"),
     ],
     cmdclass={"build_ext": BuildExtHeadless},
 )

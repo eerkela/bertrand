@@ -10,7 +10,7 @@ import subprocess
 import sys
 import sysconfig
 from pathlib import Path
-from typing import Any, Iterable, Iterator, TextIO
+from typing import Any, Iterable, TextIO
 
 import setuptools
 from pybind11.setup_helpers import Pybind11Extension
@@ -38,141 +38,31 @@ def get_include() -> str:
     return str(Path(__file__).absolute().parent.parent.parent)
 
 
-# TODO: Sources trigger the AST parser on construction, which determines whether the
-# source describes a public module interface unit or an executable.
-
-# TODO: Once the source tree has been constructed, another pass will iterate through
-# the tree and add dependency information based on the logical names of the imported
-# C++ modules.  This is what goes into the preliminary CMakeLists.txt file.
-
-# TODO: after generating the preliminary CMakeLists.txt, I configure it to emit a
-# proper compile_commands.json file, which is then passed through clang-scan-deps to
-# generate the proper dependency graph.
-
-# TODO: once I've obtained the p1689 dependency graph, I resolve Python imports and
-# add them to each source's dependency list.  This then forms the final CMakeLists.txt
-# file, which is used to build the project.
+# TODO: write an AST parser and invoke it in the Extension constructor to detect
+# module imports, main() function, and the public interface of the final Python module.
 
 
-
-class Source:
-    """Describes an arbitrary source file that can be scanned for dependencies and used
-    to generate automated bindings.  One of these is constructed for every source file
-    in the project.
+class Extension(Pybind11Extension):
+    """A setuptools.Extension class that builds using CMake and supports C++20 modules.
 
     Parameters
     ----------
-    path : Path
-        The path to the managed source file.
-    cpp_std : int
-        The C++ standard to use when compiling the module.
-    include_dirs : list[Path]
-        Additional include paths to pass to the compiler.
-    define_macros : dict[str, str]
-        Additional preprocessor definitions to pass to the compiler.
-    compile_args : list[str]
-        Arbitrary arguments to pass to the compiler.
-    library_dirs : list[Path]
-        Additional library paths to pass to the linker.
-    libraries : list[str]
-        Additional library symbols (`-l` directives) to pass to the linker.
-    link_args : list[str]
-        Additional arguments to pass to the linker.
-    cmake_args : dict[str, Any]
-        Additional arguments to pass to the CMake configuration.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the source file does not exist.
-    OSError
-        If the source file is a directory.
-    """
-
-    MODULE_REGEX = re.compile(r"\s*export\s+module\s+(\w+).*;", re.MULTILINE)
-    EXECUTABLE_REGEX = re.compile(r"\s*int\s+main\s*\(", re.MULTILINE)
-
-    def __init__(
-        self,
-        path: Path,
-        cpp_std: int = 23,
-        include_dirs: list[Path] | None = None,
-        define_macros: dict[str, str] | None = None,
-        compile_args: list[str] | None = None,
-        library_dirs: list[Path] | None = None,
-        libraries: list[str] | None = None,
-        link_args: list[str] | None = None,
-        cmake_args: dict[str, str] | None = None,
-        runtime_library_dirs: list[Path] | None = None,
-        export_symbols: list[str] | None = None,
-    ) -> None:
-        if not path.exists():
-            raise FileNotFoundError(f"source file does not exist: {path}")
-        if path.is_dir():
-            raise OSError(f"source file is a directory: {path}")
-
-        self.path = path
-        self.cpp_std = cpp_std
-        self.include_dirs = include_dirs or []
-        self.define_macros = define_macros or {}
-        self.compile_args = compile_args or []
-        self.library_dirs = library_dirs or []
-        self.libraries = libraries or []
-        self.link_args = link_args or []
-        self.cmake_args = cmake_args or {}
-        self.runtime_library_dirs = runtime_library_dirs or []
-        self.export_symbols = export_symbols or []
-
-        # TODO: this can run the AST parser at this stage to detect whether the source
-        # is a module or an executable or neither, and extract out function names,
-        # attributes, etc.  Then, when it is built as a Target, these can be fused
-        # together to generate the appropriate binding file for all the dependencies.
-
-        text = self.path.read_text()
-        self.module = self.MODULE_REGEX.search(text)
-        self.executable = self.EXECUTABLE_REGEX.search(text)
-        if self.module and self.cpp_std < 23:
-            raise ValueError(
-                f"C++ standard must be at least C++23 to enable automatic Python "
-                f"bindings: {self.path}"
-            )
-
-        self.dependencies: list[Source] = []
-
-
-    def __repr__(self) -> str:
-        return f"<Source {self.path}>"
-
-
-
-
-
-
-class Target(setuptools.Extension):
-    """A setuptools.Extension class that represents a build target for bertrand's
-    integrated build system.
-
-    Parameters
-    ----------
-    *args : Any
-        Arbitrary positional arguments passed to the setuptools.Extension constructor.
-    cpp_std : int, default 23
-        The C++ standard to use when compiling the extension.  Values less than 23 will
+    *args, **kwargs : Any
+        Arbitrary arguments passed to the Pybind11Extension constructor.
+    conan : list[str], optional
+        A list of Conan package names to install before building the extension.
+    cxx_std : int, default 20
+        The C++ standard to use when compiling the extension.  Values less than 20 will
         raise a ValueError.
     traceback : bool, default True
         If set to false, add `BERTRAND_NO_TRACEBACK` to the compile definitions, which
-        will disable cross-language tracebacks for the extension.  This can slightly
-        improve performance on the unhappy path, at the cost of less informative error
-        messages.  It does not affect performance on the happy path, where no errors
-        are raised.
+        will disable cross-language tracebacks for the extension.
     extra_cmake_args : dict[str, Any], optional
         Additional arguments to pass to the Extension's CMake configuration.  These are
         emitted as key-value pairs into a `set_target_properties()` block in the
         generated CMakeLists.txt file.  Some options are filled in by default,
         including `PREFIX`, `LIBRARY_OUTPUT_DIRECTORY`, `LIBRARY_OUTPUT_NAME`,
         `SUFFIX`, `CXX_STANDARD`, and `CXX_STANDARD_REQUIRED`.
-    **kwargs : Any
-        Arbitrary keyword arguments passed to the setuptools.Extension constructor.
     """
 
     MODULE_REGEX = re.compile(r"\s*export\s+module\s+(\w+).*;", re.MULTILINE)
@@ -181,23 +71,24 @@ class Target(setuptools.Extension):
     def __init__(
         self,
         *args: Any,
-        cpp_std: int = 23,
+        cxx_std: int = 23,
         traceback: bool = True,
         extra_cmake_args: dict[str, Any] | None = None,
         **kwargs: Any
     ) -> None:
-        if cpp_std < 23:
+        if cxx_std < 23:
             raise ValueError(
                 "C++ standard must be at least C++23 to enable bertrand features"
             )
 
         super().__init__(*args, **kwargs)
-        self.cpp_std = cpp_std
+        self.cxx_std = cxx_std
         self.traceback = traceback
         self.extra_cmake_args = extra_cmake_args or {}
         self.extra_link_args = [sysconfig.get_config_var("LDFLAGS")] + self.extra_link_args
 
-        self.include_dirs.append(get_include())  # TODO: eventually not necessary
+        self.include_dirs.append(get_include())
+        # self.include_dirs.append(numpy.get_include())
         if self.traceback:
             self.extra_compile_args.append("-g")
             self.extra_link_args.append("-g")
@@ -247,10 +138,6 @@ class Target(setuptools.Extension):
             check=True,
             capture_output=True,
         ).stdout.decode("utf-8").strip())
-
-
-
-
 
 
 # TODO: ConanFile should have separate write() and generate() methods, similar to
@@ -444,7 +331,7 @@ class CMakeLists:
             f.write( "    PREFIX \"\"\n")
             f.write(f"    OUTPUT_NAME {target}\n")
             f.write( "    SUFFIX \"\"\n")
-            f.write(f"    CXX_STANDARD {ext.cpp_std}\n")
+            f.write(f"    CXX_STANDARD {ext.cxx_std}\n")
             f.write( "    CXX_STANDARD_REQUIRED ON\n")
             for key, value in ext.extra_cmake_args.items():
                 f.write(f"    {key} {value}\n")
@@ -476,7 +363,7 @@ class CMakeLists:
             f.write( "    PREFIX \"\"\n")
             f.write(f"    OUTPUT_NAME {target}\n")
             f.write( "    SUFFIX \"\"\n")
-            f.write(f"    CXX_STANDARD {ext.cpp_std}\n")
+            f.write(f"    CXX_STANDARD {ext.cxx_std}\n")
             f.write( "    CXX_STANDARD_REQUIRED ON\n")
             for key, value in ext.extra_cmake_args.items():
                 f.write(f"    {key} {value}\n")
@@ -591,7 +478,7 @@ class CMakeLists:
     #     result +=  "    PREFIX \"\"\n"
     #     result += f"    OUTPUT_NAME {target}\n"
     #     result +=  "    SUFFIX \"\"\n"
-    #     result += f"    CXX_STANDARD {ext.cpp_std}\n"
+    #     result += f"    CXX_STANDARD {ext.cxx_std}\n"
     #     result +=  "    CXX_STANDARD_REQUIRED ON\n"
     #     for key, value in ext.extra_cmake_args.items():
     #         result += f"    {key} {value}\n"
@@ -647,7 +534,7 @@ class CMakeLists:
     #     result +=  "    PREFIX \"\"\n"
     #     result += f"    OUTPUT_NAME {ext.name}\n"
     #     result +=  "    SUFFIX \"\"\n"
-    #     result += f"    CXX_STANDARD {ext.cpp_std}\n"
+    #     result += f"    CXX_STANDARD {ext.cxx_std}\n"
     #     result +=  "    CXX_STANDARD_REQUIRED ON\n"
     #     for key, value in ext.extra_cmake_args.items():
     #         result += f"    {key} {value}\n"
@@ -872,7 +759,7 @@ class CMakeLists:
         # preconfigure to emit preliminary compile_commands.json
         subprocess.check_call(
             [
-                "cmake",
+                str(env / "bin" / "cmake"),
                 "-G",
                 "Ninja",
                 str(self.path.parent),
@@ -951,7 +838,7 @@ class CMakeLists:
         # reconfigure to use the updated modules
         subprocess.check_call(
             [
-                "cmake",
+                str(env / "bin" / "cmake"),
                 "-G",
                 "Ninja",
                 str(self.path.parent),
@@ -963,7 +850,7 @@ class CMakeLists:
         # build the extensions using CMake
         try:
             build_args = [
-                "cmake",
+                str(env / "bin" / "cmake"),
                 "--build",
                 ".",
                 "--config",
@@ -994,6 +881,7 @@ class BuildExt(pybind11_build_ext):
     ]
 
     def __init__(self, *args: Any, conan: list[Package], workers: int, **kwargs: Any) -> None:
+        breakpoint()
         super().__init__(*args, **kwargs)
         self.conan = conan
         self.workers = workers

@@ -2,21 +2,20 @@
 from __future__ import annotations
 
 import json
-import importlib
 import os
-import re
+import shlex
 import shutil
 import subprocess
 import sys
 import sysconfig
-from pathlib import Path
-from typing import Any, Iterable, TextIO
+from pathlib import Path, PosixPath
+from typing import Any, Iterable
 
 import setuptools
-from pybind11.setup_helpers import Pybind11Extension
-from pybind11.setup_helpers import build_ext as pybind11_build_ext
+from packaging.version import Version
+from setuptools.command.build_ext import build_ext as setuptools_build_ext
 
-from .codegen import PyModule
+from .codegen import PyModule, CppModule
 from .environment import env
 from .package import Package, PackageLike
 from .version import __version__
@@ -38,852 +37,150 @@ def get_include() -> str:
     return str(Path(__file__).absolute().parent.parent.parent)
 
 
-# TODO: write an AST parser and invoke it in the Extension constructor to detect
-# module imports, main() function, and the public interface of the final Python module.
-
-
-class Extension(Pybind11Extension):
-    """A setuptools.Extension class that builds using CMake and supports C++20 modules.
+class Extension(setuptools.Extension):
+    """Describes an arbitrary source file that can be scanned for dependencies and used
+    to generate automated bindings.  One of these is constructed for every source file
+    in the project.
 
     Parameters
     ----------
-    *args, **kwargs : Any
-        Arbitrary arguments passed to the Pybind11Extension constructor.
-    conan : list[str], optional
-        A list of Conan package names to install before building the extension.
-    cxx_std : int, default 20
-        The C++ standard to use when compiling the extension.  Values less than 20 will
-        raise a ValueError.
+    path : Path
+        The path to the managed source file.
+    cpp_std : int
+        The C++ standard to use when compiling the source as a target.
+    cmake_args : dict[str, Any]
+        Additional arguments to pass to the CMake configuration.
     traceback : bool, default True
         If set to false, add `BERTRAND_NO_TRACEBACK` to the compile definitions, which
-        will disable cross-language tracebacks for the extension.
-    extra_cmake_args : dict[str, Any], optional
-        Additional arguments to pass to the Extension's CMake configuration.  These are
-        emitted as key-value pairs into a `set_target_properties()` block in the
-        generated CMakeLists.txt file.  Some options are filled in by default,
-        including `PREFIX`, `LIBRARY_OUTPUT_DIRECTORY`, `LIBRARY_OUTPUT_NAME`,
-        `SUFFIX`, `CXX_STANDARD`, and `CXX_STANDARD_REQUIRED`.
-    """
+        will disable cross-language tracebacks when the source is built.  This can
+        slightly improve performance on the unhappy path, at the cost of less
+        informative error messages.  It has no effect on the happy path, when no errors
+        are raised.
+    **kwargs : Any
+        Additional arguments passed to the setuptools.Extension constructor.
 
-    MODULE_REGEX = re.compile(r"\s*export\s+module\s+(\w+).*;", re.MULTILINE)
-    MAIN_REGEX = re.compile(r"\s*int\s+main\s*\(", re.MULTILINE)
+    Raises
+    ------
+    FileNotFoundError
+        If the source file does not exist.
+    OSError
+        If the source file is a directory.
+    """
 
     def __init__(
         self,
-        *args: Any,
-        cxx_std: int = 23,
-        traceback: bool = True,
-        extra_cmake_args: dict[str, Any] | None = None,
+        path: Path,
+        *,
+        cpp_std: int = 0,
+        traceback: bool = True,  # TODO: find a way to allow the global setting to set this like cpp_std
+        extra_cmake_args: dict[str, str] | None = None,
         **kwargs: Any
     ) -> None:
-        if cxx_std < 23:
-            raise ValueError(
-                "C++ standard must be at least C++23 to enable bertrand features"
-            )
+        if not path.exists():
+            raise FileNotFoundError(f"source file does not exist: {path}")
+        if path.is_dir():
+            raise OSError(f"source file is a directory: {path}")
+        if path.is_absolute():
+            path = path.relative_to(Path.cwd())
 
-        super().__init__(*args, **kwargs)
-        self.cxx_std = cxx_std
-        self.traceback = traceback
+        name = ".".join([
+            ".".join(p.name for p in reversed(path.parents) if p.name),
+            path.stem
+        ])
+        super().__init__(name, [path.as_posix()], **{"language": "c++", **kwargs})
+        self.path = path
+        self.cpp_std = cpp_std
         self.extra_cmake_args = extra_cmake_args or {}
-        self.extra_link_args = [sysconfig.get_config_var("LDFLAGS")] + self.extra_link_args
+        self.traceback = traceback
+        self.primary_module: bool = False
+        self.executable: bool = False
 
-        self.include_dirs.append(get_include())
-        # self.include_dirs.append(numpy.get_include())
+        self.include_dirs.append(get_include())  # TODO: eventually not necessary
         if self.traceback:
             self.extra_compile_args.append("-g")
             self.extra_link_args.append("-g")
         else:
-            self.define_macros.append(("BERTRAND_NO_TRACEBACK", "ON"))
+            self.define_macros.append(("BERTRAND_NO_TRACEBACK", None))
 
-        self.modules: list[Path] = []
-        executables: list[Path] = []
-        for source in self.sources:
-            path = Path(source)
-            with path.open("r", encoding="utf_8") as f:
-                content = f.read()
-                if self.MODULE_REGEX.search(content):
-                    self.modules.append(path)
-                if self.MAIN_REGEX.search(content):
-                    executables.append(path)
+    def __repr__(self) -> str:
+        return f"<Source {self.path}>"
 
-        if len(executables) > 1:
-            raise ValueError(
-                f"Cannot build extension: multiple main() functions detected in "
-                f"{[str(p) for p in executables]}"
-            )
 
-        self.executable = executables.pop() if executables else None
+# TODO: codegen takes in the JSON output of bertrand-ast and generates a corresponding
+# C++ file that exports it to Python.  If working with an unresolved import, then it
+# just attempts the import from Python to generate the binding file.
 
-    def scan_modules(self) -> dict[str, Any]:
-        """Run clang-scan-deps on the sources to extract module dependencies.
 
-        Returns
-        -------
-        dict[str, Any]
-            A dictionary mapping module names to their dependency graph, in p1689r5
-            (https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2022/p1689r5.html)
-            format.  This is the same format that is ultimately used by CMake to
-            build the modules.
-        """
-        return json.loads(subprocess.run(
-            [
-                str(env / "bin" / "clang-scan-deps"),
-                "-format=p1689",
-                "--",
-                "clang++",
-                *self.sources,
-                # *self.extra_compile_args,
-                # *compile_args
-            ],
-            check=True,
-            capture_output=True,
-        ).stdout.decode("utf-8").strip())
-
-
-# TODO: ConanFile should have separate write() and generate() methods, similar to
-# CMakeLists?
-
-class ConanFile:
-    """A wrapper around a temporary conanfile.txt file generated by the build system
-    when compiling C/C++ extensions.
-    """
-
-    def __init__(self, build_lib: Path, packages: list[Package]) -> None:
-        self.path = build_lib.absolute() / "conanfile.txt"
-        self.packages = packages
-
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.touch(exist_ok=True)
-        with self.path.open("w") as f:
-            f.write("[requires]\n")
-            for p in self.packages:
-                f.write(f"{p.name}/{p.version}\n")
-            f.write("\n")
-            f.write("[generators]\n")
-            f.write("CMakeDeps\n")
-            f.write("CMakeToolchain\n")
-            f.write("\n")
-            f.write("[layout]\n")
-            f.write("cmake_layout\n")
-
-    def install(self) -> None:
-        """Install the Conan packages listed in the conanfile.txt file and write the
-        newly-installed packages to the env.toml file.
-        """
-        subprocess.check_call(
-            [
-                "conan",
-                "install",
-                str(self.path),
-                "--build=missing",
-                "--output-folder",
-                str(self.path.parent),
-                "-verror",
-            ],
-            cwd=self.path.parent
-        )
-        env.packages.extend(p for p in self.packages if p not in env.packages)
-
-
-class CMakeLists:
-    """A wrapper around a temporary CMakeLists.txt file generated by the build system
-    when compiling C/C++ extensions.
-    """
-
-    MIN_VERSION = "3.28"  # CMake 3.28+ is necessary for C++20 module support
-
-    # TODO: each extension is stored by name in a dictionary, where the values are the
-    # actual Extension objects that make up the project.  When a binding file is added,
-    # the source is added to the relevant extension.  There is then a `write()` method
-    # that dumps the configuration to an output file, which can be called once for the
-    # preconfiguration, and then again after all the bindings have been accounted for.
-
-    # TODO: the most difficult problem is that I need a way to associate a binding file
-    # to one or more extensions.  Maybe the best way to do that is to generate a source
-    # map, where each source is a key, and the value is a list of extensions in which
-    # that source is included.  Then, when a binding is added, I just look it up in
-    # this map and insert it as a source for each extension.
-
-    # TODO: Only one Python module can be created per Extension, since they are
-    # compiled as a shared library.  This means that if multiple sources export a
-    # module, only one of them should be correct.  Perhaps the solution to this is to
-    # restrict extensions to only one source?  That would simplify the code and allow
-    # me to automatically infer module names, etc.  All other imports would be
-    # resolved through the module database.
-    # -> Actually, I still need to allow multiple sources to allow for module
-    # partitions, but I should still enforce only one module interface unit per
-    # Extension.  Imports should always be straightforward in both languages that way.
-
-
-
-    # TODO: __init__ takes build_lib and a list of extensions.  The write() method must
-    # be called to actually produce the CMakeLists.txt file, and it can be called with
-    # the project name, debug flag, include_dirs, library_dirs, and libraries.  The
-
-    def __init__(
-        self,
-        build_lib: Path,
-        project: str,
-        debug: bool,
-        include_dirs: list[str],
-        library_dirs: list[str],
-        libraries: list[str],
-    ) -> None:
-        build_lib = build_lib.absolute()
-        build_type = "Debug" if debug else "Release"
-        # libraries.extend(p.link for p in env.packages)
-
-        self.project = project
-        self.debug = debug
-        self.path = build_lib / "CMakeLists.txt"
-        toolchain = (
-            build_lib / "build" / build_type / "generators" / "conan_toolchain.cmake"
-        )
-
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.touch(exist_ok=True)
-        with self.path.open("w") as f:
-            f.write(f"# CMakeLists.txt automatically generated by bertrand {__version__}\n")
-            f.write(f"cmake_minimum_required(VERSION {self.MIN_VERSION})\n")
-            f.write(f"project({project} LANGUAGES CXX)\n")
-            f.write("\n")
-            f.write("# global config\n")
-            f.write(f"set(CMAKE_BUILD_TYPE {build_type})\n")
-            f.write(f"set(PYTHON_EXECUTABLE {sys.executable})\n")
-            f.write("set(CMAKE_COLOR_DIAGNOSTICS ON)\n")
-            f.write("set(CMAKE_CXX_SCAN_FOR_MODULES ON)\n")
-            f.write("set(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n")
-            f.write("\n")
-            f.write("# package management\n")
-            f.write(f"include({toolchain})\n")
-            f.write('\n'.join(f'find_package({p.find} REQUIRED)' for p in env.packages))
-            f.write("\n")
-            if include_dirs:
-                f.write("include_directories(\n")
-                for include in include_dirs:
-                    f.write(f"    {include}\n")
-                f.write(")\n")
-            if library_dirs:
-                f.write("link_directories(\n")
-                for lib_dir in library_dirs:
-                    f.write(f"    {lib_dir}\n")
-                f.write(")\n")
-            if libraries:
-                f.write("link_libraries(\n")
-                for lib in libraries:
-                    f.write(f"    {lib}\n")
-                f.write(")\n")
-            f.write("\n")
-
-    def _target_sources(self, f: TextIO, target: str, ext: Extension) -> None:
-        f.write(f"target_sources({target} PRIVATE\n")
-        f.write( "    FILE_SET CXX_MODULES\n")
-        f.write(f"    BASE_DIRS {Path.cwd()}\n")
-        f.write( "    FILES\n")
-        for source in ext.modules:
-            f.write(f"        {Path(source).absolute()}\n")
-        f.write(")\n")
-
-    def _target_include_directories(self, f: TextIO, target: str, ext: Extension) -> None:
-        f.write(f"target_include_directories({target} PRIVATE\n")
-        for include in ext.include_dirs:
-            f.write(f"    {include}\n")
-        f.write(")\n")
-
-    def _target_link_directories(self, f: TextIO, target: str, ext: Extension) -> None:
-        f.write(f"target_link_directories({target} PRIVATE\n")
-        for lib_dir in ext.library_dirs:
-            f.write(f"    {lib_dir}\n")
-        f.write(")\n")
-
-    def _target_link_libraries(self, f: TextIO, target: str, ext: Extension) -> None:
-        f.write(f"target_link_libraries({target} PRIVATE\n")
-        for lib in ext.libraries:
-            f.write(f"    {lib}\n")
-        f.write(")\n")
-
-    def _target_compile_options(self, f: TextIO, target: str, ext: Extension) -> None:
-        f.write(f"target_compile_options({target} PRIVATE\n")
-        for flag in ext.extra_compile_args:
-            f.write(f"    {flag}\n")
-        f.write(")\n")
-
-    def _target_link_options(self, f: TextIO, target: str, ext: Extension) -> None:
-        f.write(f"target_link_options({target} PRIVATE\n")
-        for flag in ext.extra_link_args:
-            f.write(f"    {flag}\n")
-        f.write(")\n")
-
-    def _target_compile_definitions(self, f: TextIO, target: str, ext: Extension) -> None:
-        f.write(f"target_compile_definitions({target} PRIVATE\n")
-        for define in ext.define_macros:
-            f.write(f"    {define[0]}={define[1]}\n")
-        f.write(")\n")
-
-    def _add_library(self, target: str, ext: Extension) -> None:
-        with self.path.open("a") as f:
-            f.write(f"# shared library: {ext.name}\n")
-            f.write(f"add_library({target} MODULE\n")
-            for source in ext.sources:
-                f.write(f"    {Path(source).absolute()}\n")
-            f.write(")\n")
-            f.write(f"set_target_properties({target} PROPERTIES\n")
-            f.write( "    PREFIX \"\"\n")
-            f.write(f"    OUTPUT_NAME {target}\n")
-            f.write( "    SUFFIX \"\"\n")
-            f.write(f"    CXX_STANDARD {ext.cxx_std}\n")
-            f.write( "    CXX_STANDARD_REQUIRED ON\n")
-            for key, value in ext.extra_cmake_args.items():
-                f.write(f"    {key} {value}\n")
-            f.write(")\n")
-            if ext.modules:
-                self._target_sources(f, target, ext)
-            if ext.include_dirs:
-                self._target_include_directories(f, target, ext)
-            if ext.library_dirs:
-                self._target_link_directories(f, target, ext)
-            if ext.libraries:
-                self._target_link_libraries(f, target, ext)
-            if ext.extra_compile_args:
-                self._target_compile_options(f, target, ext)
-            if ext.extra_link_args:
-                self._target_link_options(f, target, ext)
-            if ext.define_macros:
-                self._target_compile_definitions(f, target, ext)
-            f.write("\n")
-
-    def _add_executable(self, target: str, ext: Extension) -> None:
-        with self.path.open("a") as f:
-            f.write(f"# executable: {ext.name}\n")
-            f.write(f"add_executable({target}\n")
-            for source in ext.sources:
-                f.write(f"    {Path(source).absolute()}\n")
-            f.write(")\n")
-            f.write(f"set_target_properties({target} PROPERTIES\n")
-            f.write( "    PREFIX \"\"\n")
-            f.write(f"    OUTPUT_NAME {target}\n")
-            f.write( "    SUFFIX \"\"\n")
-            f.write(f"    CXX_STANDARD {ext.cxx_std}\n")
-            f.write( "    CXX_STANDARD_REQUIRED ON\n")
-            for key, value in ext.extra_cmake_args.items():
-                f.write(f"    {key} {value}\n")
-            f.write(")\n")
-            if ext.modules:
-                self._target_sources(f, target, ext)
-            if ext.include_dirs:
-                self._target_include_directories(f, target, ext)
-            if ext.library_dirs:
-                self._target_link_directories(f, target, ext)
-            if ext.libraries:
-                self._target_link_libraries(f, target, ext)
-            if ext.extra_compile_args:
-                self._target_compile_options(f, target, ext)
-            if ext.extra_link_args:
-                self._target_link_options(f, target, ext)
-            if ext.define_macros:
-                self._target_compile_definitions(f, target, ext)
-            f.write("\n")
-
-    def add(self, ext: Extension) -> None:
-        """Add an extension to the CMakeLists.txt file.
-
-        Parameters
-        ----------
-        ext : Extension
-            An extension describing the library and/or executable to add.
-        """
-        self._add_library(f"{ext.name}{sysconfig.get_config_var('EXT_SUFFIX')}", ext)
-        if ext.executable:
-            self._add_executable(ext.name, ext)
-
-
-
-    # def __init__(
-    #     self,
-    #     build_dir: Path,
-    #     extensions: list[Extension],
-    #     project_name: str,
-    #     debug: bool,
-    #     include_dirs: list[str],
-    #     library_dirs: list[str],
-    #     libraries: list[str],
-    # ) -> None:
-    #     self.build_dir = build_dir
-    #     self.path = build_dir / "CMakeLists.txt"
-    #     self.extensions = extensions
-    #     self.project_name = project_name
-    #     self.debug = debug
-    #     self.include_dirs = include_dirs
-    #     self.library_dirs = library_dirs
-    #     self.libraries = libraries
-
-    #     self.source_map: dict[Path, list[Extension]] = {}
-    #     for ext in extensions:
-    #         for source in ext.sources:
-    #             self.source_map.setdefault(Path(source), []).append(ext)
-
-    #     self.module_interfaces: dict[Extension, Path] = {}
-    #     self.executables: dict[Extension, Path] = {}
-
-    # def _header(self) -> str:
-    #     build_type = "Debug" if self.debug else "Release"
-    #     toolchain = (
-    #         self.build_dir / "build" / build_type / "generators" /
-    #         "conan_toolchain.cmake"
-    #     )
-    #     libraries = self.libraries + [p.link for p in env.packages]
-
-    #     result = f"# CMakeLists.txt automatically generated by bertrand {__version__}\n"
-    #     result += f"cmake_minimum_required(VERSION {self.MIN_VERSION})\n"
-    #     result += f"project({self.project} LANGUAGES CXX)\n"
-    #     result += "\n"
-    #     result += "# global config\n"
-    #     result += f"set(CMAKE_BUILD_TYPE {build_type})\n"
-    #     result += f"set(PYTHON_EXECUTABLE {sys.executable})\n"
-    #     result += "set(CMAKE_COLOR_DIAGNOSTICS ON)\n"
-    #     result += "set(CMAKE_CXX_SCAN_FOR_MODULES ON)\n"
-    #     result += "set(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n"
-    #     result += "\n"
-    #     result += "# package management\n"
-    #     result += f"include({toolchain})\n"
-    #     result += "\n".join(f'find_package({p.find} REQUIRED)' for p in env.packages)
-    #     result += "\n"
-    #     if self.include_dirs:
-    #         result += "include_directories(\n"
-    #         for include in self.include_dirs:
-    #             result += f"    {include}\n"
-    #         result += ")\n"
-    #     if self.library_dirs:
-    #         result += "link_directories(\n"
-    #         for lib_dir in self.library_dirs:
-    #             result += f"    {lib_dir}\n"
-    #         result += ")\n"
-    #     if libraries:
-    #         result += "link_libraries(\n"
-    #         for lib in libraries:
-    #             result += f"    {lib}\n"
-    #         result += ")\n"
-    #     result += "\n"
-    #     return result
-
-    # def _library(self, ext: Extension) -> str:
-    #     target = f"{ext.name}{sysconfig.get_config_var('EXT_SUFFIX')}"
-
-    #     result = f"# shared library: {ext.name}\n"
-    #     result += f"add_library({target} MODULE\n"
-    #     for source in ext.sources:
-    #         result += f"    {Path(source).absolute()}\n"
-    #     result += ")\n"
-    #     result += f"set_target_properties({target} PROPERTIES\n"
-    #     result +=  "    PREFIX \"\"\n"
-    #     result += f"    OUTPUT_NAME {target}\n"
-    #     result +=  "    SUFFIX \"\"\n"
-    #     result += f"    CXX_STANDARD {ext.cxx_std}\n"
-    #     result +=  "    CXX_STANDARD_REQUIRED ON\n"
-    #     for key, value in ext.extra_cmake_args.items():
-    #         result += f"    {key} {value}\n"
-    #     result += ")\n"
-    #     if ext.modules:
-    #         result += f"target_sources({target} PRIVATE\n"
-    #         result +=  "    FILE_SET CXX_MODULES\n"
-    #         result += f"    BASE_DIRS {Path.cwd()}\n"
-    #         result +=  "    FILES\n"
-    #         for source in ext.modules:
-    #             result += f"        {Path(source).absolute()}\n"
-    #         result += ")\n"
-    #     if ext.include_dirs:
-    #         result += f"target_include_directories({target} PRIVATE\n"
-    #         for include in ext.include_dirs:
-    #             result += f"    {include}\n"
-    #         result += ")\n"
-    #     if ext.library_dirs:
-    #         result += f"target_link_directories({target} PRIVATE\n"
-    #         for lib_dir in ext.library_dirs:
-    #             result += f"    {lib_dir}\n"
-    #         result += ")\n"
-    #     if ext.libraries:
-    #         result += f"target_link_libraries({target} PRIVATE\n"
-    #         for lib in ext.libraries:
-    #             result += f"    {lib}\n"
-    #         result += ")\n"
-    #     if ext.extra_compile_args:
-    #         result += f"target_compile_options({target} PRIVATE\n"
-    #         for flag in ext.extra_compile_args:
-    #             result += f"    {flag}\n"
-    #         result += ")\n"
-    #     if ext.extra_link_args:
-    #         result += f"target_link_options({target} PRIVATE\n"
-    #         for flag in ext.extra_link_args:
-    #             result += f"    {flag}\n"
-    #         result += ")\n"
-    #     if ext.define_macros:
-    #         result += f"target_compile_definitions({target} PRIVATE\n"
-    #         for define in ext.define_macros:
-    #             result += f"    {define[0]}={define[1]}\n"
-    #         result += ")\n"
-    #     result += "\n"
-    #     return result
-
-    # def _executable(self, ext: Extension) -> str:
-    #     result = f"# executable: {ext.name}\n"
-    #     result += f"add_executable({ext.name}\n"
-    #     for source in ext.sources:
-    #         result += f"    {Path(source).absolute()}\n"
-    #     result += ")\n"
-    #     result += f"set_target_properties({ext.name} PROPERTIES\n"
-    #     result +=  "    PREFIX \"\"\n"
-    #     result += f"    OUTPUT_NAME {ext.name}\n"
-    #     result +=  "    SUFFIX \"\"\n"
-    #     result += f"    CXX_STANDARD {ext.cxx_std}\n"
-    #     result +=  "    CXX_STANDARD_REQUIRED ON\n"
-    #     for key, value in ext.extra_cmake_args.items():
-    #         result += f"    {key} {value}\n"
-    #     result += ")\n"
-    #     if ext.modules:
-    #         result += f"target_sources({ext.name} PRIVATE\n"
-    #         result +=  "    FILE_SET CXX_MODULES\n"
-    #         result += f"    BASE_DIRS {Path.cwd()}\n"
-    #         result +=  "    FILES\n"
-    #         for source in ext.modules:
-    #             result += f"        {Path(source).absolute()}\n"
-    #         result += ")\n"
-    #     if ext.include_dirs:
-    #         result += f"target_include_directories({ext.name} PRIVATE\n"
-    #         for include in ext.include_dirs:
-    #             result += f"    {include}\n"
-    #         result += ")\n"
-    #     if ext.library_dirs:
-    #         result += f"target_link_directories({ext.name} PRIVATE\n"
-    #         for lib_dir in ext.library_dirs:
-    #             result += f"    {lib_dir}\n"
-    #         result += ")\n"
-    #     if ext.libraries:
-    #         result += f"target_link_libraries({ext.name} PRIVATE\n"
-    #         for lib in ext.libraries:
-    #             result += f"    {lib}\n"
-    #         result += ")\n"
-    #     if ext.extra_compile_args:
-    #         result += f"target_compile_options({ext.name} PRIVATE\n"
-    #         for flag in ext.extra_compile_args:
-    #             result += f"    {flag}\n"
-    #         result += ")\n"
-    #     if ext.extra_link_args:
-    #         result += f"target_link_options({ext.name} PRIVATE\n"
-    #         for flag in ext.extra_link_args:
-    #             result += f"    {flag}\n"
-    #         result += ")\n"
-    #     if ext.define_macros:
-    #         result += f"target_compile_definitions({ext.name} PRIVATE\n"
-    #         for define in ext.define_macros:
-    #             result += f"    {define[0]}={define[1]}\n"
-    #         result += ")\n"
-    #     result += "\n"
-    #     return result
-
-    # def write(self) -> CMakeLists:
-    #     """Write the CMakeLists.txt file to the build directory with its current
-    #     configuration.
-
-    #     Returns
-    #     -------
-    #     CMakeLists
-    #         A reference to the current CMakeLists object, for chaining.
-    #     """
-    #     self.path.parent.mkdir(parents=True, exist_ok=True)
-    #     with self.path.open("w") as f:
-    #         f.write(self._header())
-    #         for ext in self.extensions:
-    #             f.write(self._library(ext))
-    #             if ext.executable:
-    #                 f.write(self._executable(ext))
-    #     return self
-
-    def bind(self) -> CMakeLists:
-        """Generate cross-language bindings for the C++ extensions and write them to
-        the CMakeLists.txt file.
-
-        Returns
-        -------
-        CMakeLists
-            A reference to the current CMakeLists object, for chaining.
-        """
-        # preconfigure to emit preliminary compile_commands.json
-        subprocess.check_call(
-            [
-                "cmake",
-                "-G",
-                "Ninja",
-                str(self.path.parent),
-            ],
-            cwd=self.path.parent,
-            stdout=subprocess.PIPE,  # NOTE: silences noisy CMake/Conan output
-        )
-
-        # filter out any lazily-evaluated cmake arguments from compile_commands.json
-        # that are not supported by clang-scan-deps
-        compile_commands = self.path.parent / "compile_commands.json"
-        p1689_commands = self.path.parent / "p1689_commands.json"
-        with compile_commands.open("r") as infile:
-            with p1689_commands.open("w") as outfile:
-                filtered = [
-                    {
-                        "directory": cmd["directory"],
-                        "command": " ".join(
-                            c for c in cmd["command"].split() if not c.startswith("@")
-                        ),
-                        "file": cmd["file"],
-                        "output": cmd["output"],
-                    }
-                    for cmd in json.load(infile)
-                ]
-                json.dump(filtered, outfile, indent=4)
-
-        # invoke clang-scan-deps to generate the p1689 dependency graph
-        p1689 = json.loads(subprocess.run(
-            [
-                str(env / "bin" / "clang-scan-deps"),
-                "-format=p1689",
-                "-compilation-database",
-                str(p1689_commands),
-            ],
-            check=True,
-            capture_output=True,
-        ).stdout.decode("utf-8").strip())
-
-        # TODO: iterate through the p1689 graph and update self.module_interfaces
-        # accordingly.  If any duplicates are found or the length after parsing does
-        # not exactly match the length of self.extensions, fail the build with an error
-        # message + sys.exit().
-        # -> matching lengths means that every module is associated with exactly one
-        # module interface unit.  It might be better to allow some extensions to not
-        # have a module interface unit if they are pure executables.
-
-        # analyze the p1689 dependency graph to extract module interface units and
-        # ensure a 0:1 or 1:1 correspondence with Extension declarations
-        for module in p1689["rules"]:
-            for source in module.get("provides", []):
-                path = Path(source["source-path"])
-                for ext in self.source_map[path]:
-                    if ext in self.module_interfaces:
-                        print(
-                            f"Multiple primary module interfaces found for "
-                            f"'{ext.name}':\n"
-                            f"    {self.module_interfaces[ext]}\n"
-                            f"    {path}\n"
-                            f"\n"
-                            f"Please ensure that each extension has at most one "
-                            f"top-level `export module` declaration amongst its "
-                            f"sources (disregarding module partition units)."
-                        )
-                        sys.exit(1)
-                    else:
-                        self.module_interfaces[ext] = path
-
-        # TODO: ensure each extension is associated with at most one executable source
-        # -> This might be able to be lifted out of this method and into the
-        # constructor?  That would populate the self.executables dictionary for us.
-        # -> after creating source_map, iterate through it and check each key for
-        # a main() function.  When one is found, push all of the values into the
-        # executables dictionary and fail the build if there are any duplicates.
-
-        # TODO: assuming above is done, merge the keys of self.module_interfaces and
-        # self.executables into a single set.  If the length of the set does not match
-        # the length of self.extensions, then there are some extensions that do not
-        # have either a python module to export or an executable to build, and
-        # therefore should not be included.  The user should refactor the extensions
-        # in that case, and the build should fail with an error message + sys.exit().
-        # -> Perhaps in the future, this should be allowed.  I just don't know atm.
-
-
-
-
-
-
-
-        # extract exported C++ modules and generate equivalent Python bindings
-        cpp_modules: dict[str, Path] = {}
-        python_modules: dict[str, Path] = {}
-        for module in p1689["rules"]:
-            for source in module.get("provides", []):
-                name = source["logical-name"]
-                path = Path(source["source-path"])
-                cpp_modules[name] = path
-                # python_modules[name] = self.emit_python(path)
-
-        # fill in unresolved C++ imports with Python modules
-        for module in p1689["rules"]:
-            for source in module.get("requires", []):
-                name = source["logical-name"]
-                if name not in cpp_modules:
-                    destination = compile_commands.parent / "bindings" / f"{name}.cpp"
-                    module = PyModule(destination)
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    with destination.open("w") as file:
-                        file.write(module.generate())
-                    cpp_modules[name] = destination
-
-        # insert generated modules into CMakeLists.txt as additional sources
-        print()
-        print("exported to C++:")
-        print("\n".join(f"{k}: {v}" for k, v in cpp_modules.items()))
-        print()
-        print("exported to Python:")
-        print("\n".join(f"{k}: {v}" for k, v in python_modules.items()))
-        print()
-
-
-        return self
-
-
-
-    # TODO: break this up into a builder pattern.
-    #   cmake = CmakeLists(
-    #       build_lib,
-    #       self.extensions
-    #       project,
-    #       debug,
-    #       include_dirs,
-    #       library_dirs,
-    #       libraries
-    #   )
-    #   cmake.write().bind().write().install(workers)
-
-    def install(self, workers: int) -> None:
-        """Invoke CMake to build the project.
-
-        Parameters
-        ----------
-        workers : int
-            The number of parallel workers to use when building the project.
-        """
-        # preconfigure to emit preliminary compile_commands.json
-        subprocess.check_call(
-            [
-                "cmake",
-                "-G",
-                "Ninja",
-                str(self.path.parent),
-            ],
-            cwd=self.path.parent,
-            stdout=subprocess.PIPE,  # NOTE: silences noisy CMake/Conan output
-        )
-
-        # intercept compile_commands.json and filter out any lazily-evaluated cmake
-        # arguments that are not supported by clang-scan-deps
-        compile_commands = self.path.parent / "compile_commands.json"
-        p1689_commands = compile_commands.parent / "p1689_commands.json"
-        with compile_commands.open("r") as infile:
-            with p1689_commands.open("w") as outfile:
-                filtered = [
-                    {
-                        "directory": cmd["directory"],
-                        "command": " ".join(
-                            c for c in cmd["command"].split() if not c.startswith("@")
-                        ),
-                        "file": cmd["file"],
-                        "output": cmd["output"],
-                    }
-                    for cmd in json.load(infile)
-                ]
-                json.dump(filtered, outfile, indent=4)
-
-        # invoke clang-scan-deps to generate the p1689 dependency graph
-        p1689 = json.loads(subprocess.run(
-            [
-                str(env / "bin" / "clang-scan-deps"),
-                "-format=p1689",
-                "-compilation-database",
-                str(p1689_commands),
-            ],
-            check=True,
-            capture_output=True,
-        ).stdout.decode("utf-8").strip())
-
-        # extract exported C++ modules and generate equivalent Python bindings
-        cpp_modules: dict[str, Path] = {}
-        python_modules: dict[str, Path] = {}
-        for module in p1689["rules"]:
-            for source in module.get("provides", []):
-                name = source["logical-name"]
-                path = Path(source["source-path"])
-                cpp_modules[name] = path
-                # python_modules[name] = self.emit_python(path)
-
-        # fill in unresolved C++ imports with Python modules
-        for module in p1689["rules"]:
-            for source in module.get("requires", []):
-                name = source["logical-name"]
-                if name not in cpp_modules:
-                    destination = compile_commands.parent / "bindings" / f"{name}.cpp"
-                    module = PyModule(destination)
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    with destination.open("w") as file:
-                        file.write(module.generate())
-                    cpp_modules[name] = destination
-
-        # insert generated modules into CMakeLists.txt as additional sources
-        print()
-        print("exported to C++:")
-        print("\n".join(f"{k}: {v}" for k, v in cpp_modules.items()))
-        print()
-        print("exported to Python:")
-        print("\n".join(f"{k}: {v}" for k, v in python_modules.items()))
-        print()
-
-        # TODO: it's possible to build a dependency graph by inserting
-        # --graphviz=filepath into this second configure step.  This could be useful
-        # for debugging or for visualizing the build process.  It could generate some
-        # wicked art, too.
-
-        # reconfigure to use the updated modules
-        subprocess.check_call(
-            [
-                "cmake",
-                "-G",
-                "Ninja",
-                str(self.path.parent),
-            ],
-            cwd=self.path.parent,
-            stdout=subprocess.PIPE,
-        )
-
-        # build the extensions using CMake
-        try:
-            build_args = [
-                "cmake",
-                "--build",
-                ".",
-                "--config",
-                "Debug" if self.debug else "Release",
-            ]
-            if workers:
-                build_args += ["--parallel", str(workers)]
-            subprocess.check_call(build_args, cwd=self.path.parent)
-        except subprocess.CalledProcessError:
-            sys.exit()  # errors are already printed to the console
-
-        # export the compile_commands.json file so that it can be used by clangd, etc.
-        shutil.copy2(self.path.parent / "compile_commands.json", "compile_commands.json")
-
-
-class BuildExt(pybind11_build_ext):
+class BuildExt(setuptools_build_ext):
     """A custom build_ext command that uses CMake to build extensions with support for
     C++20 modules, parallel builds, clangd, executable targets, and bertrand's core
     dependencies without any extra configuration.
     """
 
-    user_options = pybind11_build_ext.user_options + [
+    MIN_CMAKE_VERSION = Version("3.28")
+
+    # additional command-line options accepted by the command
+    user_options = setuptools_build_ext.user_options + [
         (
             "workers=",
             "j",
             "The number of parallel workers to use when building CMake extensions"
-        )
+        ),
     ]
 
-    def __init__(self, *args: Any, conan: list[Package], workers: int, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        cpp_std: int,
+        cpp_deps: list[Package],
+        include_dirs: list[str],
+        define_macros: list[tuple[str, str]],
+        compile_args: list[str],
+        library_dirs: list[str],
+        libraries: list[str],
+        link_args: list[str],
+        cmake_args: dict[str, str],
+        runtime_library_dirs: list[str],
+        export_symbols: list[str],
+        workers: int,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
-        self.conan = conan
         self.workers = workers
+
+        cpath = env.get("CPATH", "")
+        if cpath:
+            include_dirs = cpath.split(os.pathsep) + include_dirs
+
+        ld_library_path = env.get("LD_LIBRARY_PATH", "")
+        if ld_library_path:
+            library_dirs = ld_library_path.split(os.pathsep) + library_dirs
+
+        runtime_library_path = env.get("RUNTIME_LIBRARY_PATH", "")
+        if runtime_library_path:
+            runtime_library_dirs = runtime_library_path.split(os.pathsep) + runtime_library_dirs
+
+        cxxflags = env.get("CXXFLAGS", "")
+        if cxxflags:
+            compile_args = shlex.split(cxxflags) + compile_args
+
+        ldflags = env.get("LDFLAGS", "")
+        if ldflags:
+            link_args = shlex.split(ldflags) + link_args
+
+        self.bertrand: dict[str, Any] = {
+            "cpp_std": cpp_std,
+            "cpp_deps": cpp_deps,
+            "include_dirs": include_dirs,
+            "define_macros": define_macros,
+            "compile_args": compile_args,
+            "library_dirs": library_dirs,
+            "libraries": libraries,
+            "link_args": link_args,
+            "cmake_args": cmake_args,
+            "runtime_library_dirs": runtime_library_dirs,
+            "export_symbols": export_symbols,
+        }
 
     def finalize_options(self) -> None:
         """Parse command-line options and convert them to the appropriate types.
@@ -903,6 +200,453 @@ class BuildExt(pybind11_build_ext):
                 raise ValueError(
                     "workers must be set to a positive integer or 0 to use all cores"
                 )
+
+    def write_conanfile(self) -> Path:
+        """Emit a conanfile.txt file to the build directory with the necessary
+        dependencies.
+
+        Returns
+        -------
+        Path
+            The path to the generated conanfile.txt.
+        """
+        path = Path(self.build_lib) / "conanfile.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w") as f:
+            f.write("[requires]\n")
+            for package in self.bertrand["cpp_deps"]:
+                f.write(f"{package.name}/{package.version}\n")
+            f.write("\n")
+            f.write("[generators]\n")
+            f.write("CMakeDeps\n")
+            f.write("CMakeToolchain\n")
+            f.write("\n")
+            f.write("[layout]\n")
+            f.write("cmake_layout\n")
+
+        return path
+
+    def conan_install(self, conanfile: Path) -> None:
+        """Invoke conan to install C++ dependencies for the project and link them
+        against the environment.
+
+        Parameters
+        ----------
+        conanfile : Path
+            The path to the conanfile.txt to install.
+        """
+        subprocess.check_call(
+            [
+                "conan",
+                "install",
+                str(conanfile.absolute()),
+                "--build=missing",
+                "--output-folder",
+                str(conanfile.parent),
+                "-verror",
+            ],
+            cwd=conanfile.parent,
+        )
+        env.packages.extend(p for p in self.bertrand["cpp_deps"] if p not in env.packages)
+
+    def _cmakelists_header(self) -> str:
+        build_type = "Debug" if self.debug else "Release"
+        toolchain = (
+            Path(self.build_lib) / "build" / build_type / "generators" /
+            "conan_toolchain.cmake"
+        )
+        libraries = self.bertrand["libraries"] + [p.link for p in env.packages]
+
+        out = f"# CMakeLists.txt automatically generated by bertrand {__version__}\n"
+        out += f"cmake_minimum_required(VERSION {self.MIN_CMAKE_VERSION})\n"
+        out += f"project({self.distribution.get_name()} LANGUAGES CXX)\n"
+        out += "\n"
+        out += "# global config\n"
+        out += f"set(CMAKE_BUILD_TYPE {build_type})\n"
+        out += f"set(PYTHON_EXECUTABLE {sys.executable})\n"
+        out += "set(CMAKE_CXX_SCAN_FOR_MODULES ON)\n"
+        out += "set(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n"
+        out += "set(CMAKE_COLOR_DIAGNOSTICS ON)\n"
+        for k, v in self.bertrand["cmake_args"].items():
+            out += f"set({k} {v})\n"
+        if self.bertrand["define_macros"]:
+            out += "add_compile_definitions(\n"
+            for define in self.bertrand["define_macros"]:
+                out += f"    {define[0]}={define[1]}\n"
+            out += ")\n"
+        if self.bertrand["compile_args"]:
+            out += "add_compile_options(\n"
+            for flag in self.bertrand["compile_args"]:
+                out += f"    {flag}\n"
+            out += ")\n"
+        if self.bertrand["link_args"]:
+            out += "add_link_options(\n"
+            for flag in self.bertrand["link_args"]:
+                out += f"    {flag}\n"
+            out += ")\n"
+        out += "\n"
+        out += "# package management\n"
+        out += f"include({toolchain})\n"
+        out += "\n".join(f'find_package({p.find} REQUIRED)' for p in env.packages)
+        out += "\n"
+        if self.bertrand["include_dirs"]:
+            out += "include_directories(\n"
+            for include in self.bertrand["include_dirs"]:
+                out += f"    {include}\n"
+            out += ")\n"
+        if self.bertrand["library_dirs"]:
+            out += "link_directories(\n"
+            for lib_dir in self.bertrand["library_dirs"]:
+                out += f"    {lib_dir}\n"
+            out += ")\n"
+        if libraries:
+            out += "link_libraries(\n"
+            for lib in libraries:
+                out += f"    {lib}\n"
+            out += ")\n"
+        if self.bertrand["runtime_library_dirs"]:
+            out += "set(CMAKE_INSTALL_RPATH\n"
+            for lib_dir in self.bertrand["runtime_library_dirs"]:
+                out += f"    \"{lib_dir}\"\n"
+            out += ")\n"
+        # TODO: what the hell to do with export_symbols?
+        out += "\n"
+        return out
+
+    def write_stage1_cmakelists(self) -> Path:
+        """Emit a preliminary CMakeLists.txt file that includes all sources as a single
+        shared library target, which can be scanned using `clang-scan-deps` to
+        determine module dependencies.
+
+        Returns
+        -------
+        Path
+            The path to the generated CMakeLists.txt.
+        """
+        path = Path(self.build_lib).absolute() / "CMakeLists.txt"
+        extra_include_dirs: set[Path] = set()
+        extra_library_dirs: set[Path] = set()
+        extra_libraries: set[str] = set()
+        for source in self.extensions:
+            extra_include_dirs.update(include for include in source.include_dirs)
+            extra_library_dirs.update(lib_dir for lib_dir in source.library_dirs)
+            extra_libraries.update(lib for lib in source.libraries)
+
+        with path.open("w") as f:
+            f.write(self._cmakelists_header())
+            f.write("# stage 1 shared library includes all sources\n")
+            f.write("add_library(${PROJECT_NAME} MODULE\n")
+            for source in self.extensions:
+                f.write(f"    {source.path.absolute()}\n")
+            f.write(")\n")
+            f.write("target_sources(${PROJECT_NAME} PRIVATE\n")
+            f.write( "    FILE_SET CXX_MODULES\n")
+            f.write(f"    BASE_DIRS {Path.cwd()}\n")
+            f.write( "    FILES\n")
+            for source in self.extensions:
+                f.write(f"        {source.path.absolute()}\n")
+            f.write(")\n")
+            f.write("set_target_properties(${PROJECT_NAME} PROPERTIES\n")
+            f.write( "    PREFIX \"\"\n")
+            f.write( "    OUTPUT_NAME ${PROJECT_NAME}\n")
+            f.write( "    SUFFIX \"\"\n")
+            f.write(f"    CXX_STANDARD {self.bertrand['cpp_std']}\n")
+            f.write( "    CXX_STANDARD_REQUIRED ON\n")
+            f.write(")\n")
+            if extra_include_dirs:
+                f.write("target_include_directories(${PROJECT_NAME} PRIVATE\n")
+                for include in extra_include_dirs:
+                    f.write(f"    {include}\n")
+                f.write(")\n")
+            if extra_library_dirs:
+                f.write("target_link_directories(${PROJECT_NAME} PRIVATE\n")
+                for lib_dir in extra_library_dirs:
+                    f.write(f"    {lib_dir}\n")
+                f.write(")\n")
+            if extra_libraries:
+                f.write("target_link_libraries(${PROJECT_NAME} PRIVATE\n")
+                for lib in extra_libraries:
+                    f.write(f"    {lib}\n")
+                f.write(")\n")
+            f.write("\n")
+
+        return path
+
+    def get_compile_commands(self, cmakelists: Path) -> Path:
+        """Configure a CMakeLists.txt file to emit an associated compile_commands.json
+        file that can be passed to `clang-scan-deps` and `bertrand-ast`.
+
+        Parameters
+        ----------
+        cmakelists : Path
+            The path to the CMakeLists.txt file to configure.
+
+        Returns
+        -------
+        Path
+            The path to the generated compile_commands.json file.  Since we're only
+            configuring the project at this stage, the resulting file will have any
+            lazily-evaluated cmake arguments (any commands that begin with `@`)
+            stripped from it.
+        """
+        cmakelists.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.check_call(
+            [
+                str(env / "bin" / "cmake"),
+                "-G",
+                "Ninja",
+                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+                str(cmakelists.parent),
+            ],
+            cwd=cmakelists.parent,
+            stdout=subprocess.PIPE,  # NOTE: silences noisy CMake/Conan output
+        )
+
+        # filter out any lazily-evaluated arguments that might not be present at the
+        # time this method is invoked, so that it can be used with clang tooling
+        path = cmakelists.parent / "compile_commands.json"
+        with path.open("r+") as f:
+            filtered = [
+                {
+                    "directory": cmd["directory"],
+                    "command": " ".join(
+                        c for c in cmd["command"].split() if not c.startswith("@")
+                    ),
+                    "file": cmd["file"],
+                    "output": cmd["output"],
+                }
+                for cmd in json.load(f)
+            ]
+            f.seek(0)
+            json.dump(filtered, f, indent=4)
+            f.truncate()
+
+        return path
+
+    def scan_dependencies(self, compile_commands: Path) -> dict[str, Any]:
+        """Generate a p1689 dependency graph from a compile_commands.json file.
+
+        Parameters
+        ----------
+        compile_commands : Path
+            The path to the compile_commands.json file to scan.
+
+        Returns
+        -------
+        dict[str, Any]
+            The dependency graph in p1689 format.
+        """
+        return json.loads(subprocess.run(
+            [
+                str(env / "bin" / "clang-scan-deps"),
+                "-format=p1689",
+                "-compilation-database",
+                str(compile_commands),
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout.decode("utf-8").strip())
+
+    # TODO: we're good up till here.  Now I need to iterate over the p1689 graph and
+    # update each source's dependencies by resolving imports.  Whenever an unresolved
+    # import is encountered, I need to generate a Python binding file and add it to the
+    # source's dependencies like normal.
+
+    def resolve_imports(self, p1689: dict[str, Any]) -> None:
+        """Analyze a p1689 dependency graph to mark primary module interfaces and
+        generate Python bindings for unresolved C++ imports.
+
+        Parameters
+        ----------
+        p1689 : dict[str, Any]
+            The dependency graph in p1689 format.
+        """
+        for module in p1689["rules"]:
+            breakpoint()
+
+        # TODO: iterate through p1689["rules"].  Whenever a primary module interface
+        # is found (by analyzing its logical-name), get the corresponding source,
+        # search it in the self.extensions list, and mark the source as a primary
+        # module interface.  Whenever an unresolved import is detected, search for a
+        # corresponding Python module and generate a binding file.  Then, add all
+        # imports to the source's dependencies list.
+
+    def write_stage2_cmakelists(self) -> Path:
+        """Emit an intermediate CMakeLists.txt file that includes all sources as
+        separate shared libraries using the dependency information gathered from stage
+        1.
+
+        Returns
+        -------
+        Path
+            The path to the generated CMakeLists.txt.
+
+        Notes
+        -----
+        Configuring the resulting CMakeLists.txt will emit an updated
+        compile_commands.json file that is complete enough to be used for AST parsing.
+        """
+        path = Path(self.build_lib).absolute() / "CMakeLists.txt"
+        with path.open("w") as f:
+            f.write(self._cmakelists_header())
+            f.write("# stage 2 uses a unique shared library for each source\n")
+            f.write("\n")
+            for ext in self.extensions:
+                f.write(f"# source: {ext.path.absolute()}\n")
+                f.write(f"add_library({ext.name} MODULE\n")
+                for source in ext.sources:
+                    f.write(f"    {PosixPath(source).absolute()}\n")
+                f.write(")\n")
+                f.write(f"target_sources({ext.name} PRIVATE\n")
+                f.write( "    FILE_SET CXX_MODULES\n")
+                f.write(f"    BASE_DIRS {Path.cwd()}\n")
+                f.write( "    FILES\n")
+                for source in ext.sources:
+                    f.write(f"        {PosixPath(source).absolute()}\n")
+                f.write(")\n")
+                f.write(f"set_target_properties({ext.name} PROPERTIES\n")
+                f.write( "    PREFIX \"\"\n")
+                f.write(f"    OUTPUT_NAME {ext.name}\n")
+                f.write( "    SUFFIX \"\"\n")
+                f.write(f"    CXX_STANDARD {ext.cpp_std}\n")
+                f.write( "    CXX_STANDARD_REQUIRED ON\n")
+                for key, value in ext.extra_cmake_args.items():
+                    f.write(f"    {key} {value}\n")
+                f.write(")\n")
+                if ext.include_dirs:
+                    f.write(f"target_include_directories({ext.name} PRIVATE\n")
+                    for include in ext.include_dirs:
+                        f.write(f"    {include}\n")
+                    f.write(")\n")
+                if ext.library_dirs:
+                    f.write(f"target_link_directories({ext.name} PRIVATE\n")
+                    for lib_dir in ext.library_dirs:
+                        f.write(f"    {lib_dir}\n")
+                    f.write(")\n")
+                if ext.libraries:
+                    f.write(f"target_link_libraries({ext.name} PRIVATE\n")
+                    for lib in ext.libraries:
+                        f.write(f"    {lib}\n")
+                    f.write(")\n")
+                if ext.extra_compile_args:
+                    f.write(f"target_compile_options({ext.name} PRIVATE\n")
+                    for flag in ext.extra_compile_args:
+                        f.write(f"    {flag}\n")
+                    f.write(")\n")
+                if ext.extra_link_args or ext.runtime_library_dirs:
+                    f.write(f"target_link_options({ext.name} PRIVATE\n")
+                    for flag in ext.extra_link_args:
+                        f.write(f"    {flag}\n")
+                    if ext.runtime_library_dirs:
+                        for lib_dir in ext.runtime_library_dirs:
+                            f.write(f"    \"-Wl,-rpath,{lib_dir}\"\n")
+                    f.write(")\n")
+                if ext.define_macros:
+                    f.write(f"target_compile_definitions({ext.name} PRIVATE\n")
+                    for define in ext.define_macros:
+                        f.write(f"    {define[0]}={define[1]}\n")
+                    f.write(")\n")
+                # TODO: what the hell to do with export_symbols?
+                f.write("\n")
+
+        return path
+
+    def parse_ast(self, compile_commands: Path) -> None:
+        """Analyze the AST of the C++ sources to generate Python bindings, discover
+        executable targets, and cull any unexported sources.
+
+        Parameters
+        ----------
+        compile_commands : Path
+            The path to the compile_commands.json file to supplement the AST parser.
+        """
+        # TODO: for each source file, parse the AST and print JSON metadata to stdout.
+        # If the metadata indicates that the source is an executable, mark it as such
+        # before moving on.  If the source is a module interface, gather all the
+        # exported symbols and generate a Python binding file, which gets added to
+        # its dependencies.
+
+        # bertrand-ast -p . ../../ast_tests/ast_test.cpp
+
+    def write_stage3_cmakelists(self) -> Path:
+        """Emit a final CMakeLists.txt file that includes semantically-correct
+        shared library and executable targets based on the AST analysis, along with
+        extra Python bindings to expose the modules to the interpreter.
+
+        Returns
+        -------
+        Path
+            The path to the generated CMakeLists.txt.
+        """
+        path = Path(self.build_lib).absolute() / "CMakeLists.txt"
+        with path.open("w") as f:
+            f.write(self._cmakelists_header())
+            for ext in self.extensions:
+                if ext.primary_module:
+                    f.write(f"# shared library: {ext.path.absolute()}\n")
+                    f.write(f"add_library({ext.name} MODULE\n")
+                elif ext.executable:
+                    f.write(f"# executable: {ext.path.absolute()}\n")
+                    f.write(f"add_executable({ext.name}\n")
+                else:
+                    continue
+
+                for source in ext.sources:
+                    f.write(f"    {PosixPath(source).absolute()}\n")
+                f.write(")\n")
+                f.write(f"target_sources({ext.name} PRIVATE\n")
+                f.write( "    FILE_SET CXX_MODULES\n")
+                f.write(f"    BASE_DIRS {Path.cwd()}\n")
+                f.write( "    FILES\n")
+                for source in ext.sources:
+                    f.write(f"        {PosixPath(source).absolute()}\n")
+                f.write(")\n")
+                f.write(f"set_target_properties({ext.name} PROPERTIES\n")
+                f.write( "    PREFIX \"\"\n")
+                f.write(f"    OUTPUT_NAME {ext.name}\n")
+                f.write( "    SUFFIX \"\"\n")
+                f.write(f"    CXX_STANDARD {ext.cpp_std}\n")
+                f.write( "    CXX_STANDARD_REQUIRED ON\n")
+                for key, value in ext.extra_cmake_args.items():
+                    f.write(f"    {key} {value}\n")
+                f.write(")\n")
+                if ext.include_dirs:
+                    f.write(f"target_include_directories({ext.name} PRIVATE\n")
+                    for include in ext.include_dirs:
+                        f.write(f"    {include}\n")
+                    f.write(")\n")
+                if ext.library_dirs:
+                    f.write(f"target_link_directories({ext.name} PRIVATE\n")
+                    for lib_dir in ext.library_dirs:
+                        f.write(f"    {lib_dir}\n")
+                    f.write(")\n")
+                if ext.libraries:
+                    f.write(f"target_link_libraries({ext.name} PRIVATE\n")
+                    for lib in ext.libraries:
+                        f.write(f"    {lib}\n")
+                    f.write(")\n")
+                if ext.extra_compile_args:
+                    f.write(f"target_compile_options({ext.name} PRIVATE\n")
+                    for flag in ext.extra_compile_args:
+                        f.write(f"    {flag}\n")
+                    f.write(")\n")
+                if ext.extra_link_args or ext.runtime_library_dirs:
+                    f.write(f"target_link_options({ext.name} PRIVATE\n")
+                    for flag in ext.extra_link_args:
+                        f.write(f"    {flag}\n")
+                    if ext.runtime_library_dirs:
+                        for lib_dir in ext.runtime_library_dirs:
+                            f.write(f"    \"-Wl,-rpath,{lib_dir}\"\n")
+                    f.write(")\n")
+                if ext.define_macros:
+                    f.write(f"target_compile_definitions({ext.name} PRIVATE\n")
+                    for define in ext.define_macros:
+                        f.write(f"    {define[0]}={define[1]}\n")
+                    f.write(")\n")
+                # TODO: what the hell to do with export_symbols?
+                f.write("\n")
+
+        return path
 
     def build_extensions(self) -> None:
         """Build all extensions in the project.
@@ -927,39 +671,63 @@ class BuildExt(pybind11_build_ext):
         ]
         if incompabile_extensions:
             raise TypeError(
-                f"Extensions must be of type bertrand.Extension: "
+                f"Extensions must be of type bertrand.Source: "
                 f"{incompabile_extensions}"
             )
 
-        # install conan dependencies
-        build_lib = Path(self.build_lib)
-        if self.conan:
-            ConanFile(build_lib, self.conan).install()
+        # stage 0: install conan dependencies
+        if self.bertrand["cpp_deps"]:
+            self.conan_install(self.write_conanfile())
 
-        # TODO:
-        #   if self.extensions:
-        #       CMakeLists(
-        #           build_lib,
-        #           self.extensions,
-        #           self.distribution.get_name(),
-        #           self.debug,
-        #           self.compiler.include_dirs,
-        #           self.compiler.library_dirs,
-        #           self.compiler.libraries + [p.link for p in env.packages],
-        #       ).write().bind().write().install()
+        # stage 1: determine module graph using clang-scan-deps and resolve imports
+        cmakelists = self.write_stage1_cmakelists()
+        compile_commands = self.get_compile_commands(cmakelists)
+        p1689 = self.scan_dependencies(compile_commands)
+        # self.resolve_imports(p1689)
 
-        cmakelists = CMakeLists(
-            build_lib=build_lib,
-            project=self.distribution.get_name(),
-            debug=self.debug,
-            include_dirs=self.compiler.include_dirs,
-            library_dirs=self.compiler.library_dirs,
-            libraries=self.compiler.libraries + [p.link for p in env.packages],
+        # stage 2: parse AST to generate Python bindings and categorize targets
+        cmakelists = self.write_stage2_cmakelists()
+        compile_commands = self.get_compile_commands(cmakelists)
+        breakpoint()
+        self.parse_ast(compile_commands)
+
+        # stage 3: build the final project with proper dependencies and bindings
+        cmakelists = self.write_stage3_cmakelists()
+        subprocess.check_call(
+            [
+                str(env / "bin" / "cmake"),
+                "-G",
+                "Ninja",
+                str(cmakelists.parent),
+            ],
+            cwd=cmakelists.parent,
+            stdout=subprocess.PIPE,
         )
-        for ext in self.extensions:
-            cmakelists.add(ext)
+        try:
+            build_args = [
+                str(env / "bin" / "cmake"),
+                "--build",
+                ".",
+                "--config",
+                "Debug" if self.debug else "Release",  # TODO: probably not necessary
+            ]
+            if self.workers:
+                build_args += ["--parallel", str(self.workers)]
+            subprocess.check_call(build_args, cwd=cmakelists.parent)
+            shutil.copy2(
+                cmakelists.parent / "compile_commands.json",
+                "compile_commands.json"
+            )
+        except subprocess.CalledProcessError:
+            sys.exit()  # errors are already printed to the console
 
-        cmakelists.install(self.workers)
+    # TODO: if files are copied out of the build directory, then they should be added
+    # to a persistent registry so that they can be cleaned up later with a simple
+    # command.  This is not necessary unless the project is being built inplace (i.e.
+    # through `$ bertrand compile`), in which case the copy_extensions_to_source()
+    # method will be called.  It should update a temp file in the registry with the
+    # paths of all copied files, and then the clean command should read this file and
+    # delete all the paths listed in it if they exist.
 
     def copy_extensions_to_source(self) -> None:
         """Copy executables as well as shared libraries to the source directory if
@@ -985,10 +753,22 @@ class BuildExt(pybind11_build_ext):
 
 
 def setup(
-    *args: Any,
-    cmdclass: dict[str, Any] | None = None,
+    *,
+    sources: list[Source] | None = None,
+    cpp_std: int = 23,
     cpp_deps: Iterable[PackageLike] | None = None,
+    traceback: bool = True,  # TODO: all sources should default to global setting
+    include_dirs: Iterable[str] | None = None,
+    define_macros: Iterable[tuple[str, str]] | None = None,
+    compile_args: Iterable[str] | None = None,
+    library_dirs: Iterable[str] | None = None,
+    libraries: Iterable[str] | None = None,
+    link_args: Iterable[str] | None = None,
+    cmake_args: dict[str, str] | None = None,
+    runtime_library_dirs: Iterable[str] | None = None,
+    export_symbols: Iterable[str] | None = None,
     workers: int = 0,
+    cmdclass: dict[str, Any] | None = None,
     **kwargs: Any
 ) -> None:
     """A custom setup() function that automatically appends the BuildExt command to the
@@ -996,12 +776,10 @@ def setup(
 
     Parameters
     ----------
-    *args : Any
-        Arbitrary positional arguments passed to the setuptools.setup() function.
-    cmdclass : dict[str, Any] | None, default None
-        A dictionary of command classes to override the default setuptools commands.
-        If no setting is given for "build_ext", then it will be set to
-        bertrand.setuptools.BuildExt.
+    sources : list[Source] | None, default None
+        A list of C++ source files to build as extensions.  A separate Source should be
+        given for every source file in the project, and the build targets and
+        dependencies will be inferred from the AST analysis of the sources.
     cpp_deps : Iterable[PackageLike] | None, default None
         A list of C++ dependencies to install before building the extensions.  Each
         dependency should be specified as a string of the form
@@ -1009,6 +787,10 @@ def setup(
         `find_package` and `target_link_libraries` symbols are passed to the CMake
         commands of the same name.  These identifiers can typically be found by running
         `conan search ${package_name}` or by browsing conan.io.
+    cmdclass : dict[str, Any] | None, default None
+        A dictionary of command classes to override the default setuptools commands.
+        If no setting is given for "build_ext", then it will be set to
+        bertrand.setuptools.BuildExt.
     workers : int, default 0
         The number of parallel workers to use when building extensions.  If set to
         zero, then the build will use all available cores.  This can also be set
@@ -1016,19 +798,30 @@ def setup(
     **kwargs : Any
         Arbitrary keyword arguments passed to the setuptools.setup() function.
     """
-    deps: list[Package] = []
-    if env:
-        deps.extend(env.packages)
-
+    deps: list[Package] = list(env.packages) if env else []
     for p in cpp_deps or []:
         package = Package(p, allow_shorthand=False)
         if package not in deps:
             deps.append(package)
 
-    # deps = [Package(p, allow_shorthand=False) for p in conan or []]
     class _BuildExtWrapper(BuildExt):
         def __init__(self, *a: Any, **kw: Any):
-            super().__init__(*a, conan=deps, workers=workers, **kw)
+            super().__init__(
+                *a,
+                cpp_std=cpp_std,
+                cpp_deps=deps,
+                include_dirs=list(include_dirs) if include_dirs else [],
+                define_macros=list(define_macros) if define_macros else [],
+                compile_args=list(compile_args) if compile_args else [],
+                library_dirs=list(library_dirs) if library_dirs else [],
+                libraries=list(libraries) if libraries else [],
+                link_args=list(link_args) if link_args else [],
+                cmake_args=dict(cmake_args) if cmake_args else {},
+                runtime_library_dirs=list(runtime_library_dirs) if runtime_library_dirs else [],
+                export_symbols=list(export_symbols) if export_symbols else [],
+                workers=workers,
+                **kw
+            )
 
     if cmdclass is None:
         cmdclass = {"build_ext": _BuildExtWrapper}
@@ -1039,11 +832,33 @@ def setup(
         if issubclass(cmd, BuildExt):
             class _BuildExtSubclassWrapper(cmd):
                 def __init__(self, *a: Any, **kw: Any):
-                    super().__init__(*a, conan=deps, workers=workers, **kw)
+                    super().__init__(
+                        *a,
+                        cpp_std=cpp_std,
+                        cpp_deps=deps,
+                        include_dirs=list(include_dirs) if include_dirs else [],
+                        define_macros=list(define_macros) if define_macros else [],
+                        compile_args=list(compile_args) if compile_args else [],
+                        library_dirs=list(library_dirs) if library_dirs else [],
+                        libraries=list(libraries) if libraries else [],
+                        link_args=list(link_args) if link_args else [],
+                        cmake_args=dict(cmake_args) if cmake_args else {},
+                        runtime_library_dirs=list(runtime_library_dirs) if runtime_library_dirs else [],
+                        export_symbols=list(export_symbols) if export_symbols else [],
+                        workers=workers,
+                        **kw
+                    )
             cmdclass["build_ext"] = _BuildExtSubclassWrapper
 
-    setuptools.setup(*args, cmdclass=cmdclass, **kwargs)
+    if sources:
+        for source in sources:
+            if not source.cpp_std:
+                source.cpp_std = cpp_std
+    else:
+        sources = []
 
-
-
-
+    setuptools.setup(
+        ext_modules=sources,
+        cmdclass=cmdclass,
+        **kwargs
+    )

@@ -2190,6 +2190,10 @@ class Flags(Table["Flags.Entry"]):
             return result
         return default
 
+    @overload  # type: ignore
+    def get(self, key: str, default: list[str]) -> list[str]: ...  # pylint: disable=signature-differs
+    @overload
+    def get(self, key: str, default: None = None) -> list[str] | None: ...
     def get(self, key: str, default: list[str] | None = None) -> list[str] | None:  # type: ignore
         """Get an item from the table.
 

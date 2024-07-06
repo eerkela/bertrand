@@ -74,3 +74,7 @@ export module {self.name};
 
 {self._end_namespace}
 """
+
+
+class CppModule(Bindings):
+    pass
