@@ -68,10 +68,10 @@
 # del timedelta       # type: ignore
 
 
-from .env import BuildExt, Extension, get_include, setup, env, __version__
+from .env import BuildSources, Source, get_include, setup, env, __version__
 
 
-try:
-    from .regex import Regex
-except ModuleNotFoundError:
-    pass
+# try:
+#     from .regex import Regex
+# except ModuleNotFoundError:
+#     pass

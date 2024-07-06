@@ -21,6 +21,10 @@ from .package import Package, PackageLike
 from .version import __version__
 
 
+# TODO: bertrand/ast/ should be moved under bertrand/env/codegen/, which centralizes
+# all the code generation tools.
+
+
 # TODO: eventually, get_include() won't be necessary, since all the headers will be
 # converted into modules.
 
@@ -37,7 +41,7 @@ def get_include() -> str:
     return str(Path(__file__).absolute().parent.parent.parent)
 
 
-class Extension(setuptools.Extension):
+class Source(setuptools.Extension):
     """Describes an arbitrary source file that can be scanned for dependencies and used
     to generate automated bindings.  One of these is constructed for every source file
     in the project.
@@ -111,7 +115,7 @@ class Extension(setuptools.Extension):
 # just attempts the import from Python to generate the binding file.
 
 
-class BuildExt(setuptools_build_ext):
+class BuildSources(setuptools_build_ext):
     """A custom build_ext command that uses CMake to build extensions with support for
     C++20 modules, parallel builds, clangd, executable targets, and bertrand's core
     dependencies without any extra configuration.
@@ -461,8 +465,35 @@ class BuildExt(setuptools_build_ext):
         p1689 : dict[str, Any]
             The dependency graph in p1689 format.
         """
+        lookup = {source.path: source for source in self.extensions}
+        trunk = Path("CMakeFiles") / f"{self.distribution.get_name()}.dir"
+        cwd = Path.cwd()
+
+        generated: dict[str, str] = {}
         for module in p1689["rules"]:
-            breakpoint()
+            path = Path(module["primary-output"]).relative_to(trunk)
+            path = (cwd.root / path).relative_to(cwd).with_suffix("")
+            source = lookup[path]
+
+            # identify primary module interfaces and mark the associated source
+            for edge in module.get("provides", []):
+                breakpoint()
+
+            # add dependencies
+            for edge in module.get("requires", []):
+                name = edge["logical-name"]
+                if "source-path" in edge:
+                    source.sources.append(
+                        Path(edge["source-path"]).relative_to(cwd).as_posix()
+                    )
+                elif name in generated:
+                    source.sources.append(generated[name])
+                else:
+                    # TODO: pass off to codegen to generate a Python binding file.
+                    # Just need to figure out how that is done.
+                    breakpoint()
+
+        breakpoint()
 
         # TODO: iterate through p1689["rules"].  Whenever a primary module interface
         # is found (by analyzing its logical-name), get the corresponding source,
@@ -656,7 +687,7 @@ class BuildExt(setuptools_build_ext):
         RuntimeError
             If setup.py is invoked outside of a bertrand virtual environment.
         TypeError
-            If any extensions are not of type bertrand.Extension.
+            If any extensions are not of type bertrand.Source.
         """
         if self.extensions and "BERTRAND_HOME" not in os.environ:
             raise RuntimeError(
@@ -664,10 +695,10 @@ class BuildExt(setuptools_build_ext):
                 "to compile C++ extensions"
             )
 
-        # force the use of the coupled Extension class to describe build targets
+        # force the use of the coupled Source class to describe build targets
         self.check_extensions_list(self.extensions)
         incompabile_extensions = [
-            ext for ext in self.extensions if not isinstance(ext, Extension)
+            ext for ext in self.extensions if not isinstance(ext, Source)
         ]
         if incompabile_extensions:
             raise TypeError(
@@ -683,12 +714,11 @@ class BuildExt(setuptools_build_ext):
         cmakelists = self.write_stage1_cmakelists()
         compile_commands = self.get_compile_commands(cmakelists)
         p1689 = self.scan_dependencies(compile_commands)
-        # self.resolve_imports(p1689)
+        self.resolve_imports(p1689)
 
         # stage 2: parse AST to generate Python bindings and categorize targets
         cmakelists = self.write_stage2_cmakelists()
         compile_commands = self.get_compile_commands(cmakelists)
-        breakpoint()
         self.parse_ast(compile_commands)
 
         # stage 3: build the final project with proper dependencies and bindings
@@ -771,8 +801,8 @@ def setup(
     cmdclass: dict[str, Any] | None = None,
     **kwargs: Any
 ) -> None:
-    """A custom setup() function that automatically appends the BuildExt command to the
-    setup commands.
+    """A custom setup() function that automatically appends the BuildSources command to
+    the setup commands.
 
     Parameters
     ----------
@@ -790,7 +820,7 @@ def setup(
     cmdclass : dict[str, Any] | None, default None
         A dictionary of command classes to override the default setuptools commands.
         If no setting is given for "build_ext", then it will be set to
-        bertrand.setuptools.BuildExt.
+        bertrand.setuptools.BuildSources.
     workers : int, default 0
         The number of parallel workers to use when building extensions.  If set to
         zero, then the build will use all available cores.  This can also be set
@@ -804,7 +834,7 @@ def setup(
         if package not in deps:
             deps.append(package)
 
-    class _BuildExtWrapper(BuildExt):
+    class _BuildSourcesWrapper(BuildSources):
         def __init__(self, *a: Any, **kw: Any):
             super().__init__(
                 *a,
@@ -824,13 +854,13 @@ def setup(
             )
 
     if cmdclass is None:
-        cmdclass = {"build_ext": _BuildExtWrapper}
+        cmdclass = {"build_ext": _BuildSourcesWrapper}
     elif "build_ext" not in cmdclass:
-        cmdclass["build_ext"] = _BuildExtWrapper
+        cmdclass["build_ext"] = _BuildSourcesWrapper
     else:
         cmd: type = cmdclass["build_ext"]
-        if issubclass(cmd, BuildExt):
-            class _BuildExtSubclassWrapper(cmd):
+        if issubclass(cmd, BuildSources):
+            class _BuildSourcesSubclassWrapper(cmd):
                 def __init__(self, *a: Any, **kw: Any):
                     super().__init__(
                         *a,
@@ -848,7 +878,7 @@ def setup(
                         workers=workers,
                         **kw
                     )
-            cmdclass["build_ext"] = _BuildExtSubclassWrapper
+            cmdclass["build_ext"] = _BuildSourcesSubclassWrapper
 
     if sources:
         for source in sources:

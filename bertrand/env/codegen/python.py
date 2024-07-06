@@ -1,30 +1,15 @@
-"""Code generation tools for Python <-> C++ bindings."""
+"""Code generation tools to expose Python modules to C++."""
 from __future__ import annotations
 
 import importlib
 import sys
 from pathlib import Path
 
-
-class Bindings:
-    """Base class for auto-generated Python/C++ binding files."""
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-
-    def generate(self) -> str:
-        """Generate the module's source code as a string.
-
-        Returns
-        -------
-        str
-            The module's source code, which is typically written to a .cpp file
-            immediately after invoking this method.
-        """
-        raise NotImplementedError
+from .base import Module
 
 
-class PyModule(Bindings):
+
+class PyModule(Module):
     """Given an unresolved C++ import, search for an equivalent Python module and
     generate a corresponding C++ module to resolve the import.  The C++ module will
     be automatically added to the CMakeLists.txt file as a source, which can be
@@ -74,7 +59,3 @@ export module {self.name};
 
 {self._end_namespace}
 """
-
-
-class CppModule(Bindings):
-    pass
