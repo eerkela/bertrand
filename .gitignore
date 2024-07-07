@@ -46,7 +46,7 @@
 !/.github/workflows/**
 
 # ...explicitly excluding any files/directories that match these patterns
-/*.*/
+/**/.*/
 /venv/
 build/
 __pycache__/

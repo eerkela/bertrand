@@ -83,6 +83,7 @@ setup(
     sources=[
         Source(cwd / "bertrand" / "example.cpp"),
         Source(cwd / "bertrand" / "example_module.cpp"),
+        Source(cwd / "bertrand" / "example_module2.cpp"),
     ],
     cmdclass={"build_ext": BuildSourcesHeadless},
 )
