@@ -16,7 +16,7 @@ import setuptools
 from packaging.version import Version
 from setuptools.command.build_ext import build_ext as setuptools_build_ext
 
-from .codegen import PyModule, CppModule
+from .codegen import PyModule
 from .environment import env
 from .package import Package, PackageLike
 from .version import __version__
@@ -40,8 +40,8 @@ def get_include() -> str:
 
 class Source(setuptools.Extension):
     """Describes an arbitrary source file that can be scanned for dependencies and used
-    to generate automated bindings.  One of these is constructed for every source file
-    in the project.
+    to generate automated bindings.  One of these should be specified for every source
+    file in the project.
 
     Parameters
     ----------
@@ -66,6 +66,23 @@ class Source(setuptools.Extension):
         If the source file does not exist.
     OSError
         If the source file is a directory.
+
+    Notes
+    -----
+    Unlike `setuptools.Extension`, these objects are meant to represent only a single
+    source file.  Bertrand's build system is powerful enough to automatically detect
+    dependencies between files, so there is no need to specify them manually.  All the
+    required information is extracted from the source file itself.
+
+    One important thing to note regards the way extra build options are interpreted on
+    a per-source basis.  If you have a source file that requires special treatment, you
+    can list additional arguments in the `Source` constructor, which will be used when
+    that source is built as a target.  These flags will also apply to any dependencies
+    that the source has, but *not* to any sources that depend on it in turn.  So, for
+    instance, if you have 3 source files, A, B, and C, where A depends on B and B
+    depends on C, then adding a `-DDEBUG` flag to B will cause both B and C to be built
+    with the flag, while A will be built without it.  If A requires the flag as well,
+    then it should be added to the `Source` constructor for A as well.
     """
 
     def __init__(
@@ -103,15 +120,20 @@ class Source(setuptools.Extension):
         return f"<Source {self.path}>"
 
 
-# TODO: codegen takes in the JSON output of bertrand-ast and generates a corresponding
-# C++ file that exports it to Python.  If working with an unresolved import, then it
-# just attempts the import from Python to generate the binding file.
-
-
 class BuildSources(setuptools_build_ext):
-    """A custom build_ext command that uses CMake to build extensions with support for
-    C++20 modules, parallel builds, clangd, executable targets, and bertrand's core
-    dependencies without any extra configuration.
+    """A custom build_ext command that uses a clang plugin to automatically generate
+    cross-language Python/C++ bindings via ordinary import/export semantics.
+
+    Must be used with the coupled `Source` class to describe build targets.
+
+    Notes
+    -----
+    This command is intended to be placed within the `cmdclass` dictionary of a
+    `setuptools.setup` call.  The `bertrand.setup()` function will normally do this
+    automatically, but if you'd like to customize the build process in any way, you can
+    subclass this command and pass it in manually.  Bertrand does this itself in order
+    to customize the build process based on whether the user is installing within a
+    virtual environment or not.
     """
 
     MIN_CMAKE_VERSION = Version("3.28")
@@ -165,6 +187,8 @@ class BuildSources(setuptools_build_ext):
 
         Raises
         ------
+        TypeError
+            If any extensions are not of type bertrand.Source
         ValueError
             If the workers option is not set to a positive integer or 0.
         """
@@ -176,6 +200,18 @@ class BuildSources(setuptools_build_ext):
         if "-fdeclspec" not in self._bertrand_compile_args:
             self._bertrand_compile_args.append("-fdeclspec")
 
+        # force the use of the coupled Source class to describe build targets
+        self.check_extensions_list(self.extensions)
+        incompabile_extensions = [
+            ext for ext in self.extensions if not isinstance(ext, Source)
+        ]
+        if incompabile_extensions:
+            raise TypeError(
+                f"Extensions must be of type bertrand.Source: "
+                f"{incompabile_extensions}"
+            )
+
+        # add environment variables to the build configuration
         cpath = env.get("CPATH", "")
         if cpath:
             self._bertrand_include_dirs = (
@@ -203,6 +239,7 @@ class BuildSources(setuptools_build_ext):
         if ldflags:
             self._bertrand_link_args = shlex.split(ldflags) + self._bertrand_link_args
 
+        # parse workers from command line
         if self.workers:
             self.workers = int(self.workers)
             if self.workers == 0:
@@ -212,14 +249,9 @@ class BuildSources(setuptools_build_ext):
                     "workers must be set to a positive integer or 0 to use all cores"
                 )
 
-    def write_conanfile(self) -> Path:
-        """Emit a conanfile.txt file to the build directory with the necessary
-        dependencies.
-
-        Returns
-        -------
-        Path
-            The path to the generated conanfile.txt.
+    def conan_install(self) -> None:
+        """Invoke conan to install C++ dependencies for the project and link them
+        against the environment.
         """
         path = Path(self.build_lib) / "conanfile.txt"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,28 +267,17 @@ class BuildSources(setuptools_build_ext):
             f.write("[layout]\n")
             f.write("cmake_layout\n")
 
-        return path
-
-    def conan_install(self, conanfile: Path) -> None:
-        """Invoke conan to install C++ dependencies for the project and link them
-        against the environment.
-
-        Parameters
-        ----------
-        conanfile : Path
-            The path to the conanfile.txt to install.
-        """
         subprocess.check_call(
             [
                 "conan",
                 "install",
-                str(conanfile.absolute()),
+                str(path.absolute()),
                 "--build=missing",
                 "--output-folder",
-                str(conanfile.parent),
+                str(path.parent),
                 "-verror",
             ],
-            cwd=conanfile.parent,
+            cwd=path.parent,
         )
         env.packages.extend(p for p in self._bertrand_cpp_deps if p not in env.packages)
 
@@ -368,7 +389,7 @@ class BuildSources(setuptools_build_ext):
                 out += f"    -fplugin={env / 'lib' / 'bertrand-ast.so'}\n"
                 out += f"    -fplugin-arg-main-cache={self._bertrand_executable_cache}\n"
                 if source.primary_module:
-                    python_path = self._get_python_path(source)
+                    python_path = self.get_python_path(source)
                     out += f"    -fplugin-arg-export-module={source.path.absolute()}\n"
                     out += f"    -fplugin-arg-export-python={python_path}\n"
                     out += f"    -fplugin-arg-export-cache={self._bertrand_generated_cache}\n"
@@ -392,7 +413,7 @@ class BuildSources(setuptools_build_ext):
         out += "\n"
         return out
 
-    def _get_python_path(self, source: Source) -> Path:
+    def get_python_path(self, source: Source) -> Path:
         """Given a primary module interface unit, return the path to the generated
         Python binding file within the build directory.
 
@@ -409,108 +430,14 @@ class BuildSources(setuptools_build_ext):
         assert source.primary_module, f"source is not a primary module interface: {source}"
         return self._bertrand_generated_root / source.path.with_suffix(".python.cpp")
 
-    def get_compile_commands(self, cmakelists: Path) -> Path:
-        """Configure a CMakeLists.txt file to emit an associated compile_commands.json
-        file that can be passed to `clang-scan-deps` and `bertrand-ast`.
-
-        Parameters
-        ----------
-        cmakelists : Path
-            The path to the CMakeLists.txt file to configure.
-
-        Returns
-        -------
-        Path
-            The path to the generated compile_commands.json file.  Since we're only
-            configuring the project at this stage, the resulting file will have any
-            lazily-evaluated cmake arguments (any commands that begin with `@`)
-            stripped from it.
+    def stage1(self) -> None:
+        """TODO
         """
-        cmakelists.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.check_call(
-            [
-                str(env / "bin" / "cmake"),
-                "-G",
-                "Ninja",
-                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-                str(cmakelists.parent),
-            ],
-            cwd=cmakelists.parent,
-            stdout=subprocess.PIPE,  # NOTE: silences noisy CMake/Conan output
-        )
+        cmakelists = self._stage1_cmakelists()
+        compile_commands = self._compile_commands(cmakelists)
+        self._resolve_imports(compile_commands)
 
-        # filter out any lazily-evaluated arguments that might not be present at the
-        # time this method is invoked, so that it can be used with clang tooling
-        path = cmakelists.parent / "compile_commands.json"
-        with path.open("r+") as f:
-            filtered = [
-                {
-                    "directory": cmd["directory"],
-                    "command": " ".join(
-                        c for c in cmd["command"].split() if not c.startswith("@")
-                    ),
-                    "file": cmd["file"],
-                    "output": cmd["output"],
-                }
-                for cmd in json.load(f)
-            ]
-            f.seek(0)
-            json.dump(filtered, f, indent=4)
-            f.truncate()
-
-        return path
-
-    def cmake_build(self, cmakelists: Path) -> Path:
-        """Invoke CMake to compile extensions and build the project using the generated
-        CMakeLists.txt.
-
-        Parameters
-        ----------
-        cmakelists : Path
-            The path to the CMakeLists.txt file to use for the build.
-
-        Returns
-        -------
-        Path
-            The compile_commands.json file that was generated during the build.
-        """
-        subprocess.check_call(
-            [
-                str(env / "bin" / "cmake"),
-                "-G",
-                "Ninja",
-                str(cmakelists.parent),
-                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-            ],
-            cwd=cmakelists.parent,
-            stdout=subprocess.PIPE,
-        )
-        build_args = [
-            str(env / "bin" / "cmake"),
-            "--build",
-            ".",
-            "--config",
-            "Debug" if self.debug else "Release",  # TODO: probably not necessary
-        ]
-        if self.workers:
-            build_args += ["--parallel", str(self.workers)]
-        try:
-            subprocess.check_call(build_args, cwd=cmakelists.parent)
-        except subprocess.CalledProcessError:
-            sys.exit()  # errors are already printed to the console
-
-        return cmakelists.parent / "compile_commands.json"
-
-    def write_stage1_cmakelists(self) -> Path:
-        """Emit a preliminary CMakeLists.txt file that includes all sources as a single
-        shared library target, which can be scanned using `clang-scan-deps` to
-        determine module dependencies.
-
-        Returns
-        -------
-        Path
-            The path to the generated CMakeLists.txt.
-        """
+    def _stage1_cmakelists(self) -> Path:
         path = Path(self.build_lib).absolute() / "CMakeLists.txt"
         extra_include_dirs: set[Path] = set()
         extra_library_dirs: set[Path] = set()
@@ -522,7 +449,7 @@ class BuildSources(setuptools_build_ext):
 
         with path.open("w") as f:
             f.write(self._cmakelists_header())
-            f.write("# stage 1 shared library includes all sources\n")
+            f.write("# stage 1 object includes all sources\n")
             f.write("add_library(${PROJECT_NAME} OBJECT\n")
             for source in self.extensions:
                 f.write(f"    {source.path.absolute()}\n")
@@ -560,20 +487,47 @@ class BuildSources(setuptools_build_ext):
 
         return path
 
-    def resolve_imports(self, compile_commands: Path) -> None:
-        """Generate a p1689 dependency graph to organize the sources and generate
-        Python bindings for unresolved C++ imports.
+    def _compile_commands(self, cmakelists: Path) -> Path:
+        # configuring the project (but not building it!) will generate a complete
+        # enough compilation database for clang-scan-deps to use
+        cmakelists.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.check_call(
+            [
+                str(env / "bin" / "cmake"),
+                "-G",
+                "Ninja",
+                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+                str(cmakelists.parent),
+            ],
+            cwd=cmakelists.parent,
+            stdout=subprocess.PIPE,  # NOTE: silences noisy CMake/Conan output
+        )
 
-        Parameters
-        ----------
-        compile_commands : Path
-            The path to the compile_commands.json file to scan.
+        # ... but first, we have to filter out any lazily-evaluated arguments that
+        # might not be present at the time this method is invoked
+        path = cmakelists.parent / "compile_commands.json"
+        with path.open("r+") as f:
+            filtered = [
+                {
+                    "directory": cmd["directory"],
+                    "command": " ".join(
+                        c for c in cmd["command"].split() if not c.startswith("@")
+                    ),
+                    "file": cmd["file"],
+                    "output": cmd["output"],
+                }
+                for cmd in json.load(f)
+            ]
+            f.seek(0)
+            json.dump(filtered, f, indent=4)
+            f.truncate()
 
-        Notes
-        -----
-        This method acts by side effect on the extensions list, updating each source's
-        dependencies with the resolved imports.
-        """
+        return path
+
+    def _resolve_imports(self, compile_commands: Path) -> None:
+        # module dependencies are represented according to the p1689r5 spec, which is
+        # what CMake uses internally to generate the build graph.  We need some
+        # translation in order to parse this spec for our purposes.
         p1689 = json.loads(subprocess.run(
             [
                 str(env / "bin" / "clang-scan-deps"),
@@ -585,32 +539,54 @@ class BuildSources(setuptools_build_ext):
             stdout=subprocess.PIPE,
         ).stdout.decode("utf-8").strip())
 
+        # we begin by creating a lookup table that maps Path objects to their
+        # respective Source, for cross-referencing.
         lookup = {source.path: source for source in self.extensions}
+
+        # p1689 format lists the dependencies by build *target* rather than source
+        # file, so we need to undo that to obtain the right source paths.  Luckily,
+        # CMake stores the build targets in a nested source tree, so we can just strip
+        # the appropriate prefix.
         trunk = Path("CMakeFiles") / f"{self.distribution.get_name()}.dir"
         cwd = Path.cwd()
 
+        # Each source file is represented by a rule in the p1689 spec
         generated: dict[str, str] = {}
-        generated_dir = Path(self.build_lib).absolute() / "generated"
         for module in p1689["rules"]:
+
+            # find the original Source object from the target path
             path = Path(module["primary-output"]).relative_to(trunk)
             path = (cwd.root / path).relative_to(cwd).with_suffix("")
             source = lookup[path]
 
-            # identify primary module interfaces and mark the associated source
+            # module exports are represented by a "provides" key in the rule, which
+            # for C++ modules can only have a single entry (but possibly more as an
+            # implementation detail, for private partitions, etc.).
             provides = module.get("provides", [])
             if provides:
                 source.module = True
+
+                # a module is a primary module interface if it exports a module name
+                # that lacks partitions
                 source.primary_module = any(
                     ":" not in edge["logical-name"] for edge in provides
                 )
 
-            # add dependencies
+            # module imports are represented by a "requires" key in the rule, which
+            # lists the logical names and discovered source paths for each import.
             for edge in module.get("requires", []):
                 name = edge["logical-name"]
+
+                # if a source path was found, then the module is well-formed at the
+                # C++ level
                 if "source-path" in edge:
                     source.sources.append(
                         Path(edge["source-path"]).relative_to(cwd).as_posix()
                     )
+
+                # otherwise, the import is unresolved.  In this case, we attempt to
+                # import the module at the Python level, and if successful, then we
+                # can generate a Python -> C++ binding file to resolve the import.
                 elif name in generated:
                     source.sources.append(generated[name])
                 else:
@@ -622,38 +598,27 @@ class BuildSources(setuptools_build_ext):
 
                     breakpoint()
                     generated_path = Path(*name.split(".")).with_suffix(".cpp")
-                    PyModule(generated_dir / generated_path).generate(py_import)
+                    PyModule(self._bertrand_generated_root / generated_path).generate(py_import)
                     posix_path = generated_path.as_posix()
                     generated[name] = posix_path
                     source.sources.append(posix_path)
 
-    # TODO: it seems like the stage 2 build is inefficient, since it builds a separate
-    # .o object for all dependencies of all sources, even if the same source is reused
-    # across multiple libraries.
-    # -> There's probably no way around this, since the compilation flags might differ
-    # between sources.
-
-    # What I don't understand is why everything is being built twice.
-
-    def write_stage2_cmakelists(self) -> Path:
-        """Emit an intermediate CMakeLists.txt file that includes all sources as
-        separate shared libraries using the dependency information gathered from stage
-        1.
-
-        Returns
-        -------
-        Path
-            The path to the generated CMakeLists.txt.
-
-        Notes
-        -----
-        Configuring the resulting CMakeLists.txt will emit an updated
-        compile_commands.json file that is complete enough to be used for AST parsing.
+    def stage2(self) -> None:
+        """TODO
         """
+        try:
+            cmakelists = self._stage2_cmakelists()
+            self._cmake_build(cmakelists)
+            self._parse_ast()
+        finally:
+            self._bertrand_generated_cache.unlink(missing_ok=True)
+            self._bertrand_executable_cache.unlink(missing_ok=True)
+
+    def _stage2_cmakelists(self) -> Path:
         path = Path(self.build_lib).absolute() / "CMakeLists.txt"
         with path.open("w") as f:
             f.write(self._cmakelists_header())
-            f.write("# stage 2 uses a unique shared library for each source\n")
+            f.write("# stage 2 uses a unique object for each source\n")
             f.write("\n")
             for ext in self.extensions:
                 f.write(f"# source: {ext.path.absolute()}\n")
@@ -665,12 +630,73 @@ class BuildSources(setuptools_build_ext):
 
         return path
 
+    def _cmake_build(self, cmakelists: Path) -> None:
+        # building the project using the AST plugin will emit the Python bindings
+        # automatically as part of compilation, so we don't need to do anything
+        # special to trigger it.
+        subprocess.check_call(
+            [
+                str(env / "bin" / "cmake"),
+                "-G",
+                "Ninja",
+                str(cmakelists.parent),
+                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            ],
+            cwd=cmakelists.parent,
+            stdout=subprocess.PIPE,
+        )
+        build_args = [
+            str(env / "bin" / "cmake"),
+            "--build",
+            ".",
+            "--config",
+            "Debug" if self.debug else "Release",  # TODO: probably not necessary
+        ]
+        if self.workers:
+            build_args += ["--parallel", str(self.workers)]
+        try:
+            subprocess.check_call(build_args, cwd=cmakelists.parent)
+        except subprocess.CalledProcessError:
+            sys.exit()  # errors are already printed to the console
+
+    def _parse_ast(self) -> None:
+        # The AST plugin dumps the Python bindings to the generated/ folder within the
+        # build directory using a nested directory structure that mirrors the source
+        # tree.  We need to add these bindings to the appropriate Source objects so
+        # that they can be included in the final build.
+        for source in self.extensions:
+            if source.primary_module:
+                bindings = self.get_python_path(source).relative_to(Path.cwd())
+                source.sources.append(bindings.as_posix())
+
+        # Additionally, the AST plugin produces a cache that notes all of the source
+        # files that possess a `main()` entry point.  We mark these in order to build
+        # them as executables in stage 3.
+        if self._bertrand_executable_cache.exists():
+            with self._bertrand_executable_cache.open("r") as f:
+                for line in f:
+                    path = Path(line.strip()).relative_to(Path.cwd()).as_posix()
+                    self._bertrand_source_lookup[path].executable = True
+
     # TODO: stage3 AST can use .o objects that were compiled in stage 2 to avoid
     # recompiling the world
     # https://stackoverflow.com/questions/38609303/how-to-add-prebuilt-object-files-to-executable-in-cmake
     # https://groups.google.com/g/dealii/c/HIUzF7fPyjs
 
-    def write_stage3_cmakelists(self) -> Path:
+    def stage3(self) -> None:
+        """TODO
+        """
+        cmakelists = self._stage3_cmakelists()
+        self._cmake_build(cmakelists)
+
+        # make sure to copy the compilation database to the root of the source tree so
+        # that clangd can use it for code completion, etc.
+        shutil.copy2(
+            cmakelists.parent / "compile_commands.json",
+            "compile_commands.json"
+        )
+
+    def _stage3_cmakelists(self) -> Path:
         """Emit a final CMakeLists.txt file that includes semantically-correct
         shared library and executable targets based on the AST analysis, along with
         extra Python bindings to expose the modules to the interpreter.
@@ -719,56 +745,13 @@ class BuildSources(setuptools_build_ext):
                 "to compile C++ extensions"
             )
 
-        # force the use of the coupled Source class to describe build targets
-        self.check_extensions_list(self.extensions)
-        incompabile_extensions = [
-            ext for ext in self.extensions if not isinstance(ext, Source)
-        ]
-        if incompabile_extensions:
-            raise TypeError(
-                f"Extensions must be of type bertrand.Source: "
-                f"{incompabile_extensions}"
-            )
-
-        # stage 0: install conan dependencies
         if self._bertrand_cpp_deps:
-            self.conan_install(self.write_conanfile())
+            self.conan_install()
 
-        # stage 1: determine module graph using clang-scan-deps and resolve imports
-        cmakelists = self.write_stage1_cmakelists()
-        compile_commands = self.get_compile_commands(cmakelists)
-        self.resolve_imports(compile_commands)
-
-        # stage 2: parse AST to generate Python bindings and update build system
-        try:
-            cmakelists = self.write_stage2_cmakelists()
-            compile_commands = self.cmake_build(cmakelists)
-
-            # add Python bindings to each primary module interface
-            for source in self.extensions:
-                if source.primary_module:
-                    bindings = self._get_python_path(source).relative_to(Path.cwd())
-                    source.sources.append(bindings.as_posix())
-
-            # mark any source that defines a main() function as an executable target
-            if self._bertrand_executable_cache.exists():
-                with self._bertrand_executable_cache.open("r") as f:
-                    for line in f:
-                        path = Path(line.strip()).relative_to(Path.cwd()).as_posix()
-                        self._bertrand_source_lookup[path].executable = True
-        finally:
-            self._bertrand_generated_cache.unlink(missing_ok=True)
-            self._bertrand_executable_cache.unlink(missing_ok=True)
-
+        self.stage1()
+        self.stage2()
         breakpoint()
-
-        # stage 3: build the final project with proper dependencies and bindings
-        cmakelists = self.write_stage3_cmakelists()
-        self.cmake_build(cmakelists)
-        shutil.copy2(
-            cmakelists.parent / "compile_commands.json",
-            "compile_commands.json"
-        )
+        self.stage3()
 
 
     # TODO: if files are copied out of the build directory, then they should be added

@@ -77,7 +77,7 @@ class BuildSourcesHeadless(BuildSources):
 cwd = Path.cwd()
 setup(
     cpp_deps=[
-        "pcre2/10.43@PCRE2/pcre2::pcre2",
+        "pcre2/10.43@PCRE2/pcre2::pcre2",  # TODO: standardize on | separators
         "cpptrace/0.6.1@cpptrace/cpptrace::cpptrace",
     ],
     sources=[
