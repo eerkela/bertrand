@@ -1,6 +1,6 @@
 export module example2;
 
-// export import example;
+export import example;
 
 
 export namespace example2 {

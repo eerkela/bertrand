@@ -11,3 +11,6 @@ export namespace example {
     }
 
 }
+
+
+int main() {}

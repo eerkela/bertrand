@@ -16,6 +16,11 @@ class PyModule(Module):
     cross-referenced to resolve additional imports beyond the first.
     """
 
+    # TODO: maybe the path is interpolated from the dotted module name, which is what
+    # is logically imported in C++.  This would naturally group the generated .cpp files
+    # into a directory structure that mirrors the Python module hierarchy, which can
+    # make it easier to navigate.  
+
     def __init__(self, path: Path) -> None:
         super().__init__(path)
         self.name = path.stem

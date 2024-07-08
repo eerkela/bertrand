@@ -144,20 +144,19 @@ class BuildSources(setuptools_build_ext):
     ) -> None:
         super().__init__(*args, **kwargs)
         self.workers = workers
-        self.bertrand: dict[str, Any] = {
-            "cpp_std": cpp_std,
-            "cpp_deps": cpp_deps,
-            "include_dirs": include_dirs,
-            "define_macros": define_macros,
-            "compile_args": compile_args,
-            "library_dirs": library_dirs,
-            "libraries": libraries,
-            "link_args": link_args,
-            "cmake_args": cmake_args,
-            "runtime_library_dirs": runtime_library_dirs,
-            "export_symbols": export_symbols,
-            # "source_lookup": {},  # populated in finalize_options
-        }
+        self._bertrand_cpp_std = cpp_std
+        self._bertrand_cpp_deps = cpp_deps
+        self._bertrand_include_dirs = include_dirs
+        self._bertrand_define_macros = define_macros
+        self._bertrand_compile_args = compile_args
+        self._bertrand_library_dirs = library_dirs
+        self._bertrand_libraries = libraries
+        self._bertrand_link_args = link_args
+        self._bertrand_cmake_args = cmake_args
+        self._bertrand_runtime_library_dirs = runtime_library_dirs
+        self._bertrand_export_symbols = export_symbols
+        self._bertrand_source_lookup: dict[str, Source] = {}
+        self._bertrand_cache_path: Path  # initialized in finalize_options
 
     def finalize_options(self) -> None:
         """Parse command-line options and convert them to the appropriate types.
@@ -168,36 +167,37 @@ class BuildSources(setuptools_build_ext):
             If the workers option is not set to a positive integer or 0.
         """
         super().finalize_options()
-        self.bertrand["source_lookup"] = {s.sources[0]: s for s in self.extensions}
-        if "-fdeclspec" not in self.bertrand["compile_args"]:
-            self.bertrand["compile_args"].append("-fdeclspec")
+        self._bertrand_source_lookup = {s.sources[0]: s for s in self.extensions}
+        self._bertrand_cache_path = Path(self.build_lib).absolute() / ".generated_cache"
+        if "-fdeclspec" not in self._bertrand_compile_args:
+            self._bertrand_compile_args.append("-fdeclspec")
 
         cpath = env.get("CPATH", "")
         if cpath:
-            self.bertrand["include_dirs"] = (
-                self.bertrand["include_dirs"] + cpath.split(os.pathsep)
+            self._bertrand_include_dirs = (
+                self._bertrand_include_dirs + cpath.split(os.pathsep)
             )
 
         ld_library_path = env.get("LD_LIBRARY_PATH", "")
         if ld_library_path:
-            self.bertrand["library_dirs"] = (
-                self.bertrand["library_dirs"] + ld_library_path.split(os.pathsep)
+            self._bertrand_library_dirs = (
+                self._bertrand_library_dirs + ld_library_path.split(os.pathsep)
             )
 
         runtime_library_path = env.get("RUNTIME_LIBRARY_PATH", "")
         if runtime_library_path:
-            self.bertrand["runtime_library_dirs"] = (
-                self.bertrand["runtime_library_dirs"] +
+            self._bertrand_runtime_library_dirs = (
+                self._bertrand_runtime_library_dirs +
                 runtime_library_path.split(os.pathsep)
             )
 
         cxxflags = env.get("CXXFLAGS", "")
         if cxxflags:
-            self.bertrand["compile_args"] = shlex.split(cxxflags) + self.bertrand["compile_args"]
+            self._bertrand_compile_args = shlex.split(cxxflags) + self._bertrand_compile_args
 
         ldflags = env.get("LDFLAGS", "")
         if ldflags:
-            self.bertrand["link_args"] = shlex.split(ldflags) + self.bertrand["link_args"]
+            self._bertrand_link_args = shlex.split(ldflags) + self._bertrand_link_args
 
         if self.workers:
             self.workers = int(self.workers)
@@ -221,7 +221,7 @@ class BuildSources(setuptools_build_ext):
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w") as f:
             f.write("[requires]\n")
-            for package in self.bertrand["cpp_deps"]:
+            for package in self._bertrand_cpp_deps:
                 f.write(f"{package.name}/{package.version}\n")
             f.write("\n")
             f.write("[generators]\n")
@@ -254,7 +254,7 @@ class BuildSources(setuptools_build_ext):
             ],
             cwd=conanfile.parent,
         )
-        env.packages.extend(p for p in self.bertrand["cpp_deps"] if p not in env.packages)
+        env.packages.extend(p for p in self._bertrand_cpp_deps if p not in env.packages)
 
     def _cmakelists_header(self) -> str:
         build_type = "Debug" if self.debug else "Release"
@@ -262,7 +262,7 @@ class BuildSources(setuptools_build_ext):
             Path(self.build_lib) / "build" / build_type / "generators" /
             "conan_toolchain.cmake"
         )
-        libraries = self.bertrand["libraries"] + [p.link for p in env.packages]
+        libraries = self._bertrand_libraries + [p.link for p in env.packages]
 
         out = f"# CMakeLists.txt automatically generated by bertrand {__version__}\n"
         out += f"cmake_minimum_required(VERSION {self.MIN_CMAKE_VERSION})\n"
@@ -274,21 +274,21 @@ class BuildSources(setuptools_build_ext):
         out += "set(CMAKE_CXX_SCAN_FOR_MODULES ON)\n"
         out += "set(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n"
         out += "set(CMAKE_COLOR_DIAGNOSTICS ON)\n"
-        for k, v in self.bertrand["cmake_args"].items():
+        for k, v in self._bertrand_cmake_args.items():
             out += f"set({k} {v})\n"
-        if self.bertrand["define_macros"]:
+        if self._bertrand_define_macros:
             out += "add_compile_definitions(\n"
-            for define in self.bertrand["define_macros"]:
+            for define in self._bertrand_define_macros:
                 out += f"    {define[0]}={define[1]}\n"
             out += ")\n"
-        if self.bertrand["compile_args"]:
+        if self._bertrand_compile_args:
             out += "add_compile_options(\n"
-            for flag in self.bertrand["compile_args"]:
+            for flag in self._bertrand_compile_args:
                 out += f"    {flag}\n"
             out += ")\n"
-        if self.bertrand["link_args"]:
+        if self._bertrand_link_args:
             out += "add_link_options(\n"
-            for flag in self.bertrand["link_args"]:
+            for flag in self._bertrand_link_args:
                 out += f"    {flag}\n"
             out += ")\n"
         out += "\n"
@@ -296,14 +296,14 @@ class BuildSources(setuptools_build_ext):
         out += f"include({toolchain})\n"
         out += "\n".join(f'find_package({p.find} REQUIRED)' for p in env.packages)
         out += "\n"
-        if self.bertrand["include_dirs"]:
+        if self._bertrand_include_dirs:
             out += "include_directories(\n"
-            for include in self.bertrand["include_dirs"]:
+            for include in self._bertrand_include_dirs:
                 out += f"    {include}\n"
             out += ")\n"
-        if self.bertrand["library_dirs"]:
+        if self._bertrand_library_dirs:
             out += "link_directories(\n"
-            for lib_dir in self.bertrand["library_dirs"]:
+            for lib_dir in self._bertrand_library_dirs:
                 out += f"    {lib_dir}\n"
             out += ")\n"
         if libraries:
@@ -311,22 +311,27 @@ class BuildSources(setuptools_build_ext):
             for lib in libraries:
                 out += f"    {lib}\n"
             out += ")\n"
-        if self.bertrand["runtime_library_dirs"]:
+        if self._bertrand_runtime_library_dirs:
             out += "set(CMAKE_INSTALL_RPATH\n"
-            for lib_dir in self.bertrand["runtime_library_dirs"]:
+            for lib_dir in self._bertrand_runtime_library_dirs:
                 out += f"    \"{lib_dir}\"\n"
             out += ")\n"
         # TODO: what the hell to do with export_symbols?
         out += "\n"
         return out
 
-    def _cmakelists_target(self, source: Source, target: str, ast_plugin: bool) -> str:
+    def _cmakelists_target(
+        self,
+        source: Source,
+        target: str,
+        ast_plugin: bool,
+    ) -> str:
         out = f"target_sources({target} PRIVATE\n"
         out +=  "    FILE_SET CXX_MODULES\n"
         out += f"    BASE_DIRS {Path.cwd()}\n"
         out +=  "    FILES\n"
         for s in source.sources:
-            if self.bertrand["source_lookup"][s].module:
+            if self._bertrand_source_lookup[s].module:
                 out += f"        {PosixPath(s).absolute()}\n"
         out += ")\n"
         out += f"set_target_properties({target} PROPERTIES\n"
@@ -358,7 +363,8 @@ class BuildSources(setuptools_build_ext):
             if ast_plugin:
                 out += f"    -fplugin={env / 'lib' / 'bertrand-ast.so'}\n"
                 if source.primary_module:
-                    out += f"    -fplugin-arg-export-python={Path('a/b/c.cpp')}\n"
+                    out += f"    -fplugin-arg-export-python={Path('a/b/c.cpp')}\n"  # TODO: provide an actual path to binding file
+                    out += f"    -fplugin-arg-export-cache={self._bertrand_cache_path}\n"
             for flag in source.extra_compile_args:
                 out += f"    {flag}\n"
             out += ")\n"
@@ -508,7 +514,7 @@ class BuildSources(setuptools_build_ext):
             f.write( "    PREFIX \"\"\n")
             f.write( "    OUTPUT_NAME ${PROJECT_NAME}\n")
             f.write( "    SUFFIX \"\"\n")
-            f.write(f"    CXX_STANDARD {self.bertrand['cpp_std']}\n")
+            f.write(f"    CXX_STANDARD {self._bertrand_cpp_std}\n")
             f.write( "    CXX_STANDARD_REQUIRED ON\n")
             f.write(")\n")
             if extra_include_dirs:
@@ -600,6 +606,10 @@ class BuildSources(setuptools_build_ext):
     # TODO: it seems like the stage 2 build is inefficient, since it builds a separate
     # .o object for all dependencies of all sources, even if the same source is reused
     # across multiple libraries.
+    # -> There's probably no way around this, since the compilation flags might differ
+    # between sources.
+
+    # What I don't understand is why everything is being built twice.
 
     def write_stage2_cmakelists(self) -> Path:
         """Emit an intermediate CMakeLists.txt file that includes all sources as
@@ -736,7 +746,7 @@ class BuildSources(setuptools_build_ext):
             )
 
         # stage 0: install conan dependencies
-        if self.bertrand["cpp_deps"]:
+        if self._bertrand_cpp_deps:
             self.conan_install(self.write_conanfile())
 
         # stage 1: determine module graph using clang-scan-deps and resolve imports
@@ -745,11 +755,14 @@ class BuildSources(setuptools_build_ext):
         self.resolve_imports(compile_commands)
 
         # stage 2: parse AST to generate Python bindings and categorize targets
-        cmakelists = self.write_stage2_cmakelists()
-        compile_commands = self.cmake_build(cmakelists)
-        breakpoint()
-        # compile_commands = self.get_compile_commands(cmakelists)
-        self.parse_ast(compile_commands)
+        try:
+            cmakelists = self.write_stage2_cmakelists()
+            compile_commands = self.cmake_build(cmakelists)
+            breakpoint()
+            # compile_commands = self.get_compile_commands(cmakelists)
+            self.parse_ast(compile_commands)
+        finally:
+            self._bertrand_cache_path.unlink(missing_ok=True)
 
         # stage 3: build the final project with proper dependencies and bindings
         cmakelists = self.write_stage3_cmakelists()

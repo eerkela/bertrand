@@ -81,7 +81,7 @@ setup(
         "cpptrace/0.6.1@cpptrace/cpptrace::cpptrace",
     ],
     sources=[
-        Source(cwd / "bertrand" / "example.cpp"),
+        # Source(cwd / "bertrand" / "example.cpp"),
         Source(cwd / "bertrand" / "example_module.cpp"),
         Source(cwd / "bertrand" / "example_module2.cpp"),
     ],

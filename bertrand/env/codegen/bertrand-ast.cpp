@@ -1,5 +1,8 @@
-#include <unordered_set>
+#include <fstream>
+#include <ios>
+#include <string>
 
+#include "clang/AST/Decl.h"
 #include "clang/Frontend/FrontendPluginRegistry.h"
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -7,6 +10,18 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Sema/Sema.h"
 #include "llvm/Support/raw_ostream.h"
+
+// file locking is not cross-platform
+#ifdef _WIN32
+    #include <Windows.h>
+#else
+    #include <unistd.h>
+    #include <fcntl.h>
+    #include <sys/file.h>
+#endif
+
+
+
 
 
 // TODO: ok, this looks like it works, and should be a lot more efficient/easier to
@@ -29,7 +44,6 @@
 // path to the python bindings already exists, then the plugin will need to generate
 // the bindings and then compare them to the existing file, in order not to overwrite
 // them and allow incremental builds.
-
 
 
 // https://www.youtube.com/watch?v=A9COzFs-gEg
@@ -164,6 +178,85 @@ protected:
 
 
 
+namespace impl {
+
+    class FileLock {
+        std::string path;
+        #ifdef _WIN32
+            HANDLE handle;
+        #else
+            int handle;
+        #endif
+
+    public:
+
+        #ifdef _WIN32
+
+            FileLock(const std::string& file) : path(file), handle(CreateFileA(
+                path.c_str(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                NULL,
+                OPEN_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                NULL
+            )) {
+                if (handle == INVALID_HANDLE_VALUE) {
+                    llvm::errs() << "Failed to open file: " << path << "\n";
+                } else {
+                    OVERLAPPED overlapped = {0};
+                    if (!LockFileEx(
+                        handle,
+                        LOCKFILE_EXCLUSIVE_LOCK,
+                        0,
+                        MAXDWORD,
+                        MAXDWORD,
+                        &overlapped
+                    )) {
+                        CloseHandle(handle);
+                        handle = INVALID_HANDLE_VALUE;
+                        llvm::errs() << "Failed to lock file: " << path << "\n";
+                    }
+                }
+            }
+
+            ~FileLock() {
+                if (handle != INVALID_HANDLE_VALUE) {
+                    OVERLAPPED overlapped = {0};
+                    UnlockFileEx(handle, 0, MAXDWORD, MAXDWORD, &overlapped);
+                    CloseHandle(handle);
+                }
+            }
+
+        #else
+
+            FileLock(const std::string& file) : path(file), handle(
+                open(path.c_str(), O_RDWR | O_CREAT, 0666)
+            ) {
+                if (handle == -1) {
+                    llvm::errs() << "Failed to open file: " << path << "\n";
+                } else if (flock(handle, LOCK_EX) == -1) {
+                    close(handle);
+                    llvm::errs() << "Failed to lock file: " << path << "\n";
+                }
+            }
+
+            ~FileLock() {
+                if (handle != -1) {
+                    if (flock(handle, LOCK_UN) == -1) {
+                        llvm::errs() << "Failed to unlock file: " << path << "\n";
+                    }
+                    close(handle);
+                }
+            }
+
+        #endif
+
+    };
+
+}
+
+
 ////////////////////////
 ////    VISITORS    ////
 ////////////////////////
@@ -182,6 +275,12 @@ class ExportVisitor : public clang::RecursiveASTVisitor<ExportVisitor> {
     std::string body;
 
     // TODO: need a lot of support functions to extract out the necessary information
+
+    // TODO: maybe I should use a separate class to handle the file I/O, so that I
+    // can incrementally build the binding file.  I believe that's necessary anyways
+    // since the AST parser will be invoked separately for each translation unit, so
+    // I need some way to incrementally write the bindings.  I might be able to just
+    // delete the closing brace and then continue appending.
 
 public:
 
@@ -248,37 +347,79 @@ public:
 
 
 class ExportConsumer : public clang::ASTConsumer {
-    inline static std::unordered_set<std::string> cache;
     clang::CompilerInstance& compiler;
     bool python;
     std::string path;
+    std::string cache_path;
 
 public:
 
     ExportConsumer(
         clang::CompilerInstance& compiler,
         bool python,
-        std::string path
-    ) : compiler(compiler), python(python), path(path) {}
+        std::string path,
+        std::string cache_path
+    ) : compiler(compiler), python(python), path(path), cache_path(cache_path) {}
 
     void HandleTranslationUnit(clang::ASTContext& context) override {
-        if (python && cache.find(path) == cache.end()) {
-            // TODO: check if path has already been generated during this compilation,
-            // and skip if so.  Otherwise, generate the body, then compare against
-            // what already exists, and only write if different.  In both cases, add
-            // the path to the cache of generated files so that bindings are only
-            // generated once.
-            // -> The generated cache will have to be global for all translation units,
-            // which means it will have to be provided as a static member of the
-            // plugin.
-            // -> making the cache static doesn't work.  It needs to be a separate file
-            // in order to be persistent.  It can be really simple, though.  Just a
-            // newline-separated list of paths.
+        if (python) {
+            // open (or create) and lock the cache file within this context (RAII)
+            impl::FileLock lock(cache_path);
 
-            ExportVisitor visitor(path);
-            visitor.TraverseDecl(context.getTranslationUnitDecl());
-            cache.insert(path);
+            // get the source path
+            auto& src_mgr = context.getSourceManager();
+            auto main_file = src_mgr.getFileEntryRefForID(
+                src_mgr.getMainFileID()
+            );
+            std::string source_path = main_file ? main_file->getName().str() : "";
+            if (source_path.empty()) {
+                llvm::errs() << "failed to get path for source of: " << path << "\n";
+                return;
+            }
+
+            // check for a cached entry for this path or write a new one
+            bool cached = false;
+            std::fstream file(cache_path, std::ios::in | std::ios::out);
+            if (file) {
+                std::string line;
+                while (std::getline(file, line)) {
+                    if (line == source_path) {
+                        cached = true;
+                        break;
+                    }
+                }
+                if (!cached) {
+                    ExportVisitor visitor(path);
+                    visitor.TraverseDecl(context.getTranslationUnitDecl());
+                    file.clear();  // clear EOF flag before writing
+                    file.seekp(0, std::ios::end);  // append to end of file
+                    file << source_path << '\n';
+                }
+                file.close();
+            } else {
+                llvm::errs() << "failed to open cache file: " << cache_path << "\n";
+            }
         }
+    }
+
+};
+
+
+class MainConsumer : public clang::ASTConsumer {
+    clang::CompilerInstance& compiler;
+
+public:
+
+    MainConsumer(clang::CompilerInstance& compiler) : compiler(compiler) {}
+
+    bool HandleTopLevelDecl(clang::DeclGroupRef decl_group) override {
+        for (const clang::Decl* decl : decl_group) {
+            auto* func = llvm::dyn_cast<clang::FunctionDecl>(decl);
+            if (func && func->isMain()) {
+                llvm::errs() << "found main function\n";
+            }
+        }
+        return true;
     }
 
 };
@@ -309,6 +450,7 @@ public:
 class ExportAction : public clang::PluginASTAction {
     bool python;
     std::string path;
+    std::string cache_path;
 
 protected:
 
@@ -316,17 +458,22 @@ protected:
         clang::CompilerInstance& compiler,
         llvm::StringRef
     ) override {
-        return std::make_unique<ExportConsumer>(compiler, python, path);
+        return std::make_unique<ExportConsumer>(compiler, python, path, cache_path);
     }
 
     bool ParseArgs(
         const clang::CompilerInstance& compiler,
         const std::vector<std::string>& args
     ) override {
+        bool cache_given = false;
         for (const std::string& arg : args) {
             if (arg.starts_with("python=")) {
                 python = true;
                 path = arg.substr(arg.find('=') + 1);
+
+            } else if (arg.starts_with("cache=")) {
+                cache_given = true;
+                cache_path = arg.substr(arg.find('=') + 1);
 
             } else {
                 clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
@@ -338,6 +485,59 @@ protected:
                 return false;
             }
         }
+
+        if (!cache_given) {
+            clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
+            unsigned diagnostics_id = diagnostics.getCustomDiagID(
+                clang::DiagnosticsEngine::Error,
+                "missing required argument 'cache=...'"
+            );
+            diagnostics.Report(diagnostics_id);
+            return false;
+        }
+
+        return true;
+    }
+
+    PluginASTAction::ActionType getActionType() override {
+        return AddBeforeMainAction;
+    }
+
+};
+
+
+class MainAction : public clang::PluginASTAction {
+protected:
+
+    std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
+        clang::CompilerInstance& compiler,
+        llvm::StringRef
+    ) override {
+        return std::make_unique<MainConsumer>(compiler);
+    }
+
+    bool ParseArgs(
+        const clang::CompilerInstance& compiler,
+        const std::vector<std::string>& args
+    ) override {
+        // TODO: allow a path to be passed in for the cache file that is used to
+        // pass back up to the setup script.
+
+        // for (const std::string& arg : args) {
+        //     if (arg.starts_with("python=")) {
+        //         python = true;
+        //         path = arg.substr(arg.find('=') + 1);
+
+        //     } else {
+        //         clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
+        //         unsigned diagnostics_id = diagnostics.getCustomDiagID(
+        //             clang::DiagnosticsEngine::Error,
+        //             "invalid argument '%0'"
+        //         );
+        //         diagnostics.Report(diagnostics_id) << arg;
+        //         return false;
+        //     }
+        // }
 
         return true;
     }
@@ -357,4 +557,9 @@ static clang::FrontendPluginRegistry::Add<ExportAction> export_action(
     "export",
     "emit a Python binding file for each primary module interface unit, and "
     "gather contextual information for Bertrand's automated build system."
+);
+static clang::FrontendPluginRegistry::Add<MainAction> main_action(
+    "main",
+    "detect a main() entry point in the AST and direct Bertrand's automated "
+    "build system to compile a matching executable."
 );
