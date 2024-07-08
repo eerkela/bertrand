@@ -21,31 +21,6 @@
 #endif
 
 
-
-
-
-// TODO: ok, this looks like it works, and should be a lot more efficient/easier to
-// work with than libtooling.  Now, this file's job is to analyze the AST and emit a
-// Python binding file if any export declarations are present.  It should also write
-// out a simple .json file alongside the build targets that lists whether or not this
-// file is an executable, and what it exports if so.
-
-// -> Perhaps it's better to only emit the JSON, which would include binding
-// information.  That would allow me to avoid generating python bindings for
-// non-primary module interfaces.
-// -> Alternatively, I could pass a flag to the plugin that indicates whether each
-// object is a primary module interface.  If this is toggled off, then the plugin
-// won't emit any bindings for that file, and all the callbacks will just pass.  Then,
-// the primary callback would emit the bindings in one big chunk.  That's probably
-// the way to go.
-
-// That means that this file is almost entirely devoted to binding generation, since
-// the metadata json will barely contain any information.  Note also that if the
-// path to the python bindings already exists, then the plugin will need to generate
-// the bindings and then compare them to the existing file, in order not to overwrite
-// them and allow incremental builds.
-
-
 // https://www.youtube.com/watch?v=A9COzFs-gEg
 
 
@@ -180,19 +155,19 @@ protected:
 
 namespace impl {
 
-    class FileLock {
+    /* An RAII-based file handle that acts like a std:fstream, but also holds an
+    OS-level file lock to prevent concurrent writes.  Note that this creates the file
+    if it did not previously exist, and reads and writes from it 1 line at a time,
+    meaning consumers should not need to append manual newline characters.  The `->`
+    operator allows access to named fstream methods. */
+    struct FileLock {
         std::string path;
+        std::fstream file;
+
         #ifdef _WIN32
             HANDLE handle;
-        #else
-            int handle;
-        #endif
 
-    public:
-
-        #ifdef _WIN32
-
-            FileLock(const std::string& file) : path(file), handle(CreateFileA(
+            FileLock(const std::string& filepath) : path(filepath), handle(CreateFileA(
                 path.c_str(),
                 GENERIC_READ | GENERIC_WRITE,
                 0,
@@ -216,12 +191,15 @@ namespace impl {
                         CloseHandle(handle);
                         handle = INVALID_HANDLE_VALUE;
                         llvm::errs() << "Failed to lock file: " << path << "\n";
+                    } else {
+                        file.open(path, std::ios::in | std::ios::out);
                     }
                 }
             }
 
             ~FileLock() {
                 if (handle != INVALID_HANDLE_VALUE) {
+                    file.close();
                     OVERLAPPED overlapped = {0};
                     UnlockFileEx(handle, 0, MAXDWORD, MAXDWORD, &overlapped);
                     CloseHandle(handle);
@@ -229,8 +207,9 @@ namespace impl {
             }
 
         #else
+            int handle;
 
-            FileLock(const std::string& file) : path(file), handle(
+            FileLock(const std::string& filepath) : path(filepath), handle(
                 open(path.c_str(), O_RDWR | O_CREAT, 0666)
             ) {
                 if (handle == -1) {
@@ -238,11 +217,14 @@ namespace impl {
                 } else if (flock(handle, LOCK_EX) == -1) {
                     close(handle);
                     llvm::errs() << "Failed to lock file: " << path << "\n";
+                } else {
+                    file.open(path, std::ios::in | std::ios::out);
                 }
             }
 
             ~FileLock() {
                 if (handle != -1) {
+                    file.close();
                     if (flock(handle, LOCK_UN) == -1) {
                         llvm::errs() << "Failed to unlock file: " << path << "\n";
                     }
@@ -252,7 +234,34 @@ namespace impl {
 
         #endif
 
+        operator bool() const {
+            return static_cast<bool>(file);
+        }
+
+        template <typename T>
+        FileLock& operator<<(const T& line) {
+            file << line << '\n';
+            return *this;
+        }
+
+        FileLock& operator>>(std::string& line) {
+            std::getline(file, line);
+            return *this;
+        }
+
+        std::fstream* operator->() {
+            return &file;
+        }
+
     };
+
+    std::string get_source_path(const clang::CompilerInstance& compiler) {
+        auto& src_mgr = compiler.getSourceManager();
+        auto main_file = src_mgr.getFileEntryRefForID(
+            src_mgr.getMainFileID()
+        );
+        return main_file ? main_file->getName().str() : "";
+    }
 
 }
 
@@ -271,16 +280,20 @@ namespace impl {
 
 
 class ExportVisitor : public clang::RecursiveASTVisitor<ExportVisitor> {
-    std::string path;  // TODO: this can probably be kept in the ASTConsumer
+    std::string path;
     std::string body;
 
     // TODO: need a lot of support functions to extract out the necessary information
 
-    // TODO: maybe I should use a separate class to handle the file I/O, so that I
-    // can incrementally build the binding file.  I believe that's necessary anyways
-    // since the AST parser will be invoked separately for each translation unit, so
-    // I need some way to incrementally write the bindings.  I might be able to just
-    // delete the closing brace and then continue appending.
+    // TODO: this visitor is now the only writer of the final binding file, since it
+    // is only executed for the primary module interface unit.  It thus probably
+    // does not need to store the body as a string, since it can just open the file
+    // handle and write to it directly.
+
+    // -> Actually it might be better to store the body as a string and then compare
+    // it to the existing contents before writing, in order not to modify the file
+    // unnecessarily.  That should allow CMake's incremental build system to work as
+    // intended.
 
 public:
 
@@ -293,10 +306,7 @@ public:
     bool VisitExportDecl(clang::ExportDecl* export_decl) {
         using llvm::dyn_cast;
 
-        int count = 0;
-
         for (const auto* decl : export_decl->decls()) {
-            ++count;
             if (auto* func = dyn_cast<clang::FunctionDecl>(decl)) {
                 llvm::errs() << "exported function " << func->getNameAsString() << "\n";
 
@@ -314,8 +324,6 @@ public:
                 llvm::errs() << "unhandled export " << decl->getDeclKindName() << "\n";
             }
         }
-
-        llvm::errs() << "exported " << count << " declarations\n";
 
         return true;
     }
@@ -348,56 +356,48 @@ public:
 
 class ExportConsumer : public clang::ASTConsumer {
     clang::CompilerInstance& compiler;
-    bool python;
-    std::string path;
+    std::string module_path;
+    std::string python_path;
     std::string cache_path;
 
 public:
 
     ExportConsumer(
         clang::CompilerInstance& compiler,
-        bool python,
-        std::string path,
+        std::string module_path,
+        std::string python_path,
         std::string cache_path
-    ) : compiler(compiler), python(python), path(path), cache_path(cache_path) {}
+    ) : compiler(compiler), module_path(module_path), python_path(python_path),
+        cache_path(cache_path)
+    {}
 
     void HandleTranslationUnit(clang::ASTContext& context) override {
-        if (python) {
-            // open (or create) and lock the cache file within this context (RAII)
-            impl::FileLock lock(cache_path);
+        std::string source_path = impl::get_source_path(compiler);
+        if (source_path.empty()) {
+            llvm::errs() << "failed to get path for source of: " << module_path << "\n";
+            return;
+        }
 
-            // get the source path
-            auto& src_mgr = context.getSourceManager();
-            auto main_file = src_mgr.getFileEntryRefForID(
-                src_mgr.getMainFileID()
-            );
-            std::string source_path = main_file ? main_file->getName().str() : "";
-            if (source_path.empty()) {
-                llvm::errs() << "failed to get path for source of: " << path << "\n";
+        if (source_path == module_path) {
+            impl::FileLock file(cache_path);
+            if (!file) {
+                llvm::errs() << "failed to open cache file: " << cache_path << "\n";
                 return;
             }
-
-            // check for a cached entry for this path or write a new one
             bool cached = false;
-            std::fstream file(cache_path, std::ios::in | std::ios::out);
-            if (file) {
-                std::string line;
-                while (std::getline(file, line)) {
-                    if (line == source_path) {
-                        cached = true;
-                        break;
-                    }
+            std::string line;
+            while (file >> line) {
+                if (line == source_path) {
+                    cached = true;
+                    break;
                 }
-                if (!cached) {
-                    ExportVisitor visitor(path);
-                    visitor.TraverseDecl(context.getTranslationUnitDecl());
-                    file.clear();  // clear EOF flag before writing
-                    file.seekp(0, std::ios::end);  // append to end of file
-                    file << source_path << '\n';
-                }
-                file.close();
-            } else {
-                llvm::errs() << "failed to open cache file: " << cache_path << "\n";
+            }
+            if (!cached) {
+                ExportVisitor visitor(python_path);
+                visitor.TraverseDecl(context.getTranslationUnitDecl());
+                file->clear();  // clear EOF flag before writing
+                file->seekp(0, std::ios::end);  // append to end of file
+                file << source_path;
             }
         }
     }
@@ -407,16 +407,57 @@ public:
 
 class MainConsumer : public clang::ASTConsumer {
     clang::CompilerInstance& compiler;
+    std::string cache_path;
 
 public:
 
-    MainConsumer(clang::CompilerInstance& compiler) : compiler(compiler) {}
+    MainConsumer(
+        clang::CompilerInstance& compiler,
+        std::string cache_path
+    ) : compiler(compiler), cache_path(cache_path) {}
 
     bool HandleTopLevelDecl(clang::DeclGroupRef decl_group) override {
         for (const clang::Decl* decl : decl_group) {
             auto* func = llvm::dyn_cast<clang::FunctionDecl>(decl);
             if (func && func->isMain()) {
-                llvm::errs() << "found main function\n";
+                // compare against main file ID to ensure only the file that actually
+                // defines main() is considered to be executable
+                const clang::SourceManager& src_mgr = compiler.getSourceManager();
+                clang::SourceLocation loc = func->getLocation();
+                clang::FileID main_file_id = src_mgr.getMainFileID();
+                clang::FileID func_file_id = src_mgr.getFileID(loc);
+                if (func_file_id != main_file_id) {
+                    continue;
+                }
+
+                std::string source_path = impl::get_source_path(compiler);
+                if (source_path.empty()) {
+                    llvm::errs() << "failed to get path for executable\n";
+                    return false;
+                }
+
+                // open (or create) and lock the cache file within this context
+                impl::FileLock file(cache_path);
+                if (!file) {
+                    llvm::errs() << "failed to open cache file: " << cache_path << "\n";
+                    return false;
+                }
+
+                // check for a cached entry for this path or write a new one
+                bool cached = false;
+                std::string line;
+                while (file >> line) {
+                    if (line == source_path) {
+                        cached = true;
+                        break;
+                    }
+                }
+                if (!cached) {
+                    llvm::errs() << "found main() in: " << source_path << "\n";
+                    file->clear();  // clear EOF flag before writing
+                    file->seekp(0, std::ios::end);  // append to end of file
+                    file << source_path;
+                }
             }
         }
         return true;
@@ -448,8 +489,8 @@ public:
 
 
 class ExportAction : public clang::PluginASTAction {
-    bool python;
-    std::string path;
+    std::string module_path;
+    std::string python_path;
     std::string cache_path;
 
 protected:
@@ -458,21 +499,26 @@ protected:
         clang::CompilerInstance& compiler,
         llvm::StringRef
     ) override {
-        return std::make_unique<ExportConsumer>(compiler, python, path, cache_path);
+        return std::make_unique<ExportConsumer>(
+            compiler,
+            module_path,
+            python_path,
+            cache_path
+        );
     }
 
     bool ParseArgs(
         const clang::CompilerInstance& compiler,
         const std::vector<std::string>& args
     ) override {
-        bool cache_given = false;
         for (const std::string& arg : args) {
-            if (arg.starts_with("python=")) {
-                python = true;
-                path = arg.substr(arg.find('=') + 1);
+            if (arg.starts_with("module=")) {
+                module_path = arg.substr(arg.find('=') + 1);
+
+            } else if (arg.starts_with("python=")) {
+                python_path = arg.substr(arg.find('=') + 1);
 
             } else if (arg.starts_with("cache=")) {
-                cache_given = true;
                 cache_path = arg.substr(arg.find('=') + 1);
 
             } else {
@@ -485,17 +531,6 @@ protected:
                 return false;
             }
         }
-
-        if (!cache_given) {
-            clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
-            unsigned diagnostics_id = diagnostics.getCustomDiagID(
-                clang::DiagnosticsEngine::Error,
-                "missing required argument 'cache=...'"
-            );
-            diagnostics.Report(diagnostics_id);
-            return false;
-        }
-
         return true;
     }
 
@@ -507,38 +542,35 @@ protected:
 
 
 class MainAction : public clang::PluginASTAction {
+    std::string cache_path;
+
 protected:
 
     std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
         clang::CompilerInstance& compiler,
         llvm::StringRef
     ) override {
-        return std::make_unique<MainConsumer>(compiler);
+        return std::make_unique<MainConsumer>(compiler, cache_path);
     }
 
     bool ParseArgs(
         const clang::CompilerInstance& compiler,
         const std::vector<std::string>& args
     ) override {
-        // TODO: allow a path to be passed in for the cache file that is used to
-        // pass back up to the setup script.
+        for (const std::string& arg : args) {
+            if (arg.starts_with("cache=")) {
+                cache_path = arg.substr(arg.find('=') + 1);
 
-        // for (const std::string& arg : args) {
-        //     if (arg.starts_with("python=")) {
-        //         python = true;
-        //         path = arg.substr(arg.find('=') + 1);
-
-        //     } else {
-        //         clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
-        //         unsigned diagnostics_id = diagnostics.getCustomDiagID(
-        //             clang::DiagnosticsEngine::Error,
-        //             "invalid argument '%0'"
-        //         );
-        //         diagnostics.Report(diagnostics_id) << arg;
-        //         return false;
-        //     }
-        // }
-
+            } else {
+                clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
+                unsigned diagnostics_id = diagnostics.getCustomDiagID(
+                    clang::DiagnosticsEngine::Error,
+                    "invalid argument '%0'"
+                );
+                diagnostics.Report(diagnostics_id) << arg;
+                return false;
+            }
+        }
         return true;
     }
 

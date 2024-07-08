@@ -156,7 +156,9 @@ class BuildSources(setuptools_build_ext):
         self._bertrand_runtime_library_dirs = runtime_library_dirs
         self._bertrand_export_symbols = export_symbols
         self._bertrand_source_lookup: dict[str, Source] = {}
-        self._bertrand_cache_path: Path  # initialized in finalize_options
+        self._bertrand_generated_root: Path  # initialized in finalize_options
+        self._bertrand_generated_cache: Path  # initialized in finalize_options
+        self._bertrand_executable_cache: Path  # initialized in finalize_options
 
     def finalize_options(self) -> None:
         """Parse command-line options and convert them to the appropriate types.
@@ -168,7 +170,9 @@ class BuildSources(setuptools_build_ext):
         """
         super().finalize_options()
         self._bertrand_source_lookup = {s.sources[0]: s for s in self.extensions}
-        self._bertrand_cache_path = Path(self.build_lib).absolute() / ".generated_cache"
+        self._bertrand_generated_root = Path(self.build_lib).absolute() / "generated"
+        self._bertrand_generated_cache = Path(self.build_lib).absolute() / ".generated"
+        self._bertrand_executable_cache = Path(self.build_lib).absolute() / ".executables"
         if "-fdeclspec" not in self._bertrand_compile_args:
             self._bertrand_compile_args.append("-fdeclspec")
 
@@ -362,9 +366,12 @@ class BuildSources(setuptools_build_ext):
             out += f"target_compile_options({target} PRIVATE\n"
             if ast_plugin:
                 out += f"    -fplugin={env / 'lib' / 'bertrand-ast.so'}\n"
+                out += f"    -fplugin-arg-main-cache={self._bertrand_executable_cache}\n"
                 if source.primary_module:
-                    out += f"    -fplugin-arg-export-python={Path('a/b/c.cpp')}\n"  # TODO: provide an actual path to binding file
-                    out += f"    -fplugin-arg-export-cache={self._bertrand_cache_path}\n"
+                    python_path = self._get_python_path(source)
+                    out += f"    -fplugin-arg-export-module={source.path.absolute()}\n"
+                    out += f"    -fplugin-arg-export-python={python_path}\n"
+                    out += f"    -fplugin-arg-export-cache={self._bertrand_generated_cache}\n"
             for flag in source.extra_compile_args:
                 out += f"    {flag}\n"
             out += ")\n"
@@ -384,6 +391,23 @@ class BuildSources(setuptools_build_ext):
         # TODO: what the hell to do with export_symbols?
         out += "\n"
         return out
+
+    def _get_python_path(self, source: Source) -> Path:
+        """Given a primary module interface unit, return the path to the generated
+        Python binding file within the build directory.
+
+        Parameters
+        ----------
+        source : Source
+            The primary module interface unit to look for.
+
+        Returns
+        -------
+        Path
+            The path to the generated Python binding file.
+        """
+        assert source.primary_module, f"source is not a primary module interface: {source}"
+        return self._bertrand_generated_root / source.path.with_suffix(".python.cpp")
 
     def get_compile_commands(self, cmakelists: Path) -> Path:
         """Configure a CMakeLists.txt file to emit an associated compile_commands.json
@@ -641,45 +665,6 @@ class BuildSources(setuptools_build_ext):
 
         return path
 
-    def parse_ast(self, compile_commands: Path) -> None:
-        """Analyze the AST of the C++ sources to generate Python bindings, discover
-        executable targets, and cull any unexported sources.
-
-        Parameters
-        ----------
-        compile_commands : Path
-            The path to the compile_commands.json file to supplement the AST parser.
-        """
-
-        generated: dict[Path, str] = {}
-        generated_dir = Path(self.build_lib).absolute() / "generated"
-        for source in self.extensions:
-            raw_ast = subprocess.run(
-                [
-                    str(env / "bin" / "bertrand-ast"),
-                    "-p",
-                    str(compile_commands.parent),  # use stage 2 compile_commands.json
-                    str(source.path.absolute()),
-                ],
-                check=True,
-                stdout=subprocess.PIPE,
-            ).stdout.decode("utf-8").strip()
-            ast = json.loads(raw_ast)
-            breakpoint()
-
-            if ast["has_main"]:
-                source.executable = True
-
-            if source.primary_module:
-                if source.path in generated:
-                    source.sources.append(generated[source.path])
-                else:
-                    breakpoint()
-                    CppModule(generated_dir / source.path).generate(ast)
-                    posix_path = source.path.as_posix()
-                    generated[source.path] = posix_path
-                    source.sources.append(posix_path)
-
     # TODO: stage3 AST can use .o objects that were compiled in stage 2 to avoid
     # recompiling the world
     # https://stackoverflow.com/questions/38609303/how-to-add-prebuilt-object-files-to-executable-in-cmake
@@ -754,15 +739,28 @@ class BuildSources(setuptools_build_ext):
         compile_commands = self.get_compile_commands(cmakelists)
         self.resolve_imports(compile_commands)
 
-        # stage 2: parse AST to generate Python bindings and categorize targets
+        # stage 2: parse AST to generate Python bindings and update build system
         try:
             cmakelists = self.write_stage2_cmakelists()
             compile_commands = self.cmake_build(cmakelists)
-            breakpoint()
-            # compile_commands = self.get_compile_commands(cmakelists)
-            self.parse_ast(compile_commands)
+
+            # add Python bindings to each primary module interface
+            for source in self.extensions:
+                if source.primary_module:
+                    bindings = self._get_python_path(source).relative_to(Path.cwd())
+                    source.sources.append(bindings.as_posix())
+
+            # mark any source that defines a main() function as an executable target
+            if self._bertrand_executable_cache.exists():
+                with self._bertrand_executable_cache.open("r") as f:
+                    for line in f:
+                        path = Path(line.strip()).relative_to(Path.cwd()).as_posix()
+                        self._bertrand_source_lookup[path].executable = True
         finally:
-            self._bertrand_cache_path.unlink(missing_ok=True)
+            self._bertrand_generated_cache.unlink(missing_ok=True)
+            self._bertrand_executable_cache.unlink(missing_ok=True)
+
+        breakpoint()
 
         # stage 3: build the final project with proper dependencies and bindings
         cmakelists = self.write_stage3_cmakelists()
