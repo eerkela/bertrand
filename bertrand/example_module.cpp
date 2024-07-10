@@ -1,7 +1,7 @@
 module;
 #include <iostream>
 #include <string>
-export module bertrand.abc;
+export module bertrand.example_module;
 
 
 void foo() {
@@ -9,7 +9,7 @@ void foo() {
 }
 
 
-export void bar() {
+export [[py::noexport]] void bar() {
     std::cout << "Hello from bar()!\n";
 }
 

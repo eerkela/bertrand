@@ -98,6 +98,7 @@ dev = [
     "sphinx_rtd_theme",
     "sphinx-tabs",
     "sphinx-togglebutton",
+    "types-colorama",
     "types-beautifulsoup4",
     "types-python-dateutil",
     "types-pytz",

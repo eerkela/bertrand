@@ -9,6 +9,16 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(Clang REQUIRED)
 
+add_library(bertrand-attrs SHARED bertrand-attrs.cpp)
+target_link_libraries(bertrand-attrs PRIVATE
+    clang-cpp
+    LLVMCore
+    LLVMSupport
+)
+set_target_properties(bertrand-attrs PROPERTIES
+    PREFIX ""
+)
+
 add_library(bertrand-ast SHARED bertrand-ast.cpp)
 target_link_libraries(bertrand-ast PRIVATE
     clang-cpp
@@ -19,4 +29,4 @@ set_target_properties(bertrand-ast PROPERTIES
     PREFIX ""
 )
 
-install(TARGETS bertrand-ast LIBRARY DESTINATION lib)
+install(TARGETS bertrand-attrs bertrand-ast LIBRARY DESTINATION lib)

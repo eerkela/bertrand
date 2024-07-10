@@ -10,50 +10,17 @@ import subprocess
 import sys
 import sysconfig
 from pathlib import Path, PosixPath
-from typing import Any, Iterable, NoReturn
+from typing import Any, Iterable
 
-import colorama
 import setuptools
 from packaging.version import Version
 from setuptools.command.build_ext import build_ext as setuptools_build_ext
 
 from .codegen import PyModule
 from .environment import env
+from .messages import FAIL, WHITE, RED, YELLOW, GREEN
 from .package import Package, PackageLike
 from .version import __version__
-
-
-colorama.init()
-WHITE = colorama.Fore.WHITE
-RED = colorama.Fore.LIGHTRED_EX
-YELLOW = colorama.Fore.LIGHTYELLOW_EX
-GREEN = colorama.Fore.LIGHTGREEN_EX
-CYAN = colorama.Fore.LIGHTCYAN_EX
-BLUE = colorama.Fore.LIGHTBLUE_EX
-MAGENTA = colorama.Fore.LIGHTMAGENTA_EX
-
-
-def warn(message: str) -> None:
-    """Print a warning message to the console and continue.
-
-    Parameters
-    ----------
-    message : str
-        The message to print to the console.
-    """
-    print(f"{YELLOW}WARNING{WHITE}: {message}")
-
-
-def fail(message: str) -> NoReturn:
-    """Print a failure message to the console and exit the program.
-
-    Parameters
-    ----------
-    message : str
-        The message to print before exiting.
-    """
-    print(f"{RED}FAILURE{WHITE}: {message}")
-    sys.exit()
 
 
 # TODO: eventually, get_include() won't be necessary, since all the headers will be
@@ -121,17 +88,19 @@ class Source(setuptools.Extension):
 
     def __init__(
         self,
-        path: Path,
+        path: str | Path,
         *,
         cpp_std: int = 0,
         traceback: bool | None = None,
         extra_cmake_args: dict[str, str] | None = None,
         **kwargs: Any
     ) -> None:
+        if isinstance(path, str):
+            path = Path(path)
         if not path.exists():
-            fail(f"source file does not exist: {RED}{path}{WHITE}")
+            FAIL(f"source file does not exist: {RED}{path}{WHITE}")
         if path.is_dir():
-            raise OSError(f"source file is a directory: {path}")
+            FAIL(f"source file is a directory: {RED}{path}{WHITE}")
         if path.is_absolute():
             path = path.relative_to(Path.cwd())
 
@@ -240,9 +209,9 @@ class BuildSources(setuptools_build_ext):
             ext for ext in self.extensions if not isinstance(ext, Source)
         ]
         if incompabile_extensions:
-            raise TypeError(
+            FAIL(
                 f"Extensions must be of type bertrand.Source: "
-                f"{incompabile_extensions}"
+                f"{YELLOW}{incompabile_extensions}{WHITE}"
             )
 
         # add environment variables to the build configuration
@@ -279,8 +248,9 @@ class BuildSources(setuptools_build_ext):
             if self.workers == 0:
                 self.workers = os.cpu_count() or 1
             elif self.workers < 0:
-                raise ValueError(
-                    "workers must be set to a positive integer or 0 to use all cores"
+                FAIL(
+                    f"workers must be set to a positive integer or 0 to use all cores, "
+                    f"not {RED}{self.workers}{WHITE}"
                 )
 
     def conan_install(self) -> None:
@@ -418,7 +388,13 @@ class BuildSources(setuptools_build_ext):
                 out += f"    {lib}\n"
             out += ")\n"
         if source.extra_compile_args or ast_plugin:
+            # NOTE: attribute plugins mess with clangd, which can't recognize them by
+            # default.  In response, we simply disable warnings about unknown
+            # attributes.  That's not ideal, but until llvm implements some way around
+            # this, it's the only option.
             out += f"target_compile_options({target} PRIVATE\n"
+            out += f"    -fplugin={env / 'lib' / 'bertrand-attrs.so'}\n"
+            out += "    -Wno-unknown-attributes\n"
             if ast_plugin:
                 out += f"    -fplugin={env / 'lib' / 'bertrand-ast.so'}\n"
                 out += f"    -fplugin-arg-main-cache={self._bertrand_executable_cache}\n"
@@ -613,7 +589,7 @@ class BuildSources(setuptools_build_ext):
                     if import_path != source.path.with_suffix(""):
                         expected_path = import_path.with_suffix(source.path.suffix)
                         rename = ".".join(source.path.with_suffix("").parts)
-                        fail(
+                        FAIL(
                             f"primary module interface '{YELLOW}{source.module}{WHITE}' "
                             f"must be exported from:\n"
                             f"    + {GREEN}{expected_path.absolute()}{WHITE}\n"
@@ -791,9 +767,9 @@ class BuildSources(setuptools_build_ext):
             If any extensions are not of type bertrand.Source.
         """
         if self.extensions and "BERTRAND_HOME" not in os.environ:
-            raise RuntimeError(
+            FAIL(
                 "setup.py must be run inside a bertrand virtual environment in order "
-                "to compile C++ extensions"
+                "to compile C++ extensions."
             )
 
         if self._bertrand_cpp_deps:
@@ -967,6 +943,3 @@ def setup(
         cmdclass=cmdclass,
         **kwargs
     )
-
-
-colorama.deinit()

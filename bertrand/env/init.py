@@ -1057,11 +1057,9 @@ class Recipe:
         python_version: str,
         conan_version: str,
     ) -> None:
-        # self.gold = Gold("latest")
-        self.clang = Clang(clang_version)
         self.ninja = Ninja(ninja_version)
+        self.clang = Clang(clang_version)
         self.cmake = CMake(cmake_version)
-        # self.mold = Mold(mold_version)
         self.python = Python(python_version)
         self.conan = Conan(conan_version)
         self.bertrand = Bertrand(__version__)
@@ -1079,10 +1077,8 @@ class Recipe:
         # to be a bug in the Python build system itself.
         order = [
             self.ninja,
-            # self.gold,
             self.clang,
             self.cmake,
-            # self.mold,
             self.python,
             self.conan,
             self.bertrand,

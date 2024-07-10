@@ -50,40 +50,15 @@ class BuildSourcesHeadless(BuildSources):
             super().build_extensions()
 
 
-
-
-# setup(
-#     conan=[
-#         "pcre2/10.43@PCRE2/pcre2::pcre2",
-#         "cpptrace/0.6.1@cpptrace/cpptrace::cpptrace",
-#     ],
-#     ext_modules=[
-#         Extension(
-#             "example",
-#             ["bertrand/example.cpp", "bertrand/example_module.cpp"],
-#             extra_compile_args=["-fdeclspec"]
-#         ),
-#         # Extension(
-#         #     "bertrand.env.ast",
-#         #     ["bertrand/env/ast.cpp"],
-#         #     extra_compile_args=["-std=c++17"],
-#         #     extra_link_args=["-lclang-cpp"]
-#         # ),
-#     ],
-#     cmdclass={"build_ext": BuildExtHeadless},
-# )
-
-
-cwd = Path.cwd()
 setup(
     cpp_deps=[
         "pcre2/10.43@PCRE2/pcre2::pcre2",  # TODO: standardize on | separators
         "cpptrace/0.6.1@cpptrace/cpptrace::cpptrace",
     ],
     sources=[
-        # Source(cwd / "bertrand" / "example.cpp"),
-        Source(cwd / "bertrand" / "example_module.cpp"),
-        # Source(cwd / "bertrand" / "example_module2.cpp"),
+        # Source("bertrand/example.cpp"),
+        Source("bertrand/example_module.cpp"),
+        # Source("bertrand/example_module2.cpp"),
     ],
     cmdclass={"build_ext": BuildSourcesHeadless},
 )

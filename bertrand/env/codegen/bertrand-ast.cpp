@@ -3,11 +3,13 @@
 #include <string>
 
 #include "clang/AST/Decl.h"
-#include "clang/Frontend/FrontendPluginRegistry.h"
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/Basic/DiagnosticIDs.h"
+#include "clang/Basic/ParsedAttrInfo.h"
 #include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/FrontendPluginRegistry.h"
 #include "clang/Sema/Sema.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -287,6 +289,17 @@ class ExportVisitor : public clang::RecursiveASTVisitor<ExportVisitor> {
     // FunctionDecls, TypeDecls, VarDecls, and NamespaceDecls, etc. and then write
     // them to the binding file in a consistent fashion.
 
+    bool noexport(const clang::NamedDecl& decl) {
+        for (auto&& attr : decl.getAttrs()) {
+            if (
+                attr->getKind() == clang::attr::Annotate &&
+                static_cast<clang::AnnotateAttr*>(attr)->getAnnotation() == "noexport"
+            ) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /* Emit a top-level function declaration to the binding file. */
     void emit(const clang::FunctionDecl& func) {
@@ -332,6 +345,7 @@ public:
                 file->clear();  // clear EOF flag before writing
                 file->seekp(0, std::ios::beg);
                 file << body;  // only overwrite if the contents have changed
+                file->flush();
             } else {
                 llvm::errs() << "no changes to file: " << path << "\n";
             }
@@ -359,19 +373,31 @@ public:
 
         for (const auto* decl : export_decl->decls()) {
             if (auto* func = dyn_cast<clang::FunctionDecl>(decl)) {
+                if (noexport(*func)) {
+                    continue;
+                }
                 emit(*func);
                 llvm::errs() << "exported function " << func->getNameAsString() << "\n";
 
             // CXXRecordDecl?
             } else if (auto* type = dyn_cast<clang::TypeDecl>(decl)) {
+                if (noexport(*type)) {
+                    continue;
+                }
                 // emit(*type);
                 llvm::errs() << "exported type " << type->getNameAsString() << "\n";
 
             } else if (auto* var = dyn_cast<clang::VarDecl>(decl)) {
+                if (noexport(*var)) {
+                    continue;
+                }
                 // emit(*var);
                 llvm::errs() << "exported variable " << var->getNameAsString() << "\n";
 
             } else if (auto* name = dyn_cast<clang::NamespaceDecl>(decl)) {
+                if (noexport(*name)) {
+                    continue;
+                }
                 // emit(*name);
                 llvm::errs() << "exported namespace " << name->getNameAsString() << "\n";
 
