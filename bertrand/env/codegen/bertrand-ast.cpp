@@ -283,41 +283,96 @@ class ExportVisitor : public clang::RecursiveASTVisitor<ExportVisitor> {
     std::string path;
     std::string body;
 
-    // TODO: need a lot of support functions to extract out the necessary information
+    // TODO: I should have an overloadable emit() method which can take
+    // FunctionDecls, TypeDecls, VarDecls, and NamespaceDecls, etc. and then write
+    // them to the binding file in a consistent fashion.
 
-    // TODO: this visitor is now the only writer of the final binding file, since it
-    // is only executed for the primary module interface unit.  It thus probably
-    // does not need to store the body as a string, since it can just open the file
-    // handle and write to it directly.
 
-    // -> Actually it might be better to store the body as a string and then compare
-    // it to the existing contents before writing, in order not to modify the file
-    // unnecessarily.  That should allow CMake's incremental build system to work as
-    // intended.
+    /* Emit a top-level function declaration to the binding file. */
+    void emit(const clang::FunctionDecl& func) {
+        std::string name = func.getNameAsString();
+        std::string qualname = func.getQualifiedNameAsString();  // includes namespaces
+
+        // TODO: generate a lambda with python argument annotations to enable keyword
+        // arguments, etc.
+
+        body += "    m.def(\"" + name + "\", \"\", " + qualname + ");\n";
+    }
 
 public:
 
-    // TODO: every time we visit an export declaration, update the body of the Python
-    // binding file accordingly.  There will also need to be a method to write the
-    // header and footer of the file, and to write the file to disk.
+    // TODO: ExportVisitor can receive an ASTContext in the constructor, which allows
+    // it to extract documentation comments and other information from the AST.
 
-    ExportVisitor(const std::string& path) : path(path) {}
+    // TODO: how to model dotted module names?  There has to be some mapping from
+    // directory structure to dotted name, but that will require some thinking.
+
+    ExportVisitor(
+        const std::string& import_name,
+        const std::string& export_name,
+        const std::string& path
+    ) : path(path) {
+        body += "#include <bertrand/python.h>\n";
+        body += "namespace py = bertrand::py;\n";
+        body += "\n";
+        body += "import " + import_name + ";\n";
+        body += "\n";
+        body += "BERTRAND_MODULE(" + export_name + ", m) {\n";
+    }
+
+    ~ExportVisitor() {
+        body += "}\n";
+
+        impl::FileLock file(path);
+        if (file) {
+            std::stringstream buffer;
+            buffer << file->rdbuf();
+            std::string contents = buffer.str();
+            if (contents != body + "\n") {  // TODO: if I remove automatic newlines, then I can remove + "\n"
+                file->clear();  // clear EOF flag before writing
+                file->seekp(0, std::ios::beg);
+                file << body;  // only overwrite if the contents have changed
+            } else {
+                llvm::errs() << "no changes to file: " << path << "\n";
+            }
+        } else {
+            llvm::errs() << "failed to open file: " << path << "\n";
+        }
+    }
+
+    /* C++'s `export` keyword can be applied to many kinds of declarations, including:
+     *
+     *  - TypeDecl: in which a py::Class is instantiated and attached to the module
+     *    using pybind11.
+     *  - FunctionDecl: in which a py::Function is instantiated and attached to the
+     *    module binding.
+     *  - VarDecl: in which the variable is converted to a Python object and attached
+     *    to the module binding.
+     *        -> Note that modifying the variable in Python should probably also
+     *           modify it in C++, so this will require some kind of proxy or capsule.
+     *  - NamespaceDecl: in which the contents of *that namespace declaration* (i.e.
+     *    not the namespace as a whole) are exported.
+     */
 
     bool VisitExportDecl(clang::ExportDecl* export_decl) {
         using llvm::dyn_cast;
 
         for (const auto* decl : export_decl->decls()) {
             if (auto* func = dyn_cast<clang::FunctionDecl>(decl)) {
+                emit(*func);
                 llvm::errs() << "exported function " << func->getNameAsString() << "\n";
 
             // CXXRecordDecl?
             } else if (auto* type = dyn_cast<clang::TypeDecl>(decl)) {
+                // emit(*type);
                 llvm::errs() << "exported type " << type->getNameAsString() << "\n";
 
             } else if (auto* var = dyn_cast<clang::VarDecl>(decl)) {
+                // emit(*var);
                 llvm::errs() << "exported variable " << var->getNameAsString() << "\n";
 
             } else if (auto* name = dyn_cast<clang::NamespaceDecl>(decl)) {
+                // emit(*name);
                 llvm::errs() << "exported namespace " << name->getNameAsString() << "\n";
 
             } else {
@@ -357,6 +412,8 @@ public:
 class ExportConsumer : public clang::ASTConsumer {
     clang::CompilerInstance& compiler;
     std::string module_path;
+    std::string import_name;
+    std::string export_name;
     std::string python_path;
     std::string cache_path;
 
@@ -365,10 +422,12 @@ public:
     ExportConsumer(
         clang::CompilerInstance& compiler,
         std::string module_path,
+        std::string import_name,
+        std::string export_name,
         std::string python_path,
         std::string cache_path
-    ) : compiler(compiler), module_path(module_path), python_path(python_path),
-        cache_path(cache_path)
+    ) : compiler(compiler), module_path(module_path), import_name(import_name),
+        export_name(export_name), python_path(python_path), cache_path(cache_path)
     {}
 
     void HandleTranslationUnit(clang::ASTContext& context) override {
@@ -393,7 +452,7 @@ public:
                 }
             }
             if (!cached) {
-                ExportVisitor visitor(python_path);
+                ExportVisitor visitor(import_name, export_name, python_path);
                 visitor.TraverseDecl(context.getTranslationUnitDecl());
                 file->clear();  // clear EOF flag before writing
                 file->seekp(0, std::ios::end);  // append to end of file
@@ -490,6 +549,8 @@ public:
 
 class ExportAction : public clang::PluginASTAction {
     std::string module_path;
+    std::string import_name;
+    std::string export_name;
     std::string python_path;
     std::string cache_path;
 
@@ -502,6 +563,8 @@ protected:
         return std::make_unique<ExportConsumer>(
             compiler,
             module_path,
+            import_name,
+            export_name,
             python_path,
             cache_path
         );
@@ -512,12 +575,23 @@ protected:
         const std::vector<std::string>& args
     ) override {
         for (const std::string& arg : args) {
+            // path to primary module interface unit being examined
             if (arg.starts_with("module=")) {
                 module_path = arg.substr(arg.find('=') + 1);
 
+            // module name to import at C++ level
+            } else if (arg.starts_with("import=")) {
+                import_name = arg.substr(arg.find('=') + 1);
+
+            // module name to export to Python
+            } else if (arg.starts_with("export=")) {
+                export_name = arg.substr(arg.find('=') + 1);
+
+            // path to output binding file
             } else if (arg.starts_with("python=")) {
                 python_path = arg.substr(arg.find('=') + 1);
 
+            // path to cache to avoid repeated work
             } else if (arg.starts_with("cache=")) {
                 cache_path = arg.substr(arg.find('=') + 1);
 

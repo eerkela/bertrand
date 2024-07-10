@@ -1,16 +1,19 @@
-export module example;
+module;
+#include <iostream>
+#include <string>
+export module bertrand.abc;
 
 
-// import xyz;
-
-
-export namespace example {
-
-    int add(int a = 2, int b = 1) {
-        return a + b;
-    }
-
+void foo() {
+    std::cout << "Hello from foo()!\n";
 }
 
 
-int main() {}
+export void bar() {
+    std::cout << "Hello from bar()!\n";
+}
+
+
+export void baz(const std::string& name) {
+    std::cout << "Hello, " << name << "!\n";
+}

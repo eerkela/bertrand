@@ -1,9 +1,9 @@
 """Setup script for Bertrand."""
-import os
 from pathlib import Path
 import subprocess
 
 from bertrand import BuildSources, Source, setup, env
+
 
 
 # TODO: for headless installation, use pipx to install bertrand:
@@ -83,7 +83,7 @@ setup(
     sources=[
         # Source(cwd / "bertrand" / "example.cpp"),
         Source(cwd / "bertrand" / "example_module.cpp"),
-        Source(cwd / "bertrand" / "example_module2.cpp"),
+        # Source(cwd / "bertrand" / "example_module2.cpp"),
     ],
     cmdclass={"build_ext": BuildSourcesHeadless},
 )

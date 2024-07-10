@@ -10,8 +10,9 @@ import subprocess
 import sys
 import sysconfig
 from pathlib import Path, PosixPath
-from typing import Any, Iterable
+from typing import Any, Iterable, NoReturn
 
+import colorama
 import setuptools
 from packaging.version import Version
 from setuptools.command.build_ext import build_ext as setuptools_build_ext
@@ -22,8 +23,41 @@ from .package import Package, PackageLike
 from .version import __version__
 
 
+colorama.init()
+WHITE = colorama.Fore.WHITE
+RED = colorama.Fore.LIGHTRED_EX
+YELLOW = colorama.Fore.LIGHTYELLOW_EX
+GREEN = colorama.Fore.LIGHTGREEN_EX
+CYAN = colorama.Fore.LIGHTCYAN_EX
+BLUE = colorama.Fore.LIGHTBLUE_EX
+MAGENTA = colorama.Fore.LIGHTMAGENTA_EX
+
+
+def warn(message: str) -> None:
+    """Print a warning message to the console and continue.
+
+    Parameters
+    ----------
+    message : str
+        The message to print to the console.
+    """
+    print(f"{YELLOW}WARNING{WHITE}: {message}")
+
+
+def fail(message: str) -> NoReturn:
+    """Print a failure message to the console and exit the program.
+
+    Parameters
+    ----------
+    message : str
+        The message to print before exiting.
+    """
+    print(f"{RED}FAILURE{WHITE}: {message}")
+    sys.exit()
+
+
 # TODO: eventually, get_include() won't be necessary, since all the headers will be
-# converted into modules.
+# converted into modules, and the python module might be imported by default.
 
 
 def get_include() -> str:
@@ -95,7 +129,7 @@ class Source(setuptools.Extension):
         **kwargs: Any
     ) -> None:
         if not path.exists():
-            raise FileNotFoundError(f"source file does not exist: {path}")
+            fail(f"source file does not exist: {RED}{path}{WHITE}")
         if path.is_dir():
             raise OSError(f"source file is a directory: {path}")
         if path.is_absolute():
@@ -110,8 +144,8 @@ class Source(setuptools.Extension):
         self.cpp_std = cpp_std
         self.extra_cmake_args = extra_cmake_args or {}
         self.traceback = traceback
-        self.module = False
-        self.primary_module = False
+        self.module = ""
+        self.primary_module = ""
         self.executable = False
 
         self.include_dirs.append(get_include())  # TODO: eventually not necessary
@@ -356,7 +390,7 @@ class BuildSources(setuptools_build_ext):
         out += f"    BASE_DIRS {Path.cwd()}\n"
         out +=  "    FILES\n"
         for s in source.sources:
-            if self._bertrand_source_lookup[s].module:
+            if s in self._bertrand_source_lookup and self._bertrand_source_lookup[s].module:
                 out += f"        {PosixPath(s).absolute()}\n"
         out += ")\n"
         out += f"set_target_properties({target} PROPERTIES\n"
@@ -390,7 +424,11 @@ class BuildSources(setuptools_build_ext):
                 out += f"    -fplugin-arg-main-cache={self._bertrand_executable_cache}\n"
                 if source.primary_module:
                     python_path = self.get_python_path(source)
+                    python_path.parent.mkdir(parents=True, exist_ok=True)
+                    python_module = source.primary_module.split(".")[-1]
                     out += f"    -fplugin-arg-export-module={source.path.absolute()}\n"
+                    out += f"    -fplugin-arg-export-import={source.primary_module}\n"
+                    out += f"    -fplugin-arg-export-export={python_module}\n"
                     out += f"    -fplugin-arg-export-python={python_path}\n"
                     out += f"    -fplugin-arg-export-cache={self._bertrand_generated_cache}\n"
             for flag in source.extra_compile_args:
@@ -564,13 +602,26 @@ class BuildSources(setuptools_build_ext):
             # implementation detail, for private partitions, etc.).
             provides = module.get("provides", [])
             if provides:
-                source.module = True
-
                 # a module is a primary module interface if it exports a module name
                 # that lacks partitions
-                source.primary_module = any(
-                    ":" not in edge["logical-name"] for edge in provides
-                )
+                source.module = provides[0]["logical-name"]
+                if ":" not in source.module:
+                    source.primary_module = source.module
+                    import_path = Path(*source.module.split("."))
+                    if source.path.stem == "__init__":
+                        import_path /= "__init__"
+                    if import_path != source.path.with_suffix(""):
+                        expected_path = import_path.with_suffix(source.path.suffix)
+                        rename = ".".join(source.path.with_suffix("").parts)
+                        fail(
+                            f"primary module interface '{YELLOW}{source.module}{WHITE}' "
+                            f"must be exported from:\n"
+                            f"    + {GREEN}{expected_path.absolute()}{WHITE}\n"
+                            f"    - {RED}{source.path.absolute()}{WHITE}\n"
+                            f"\n"
+                            f"... or be renamed to '{YELLOW}{rename}{WHITE}' to match "
+                            f"Python semantics."
+                        )
 
             # module imports are represented by a "requires" key in the rule, which
             # lists the logical names and discovered source paths for each import.
@@ -594,7 +645,7 @@ class BuildSources(setuptools_build_ext):
                         py_import = importlib.import_module(name)
                     except ImportError:
                         print(f"Unresolved import '{name}' in source {source.path}")
-                        sys.exit(1)
+                        sys.exit()
 
                     breakpoint()
                     generated_path = Path(*name.split(".")).with_suffix(".cpp")
@@ -750,7 +801,6 @@ class BuildSources(setuptools_build_ext):
 
         self.stage1()
         self.stage2()
-        breakpoint()
         self.stage3()
 
 
@@ -917,3 +967,6 @@ def setup(
         cmdclass=cmdclass,
         **kwargs
     )
+
+
+colorama.deinit()

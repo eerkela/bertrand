@@ -61,6 +61,7 @@ keywords = [
     "ETL",
 ]
 dependencies = [
+    "colorama",
     "conan",
     "beautifulsoup4",
     "numpy",

@@ -1,9 +1,9 @@
-export module example2;
+export module example.module2;
 
 export import example;
 
 
-export namespace example2 {
+export namespace example::module2 {
 
     int sub(int a = 2, int b = 1) {
         return a - b;
