@@ -1298,8 +1298,6 @@ def init(
 
         # skip previously built targets
         info = env.info
-        if "gold" in info:
-            recipe.gold.build = False
         if "clang" in info:
             if recipe.clang.version != Version(info["clang"]):
                 raise RuntimeError(
@@ -1324,14 +1322,6 @@ def init(
                     f"want to rebuild the environment from scratch."
                 )
             recipe.cmake.build = False
-        if "mold" in info:
-            if recipe.mold.version != Version(info["mold"]):
-                raise RuntimeError(
-                    f"linker version '{recipe.mold.version}' does not match existing "
-                    f"environment '{info['mold']}'.  Use `--force` if you want to "
-                    f"rebuild the environment from scratch. "
-                )
-            recipe.mold.build = False
         if "python" in info:
             if recipe.python.version != Version(info["python"]):
                 raise RuntimeError(
