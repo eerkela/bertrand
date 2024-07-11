@@ -1,27 +1,44 @@
-#ifndef BERTRAND_PYTHON_H
-#define BERTRAND_PYTHON_H
+module;
+
 #define PYBIND11_DETAILED_ERROR_MESSAGES
 
+// #include "regex.h"
 
-#include "python/common.h"
+export module bertrand.python;
 
-#include "python/bool.h"
-#include "python/int.h"
-#include "python/float.h"
-#include "python/complex.h"
-#include "python/range.h"
-#include "python/list.h"
-#include "python/tuple.h"
-#include "python/set.h"
-#include "python/dict.h"
-#include "python/str.h"
-#include "python/bytes.h"
-#include "python/code.h"
-// #include "python/datetime.h"
-#include "python/math.h"
-#include "python/type.h"
+// export import :common       [[py::noexport]];
+// export import :bool_        [[py::noexport]];
+// export import :int_         [[py::noexport]];
+// export import :float_       [[py::noexport]];
+// export import :complex      [[py::noexport]];
+// export import :range        [[py::noexport]];
+// export import :list         [[py::noexport]];
+// export import :tuple        [[py::noexport]];
+// export import :set          [[py::noexport]];
+// export import :dict         [[py::noexport]];
+// export import :str          [[py::noexport]];
+// export import :bytes        [[py::noexport]];
+// export import :code         [[py::noexport]];
+// // export import :datetime     [[py::noexport]];
+// export import :math         [[py::noexport]];
+// export import :type         [[py::noexport]];
 
-#include "regex.h"
+export import :common;
+export import :bool_;
+export import :int_;
+export import :float_;
+export import :complex;
+export import :range;
+export import :list;
+export import :tuple;
+export import :set;
+export import :dict;
+export import :str;
+export import :bytes;
+export import :code;
+// export import :datetime;
+export import :math;
+export import :type;
 
 
 // TODO: the only remaining language feature left to emulate are:
@@ -29,7 +46,6 @@
 // - decorators (?)
 
 // -> model context managers using auto guard = py::enter(object);
-
 
 
 // TODO: after upgrading to gcc-14, these are now supported:
@@ -64,8 +80,6 @@
 // entirely at compile time.  Something like:
 
 //    using Type = bertrand::resolve<"Int">;  // Bonus points if I can do full compile-time regex matches
-
-
 
 
 
@@ -132,7 +146,7 @@
  */
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 namespace literals {
@@ -1207,31 +1221,30 @@ inline void setattr(const Handle& obj, const Str& name, const Object& value) {
 }  // namespace py
 
 
-auto Regex::Match::group(const py::args& args) const
-    -> std::vector<std::optional<std::string>>
-{
-    py::Tuple tuple = args;
-    std::vector<std::optional<std::string>> result;
-    result.reserve(len(tuple));
+// auto Regex::Match::group(const py::args& args) const
+//     -> std::vector<std::optional<std::string>>
+// {
+//     py::Tuple tuple = args;
+//     std::vector<std::optional<std::string>> result;
+//     result.reserve(len(tuple));
 
-    for (const auto& arg : tuple) {
-        if (py::isinstance<py::Str>(arg)) {
-            result.push_back(group(static_cast<std::string>(arg)));
-        } else if (py::isinstance<py::Int>(arg)) {
-            result.push_back(group(static_cast<size_t>(arg)));
-        } else {
-            throw py::TypeError(
-                "group() expects an integer or string argument"
-            );
-        }
-    }
+//     for (const auto& arg : tuple) {
+//         if (py::isinstance<py::Str>(arg)) {
+//             result.push_back(group(static_cast<std::string>(arg)));
+//         } else if (py::isinstance<py::Int>(arg)) {
+//             result.push_back(group(static_cast<size_t>(arg)));
+//         } else {
+//             throw py::TypeError(
+//                 "group() expects an integer or string argument"
+//             );
+//         }
+//     }
 
-    return result;
-}
+//     return result;
+// }
 
 
 }  // namespace bertrand
 
 
-#undef PYBIND11_DETAILED_ERROR_MESSAGES
-#endif  // BERTRAND_PYTHON_H
+// #undef PYBIND11_DETAILED_ERROR_MESSAGES

@@ -1,15 +1,14 @@
-#ifndef BERTRAND_PYTHON_COMMON_ITERATORS_H
-#define BERTRAND_PYTHON_COMMON_ITERATORS_H
+export module bertrand.python:common.iter;
 
-#include "declarations.h"
-#include "except.h"
-#include "ops.h"
-#include "object.h"
-#include "func.h"
-#include "item.h"
+import :common.declarations;
+import :common.except;
+import :common.ops;
+import :common.object;
+import :common.func;
+import :common.item;
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 namespace impl {
 
@@ -846,6 +845,3 @@ public:
 }  // namespace impl
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_COMMON_ITERATORS_H

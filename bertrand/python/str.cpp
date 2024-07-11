@@ -1,18 +1,20 @@
-#ifndef BERTRAND_PYTHON_STRING_H
-#define BERTRAND_PYTHON_STRING_H
+module;
 
-#include "common.h"
-#include "int.h"
-#include "tuple.h"
-#include "list.h"
-#include "set.h"
-#include "dict.h"
 #ifdef BERTRAND_HAS_STD_FORMAT
     #include <format>
 #endif
 
+export module bertrand.python:str;
 
-namespace bertrand {
+import :common;
+import :int_;
+import :tuple;
+import :list;
+import :set;
+import :dict;
+
+
+export namespace bertrand {
 namespace py {
 
 
@@ -747,7 +749,7 @@ struct __imul__<L, R>                                       : Returns<Str&> {
 }  // namespace bertrand
 
 
-namespace std {
+export namespace std {
 
     template <>
     struct hash<bertrand::py::Str> {
@@ -766,6 +768,3 @@ namespace std {
     };
 
 }
-
-
-#endif  // BERTRAND_PYTHON_STRING_H

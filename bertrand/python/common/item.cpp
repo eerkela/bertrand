@@ -1,14 +1,13 @@
-#ifndef BERTRAND_PYTHON_COMMON_PROXIES_H
-#define BERTRAND_PYTHON_COMMON_PROXIES_H
+export module bertrand.python:common.item;
 
-#include "declarations.h"
-#include "except.h"
-#include "object.h"
-#include "ops.h"
-#include "control.h"
+import :common.declarations;
+import :common.except;
+import :common.object;
+import :common.ops;
+import :common.control;
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 namespace impl {
 
@@ -305,6 +304,3 @@ public:
 }  // namespace impl
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_COMMON_PROXIES_H

@@ -1,9 +1,7 @@
-#ifndef BERTRAND_PYTHON_LIST_H
-#define BERTRAND_PYTHON_LIST_H
+export module bertrand.python:list;
 
-#include "common.h"
-#include "bool.h"
-
+import :common;
+import :bool_;
 
 // TODO: right now, containers are convertible to but not from their equivalent types.
 // This is an asymmetry that could cause bugs down the line, so it should probably be
@@ -14,7 +12,7 @@
 // implicit conversion.
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -888,6 +886,3 @@ struct __reversed__<Self>                                   : Returns<typename S
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_LIST_H

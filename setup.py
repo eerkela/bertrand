@@ -56,9 +56,9 @@ setup(
         "cpptrace/0.6.1@cpptrace/cpptrace::cpptrace",
     ],
     sources=[
-        # Source("bertrand/example.cpp"),
-        Source("bertrand/example_module.cpp"),
-        # Source("bertrand/example_module2.cpp"),
+        Source("bertrand/python.cpp"),
+        *[Source(p) for p in Path("bertrand/python").rglob("*.cpp")],
     ],
+    # sources=[Source("A.cpp"), Source("B.cpp")],
     cmdclass={"build_ext": BuildSourcesHeadless},
 )

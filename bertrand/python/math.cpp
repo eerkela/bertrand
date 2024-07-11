@@ -1,17 +1,18 @@
-#ifndef BERTRAND_PYTHON_MATH_H
-#define BERTRAND_PYTHON_MATH_H
+module;
 
 #include <cmath>
 
-#include "common.h"
-#include "int.h"
-#include "float.h"
+export module bertrand.python:math;
+
+import :common;
+import :int_;
+import :float_;
 
 
 // TODO: allow for complex/Decimal operands?
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -998,6 +999,3 @@ template <typename T, typename Mode> requires (impl::round_mode<T, Mode>)
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_MATH_H

@@ -1,11 +1,13 @@
-#ifndef BERTRAND_PYTHON_COMMON_EXCEPTIONS_H
-#define BERTRAND_PYTHON_COMMON_EXCEPTIONS_H
+module;
 
 #include <cstdlib>
-#include "declarations.h"
 
 #include <internal/pycore_frame.h>  // required to assign to frame->f_lineno
 #include <cpptrace/cpptrace.hpp>
+
+export module bertrand.python:common.except;
+
+import :common.declarations;
 
 
 /* CPython exception types:
@@ -45,7 +47,7 @@
 // PyUnicodeDecodeError_Create() for details.
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -1106,6 +1108,3 @@ BERTRAND_EXCEPTION(ValueError, Exception, PyExc_ValueError)
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_COMMON_EXCEPTIONS_H

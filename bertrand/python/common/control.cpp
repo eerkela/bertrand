@@ -1,15 +1,13 @@
-#ifndef BERTRAND_PYTHON_COMMON_CONTROL_H
-#define BERTRAND_PYTHON_COMMON_CONTROL_H
+export module bertrand.python:common.control;
+
+import :common.declarations;
+import :common.except;
+import :common.ops;
+import :common.object;
+import :common.func;
 
 
-#include "declarations.h"
-#include "except.h"
-#include "ops.h"
-#include "object.h"
-#include "func.h"
-
-
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -4573,6 +4571,3 @@ struct __ixor__<L, R>                                       : Returns<FrozenSet<
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_COMMON_CONTROL_H

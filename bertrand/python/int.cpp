@@ -1,14 +1,13 @@
-#ifndef BERTRAND_PYTHON_INT_H
-#define BERTRAND_PYTHON_INT_H
+export module bertrand.python:int_;
 
-#include "common.h"
+import :common;
 
 
 // TODO: prevent int overflow during conversion to C++ integers.  Raise an OverflowError
 // if this occurs.
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -345,6 +344,3 @@ inline const Int Int::two = 2;
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_INT_H

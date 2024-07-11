@@ -1,13 +1,12 @@
-#ifndef BERTRAND_PYTHON_TYPE_H
-#define BERTRAND_PYTHON_TYPE_H
+export module bertrand.python:type;
 
-#include "common.h"
-#include "str.h"
-#include "tuple.h"
-#include "dict.h"
+import :common;
+import :str;
+import :tuple;
+import :dict;
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -476,6 +475,3 @@ struct __explicit_init__<Super, Base, Self>                  : Returns<Super> {
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_TYPE_H

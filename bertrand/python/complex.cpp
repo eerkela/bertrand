@@ -1,12 +1,11 @@
-#ifndef BERTRAND_PYTHON_COMPLEX_H
-#define BERTRAND_PYTHON_COMPLEX_H
+export module bertrand.python:complex;
 
-#include "common.h"
-#include "float.h"
-#include "str.h"
+import :common;
+import :float_;
+import :str;
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -209,7 +208,7 @@ struct __cast__<From, std::complex<To>>                     : Returns<std::compl
 }  // namespace bertrand
 
 
-namespace pybind11 {
+export namespace pybind11 {
 namespace detail {
 
 template <>
@@ -296,6 +295,3 @@ COMPLEX_CASTER(long double);
 
 } // namespace detail
 } // namespace pybind11
-
-
-#endif  // BERTRAND_PYTHON_COMPLEX_H

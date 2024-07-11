@@ -1,11 +1,10 @@
-#ifndef BERTRAND_PYTHON_FLOAT_H
-#define BERTRAND_PYTHON_FLOAT_H
+export module bertrand.python:float_;
 
-#include "common.h"
-#include "str.h"
+import :common;
+import :str;
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -177,6 +176,3 @@ const Float Float::one = 1.0;
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_FLOAT_H

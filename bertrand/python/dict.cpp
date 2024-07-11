@@ -1,9 +1,8 @@
-#ifndef BERTRAND_PYTHON_DICT_H
-#define BERTRAND_PYTHON_DICT_H
+export module bertrand.python:dict;
 
-#include "common.h"
-#include "list.h"
-#include "set.h"
+import :common;
+import :list;
+import :set;
 
 
 // NOTE: MappingProxy is hashable as of Python 3.12
@@ -11,7 +10,7 @@
 // NOTE: ChainMap is complicated, but maybe possible to support as well.
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -1341,6 +1340,3 @@ template <typename Map>
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_DICT_H

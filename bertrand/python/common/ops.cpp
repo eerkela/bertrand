@@ -1,11 +1,10 @@
-#ifndef BERTRAND_PYTHON_COMMON_OPS_H
-#define BERTRAND_PYTHON_COMMON_OPS_H
+export module bertrand.python:common.ops;
 
-#include "declarations.h"
-#include "except.h"
+import :common.declarations;
+import :common.except;
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -1870,7 +1869,7 @@ L& operator^=(L& lhs, const R& rhs) {
 }  // namespace bertrand
 
 
-namespace std {
+export namespace std {
 
     template <typename T> requires (bertrand::py::__hash__<T>::enable)
     struct hash<T> {
@@ -1909,7 +1908,4 @@ namespace std {
 
     #undef BERTRAND_STD_EQUAL_TO
 
-};
-
-
-#endif  // BERTRAND_PYTHON_COMMON_OPS_H
+};  // namespace std

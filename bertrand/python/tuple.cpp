@@ -1,13 +1,11 @@
-#ifndef BERTRAND_PYTHON_TUPLE_H
-#define BERTRAND_PYTHON_TUPLE_H
+export module bertrand.python:tuple;
 
-#include "common.h"
-
+import :common;
 
 // TODO: support py::deque?
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -965,6 +963,3 @@ public:
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_TUPLE_H

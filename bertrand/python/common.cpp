@@ -1,17 +1,16 @@
-#ifndef BERTRAND_PYTHON_COMMON_H
-#define BERTRAND_PYTHON_COMMON_H
+export module bertrand.python:common;
 
-#include "common/declarations.h"
-#include "common/except.h"
-#include "common/ops.h"
-#include "common/object.h"
-#include "common/func.h"
-#include "common/item.h"
-#include "common/iter.h"
-#include "common/control.h"
+export import :common.declarations;
+export import :common.except;
+export import :common.ops;
+export import :common.object;
+export import :common.func;
+export import :common.item;
+export import :common.iter;
+export import :common.control;
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -736,7 +735,7 @@ template <typename Self> requires (__reversed__<Self>::enable)
 ////////////////////////////
 
 
-namespace pybind11 {
+export namespace pybind11 {
 namespace detail {
 
 
@@ -780,6 +779,3 @@ struct type_caster<T> {
 
 }  // namespace detail
 }  // namespace pybind11
-
-
-#endif // BERTRAND_PYTHON_COMMON_H

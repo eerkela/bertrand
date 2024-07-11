@@ -1,16 +1,15 @@
-#ifndef BERTRAND_PYTHON_BYTES_H
-#define BERTRAND_PYTHON_BYTES_H
+export module bertrand.python:bytes;
 
-#include "common.h"
-#include "int.h"
-#include "str.h"
-#include "list.h"
-#include "tuple.h"
-#include "set.h"
-#include "dict.h"
+import :common;
+import :int_;
+import :str;
+import :list;
+import :tuple;
+import :set;
+import :dict;
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -670,6 +669,3 @@ struct __imul__<L, R>                                       : Returns<ByteArray&
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_BYTES_H

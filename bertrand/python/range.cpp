@@ -1,11 +1,10 @@
-#ifndef BERTRAND_PYTHON_RANGE_H
-#define BERTRAND_PYTHON_RANGE_H
+export module bertrand.python:range;
 
-#include "common.h"
-#include "int.h"
+import :common;
+import :int_;
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -193,6 +192,3 @@ struct __init__<Range>                                      : Returns<Range> {
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_RANGE_H

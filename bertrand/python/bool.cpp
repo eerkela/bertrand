@@ -1,10 +1,9 @@
-#ifndef BERTRAND_PYTHON_BOOL_H
-#define BERTRAND_PYTHON_BOOL_H
+export module bertrand.python:bool_;
 
-#include "common.h"
+import :common;
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -203,6 +202,3 @@ static const Bool False = reinterpret_borrow<Bool>(Py_False);
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_BOOL_H

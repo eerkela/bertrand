@@ -1,10 +1,4 @@
-#ifndef BERTRAND_PYTHON_COMMON_FUNC_H
-#define BERTRAND_PYTHON_COMMON_FUNC_H
-
-#include "declarations.h"
-#include "except.h"
-#include "ops.h"
-#include "object.h"
+module;
 
 #if defined(__GNUC__) || defined(__clang__)
 #include <cxxabi.h>
@@ -15,6 +9,13 @@
 #pragma comment(lib, "dbghelp.lib")
 #endif
 
+export module bertrand.python:common.func;
+
+import :common.declarations;
+import :common.except;
+import :common.ops;
+import :common.object;
+
 
 // TODO: ensure interpreter is properly initialized when a C++ function is converted
 // into a Python equivalent.
@@ -23,7 +24,7 @@
 // TODO: not sure if Arg.value() is being used correctly everywhere.
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -3086,6 +3087,3 @@ namespace impl {
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif // BERTRAND_PYTHON_COMMON_FUNC_H

@@ -1,28 +1,19 @@
-#ifndef BERTRAND_PYTHON_FUNC_H
-#define BERTRAND_PYTHON_FUNC_H
+module;
 
 #include <fstream>
 
-#include "common.h"
-#include "dict.h"
-#include "str.h"
-#include "bytes.h"
-#include "tuple.h"
-#include "list.h"
-#include "type.h"
+export module bertrand.python:code;
+
+import :common;
+import :dict;
+import :str;
+import :bytes;
+import :tuple;
+import :list;
+import :type;
 
 
-#if defined(__GNUC__) || defined(__clang__)
-#include <cxxabi.h>
-#include <cstdlib>
-#elif defined(_MSC_VER)
-#include <windows.h>
-#include <dbghelp.h>
-#pragma comment(lib, "dbghelp.lib")
-#endif
-
-
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -1042,7 +1033,7 @@ struct __init__<Frame, File, Func, Line> : Returns<Frame> {
 }  // namespace bertrand
 
 
-namespace pybind11 {
+export namespace pybind11 {
 namespace detail {
 
 template <bertrand::py::impl::is_callable_any T>
@@ -1063,6 +1054,3 @@ struct type_caster<T> {
 
 }  // namespace detail
 }  // namespace pybind11
-
-
-#endif  // BERTRAND_PYTHON_FUNC_H

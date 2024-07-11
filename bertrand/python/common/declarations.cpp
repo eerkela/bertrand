@@ -1,5 +1,4 @@
-#ifndef BERTRAND_PYTHON_COMMON_DECLARATIONS_H
-#define BERTRAND_PYTHON_COMMON_DECLARATIONS_H
+module;
 
 #include <algorithm>
 #include <cstddef>
@@ -41,8 +40,10 @@
 #include <bertrand/common.h>
 #include <bertrand/static_str.h>
 
+export module bertrand.python:common.declarations;
 
-namespace bertrand {
+
+export namespace bertrand {
 namespace py {
 
 
@@ -83,58 +84,6 @@ private:
         }
     }
 };
-
-
-///////////////////////////////////////
-////    INHERITED FROM PYBIND11    ////
-///////////////////////////////////////
-
-
-/* Pybind11 documentation:
-*     https://pybind11.readthedocs.io/en/stable/
-*/
-
-
-// binding functions
-using pybind11::init;  // TODO: can be automatically inferred via AST parsing
-using pybind11::init_alias;  // TODO: not needed
-using pybind11::implicitly_convertible;  // Do not use
-// PYBIND11_MODULE                      <- macros don't respect namespaces
-// PYBIND11_EMBEDDED_MODULE
-// PYBIND11_OVERRIDE
-// PYBIND11_OVERRIDE_PURE
-// PYBIND11_OVERRIDE_NAME
-// PYBIND11_OVERRIDE_PURE_NAME
-using pybind11::get_override;
-using pybind11::scoped_ostream_redirect;
-using pybind11::scoped_estream_redirect;
-using pybind11::add_ostream_redirect;
-
-
-// annotations
-using pybind11::overload_cast;
-using pybind11::const_;
-using pybind11::args;  // TODO: superceded by Arg<>
-using pybind11::kwargs;  // TODO: superceded by Arg<>
-using pybind11::is_method;
-using pybind11::is_setter;
-using pybind11::is_operator;
-using pybind11::is_final;
-using pybind11::scope;
-using pybind11::doc;
-using pybind11::name;
-using pybind11::sibling;
-using pybind11::base;
-using pybind11::keep_alive;
-using pybind11::multiple_inheritance;
-using pybind11::dynamic_attr;
-using pybind11::buffer_protocol;
-using pybind11::metaclass;
-using pybind11::custom_type_setup;
-using pybind11::module_local;
-using pybind11::arithmetic;
-using pybind11::prepend;
-using pybind11::call_guard;
 
 
 ////////////////////////////////////
@@ -470,13 +419,13 @@ static constexpr impl::UnboundArg<name> arg {};
 ///////////////////////////////
 
 
-template <typename... Args>
-using Class = pybind11::class_<Args...>;  // TODO: these don't inherit from BertrandTag, but should
+// template <typename... Args>
+// using Class = pybind11::class_<Args...>;  // TODO: these don't inherit from BertrandTag, but should
 using Handle = pybind11::handle;
-using WeakRef = pybind11::weakref;
-using Capsule = pybind11::capsule;
-using Buffer = pybind11::buffer;  // TODO: delete this and force users to use memoryview instead
-using MemoryView = pybind11::memoryview;  // TODO: place in buffer.h along with memoryview
+// using WeakRef = pybind11::weakref;
+// using Capsule = pybind11::capsule;
+// using Buffer = pybind11::buffer;  // TODO: delete this and force users to use memoryview instead
+// using MemoryView = pybind11::memoryview;  // TODO: place in buffer.h along with memoryview
 class Object;
 template <typename>
 class Function;
@@ -1198,6 +1147,3 @@ template <std::derived_from<Object> T>
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_COMMON_DECLARATIONS_H

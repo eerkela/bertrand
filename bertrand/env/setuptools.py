@@ -538,6 +538,26 @@ class BuildSources(setuptools_build_ext):
 
         return path
 
+    def _get_import_path(self, cache: dict[str, Path], edge: dict[str, Any]) -> Path:
+        # if a source path is present, then the module is well-formed at the C++ level
+        if "source-path" in edge:
+            return Path(edge["source-path"]).relative_to(Path.cwd())
+
+        # otherwise, the import is unresolved.  If we've encountered it before, we can
+        # consult the cache to avoid recomputing it.
+        name = edge["logical-name"]
+        if name in cache:
+            return cache[name]
+
+        # otherwise, we attempt to import the module at the Python level and generate
+        # a Python -> C++ binding file to resolve the import.
+        breakpoint()
+        module = importlib.import_module(name)
+        generated_path = Path(*name.split(".")).with_suffix(".cpp")
+        PyModule(self._bertrand_generated_root / generated_path).generate(module)
+        cache[name] = generated_path
+        return generated_path
+
     def _resolve_imports(self, compile_commands: Path) -> None:
         # module dependencies are represented according to the p1689r5 spec, which is
         # what CMake uses internally to generate the build graph.  We need some
@@ -553,32 +573,31 @@ class BuildSources(setuptools_build_ext):
             stdout=subprocess.PIPE,
         ).stdout.decode("utf-8").strip())
 
-        # we begin by creating a lookup table that maps Path objects to their
-        # respective Source, for cross-referencing.
-        lookup = {source.path: source for source in self.extensions}
-
-        # p1689 format lists the dependencies by build *target* rather than source
-        # file, so we need to undo that to obtain the right source paths.  Luckily,
-        # CMake stores the build targets in a nested source tree, so we can just strip
-        # the appropriate prefix.
+        # first of all, p1689 lists the dependencies by build *target* rather than
+        # source path, so we need to cross reference that with our Source objects.
+        # Luckily, CMake stores the build targets in a nested source tree, so we can
+        # strip the appropriate prefix and do some path arithmetic to get a 1:1 map.
         trunk = Path("CMakeFiles") / f"{self.distribution.get_name()}.dir"
         cwd = Path.cwd()
+        graph = {
+            (
+                (cwd.root / Path(module["primary-output"]).relative_to(trunk)) \
+                    .relative_to(cwd).with_suffix("").as_posix()
+            ): module
+            for module in p1689["rules"]
+        }
 
         # Each source file is represented by a rule in the p1689 spec
-        generated: dict[str, str] = {}
-        for module in p1689["rules"]:
+        generated: dict[str, Path] = {}
+        for posix, module in graph.items():
+            source = self._bertrand_source_lookup[posix]
 
-            # find the original Source object from the target path
-            path = Path(module["primary-output"]).relative_to(trunk)
-            path = (cwd.root / path).relative_to(cwd).with_suffix("")
-            source = lookup[path]
-
-            # module exports are represented by a "provides" key in the rule, which
-            # for C++ modules can only have a single entry (but possibly more as an
-            # implementation detail, for private partitions, etc.).
+            # exports are represented by a "provides" array, which - for C++ modules -
+            # can only have a single entry (but possibly more as an implementation
+            # detail for private partitions, etc. depending on vendor).
             provides = module.get("provides", [])
             if provides:
-                # a module is a primary module interface if it exports a module name
+                # a module is a primary module interface if it exports a logical name
                 # that lacks partitions
                 source.module = provides[0]["logical-name"]
                 if ":" not in source.module:
@@ -599,36 +618,20 @@ class BuildSources(setuptools_build_ext):
                             f"Python semantics."
                         )
 
-            # module imports are represented by a "requires" key in the rule, which
-            # lists the logical names and discovered source paths for each import.
-            for edge in module.get("requires", []):
-                name = edge["logical-name"]
-
-                # if a source path was found, then the module is well-formed at the
-                # C++ level
-                if "source-path" in edge:
-                    source.sources.append(
-                        Path(edge["source-path"]).relative_to(cwd).as_posix()
-                    )
-
-                # otherwise, the import is unresolved.  In this case, we attempt to
-                # import the module at the Python level, and if successful, then we
-                # can generate a Python -> C++ binding file to resolve the import.
-                elif name in generated:
-                    source.sources.append(generated[name])
-                else:
-                    try:
-                        py_import = importlib.import_module(name)
-                    except ImportError:
-                        print(f"Unresolved import '{name}' in source {source.path}")
-                        sys.exit()
-
-                    breakpoint()
-                    generated_path = Path(*name.split(".")).with_suffix(".cpp")
-                    PyModule(self._bertrand_generated_root / generated_path).generate(py_import)
-                    posix_path = generated_path.as_posix()
-                    generated[name] = posix_path
-                    source.sources.append(posix_path)
+            # module imports have to be handled carefully in order to account for
+            # nested dependencies.  In this case, we do a depth-first search against
+            # the p1689 graph to resolve each import.
+            stack = [
+                self._get_import_path(generated, edge).as_posix()
+                for edge in module.get("requires", [])
+            ]
+            while stack:
+                p = stack.pop()
+                for edge in graph[p].get("requires", []):
+                    p2 = self._get_import_path(generated, edge).as_posix()
+                    if p2 not in stack and p2 not in source.sources:
+                        stack.append(p2)
+                source.sources.append(p)
 
     def stage2(self) -> None:
         """TODO
@@ -692,6 +695,7 @@ class BuildSources(setuptools_build_ext):
         # tree.  We need to add these bindings to the appropriate Source objects so
         # that they can be included in the final build.
         for source in self.extensions:
+            continue  # TODO: re-enable bindings
             if source.primary_module:
                 bindings = self.get_python_path(source).relative_to(Path.cwd())
                 source.sources.append(bindings.as_posix())
@@ -778,7 +782,6 @@ class BuildSources(setuptools_build_ext):
         self.stage1()
         self.stage2()
         self.stage3()
-
 
     # TODO: if files are copied out of the build directory, then they should be added
     # to a persistent registry so that they can be cleaned up later with a simple

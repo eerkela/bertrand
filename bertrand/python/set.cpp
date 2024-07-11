@@ -1,13 +1,12 @@
-#ifndef BERTRAND_PYTHON_SET_H
-#define BERTRAND_PYTHON_SET_H
+export module bertrand.python:set;
 
-#include "common.h"
+import :common;
 
 
 // TODO: check to make sure control structs are properly enabled after CTAD refactor
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -1453,6 +1452,3 @@ struct __contains__<Self, Key>                              : Returns<bool> {
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_SET_H

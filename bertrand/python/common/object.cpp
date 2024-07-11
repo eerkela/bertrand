@@ -1,12 +1,11 @@
-#ifndef BERTRAND_PYTHON_COMMON_OBJECT_H
-#define BERTRAND_PYTHON_COMMON_OBJECT_H
+export module bertrand.python:common.object;
 
-#include "declarations.h"
-#include "except.h"
-#include "ops.h"
+import :common.declarations;
+import :common.except;
+import :common.ops;
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -608,6 +607,3 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 
 }  // namespace py
 }  // namespace bertrand
-
-
-#endif  // BERTRAND_PYTHON_COMMON_OBJECT_H
