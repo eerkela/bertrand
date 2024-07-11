@@ -1,3 +1,11 @@
+module;
+
+#include <algorithm>
+#include <concepts>
+
+#include <Python.h>
+#include <pybind11/pybind11.h>
+
 export module bertrand.python:set;
 
 import :common;

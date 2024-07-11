@@ -1,3 +1,10 @@
+module;
+
+#include <concepts>
+#include <iterator>
+
+#include <Python.h>
+
 export module bertrand.python:common.iter;
 
 import :common.declarations;

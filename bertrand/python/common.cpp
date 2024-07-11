@@ -1,3 +1,16 @@
+module;
+
+#include <array>
+#include <concepts>
+#include <initializer_list>
+#include <string>
+#include <type_traits>
+
+#include <Python.h>
+#include <pybind11/pybind11.h>
+
+#include <bertrand/static_str.h>
+
 export module bertrand.python:common;
 
 export import :common.declarations;
@@ -265,9 +278,9 @@ struct __init__<EllipsisType, T>                            : Returns<EllipsisTy
 };
 
 
-static const NoneType None;
-static const EllipsisType Ellipsis;
-static const NotImplementedType NotImplemented;
+const NoneType None;
+const EllipsisType Ellipsis;
+const NotImplementedType NotImplemented;
 
 
 /////////////////////
@@ -556,41 +569,10 @@ public:
     // TODO: check if the function is overwriting an existing attribute?
 
     template <typename Func, typename... Defaults>
-    Module& def(const char* name, const char* doc, Func&& body, Defaults&&... defaults) {
-        Function f(
-            (name == nullptr) ? "" : name,
-            (doc == nullptr) ? "" : doc,
-            std::forward<Func>(body),
-            std::forward<Defaults>(defaults)...
-        );
-        if (PyModule_AddObjectRef(this->ptr(), name, f.ptr())) {
-            Exception::from_python();
-        }
-        return *this;
-    }
+    Module& def(const Str& name, const Str& doc, Func&& body, Defaults&&... defaults);
 
     /* Equivalent to pybind11::module_::def_submodule(). */
-    Module def_submodule(const char* name, const char* doc = nullptr) {
-        const char* this_name = PyModule_GetName(m_ptr);
-        if (this_name == nullptr) {
-            Exception::from_python();
-        }
-        std::string full_name = std::string(this_name) + '.' + name;
-        Handle submodule = PyImport_AddModule(full_name.c_str());
-        if (!submodule) {
-            Exception::from_python();
-        }
-        Module result = reinterpret_borrow<Module>(submodule);
-        try {
-            if (doc && pybind11::options::show_user_defined_docstrings()) {
-                setattr<"__doc__">(result, pybind11::str(doc));
-            }
-            pybind11::setattr(*this, name, result);
-            return result;
-        } catch (...) {
-            Exception::from_pybind11();
-        }
-    }
+    Module def_submodule(const Str& name, const Str& doc);
 
     void reload() {
         PyObject *obj = PyImport_ReloadModule(this->ptr());

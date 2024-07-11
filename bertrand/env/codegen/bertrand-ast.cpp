@@ -325,7 +325,7 @@ public:
         const std::string& export_name,
         const std::string& path
     ) : path(path) {
-        body += "#include <bertrand/python.h>\n";
+        body += "import bertrand.python;\n";
         body += "namespace py = bertrand::py;\n";
         body += "\n";
         body += "import " + import_name + ";\n";

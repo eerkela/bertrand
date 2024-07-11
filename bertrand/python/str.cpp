@@ -1,8 +1,13 @@
 module;
 
+#include <concepts>
+
 #ifdef BERTRAND_HAS_STD_FORMAT
     #include <format>
 #endif
+
+#include <Python.h>
+#include <pybind11/pybind11.h>
 
 export module bertrand.python:str;
 
@@ -161,9 +166,20 @@ public:
         return reinterpret_steal<Str>(result);
     }
 
-    BERTRAND_METHOD([[nodiscard]], capitalize, const)
-    BERTRAND_METHOD([[nodiscard]], casefold, const)
-    BERTRAND_METHOD([[nodiscard]], center, const)
+    template <typename... Args> requires (impl::invocable<Self, "capitalize", Args...>)
+    [[nodiscard]] decltype(auto) capitalize(Args&&... args) const {
+        return impl::call_method<"capitalize">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "casefold", Args...>)
+    [[nodiscard]] decltype(auto) casefold(Args&&... args) const {
+        return impl::call_method<"casefold">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "center", Args...>)
+    [[nodiscard]] decltype(auto) center(Args&&... args) const {
+        return impl::call_method<"center">(*this, std::forward<Args>(args)...);
+    }
 
     [[nodiscard]] size_t count(
         const Str& sub,
@@ -182,7 +198,10 @@ public:
         return static_cast<size_t>(result);
     }
 
-    BERTRAND_METHOD([[nodiscard]], encode, const)
+    template <typename... Args> requires (impl::invocable<Self, "encode", Args...>)
+    [[nodiscard]] decltype(auto) encode(Args&&... args) const {
+        return impl::call_method<"encode">(*this, std::forward<Args>(args)...);
+    }
 
     [[nodiscard]] bool endswith(
         const Str& suffix,
@@ -202,7 +221,10 @@ public:
         return result;
     }
 
-    BERTRAND_METHOD([[nodiscard]], expandtabs, const)
+    template <typename... Args> requires (impl::invocable<Self, "expandtabs", Args...>)
+    [[nodiscard]] decltype(auto) expandtabs(Args&&... args) const {
+        return impl::call_method<"expandtabs">(*this, std::forward<Args>(args)...);
+    }
 
     [[nodiscard]] Py_ssize_t find(
         const Str& sub,
@@ -226,8 +248,15 @@ public:
         return PyUnicode_FindChar(this->ptr(), ch, start, stop, 1);
     }
 
-    BERTRAND_METHOD([[nodiscard]], format, const)
-    BERTRAND_METHOD([[nodiscard]], format_map, const)
+    template <typename... Args> requires (impl::invocable<Self, "format", Args...>)
+    [[nodiscard]] decltype(auto) format(Args&&... args) const {
+        return impl::call_method<"format">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "format_map", Args...>)
+    [[nodiscard]] decltype(auto) format_map(Args&&... args) const {
+        return impl::call_method<"format_map">(*this, std::forward<Args>(args)...);
+    }
 
     [[nodiscard]] Py_ssize_t index(
         const Str& sub,
@@ -265,18 +294,65 @@ public:
         return result;
     }
 
-    BERTRAND_METHOD([[nodiscard]], isalnum, const)
-    BERTRAND_METHOD([[nodiscard]], isalpha, const)
-    BERTRAND_METHOD([[nodiscard]], isascii_, const)
-    BERTRAND_METHOD([[nodiscard]], isdecimal, const)
-    BERTRAND_METHOD([[nodiscard]], isdigit, const)
-    BERTRAND_METHOD([[nodiscard]], isidentifier, const)
-    BERTRAND_METHOD([[nodiscard]], islower, const)
-    BERTRAND_METHOD([[nodiscard]], isnumeric, const)
-    BERTRAND_METHOD([[nodiscard]], isprintable, const)
-    BERTRAND_METHOD([[nodiscard]], isspace, const)
-    BERTRAND_METHOD([[nodiscard]], istitle, const)
-    BERTRAND_METHOD([[nodiscard]], isupper, const)
+    template <typename... Args> requires (impl::invocable<Self, "isalnum", Args...>)
+    [[nodiscard]] decltype(auto) isalnum(Args&&... args) const {
+        return impl::call_method<"isalnum">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "isalpha", Args...>)
+    [[nodiscard]] decltype(auto) isalpha(Args&&... args) const {
+        return impl::call_method<"isalpha">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "isascii", Args...>)
+    [[nodiscard]] decltype(auto) isascii_(Args&&... args) const {
+        return impl::call_method<"isascii">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "isdecimal", Args...>)
+    [[nodiscard]] decltype(auto) isdecimal(Args&&... args) const {
+        return impl::call_method<"isdecimal">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "isdigit", Args...>)
+    [[nodiscard]] decltype(auto) isdigit(Args&&... args) const {
+        return impl::call_method<"isdigit">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "isidentifier", Args...>)
+    [[nodiscard]] decltype(auto) isidentifier(Args&&... args) const {
+        return impl::call_method<"isidentifier">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "islower", Args...>)
+    [[nodiscard]] decltype(auto) islower(Args&&... args) const {
+        return impl::call_method<"islower">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "isnumeric", Args...>)
+    [[nodiscard]] decltype(auto) isnumeric(Args&&... args) const {
+        return impl::call_method<"isnumeric">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "isprintable", Args...>)
+    [[nodiscard]] decltype(auto) isprintable(Args&&... args) const {
+        return impl::call_method<"isprintable">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "isspace", Args...>)
+    [[nodiscard]] decltype(auto) isspace(Args&&... args) const {
+        return impl::call_method<"isspace">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "istitle", Args...>)
+    [[nodiscard]] decltype(auto) istitle(Args&&... args) const {
+        return impl::call_method<"istitle">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "isupper", Args...>)
+    [[nodiscard]] decltype(auto) isupper(Args&&... args) const {
+        return impl::call_method<"isupper">(*this, std::forward<Args>(args)...);
+    }
 
     template <impl::is_iterable T>
     [[nodiscard]] Str join(const T& iterable) const {
@@ -294,10 +370,25 @@ public:
         return join(py::List(iterable));
     }
 
-    BERTRAND_METHOD([[nodiscard]], ljust, const)
-    BERTRAND_METHOD([[nodiscard]], lower, const)
-    BERTRAND_METHOD([[nodiscard]], lstrip, const)
-    BERTRAND_STATIC_METHOD([[nodiscard]], maketrans)
+    template <typename... Args> requires (impl::invocable<Self, "ljust", Args...>)
+    [[nodiscard]] decltype(auto) ljust(Args&&... args) const {
+        return impl::call_method<"ljust">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "lower", Args...>)
+    [[nodiscard]] decltype(auto) lower(Args&&... args) const {
+        return impl::call_method<"lower">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "lstrip", Args...>)
+    [[nodiscard]] decltype(auto) lstrip(Args&&... args) const {
+        return impl::call_method<"lstrip">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "maketrans", Args...>)
+    [[nodiscard]] static decltype(auto) maketrans(Args&&... args) {
+        return impl::call_static<Self, "maketrans">(std::forward<Args>(args)...);
+    }
 
     [[nodiscard]] Tuple<Str> partition(const Str& sep) const {
         PyObject* result = PyUnicode_Partition(this->ptr(), sep.ptr());
@@ -307,8 +398,15 @@ public:
         return reinterpret_steal<Tuple<Str>>(result);
     }
 
-    BERTRAND_METHOD([[nodiscard]], removeprefix, const)
-    BERTRAND_METHOD([[nodiscard]], removesuffix, const)
+    template <typename... Args> requires (impl::invocable<Self, "removeprefix", Args...>)
+    [[nodiscard]] decltype(auto) removeprefix(Args&&... args) const {
+        return impl::call_method<"removeprefix">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "removesuffix", Args...>)
+    [[nodiscard]] decltype(auto) removesuffix(Args&&... args) const {
+        return impl::call_method<"removesuffix">(*this, std::forward<Args>(args)...);
+    }
 
     [[nodiscard]] Str replace(const Str& sub, const Str& repl, Py_ssize_t maxcount = -1) const {
         PyObject* result = PyUnicode_Replace(
@@ -381,7 +479,10 @@ public:
         return result;
     }
 
-    BERTRAND_METHOD([[nodiscard]], rjust, const)
+    template <typename... Args> requires (impl::invocable<Self, "rjust", Args...>)
+    [[nodiscard]] decltype(auto) rjust(Args&&... args) const {
+        return impl::call_method<"rjust">(*this, std::forward<Args>(args)...);
+    }
 
     [[nodiscard]] Tuple<Str> rpartition(const Str& sep) const {
         PyObject* result = PyUnicode_RPartition(this->ptr(), sep.ptr());
@@ -407,7 +508,10 @@ public:
         return reinterpret_steal<List<Str>>(result);
     }
 
-    BERTRAND_METHOD([[nodiscard]], rstrip, const)
+    template <typename... Args> requires (impl::invocable<Self, "rstrip", Args...>)
+    [[nodiscard]] decltype(auto) rstrip(Args&&... args) const {
+        return impl::call_method<"rstrip">(*this, std::forward<Args>(args)...);
+    }
 
     [[nodiscard]] List<Str> split() const {
         PyObject* result = PyUnicode_Split(this->ptr(), nullptr, -1);
@@ -451,12 +555,35 @@ public:
         return result;
     }
 
-    BERTRAND_METHOD([[nodiscard]], strip, const)
-    BERTRAND_METHOD([[nodiscard]], swapcase, const)
-    BERTRAND_METHOD([[nodiscard]], title, const)
-    BERTRAND_METHOD([[nodiscard]], translate, const)
-    BERTRAND_METHOD([[nodiscard]], upper, const)
-    BERTRAND_METHOD([[nodiscard]], zfill, const)
+    template <typename... Args> requires (impl::invocable<Self, "strip", Args...>)
+    [[nodiscard]] decltype(auto) strip(Args&&... args) const {
+        return impl::call_method<"strip">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "swapcase", Args...>)
+    [[nodiscard]] decltype(auto) swapcase(Args&&... args) const {
+        return impl::call_method<"swapcase">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "title", Args...>)
+    [[nodiscard]] decltype(auto) title(Args&&... args) const {
+        return impl::call_method<"title">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "translate", Args...>)
+    [[nodiscard]] decltype(auto) translate(Args&&... args) const {
+        return impl::call_method<"translate">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "upper", Args...>)
+    [[nodiscard]] decltype(auto) upper(Args&&... args) const {
+        return impl::call_method<"upper">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "zfill", Args...>)
+    [[nodiscard]] decltype(auto) zfill(Args&&... args) const {
+        return impl::call_method<"zfill">(*this, std::forward<Args>(args)...);
+    }
 
 };
 
@@ -670,7 +797,7 @@ struct __contains__<Self, Key>                              : Returns<bool> {
 
 template <std::derived_from<Str> L, impl::str_like R>
 struct __add__<L, R>                                        : Returns<Str> {
-    static auto operator()(const L& lhs, R& rhs) {
+    static auto operator()(const L& lhs, const R& rhs) {
         PyObject* result = PyUnicode_Concat(
             as_object(lhs).ptr(),
             as_object(rhs).ptr()
@@ -685,7 +812,7 @@ struct __add__<L, R>                                        : Returns<Str> {
 
 template <impl::str_like L, std::derived_from<Str> R> requires (!std::derived_from<L, Str>)
 struct __add__<L, R>                                        : Returns<Str> {
-    static auto operator()(const L& lhs, R& rhs) {
+    static auto operator()(const L& lhs, const R& rhs) {
         PyObject* result = PyUnicode_Concat(
             as_object(lhs).ptr(),
             as_object(rhs).ptr()

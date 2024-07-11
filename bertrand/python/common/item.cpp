@@ -1,3 +1,10 @@
+module;
+
+#include <string>
+#include <utility>
+
+#include <Python.h>
+
 export module bertrand.python:common.item;
 
 import :common.declarations;

@@ -1,3 +1,11 @@
+module;
+
+#include <algorithm>
+#include <list>
+
+#include <Python.h>
+#include <pybind11/pybind11.h>
+
 export module bertrand.python:list;
 
 import :common;
@@ -287,8 +295,15 @@ public:
         }
     }
 
-    BERTRAND_METHOD(, remove, )
-    BERTRAND_METHOD(, pop, )
+    template <typename... Args> requires (impl::invocable<Self, "remove", Args...>)
+    decltype(auto) remove(Args&&... args) {
+        return impl::call_method<"remove">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "pop", Args...>)
+    decltype(auto) pop(Args&&... args) {
+        return impl::call_method<"pop">(*this, std::forward<Args>(args)...);
+    }
 
     /* Equivalent to Python `list.reverse()`. */
     void reverse() {
@@ -297,7 +312,10 @@ public:
         }
     }
 
-    BERTRAND_METHOD(, sort, )
+    template <typename... Args> requires (impl::invocable<Self, "sort", Args...>)
+    decltype(auto) sort(Args&&... args) {
+        return impl::call_method<"sort">(*this, std::forward<Args>(args)...);
+    }
 
     [[nodiscard]] friend List operator+(
         const List& self,

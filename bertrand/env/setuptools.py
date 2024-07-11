@@ -23,6 +23,11 @@ from .package import Package, PackageLike
 from .version import __version__
 
 
+# import std;  can be supported by doing this:
+# https://discourse.llvm.org/t/libc-c-23-module-installation-support/77061/9
+# https://discourse.llvm.org/t/llvm-discussion-forums-libc-c-23-module-installation-support/77087/27
+
+
 # TODO: eventually, get_include() won't be necessary, since all the headers will be
 # converted into modules, and the python module might be imported by default.
 
@@ -587,7 +592,7 @@ class BuildSources(setuptools_build_ext):
             for module in p1689["rules"]
         }
 
-        # Each source file is represented by a rule in the p1689 spec
+        # import bindings are cached to avoid repeated work
         generated: dict[str, Path] = {}
         for posix, module in graph.items():
             source = self._bertrand_source_lookup[posix]
@@ -603,8 +608,16 @@ class BuildSources(setuptools_build_ext):
                 if ":" not in source.module:
                     source.primary_module = source.module
                     import_path = Path(*source.module.split("."))
+
+                    # __init__.cpp is a valid way of exporting a module as a
+                    # Python-style subpackage.
                     if source.path.stem == "__init__":
                         import_path /= "__init__"
+
+                    # C++ does not enforce any specific meaning for dots in the module
+                    # name, so we need to force them to conform with Python semantics.
+                    # This maintains consistency between the two, and makes binding
+                    # generation much more consistent.
                     if import_path != source.path.with_suffix(""):
                         expected_path = import_path.with_suffix(source.path.suffix)
                         rename = ".".join(source.path.with_suffix("").parts)
@@ -651,6 +664,8 @@ class BuildSources(setuptools_build_ext):
             f.write("# stage 2 uses a unique object for each source\n")
             f.write("\n")
             for ext in self.extensions:
+                if ext.module and not ext.primary_module:
+                    continue
                 f.write(f"# source: {ext.path.absolute()}\n")
                 f.write(f"add_library({ext.name} OBJECT\n")
                 for source in ext.sources:

@@ -411,7 +411,7 @@ namespace impl {
 
 /* Compile-time factory for `UnboundArgument` tags. */
 template <StaticStr name>
-static constexpr impl::UnboundArg<name> arg {};
+constexpr impl::UnboundArg<name> arg {};
 
 
 ///////////////////////////////
@@ -422,10 +422,10 @@ static constexpr impl::UnboundArg<name> arg {};
 // template <typename... Args>
 // using Class = pybind11::class_<Args...>;  // TODO: these don't inherit from BertrandTag, but should
 using Handle = pybind11::handle;
-// using WeakRef = pybind11::weakref;
-// using Capsule = pybind11::capsule;
-// using Buffer = pybind11::buffer;  // TODO: delete this and force users to use memoryview instead
-// using MemoryView = pybind11::memoryview;  // TODO: place in buffer.h along with memoryview
+using WeakRef = pybind11::weakref;
+using Capsule = pybind11::capsule;
+using Buffer = pybind11::buffer;  // TODO: delete this and force users to use memoryview instead
+using MemoryView = pybind11::memoryview;  // TODO: place in buffer.h along with memoryview
 class Object;
 template <typename>
 class Function;
@@ -635,7 +635,7 @@ namespace impl {
     explicit constructors on the target type, which can give unexpected results and
     violate strict type safety. */
     template <typename U>
-    static decltype(auto) implicit_cast(U&& value) {
+    decltype(auto) implicit_cast(U&& value) {
         return std::forward<U>(value);
     }
 

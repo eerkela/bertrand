@@ -1,3 +1,10 @@
+module;
+
+#include <type_traits>
+
+#include <Python.h>
+#include <pybind11/pybind11.h>
+
 export module bertrand.python:int_;
 
 import :common;
@@ -66,12 +73,35 @@ public:
         __explicit_init__<Int, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     )) {}
 
-    BERTRAND_METHOD([[nodiscard]], bit_length, const)
-    BERTRAND_METHOD([[nodiscard]], bit_count, const)
-    BERTRAND_METHOD([[nodiscard]], to_bytes, const)
-    BERTRAND_STATIC_METHOD([[nodiscard]], from_bytes)
-    BERTRAND_METHOD([[nodiscard]], as_integer_ratio, const)
-    BERTRAND_METHOD([[nodiscard]], is_integer, const)
+    template <typename... Args> requires (impl::invocable<Self, "bit_length", Args...>)
+    [[nodiscard]] decltype(auto) bit_length(Args&&... args) const {
+        return impl::call_method<"bit_length">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "bit_count", Args...>)
+    [[nodiscard]] decltype(auto) bit_count(Args&&... args) const {
+        return impl::call_method<"bit_count">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "to_bytes", Args...>)
+    [[nodiscard]] decltype(auto) to_bytes(Args&&... args) const {
+        return impl::call_method<"to_bytes">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "from_bytes", Args...>)
+    [[nodiscard]] static decltype(auto) from_bytes(Args&&... args) {
+        return impl::call_static<Self, "from_bytes">(std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "as_integer_ratio", Args...>)
+    [[nodiscard]] decltype(auto) as_integer_ratio(Args&&... args) const {
+        return impl::call_method<"as_integer_ratio">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "is_integer", Args...>)
+    [[nodiscard]] decltype(auto) is_integer(Args&&... args) const {
+        return impl::call_method<"is_integer">(*this, std::forward<Args>(args)...);
+    }
 
     static const Int neg_two;
     static const Int neg_one;
@@ -335,11 +365,11 @@ struct __cast__<From, To>                                   : Returns<To> {
 // convertible from long long?
 
 
-inline const Int Int::neg_two = -2;
-inline const Int Int::neg_one = -1;
-inline const Int Int::zero = 0;
-inline const Int Int::one = 1;
-inline const Int Int::two = 2;
+const Int Int::neg_two = -2;
+const Int Int::neg_one = -1;
+const Int Int::zero = 0;
+const Int Int::one = 1;
+const Int Int::two = 2;
 
 
 }  // namespace py

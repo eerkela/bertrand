@@ -2,6 +2,12 @@ module;
 
 #define PYBIND11_DETAILED_ERROR_MESSAGES
 
+#include <ranges>
+
+#include <Python.h>
+#include <pybind11/pybind11.h>
+#include <pybind11/eval.h>
+
 // #include "regex.h"
 
 export module bertrand.python;
@@ -234,132 +240,6 @@ inline const Type Frame::type = reinterpret_borrow<Type>((PyObject*) &PyFrame_Ty
 //         return Type();
 //     }
 // }();
-
-
-////////////////////////////////////
-////    FORWARD DECLARATIONS    ////
-////////////////////////////////////
-
-
-template <typename Return, typename... Target>
-[[nodiscard]] inline std::optional<std::string> Function<Return(Target...)>::filename() const {
-    std::optional<Code> code = this->code();
-    if (code.has_value()) {
-        return code->filename;
-    }
-    return std::nullopt;
-}
-
-
-template <typename Return, typename... Target>
-[[nodiscard]] inline std::optional<size_t> Function<Return(Target...)>::lineno() const {
-    std::optional<Code> code = this->code();
-    if (code.has_value()) {
-        return code->line_number;
-    }
-    return std::nullopt;
-}
-
-
-template <typename Return, typename... Target>
-[[nodiscard]] inline std::optional<Module> Function<Return(Target...)>::module_() const {
-    PyObject* result = PyFunction_GetModule(unwrap_method());
-    if (result == nullptr) {
-        if (PyErr_Occurred()) {
-            PyErr_Clear();
-        }
-        return std::nullopt;
-    }
-    return reinterpret_borrow<Module>(result);
-}
-
-
-template <typename Return, typename... Target>
-[[nodiscard]] inline std::optional<Code> Function<Return(Target...)>::code() const {
-    PyObject* result = PyFunction_GetCode(unwrap_method());
-    if (result == nullptr) {
-        if (PyErr_Occurred()) {
-            PyErr_Clear();
-        }
-        return std::nullopt;
-    }
-    return reinterpret_borrow<Code>(result);
-}
-
-
-template <typename Return, typename... Target>
-[[nodiscard]] inline std::optional<Dict<Str, Object>> Function<Return(Target...)>::globals() const {
-    PyObject* result = PyFunction_GetGlobals(unwrap_method());
-    if (result == nullptr) {
-        if (PyErr_Occurred()) {
-            PyErr_Clear();
-        }
-        return std::nullopt;
-    }
-    return reinterpret_borrow<Dict<Str, Object>>(result);
-}
-
-
-// template <typename Return, typename... Target>
-// [[nodiscard]] MappingProxy<Dict<Str, Object>> Function<Return(Target...)>::defaults() const {
-
-// }
-
-
-// template <typename Return, typename... Target>
-// template <typename... Values> requires (sizeof...(Values) > 0)  // TODO: complete this
-// void Function<Return(Target...)>::defaults(Values&&... values) {
-
-// }
-
-
-// template <typename Return, typename... Target>
-// [[nodiscard]] MappingProxy<Dict<Str, Object>> Function<Return(Target...)>::annotations() const {
-
-// }
-
-
-// template <typename Return, typename... Target>
-// template <typename... Annotations> requires (sizeof...(Annotations) > 0)  // TODO: complete this
-// void Function<Return(Target...)>::annotations(Annotations&&... values) {
-
-// }
-
-
-template <typename Return, typename... Target>
-[[nodiscard]] inline std::optional<Tuple<Object>> Function<Return(Target...)>::closure() const {
-    PyObject* result = PyFunction_GetClosure(unwrap_method());
-    if (result == nullptr) {
-        if (PyErr_Occurred()) {
-            PyErr_Clear();
-        }
-        return std::nullopt;
-    }
-    return reinterpret_borrow<Tuple<Object>>(result);
-}
-
-
-template <typename Return, typename... Target>
-inline void Function<Return(Target...)>::closure(std::optional<Tuple<Object>> closure) {
-    PyObject* item = closure.has_value() ? closure->ptr() : Py_None;
-    if (PyFunction_SetClosure(unwrap_method(), item)) {
-        Exception::from_python();
-    }
-}
-
-
-#if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
-
-    /* Get the type's qualified name. */
-    [[nodiscard]] inline Str Type::qualname() const {
-        PyObject* result = PyType_GetQualName(self());
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return reinterpret_steal<Str>(result);
-    }
-
-#endif
 
 
 ////////////////////////////////
@@ -1216,6 +1096,170 @@ inline void setattr(const Handle& obj, const Str& name, const Object& value) {
         getattr(object, lookup).release()
     );
 }
+
+
+////////////////////////////////////
+////    FORWARD DECLARATIONS    ////
+////////////////////////////////////
+
+
+template <typename Func, typename... Defaults>
+Module& Module::def(const Str& name, const Str& doc, Func&& body, Defaults&&... defaults) {
+    Function f(
+        name,
+        doc,
+        std::forward<Func>(body),
+        std::forward<Defaults>(defaults)...
+    );
+    if (PyModule_AddObjectRef(this->ptr(), PyUnicode_AsUTF8(name.ptr()), f.ptr())) {
+        Exception::from_python();
+    }
+    return *this;
+}
+
+
+Module Module::def_submodule(const Str& name, const Str& doc = "") {
+    const char* this_name = PyModule_GetName(m_ptr);
+    if (this_name == nullptr) {
+        Exception::from_python();
+    }
+    std::string full_name = std::string(this_name) + "." + name;
+    Handle submodule = PyImport_AddModule(full_name.c_str());
+    if (!submodule) {
+        Exception::from_python();
+    }
+    Module result = reinterpret_borrow<Module>(submodule);
+    try {
+        if (doc && pybind11::options::show_user_defined_docstrings()) {
+            setattr<"__doc__">(result, doc);
+        }
+        setattr(*this, name, result);
+        return result;
+    } catch (...) {
+        Exception::from_pybind11();
+    }
+}
+
+
+template <typename Return, typename... Target>
+[[nodiscard]] inline std::optional<std::string> Function<Return(Target...)>::filename() const {
+    std::optional<Code> code = this->code();
+    if (code.has_value()) {
+        return code->filename;
+    }
+    return std::nullopt;
+}
+
+
+template <typename Return, typename... Target>
+[[nodiscard]] inline std::optional<size_t> Function<Return(Target...)>::lineno() const {
+    std::optional<Code> code = this->code();
+    if (code.has_value()) {
+        return code->line_number;
+    }
+    return std::nullopt;
+}
+
+
+template <typename Return, typename... Target>
+[[nodiscard]] inline std::optional<Module> Function<Return(Target...)>::module_() const {
+    PyObject* result = PyFunction_GetModule(unwrap_method());
+    if (result == nullptr) {
+        if (PyErr_Occurred()) {
+            PyErr_Clear();
+        }
+        return std::nullopt;
+    }
+    return reinterpret_borrow<Module>(result);
+}
+
+
+template <typename Return, typename... Target>
+[[nodiscard]] inline std::optional<Code> Function<Return(Target...)>::code() const {
+    PyObject* result = PyFunction_GetCode(unwrap_method());
+    if (result == nullptr) {
+        if (PyErr_Occurred()) {
+            PyErr_Clear();
+        }
+        return std::nullopt;
+    }
+    return reinterpret_borrow<Code>(result);
+}
+
+
+template <typename Return, typename... Target>
+[[nodiscard]] inline std::optional<Dict<Str, Object>> Function<Return(Target...)>::globals() const {
+    PyObject* result = PyFunction_GetGlobals(unwrap_method());
+    if (result == nullptr) {
+        if (PyErr_Occurred()) {
+            PyErr_Clear();
+        }
+        return std::nullopt;
+    }
+    return reinterpret_borrow<Dict<Str, Object>>(result);
+}
+
+
+// template <typename Return, typename... Target>
+// [[nodiscard]] MappingProxy<Dict<Str, Object>> Function<Return(Target...)>::defaults() const {
+
+// }
+
+
+// template <typename Return, typename... Target>
+// template <typename... Values> requires (sizeof...(Values) > 0)  // TODO: complete this
+// void Function<Return(Target...)>::defaults(Values&&... values) {
+
+// }
+
+
+// template <typename Return, typename... Target>
+// [[nodiscard]] MappingProxy<Dict<Str, Object>> Function<Return(Target...)>::annotations() const {
+
+// }
+
+
+// template <typename Return, typename... Target>
+// template <typename... Annotations> requires (sizeof...(Annotations) > 0)  // TODO: complete this
+// void Function<Return(Target...)>::annotations(Annotations&&... values) {
+
+// }
+
+
+template <typename Return, typename... Target>
+[[nodiscard]] inline std::optional<Tuple<Object>> Function<Return(Target...)>::closure() const {
+    PyObject* result = PyFunction_GetClosure(unwrap_method());
+    if (result == nullptr) {
+        if (PyErr_Occurred()) {
+            PyErr_Clear();
+        }
+        return std::nullopt;
+    }
+    return reinterpret_borrow<Tuple<Object>>(result);
+}
+
+
+template <typename Return, typename... Target>
+inline void Function<Return(Target...)>::closure(std::optional<Tuple<Object>> closure) {
+    PyObject* item = closure.has_value() ? closure->ptr() : Py_None;
+    if (PyFunction_SetClosure(unwrap_method(), item)) {
+        Exception::from_python();
+    }
+}
+
+
+#if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
+
+    /* Get the type's qualified name. */
+    [[nodiscard]] inline Str Type::qualname() const {
+        PyObject* result = PyType_GetQualName(self());
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Str>(result);
+    }
+
+#endif
 
 
 }  // namespace py

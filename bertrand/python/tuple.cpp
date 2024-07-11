@@ -1,3 +1,12 @@
+module;
+
+#include <algorithm>
+#include <concepts>
+#include <list>
+
+#include <Python.h>
+#include <pybind11/pybind11.h>
+
 export module bertrand.python:tuple;
 
 import :common;
@@ -889,16 +898,16 @@ namespace impl {
         std::derived_from<typename T::type, Object>;
 
     template <typename... Ts>
-    static constexpr bool fields_are_homogenous = true;
+    constexpr bool fields_are_homogenous = true;
     template <typename T1, typename T2, typename... Ts>
-    static constexpr bool fields_are_homogenous<T1, T2, Ts...> =
+    constexpr bool fields_are_homogenous<T1, T2, Ts...> =
         std::same_as<typename T1::type, typename T2::type> &&
         fields_are_homogenous<T2, Ts...>;
 
     template <typename... Ts>
-    static constexpr bool field_names_are_unique = true;
+    constexpr bool field_names_are_unique = true;
     template <typename T, typename... Ts>
-    static constexpr bool field_names_are_unique<T, Ts...> =
+    constexpr bool field_names_are_unique<T, Ts...> =
         ((T::name != Ts::name) && ...) && field_names_are_unique<Ts...>;
 
     template <typename... Ts>

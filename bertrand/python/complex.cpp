@@ -1,3 +1,11 @@
+module;
+
+#include <complex>
+#include <type_traits>
+
+#include <Python.h>
+#include <pybind11/pybind11.h>
+
 export module bertrand.python:complex;
 
 import :common;

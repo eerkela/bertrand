@@ -1,3 +1,8 @@
+module;
+
+#include <Python.h>
+#include <pybind11/pybind11.h>
+
 export module bertrand.python:float_;
 
 import :common;
@@ -63,10 +68,25 @@ public:
         __explicit_init__<Float, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     )) {}
 
-    BERTRAND_METHOD([[nodiscard]], as_integer_ratio, const)
-    BERTRAND_METHOD([[nodiscard]], is_integer, const)
-    BERTRAND_METHOD([[nodiscard]], hex, const)
-    BERTRAND_STATIC_METHOD([[nodiscard]], fromhex)
+    template <typename... Args> requires (impl::invocable<Self, "as_integer_ratio", Args...>)
+    [[nodiscard]] decltype(auto) as_integer_ratio(Args&&... args) const {
+        return impl::call_method<"as_integer_ratio">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "is_integer", Args...>)
+    [[nodiscard]] decltype(auto) is_integer(Args&&... args) const {
+        return impl::call_method<"is_integer">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "hex", Args...>)
+    [[nodiscard]] decltype(auto) hex(Args&&... args) const {
+        return impl::call_method<"hex">(*this, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires (impl::invocable<Self, "fromhex", Args...>)
+    [[nodiscard]] static decltype(auto) fromhex(Args&&... args) {
+        return impl::call_static<Self, "fromhex">(std::forward<Args>(args)...);
+    }
 
     static const Float neg_one;
     static const Float neg_half;

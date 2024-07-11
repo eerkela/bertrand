@@ -2,6 +2,12 @@ module;
 
 #include <fstream>
 
+#include <Python.h>
+#include <cpptrace/cpptrace.hpp>
+#include <pybind11/pybind11.h>
+
+#include <bertrand/common.h>
+
 export module bertrand.python:code;
 
 import :common;

@@ -1,3 +1,12 @@
+module;
+
+#include <sstream>
+
+#include <Python.h>
+#include <pybind11/pybind11.h>
+
+#include <bertrand/common.h>
+
 export module bertrand.python:common.object;
 
 import :common.declarations;
@@ -182,7 +191,7 @@ public:
 
     /* Copy assignment operator. */
     Object& operator=(const Object& other) {
-        std::cout << "object copy assignment\n";  // TODO: remove print statement
+        print("object copy assignment");  // TODO: remove print statement
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = Py_XNewRef(other.m_ptr);
@@ -193,7 +202,7 @@ public:
 
     /* Move assignment operator. */
     Object& operator=(Object&& other) {
-        std::cout << "object move assignment\n";  // TODO: remove print statement
+        print("object move assignment");  // TODO: remove print statement
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = other.m_ptr;

@@ -1,6 +1,10 @@
 module;
 
+#include <concepts>
 #include <cmath>
+#include <utility>
+
+#include <Python.h>
 
 export module bertrand.python:math;
 

@@ -1,3 +1,14 @@
+module;
+
+#include <functional>
+#include <list>
+#include <map>
+#include <set>
+
+#include <pybind11/pybind11.h>
+
+#include <bertrand/static_str.h>
+
 export module bertrand.python:common.control;
 
 import :common.declarations;

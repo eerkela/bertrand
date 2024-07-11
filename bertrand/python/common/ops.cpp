@@ -1,3 +1,14 @@
+module;
+
+#include <concepts>
+#include <ranges>
+#include <type_traits>
+
+#include <Python.h>
+#include <pybind11/pybind11.h>
+
+#include <bertrand/static_str.h>
+
 export module bertrand.python:common.ops;
 
 import :common.declarations;
@@ -10,7 +21,7 @@ namespace py {
 
 namespace impl {
 
-    static PyObject* one = (Interpreter::init(), PyLong_FromLong(1));
+    PyObject* one = (Interpreter::init(), PyLong_FromLong(1));
 
     // TODO: update dereference to use new unpacking architecture.  It should
     // also be renamed to unpack.

@@ -1,9 +1,15 @@
 module;
 
 #include <cstdlib>
+#include <functional>
 
+#include <Python.h>
 #include <internal/pycore_frame.h>  // required to assign to frame->f_lineno
+#include <frameobject.h>  // required for PyFrame_New
 #include <cpptrace/cpptrace.hpp>
+#include <pybind11/pybind11.h>
+
+#include <bertrand/common.h>
 
 export module bertrand.python:common.except;
 

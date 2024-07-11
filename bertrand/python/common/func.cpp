@@ -1,5 +1,15 @@
 module;
 
+#include <concepts>
+#include <functional>
+#include <string>
+#include <tuple>
+#include <type_traits>
+#include <unordered_map>
+#include <utility>
+
+#include <Python.h>
+
 #if defined(__GNUC__) || defined(__clang__)
 #include <cxxabi.h>
 #include <cstdlib>
@@ -2189,12 +2199,12 @@ public:
     //     contents = Capsule::from_python(m_ptr);
     // }
 
-    /* Construct a py::Function from a pybind11 accessor.  Attempts to unpack the
-    argument's capsule if it represents a py::Function instance. */
-    template <typename Policy>
-    Function(const pybind11::detail::accessor<Policy>& accessor) : Base(accessor) {
-        contents = Capsule::from_python(m_ptr);
-    }
+    // /* Construct a py::Function from a pybind11 accessor.  Attempts to unpack the
+    // argument's capsule if it represents a py::Function instance. */
+    // template <typename Policy>
+    // Function(const pybind11::detail::accessor<Policy>& accessor) : Base(accessor) {
+    //     contents = Capsule::from_python(m_ptr);
+    // }
 
     /* Construct a py::Function from a valid C++ function with the templated signature.
     Use CTAD to deduce the signature if not explicitly provided.  If the signature
@@ -3016,7 +3026,7 @@ namespace impl {
         requires (invocable<std::decay_t<Self>, name, Args...>)
     inline decltype(auto) call_method(Self&& self, Args&&... args) {
         using Func = __getattr__<std::decay_t<Self>, name>::type;
-        auto meth = reinterpret_steal<pybind11::object>(
+        auto meth = reinterpret_steal<Object>(
             PyObject_GetAttr(self.ptr(), TemplateString<name>::ptr)
         );
         if (meth.ptr() == nullptr) {
@@ -3038,7 +3048,7 @@ namespace impl {
         requires (invocable<std::decay_t<Self>, name, Args...>)
     inline decltype(auto) call_static(Args&&... args) {
         using Func = __getattr__<std::decay_t<Self>, name>::type;
-        auto meth = reinterpret_steal<pybind11::object>(
+        auto meth = reinterpret_steal<Object>(
             PyObject_GetAttr(Self::type.ptr(), TemplateString<name>::ptr)
         );
         if (meth.ptr() == nullptr) {
@@ -3053,34 +3063,6 @@ namespace impl {
             throw;
         }
     }
-
-    /* A convenience macro that is meant to be invoked in the body of a py::Object
-    subclass, which generates a thin wrapper that forwards to the named method using
-    the argument conventions defined in its __getattr__ specialization. */
-    #define BERTRAND_METHOD(attributes, name, qualifiers)                               \
-        template <typename... Args> requires (                                          \
-            ::bertrand::py::impl::invocable<Self, BERTRAND_STRINGIFY(name), Args...>    \
-        )                                                                               \
-        attributes decltype(auto) name(Args&&... args) qualifiers {                     \
-            return ::bertrand::py::impl::call_method<BERTRAND_STRINGIFY(name)>(         \
-                *this,                                                                  \
-                std::forward<Args>(args)...                                             \
-            );                                                                          \
-        }
-
-    /* A convenience macro that is meant to be invoked in the body of a py::Object
-    subclass, which generates a thin wrapper that forwards to the named class or
-    static method using the argument conventions defined in its __getattr__
-    specialization. */
-    #define BERTRAND_STATIC_METHOD(attributes, name)                                    \
-        template <typename... Args> requires (                                          \
-            ::bertrand::py::impl::invocable<Self, BERTRAND_STRINGIFY(name), Args...>    \
-        )                                                                               \
-        attributes static decltype(auto) name(Args&&... args) {                         \
-            return ::bertrand::py::impl::call_static<Self, BERTRAND_STRINGIFY(name)>(   \
-                std::forward<Args>(args)...                                             \
-            );                                                                          \
-        }
 
 }
 
