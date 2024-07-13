@@ -10,7 +10,7 @@ import subprocess
 import sys
 import sysconfig
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterator, Iterable, overload, cast, SupportsIndex
 
 import setuptools
 from packaging.version import Version
@@ -84,36 +84,12 @@ class Source(setuptools.Extension):
     to generate automated bindings.  One of these should be specified for every source
     file in the project.
 
-    Parameters
-    ----------
-    path : Path
-        The path to the managed source file.
-    cpp_std : int
-        The C++ standard to use when compiling the source as a target.
-    cmake_args : dict[str, Any]
-        Additional arguments to pass to the CMake configuration.
-    traceback : bool, default True
-        If set to false, add `BERTRAND_NO_TRACEBACK` to the compile definitions, which
-        will disable cross-language tracebacks when the source is built.  This can
-        slightly improve performance on the unhappy path, at the cost of less
-        informative error messages.  It has no effect on the happy path, when no errors
-        are raised.
-    **kwargs : Any
-        Additional arguments passed to the setuptools.Extension constructor.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the source file does not exist.
-    OSError
-        If the source file is a directory.
-
     Notes
     -----
     Unlike `setuptools.Extension`, these objects are meant to represent only a single
     source file.  Bertrand's build system is powerful enough to automatically detect
     dependencies between files, so there is no need to specify them manually.  All the
-    required information is extracted from the source file itself.
+    required information is extracted from the source file itself at build time.
 
     One important thing to note regards the way extra build options are interpreted on
     a per-source basis.  If you have a source file that requires special treatment, you
@@ -123,46 +99,243 @@ class Source(setuptools.Extension):
     instance, if you have 3 source files, A, B, and C, where A depends on B and B
     depends on C, then adding a `-DDEBUG` flag to B will cause both B and C to be built
     with the flag, while A will be built without it.  If A requires the flag as well,
-    then it should be added to the `Source` constructor for A as well.
+    then it should be added to its `Source` constructor.
     """
 
-    # TODO: re-list all the setuptools arguments here for the benefit of docs/LSP
+    class Paths(list):  # type: ignore
+        """A collection of paths that automatically converts between posix-style
+        strings and formal Path objects when accessed.
+        """
+
+        def __init__(self, paths: Iterable[str]) -> None:
+            super().__init__(paths)
+
+        @overload
+        def __getitem__(self, index: SupportsIndex) -> Path: ...
+        @overload
+        def __getitem__(self, index: slice) -> list[Path]: ...
+        def __getitem__(self, index: SupportsIndex | slice) -> Path | list[Path]:
+            if isinstance(index, slice):
+                return [Path(p) for p in super().__getitem__(index)]
+            return Path(super().__getitem__(index))
+
+        @overload
+        def __setitem__(self, index: SupportsIndex, value: Path) -> None: ...
+        @overload
+        def __setitem__(self, index: slice, value: Iterable[Path]) -> None: ...
+        def __setitem__(
+            self,
+            index: SupportsIndex | slice,
+            value: Path | Iterable[Path]
+        ) -> None:
+            if isinstance(index, slice):
+                super().__setitem__(index, [p.as_posix() for p in cast(list[Path], value)])
+            else:
+                super().__setitem__(index, cast(Path, value).as_posix())
+
+        def __contains__(self, path: Path) -> bool:  # type: ignore
+            return super().__contains__(path.as_posix())
+
+        def __iter__(self) -> Iterator[Path]:
+            return (Path(p) for p in super().__iter__())
+
+        def __reversed__(self) -> Iterator[Path]:
+            return (Path(p) for p in super().__reversed__())
+
+        def __add__(self, other: list[Path]) -> list[Path]:  # type: ignore
+            return [Path(p) for p in super().__iter__()] + other
+
+        def __iadd__(self, other: list[Path]) -> None:  # type: ignore
+            super().extend(p.as_posix() for p in other)
+
+        def __mul__(self, n: SupportsIndex) -> list[Path]:
+            return [Path(p) for p in super().__iter__()] * n
+
+        def __rmul__(self, n: SupportsIndex) -> list[Path]:
+            return [Path(p) for p in super().__iter__()] * n
+
+        def __lt__(self, other: list[Path]) -> bool:
+            return [Path(p) for p in super().__iter__()] < other
+
+        def __le__(self, other: list[Path]) -> bool:
+            return [Path(p) for p in super().__iter__()] <= other
+
+        def __eq__(self, other: Any) -> bool:
+            return [Path(p) for p in super().__iter__()] == other
+
+        def __ne__(self, other: Any) -> bool:
+            return [Path(p) for p in super().__iter__()] != other
+
+        def __ge__(self, other: list[Path]) -> bool:
+            return [Path(p) for p in super().__iter__()] >= other
+
+        def __gt__(self, other: list[Path]) -> bool:
+            return [Path(p) for p in super().__iter__()] > other
+
+        def index(
+            self,
+            path: Path,
+            start: SupportsIndex = 0,
+            stop: SupportsIndex | None = None
+        ) -> int:
+            """Find the index of a path in the collection.
+
+            Parameters
+            ----------
+            path : Path
+                The path to search for.
+            start : int, optional
+                The index to start searching from.
+            stop : int, optional
+                The index to stop searching at.
+
+            Returns
+            -------
+            int
+                The index of the path in the collection.
+            """
+            return super().index(
+                path.as_posix(),
+                start,
+                len(self) if stop is None else stop
+            )
+
+        def count(self, path: Path) -> int:
+            """Count the number of occurrences of a path in the collection.
+
+            Parameters
+            ----------
+            path : Path
+                The path to search for.
+
+            Returns
+            -------
+            int
+                The number of occurrences of the path in the collection.
+            """
+            return super().count(path.as_posix())
+
+        def append(self, path: Path) -> None:
+            """Append a new path to the collection.
+
+            Parameters
+            ----------
+            path : str
+                The path to append.
+            """
+            super().append(path.as_posix())
+
+        def extend(self, paths: Iterable[Path]) -> None:
+            """Extend the collection with a list of paths.
+
+            Parameters
+            ----------
+            paths : list[str]
+                The paths to append.
+            """
+            super().extend(p.as_posix() for p in paths)
+
+        def copy(self) -> list[Path]:
+            """Return a shallow copy of the collection.
+
+            Returns
+            -------
+            list[str]
+                A shallow copy of the collection.
+            """
+            return [Path(p) for p in super().__iter__()]
+
+        def insert(self, index: SupportsIndex, path: Path) -> None:
+            """Insert a path at a specific index in the collection.
+
+            Parameters
+            ----------
+            index : int
+                The index to insert the path at.
+            path : str
+                The path to insert.
+            """
+            super().insert(index, path.as_posix())
+
+        def pop(self, index: SupportsIndex = -1) -> Path:
+            """Remove and return a path from the collection.
+
+            Parameters
+            ----------
+            index : int, optional
+                The index of the path to remove.
+
+            Returns
+            -------
+            str
+                The removed path.
+            """
+            return Path(super().pop(index))
+
+        def remove(self, path: Path) -> None:
+            """Remove a specific path from the collection.
+
+            Parameters
+            ----------
+            path : str
+                The path to remove.
+            """
+            super().remove(path.as_posix())
 
     def __init__(
         self,
         path: str | Path,
         *,
         cpp_std: int | None = None,
+        extra_include_dirs: list[Path] | None = None,
+        extra_define_macros: list[tuple[str, str | None]] | None = None,
+        extra_library_dirs: list[Path] | None = None,
+        extra_libraries: list[str] | None = None,
+        extra_runtime_library_dirs: list[Path] | None = None,
+        extra_compile_args: list[str] | None = None,
+        extra_link_args: list[str] | None = None,
+        extra_cmake_args: list[tuple[str, str | None]] | None = None,
         traceback: bool | None = None,
-        extra_cmake_args: dict[str, str] | None = None,
-        **kwargs: Any
     ) -> None:
         if isinstance(path, str):
             path = Path(path)
+        path = path.resolve()
+        if Path.cwd() not in path.parents:
+            FAIL(
+                f"source file must be contained within the project directory: "
+                f"{CYAN}{path}{WHITE}"
+            )
+        path = path.relative_to(Path.cwd())
         if not path.exists():
             FAIL(f"source file does not exist: {CYAN}{path}{WHITE}")
         if path.is_dir():
             FAIL(f"source file is a directory: {CYAN}{path}{WHITE}")
-        if path.is_absolute():
-            path = path.relative_to(Path.cwd())
 
         name = ".".join([
             ".".join(p.name for p in reversed(path.parents) if p.name),
             path.stem
         ])
-        super().__init__(name, [path.as_posix()], **{"language": "c++", **kwargs})
+        super().__init__(
+            name,
+            [path.as_posix()],
+            include_dirs=[p.as_posix() for p in extra_include_dirs or []],
+            define_macros=extra_define_macros or [],
+            library_dirs=[p.as_posix() for p in extra_library_dirs or []],
+            libraries=extra_libraries or [],
+            runtime_library_dirs=[p.as_posix() for p in extra_runtime_library_dirs or []],
+            extra_compile_args=extra_compile_args or [],
+            extra_link_args=extra_link_args or [],
+            language="c++",
+        )
         self.path = path
         self._cpp_std = cpp_std
-        self.extra_cmake_args = extra_cmake_args or {}
+        self._extra_cmake_args = extra_cmake_args or []
         self._traceback = traceback
         self._provides = ""
         self._requires: dict[str, Path] = {}
         self._executable = False
 
         self.include_dirs.append(get_include())  # TODO: eventually not necessary
-
-    # TODO: include setters for all of these properties, and fully document the
-    # relevant setuptools fields.  Use super() to forward everything to setuptools.Extension.
 
     @property
     def cpp_std(self) -> int:
@@ -191,6 +364,212 @@ class Source(setuptools.Extension):
         if self._cpp_std < 23:
             raise ValueError(f"C++ standard must be >= 23: {self._cpp_std}")
         return self._cpp_std
+
+    @cpp_std.setter
+    def cpp_std(self, value: int) -> None:
+        if value < 23:
+            raise ValueError(f"C++ standard must be >= 23: {value}")
+        self._cpp_std = value
+
+    @property
+    def extra_include_dirs(self) -> Paths:
+        """A list of additional `-I` directories to pass to the compiler when this
+        source is built.
+
+        Returns
+        -------
+        list[Path]
+            A list of path objects representing additional include directories.
+
+        See Also
+        --------
+        bertrand.setup : sets global options and executes the build process.
+
+        Notes
+        -----
+        These directories are passed *in addition* to any that were specified in the
+        `bertrand.setup()` call.  
+        """
+        return self.Paths(self.include_dirs)
+
+    @extra_include_dirs.setter
+    def extra_include_dirs(self, value: list[Path]) -> None:
+        self.include_dirs = [p.as_posix() for p in value]
+
+    @property
+    def extra_define_macros(self) -> list[tuple[str, str | None]]:
+        """A list of `-D`/`#define` macros to pass to the compiler when this source is
+        built.
+
+        Returns
+        -------
+        list[tuple[str, str | None]]
+            A list of tuples representing additional macros to define.  The second
+            element of each tuple is optional, and will be omitted if set to None.
+
+        See Also
+        --------
+        bertrand.setup : sets global options and executes the build process.
+
+        Notes
+        -----
+        These macros are passed *in addition* to any that were specified in the
+        `bertrand.setup()` call.
+        """
+        return self.define_macros
+
+    @extra_define_macros.setter
+    def extra_define_macros(self, value: list[tuple[str, str | None]]) -> None:
+        self.define_macros = value
+
+    @property
+    def extra_library_dirs(self) -> Paths:
+        """A list of additional `-L` directories to pass to the linker when this
+        source is built.
+
+        Returns
+        -------
+        list[Path]
+            A list of path objects representing additional library directories.
+
+        See Also
+        --------
+        bertrand.setup : sets global options and executes the build process.
+
+        Notes
+        -----
+        These directories are passed *in addition* to any that were specified in the
+        `bertrand.setup()` call.
+        """
+        return self.Paths(self.library_dirs)
+
+    @extra_library_dirs.setter
+    def extra_library_dirs(self, value: list[Path]) -> None:
+        self.library_dirs = [p.as_posix() for p in value]
+
+    @property
+    def extra_libraries(self) -> list[str]:
+        """A list of additional `-l` symbols to link against when this source is
+        built.
+
+        Returns
+        -------
+        list[str]
+            A list of library names to link against.
+
+        See Also
+        --------
+        bertrand.setup : sets global options and executes the build process.
+
+        Notes
+        -----
+        These libraries are linked *in addition* to any that were specified in the
+        `bertrand.setup()` call.
+        """
+        return self.libraries
+
+    @extra_libraries.setter
+    def extra_libraries(self, value: list[str]) -> None:
+        self.libraries = value
+
+    @property
+    def extra_runtime_library_dirs(self) -> Paths:
+        """A list of additional `rpath` library directories to pass to the linker when
+        this source is built.
+
+        Returns
+        -------
+        list[Path]
+            A list of path objects representing additional runtime library directories.
+
+        See Also
+        --------
+        bertrand.setup : sets global options and executes the build process.
+
+        Notes
+        -----
+        These directories are passed *in addition* to any that were specified in the
+        `bertrand.setup()` call.
+        """
+        return self.Paths(self.runtime_library_dirs)
+
+    @extra_runtime_library_dirs.setter
+    def extra_runtime_library_dirs(self, value: list[Path]) -> None:
+        self.runtime_library_dirs = [p.as_posix() for p in value]
+
+    @property
+    def extra_compile_args(self) -> list[str]:
+        """A list of additional flags to pass to the compiler when this source is built.
+
+        Returns
+        -------
+        list[str]
+            A list of additional compiler flags.
+
+        See Also
+        --------
+        bertrand.setup : sets global options and executes the build process.
+
+        Notes
+        -----
+        These flags are passed *in addition* to any that were specified in the
+        `bertrand.setup()` call.
+        """
+        return self.__dict__["extra_compile_args"]
+
+    @extra_compile_args.setter
+    def extra_compile_args(self, value: list[str]) -> None:
+        self.__dict__["extra_compile_args"] = value
+
+    @property
+    def extra_link_args(self) -> list[str]:
+        """A list of additional flags to pass to the linker when this source is built.
+
+        Returns
+        -------
+        list[str]
+            A list of additional linker flags.
+
+        See Also
+        --------
+        bertrand.setup : sets global options and executes the build process.
+
+        Notes
+        -----
+        These flags are passed *in addition* to any that were specified in the
+        `bertrand.setup()` call.
+        """
+        return self.__dict__["extra_link_args"]
+
+    @extra_link_args.setter
+    def extra_link_args(self, value: list[str]) -> None:
+        self.__dict__["extra_link_args"] = value
+
+    @property
+    def extra_cmake_args(self) -> list[tuple[str, str | None]]:
+        """A list of additional cmake arguments to pass to the build system when this
+        source is built.
+
+        Returns
+        -------
+        list[tuple[str, str | None]]
+            A list of tuples representing additional cmake arguments.  The second
+            element of each tuple is optional, and will be omitted if set to None.
+
+        See Also
+        --------
+        bertrand.setup : sets global options and executes the build process.
+
+        Notes
+        -----
+        These arguments are passed *in addition* to any that were specified in the
+        `bertrand.setup()` call.
+        """
+        return self._extra_cmake_args
+
+    @extra_cmake_args.setter
+    def extra_cmake_args(self, value: list[tuple[str, str | None]]) -> None:
+        self._extra_cmake_args = value
 
     @property
     def traceback(self) -> bool:
@@ -561,8 +940,11 @@ class BuildSources(setuptools_build_ext):
                 f"in {CYAN}{source.path}{WHITE}"
             )
         out +=  "    CXX_STANDARD_REQUIRED ON\n"
-        for key, value in source.extra_cmake_args.items():
-            out += f"    {key} {value}\n"
+        for key, value in source.extra_cmake_args:
+            if value is None:
+                out += f"    {key}\n"
+            else:
+                out += f"    {key} {value}\n"
         out += ")\n"
         out += f"target_compile_options({target} PRIVATE\n"
         # TODO: importing std from env/modules/ causes clang to emit a warning about
