@@ -440,10 +440,14 @@ def main() -> None:
         # TODO: I can just append the compiler options to CFLAGS and LDFLAGS directly,
         # which avoids the need to modify the setup.py script at all.  That also makes
         # it simple to pass extra options like --inplace or --debug, etc.
-        subprocess.check_call(
-            ["python", "setup.py", "build_ext", *args.compiler_options],
-            cwd=args.path[0]
-        )
+        try:
+            subprocess.check_call(
+                ["python", "setup.py", "build_ext", *args.compiler_options],
+                cwd=args.path[0]
+            )
+        except subprocess.CalledProcessError:
+            raise  # TODO: delete this and rely on internal messaging
+            pass  # error messages are already printed to stdout
 
     elif args.binaries:
         print(get_bin())

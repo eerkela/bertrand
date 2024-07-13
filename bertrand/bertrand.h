@@ -1,6 +1,30 @@
 #ifndef BERTRAND_H
 #define BERTRAND_H
 
+
+// TODO: at some point, this should be translated into an actual __init__.cpp file.
+// However, there has to be some way of disambiguating the C++ API from the Python API.
+// during Python-level imports.  This is non-trivial, since I will have to detect the
+// presence of an equivalent __init__.py file and add some identifier to avoid confusing
+// the two.
+// -> If __init__.py is present, then importing the module at the Python level will
+// invoke the Python API.  The Python API can then import the C++ API and forward what
+// it needs.
+// -> If __init__.py is not present, then an equivalent shared library will be created
+// using the C++ API.
+
+// Basically, this involves tuning the target name such that it does not collide with
+// __init__.py.  Perhaps __init__cpp.suffix.so?  __init__.py can then import it as
+// from .__init__cpp import ...
+
+// Or perhaps I ditch special treatment for __init__.cpp and just find a way to allow
+// the module name to differ from the file name.  Maybe the source files can be
+// anywhere, but the build products will always be placed into a Python-style
+// source tree so that they can be correctly imported?
+
+
+
+
 /* NOTE: this file basically acts like a Python-style __init__.py file, but for C++
  * headers within the bertrand:: namespace.  These headers will be automatically
  * installed alongside the python package when `pip install bertrand` is executed.

@@ -1,6 +1,6 @@
-// #ifndef BERTRAND_PYTHON_MODULE_GUARD
-// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
-// #endif
+#ifndef BERTRAND_PYTHON_MODULE_GUARD
+#error "Internal headers should not be included directly.  Import 'bertrand.python' instead."
+#endif
 
 #ifndef BERTRAND_PYTHON_LIST_H
 #define BERTRAND_PYTHON_LIST_H

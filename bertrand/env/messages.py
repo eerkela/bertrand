@@ -52,7 +52,7 @@ def WARN(message: str) -> None:
 
 
 def FAIL(message: str) -> NoReturn:
-    """Print a failure message to the console and exit the program.
+    """Print a failure message to the console and exit the program with an error code.
 
     Parameters
     ----------
@@ -60,4 +60,4 @@ def FAIL(message: str) -> NoReturn:
         The message to print before exiting.
     """
     print(f"{RED}FAILURE{WHITE}: {message}")
-    sys.exit()
+    sys.exit(1)
