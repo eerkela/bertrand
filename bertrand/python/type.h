@@ -1,17 +1,17 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
+#ifndef BERTRAND_PYTHON_TYPE_H
+#define BERTRAND_PYTHON_TYPE_H
 
-export module bertrand.python:type;
-
-import :common;
-import :str;
-import :tuple;
-import :dict;
+#include "common.h"
+#include "str.h"
+#include "tuple.h"
+#include "dict.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -480,3 +480,6 @@ struct __explicit_init__<Super, Base, Self>                  : Returns<Super> {
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

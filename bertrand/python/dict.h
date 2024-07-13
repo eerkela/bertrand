@@ -1,13 +1,13 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
+#ifndef BERTRAND_PYTHON_DICT_H
+#define BERTRAND_PYTHON_DICT_H
 
-export module bertrand.python:dict;
-
-import :common;
-import :list;
-import :set;
+#include "common.h"
+#include "list.h"
+#include "set.h"
 
 
 // NOTE: MappingProxy is hashable as of Python 3.12
@@ -15,7 +15,7 @@ import :set;
 // NOTE: ChainMap is complicated, but maybe possible to support as well.
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -1345,3 +1345,6 @@ template <typename Map>
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

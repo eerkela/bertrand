@@ -1,19 +1,15 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
+
+#ifndef BERTRAND_PYTHON_COMMON_EXCEPT_H
+#define BERTRAND_PYTHON_COMMON_EXCEPT_H
 
 #include <cstdlib>
-#include <functional>
+#include "declarations.h"
 
-#include <Python.h>
 #include <internal/pycore_frame.h>  // required to assign to frame->f_lineno
-#include <frameobject.h>  // required for PyFrame_New
 #include <cpptrace/cpptrace.hpp>
-#include <pybind11/pybind11.h>
-
-#include <bertrand/common.h>
-
-export module bertrand.python:common.except;
-
-import :common.declarations;
 
 
 /* CPython exception types:
@@ -53,7 +49,7 @@ import :common.declarations;
 // PyUnicodeDecodeError_Create() for details.
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -1114,3 +1110,6 @@ BERTRAND_EXCEPTION(ValueError, Exception, PyExc_ValueError)
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

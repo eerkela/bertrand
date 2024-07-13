@@ -1,15 +1,13 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <algorithm>
-#include <list>
+#ifndef BERTRAND_PYTHON_LIST_H
+#define BERTRAND_PYTHON_LIST_H
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
+#include "common.h"
+#include "bool.h"
 
-export module bertrand.python:list;
-
-import :common;
-import :bool_;
 
 // TODO: right now, containers are convertible to but not from their equivalent types.
 // This is an asymmetry that could cause bugs down the line, so it should probably be
@@ -20,7 +18,7 @@ import :bool_;
 // implicit conversion.
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -904,3 +902,6 @@ struct __reversed__<Self>                                   : Returns<typename S
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

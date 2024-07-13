@@ -1,15 +1,15 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
+#ifndef BERTRAND_PYTHON_FLOAT_H
+#define BERTRAND_PYTHON_FLOAT_H
 
-export module bertrand.python:float_;
-
-import :common;
-import :str;
+#include "common.h"
+#include "str.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -196,3 +196,6 @@ const Float Float::one = 1.0;
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

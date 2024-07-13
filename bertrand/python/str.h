@@ -1,25 +1,22 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <concepts>
+#ifndef BERTRAND_PYTHON_STR_H
+#define BERTRAND_PYTHON_STR_H
 
+#include "common.h"
+#include "int.h"
+#include "tuple.h"
+#include "list.h"
+#include "set.h"
+#include "dict.h"
 #ifdef BERTRAND_HAS_STD_FORMAT
     #include <format>
 #endif
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
 
-export module bertrand.python:str;
-
-import :common;
-import :int_;
-import :tuple;
-import :list;
-import :set;
-import :dict;
-
-
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -876,7 +873,7 @@ struct __imul__<L, R>                                       : Returns<Str&> {
 }  // namespace bertrand
 
 
-export namespace std {
+namespace std {
 
     template <>
     struct hash<bertrand::py::Str> {
@@ -895,3 +892,6 @@ export namespace std {
     };
 
 }
+
+
+#endif

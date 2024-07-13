@@ -1,25 +1,22 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
+
+#ifndef BERTRAND_PYTHON_CODE_H
+#define BERTRAND_PYTHON_CODE_H
 
 #include <fstream>
 
-#include <Python.h>
-#include <cpptrace/cpptrace.hpp>
-#include <pybind11/pybind11.h>
-
-#include <bertrand/common.h>
-
-export module bertrand.python:code;
-
-import :common;
-import :dict;
-import :str;
-import :bytes;
-import :tuple;
-import :list;
-import :type;
+#include "common.h"
+#include "dict.h"
+#include "str.h"
+#include "bytes.h"
+#include "tuple.h"
+#include "list.h"
+#include "type.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -1039,7 +1036,7 @@ struct __init__<Frame, File, Func, Line> : Returns<Frame> {
 }  // namespace bertrand
 
 
-export namespace pybind11 {
+namespace pybind11 {
 namespace detail {
 
 template <bertrand::py::impl::is_callable_any T>
@@ -1060,3 +1057,6 @@ struct type_caster<T> {
 
 }  // namespace detail
 }  // namespace pybind11
+
+
+#endif

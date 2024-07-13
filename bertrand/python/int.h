@@ -1,20 +1,18 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <type_traits>
+#ifndef BERTRAND_PYTHON_INT_H
+#define BERTRAND_PYTHON_INT_H
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
-
-export module bertrand.python:int_;
-
-import :common;
+#include "common.h"
 
 
 // TODO: prevent int overflow during conversion to C++ integers.  Raise an OverflowError
 // if this occurs.
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -374,3 +372,6 @@ const Int Int::two = 2;
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

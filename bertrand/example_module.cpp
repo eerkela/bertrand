@@ -1,7 +1,7 @@
-module;
-#include <iostream>
-#include <string>
 export module bertrand.example_module;
+
+import std;
+import bertrand.python;
 
 
 void foo() {
@@ -16,4 +16,10 @@ export [[py::noexport]] void bar() {
 
 export void baz(const std::string& name) {
     std::cout << "Hello, " << name << "!\n";
+}
+
+
+int main() {
+    py::print("Hello from bertrand!");
+    std::println("import std is awesome!");
 }

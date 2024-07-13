@@ -1,50 +1,31 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
+
+#ifndef BERTRAND_PYTHON_INIT_H
+#define BERTRAND_PYTHON_INIT_H
 
 #define PYBIND11_DETAILED_ERROR_MESSAGES
 
-#include <ranges>
+#include "common.h"
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/eval.h>
+#include "bool.h"
+#include "int.h"
+#include "float.h"
+#include "complex.h"
+#include "range.h"
+#include "list.h"
+#include "tuple.h"
+#include "set.h"
+#include "dict.h"
+#include "str.h"
+#include "bytes.h"
+#include "code.h"
+// #include "datetime.h"
+#include "math.h"
+#include "type.h"
 
-// #include "regex.h"
-
-export module bertrand.python;
-
-// export import :common       [[py::noexport]];
-// export import :bool_        [[py::noexport]];
-// export import :int_         [[py::noexport]];
-// export import :float_       [[py::noexport]];
-// export import :complex      [[py::noexport]];
-// export import :range        [[py::noexport]];
-// export import :list         [[py::noexport]];
-// export import :tuple        [[py::noexport]];
-// export import :set          [[py::noexport]];
-// export import :dict         [[py::noexport]];
-// export import :str          [[py::noexport]];
-// export import :bytes        [[py::noexport]];
-// export import :code         [[py::noexport]];
-// // export import :datetime     [[py::noexport]];
-// export import :math         [[py::noexport]];
-// export import :type         [[py::noexport]];
-
-export import :common;
-export import :bool_;
-export import :int_;
-export import :float_;
-export import :complex;
-export import :range;
-export import :list;
-export import :tuple;
-export import :set;
-export import :dict;
-export import :str;
-export import :bytes;
-export import :code;
-// export import :datetime;
-export import :math;
-export import :type;
+// #include "../regex.h"
 
 
 // TODO: the only remaining language feature left to emulate are:
@@ -152,7 +133,7 @@ export import :type;
  */
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 namespace literals {
@@ -1291,4 +1272,5 @@ inline void Function<Return(Target...)>::closure(std::optional<Tuple<Object>> cl
 }  // namespace bertrand
 
 
-// #undef PYBIND11_DETAILED_ERROR_MESSAGES
+#undef PYBIND11_DETAILED_ERROR_MESSAGES
+#endif

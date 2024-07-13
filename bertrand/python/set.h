@@ -1,20 +1,17 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <algorithm>
-#include <concepts>
+#ifndef BERTRAND_PYTHON_SET_H
+#define BERTRAND_PYTHON_SET_H
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
-
-export module bertrand.python:set;
-
-import :common;
+#include "common.h"
 
 
 // TODO: check to make sure control structs are properly enabled after CTAD refactor
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -1460,3 +1457,6 @@ struct __contains__<Self, Key>                              : Returns<bool> {
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

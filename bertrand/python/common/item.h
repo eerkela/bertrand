@@ -1,20 +1,18 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <string>
-#include <utility>
+#ifndef BERTRAND_PYTHON_COMMON_ITEM_H
+#define BERTRAND_PYTHON_COMMON_ITEM_H
 
-#include <Python.h>
-
-export module bertrand.python:common.item;
-
-import :common.declarations;
-import :common.except;
-import :common.object;
-import :common.ops;
-import :common.control;
+#include "declarations.h"
+#include "except.h"
+#include "object.h"
+#include "ops.h"
+#include "control.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 namespace impl {
 
@@ -311,3 +309,6 @@ public:
 }  // namespace impl
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

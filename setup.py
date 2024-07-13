@@ -1,9 +1,9 @@
 """Setup script for Bertrand."""
-from pathlib import Path
 import subprocess
+import sysconfig
+from pathlib import Path
 
 from bertrand import BuildSources, Source, setup, env
-
 
 
 # TODO: for headless installation, use pipx to install bertrand:
@@ -17,8 +17,11 @@ from bertrand import BuildSources, Source, setup, env
 #     tk-dev uuid-dev zlib1g-dev
 # sudo pipx ensurepath --global
 # pipx install bertrand
-# bertrand init
+# bertrand init venv
 
+
+PYTHON_H = Path(sysconfig.get_path("include")) / "Python.h"
+PYTHON_PCM = PYTHON_H.parent / "Python.h.pcm"
 
 
 class BuildSourcesHeadless(BuildSources):
@@ -26,28 +29,49 @@ class BuildSourcesHeadless(BuildSources):
     extensions if not in a virtual environment, rather than failing.
     """
 
+    def finalize_options(self) -> None:
+        """Skip if not in a virtual environment."""
+        if env:
+            super().finalize_options()
+
     def build_extensions(self) -> None:
         """Build if in a virtual environment, otherwise skip."""
         if env:
-            # build clang AST parser first
-            build = Path.cwd() / "bertrand" / "env" / "codegen" / "build"
-            build.mkdir(exist_ok=True)
-            subprocess.check_call(
-                [
-                    str(env / "bin" / "cmake"),
-                    "-G",
-                    "Ninja",
-                    f"-DCMAKE_INSTALL_PREFIX={env.dir}",
-                    "-DCMAKE_BUILD_TYPE=Release",
-                    "..",
-                ],
-                cwd=build,
-            )
-            subprocess.check_call(["ninja"], cwd=build)
-            subprocess.check_call(["ninja", "install"], cwd=build)
+            try:
+                # precompile Python.h so that it can be efficiently imported
+                # subprocess.check_call(
+                #     [
+                #         str(env / "bin" / "clang++"),
+                #         "-std=c++23",
+                #         *self._bertrand_compile_args,
+                #         "-fmodule-header",
+                #         str(PYTHON_H),
+                #         "-o",
+                #         str(PYTHON_PCM),
+                #     ]
+                # )
 
-            # then build extensions using it
-            super().build_extensions()
+                # build clang AST parser first
+                build = Path.cwd() / "bertrand" / "env" / "codegen" / "build"
+                build.mkdir(exist_ok=True)
+                subprocess.check_call(
+                    [
+                        str(env / "bin" / "cmake"),
+                        "-G",
+                        "Ninja",
+                        f"-DCMAKE_INSTALL_PREFIX={env.dir}",
+                        "-DCMAKE_BUILD_TYPE=Release",
+                        "..",
+                    ],
+                    cwd=build,
+                )
+                subprocess.check_call(["ninja"], cwd=build)
+                subprocess.check_call(["ninja", "install"], cwd=build)
+
+                # then build extensions using it
+                super().build_extensions()
+            finally:
+                PYTHON_PCM.unlink(missing_ok=True)
 
 
 setup(
@@ -56,9 +80,11 @@ setup(
         "cpptrace/0.6.1@cpptrace/cpptrace::cpptrace",
     ],
     sources=[
-        Source("bertrand/python.cpp"),
-        *[Source(p) for p in Path("bertrand/python").rglob("*.cpp")],
+        Source(
+            "bertrand/example_module.cpp",
+            # extra_compile_args=[f"-fmodule-file={PYTHON_PCM}"]
+        ),
+        *(Source(p) for p in Path("bertrand/python").rglob("*.cpp")),
     ],
-    # sources=[Source("A.cpp"), Source("B.cpp")],
     cmdclass={"build_ext": BuildSourcesHeadless},
 )

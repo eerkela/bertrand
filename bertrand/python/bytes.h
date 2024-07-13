@@ -1,20 +1,20 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
+#ifndef BERTRAND_PYTHON_BYTES_H
+#define BERTRAND_PYTHON_BYTES_H
 
-export module bertrand.python:bytes;
-
-import :common;
-import :int_;
-import :str;
-import :list;
-import :tuple;
-import :set;
-import :dict;
+#include "common.h"
+#include "int.h"
+#include "str.h"
+#include "list.h"
+#include "tuple.h"
+#include "set.h"
+#include "dict.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -988,3 +988,6 @@ struct __imul__<L, R>                                       : Returns<ByteArray&
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

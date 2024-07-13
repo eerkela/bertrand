@@ -286,7 +286,7 @@ class ExportVisitor : public clang::RecursiveASTVisitor<ExportVisitor> {
     std::string body;
 
     // TODO: I should have an overloadable emit() method which can take
-    // FunctionDecls, TypeDecls, VarDecls, and NamespaceDecls, etc. and then write
+    // FunctionDecls, CXXRecordDecls, VarDecls, and NamespaceDecls, etc. and then write
     // them to the binding file in a consistent fashion.
 
     bool noexport(const clang::NamedDecl& decl) {
@@ -317,35 +317,35 @@ public:
     // TODO: ExportVisitor can receive an ASTContext in the constructor, which allows
     // it to extract documentation comments and other information from the AST.
 
-    // TODO: how to model dotted module names?  There has to be some mapping from
-    // directory structure to dotted name, but that will require some thinking.
-
     ExportVisitor(
         const std::string& import_name,
         const std::string& export_name,
         const std::string& path
     ) : path(path) {
+        body += "import " + import_name + ";\n";
+        body += "\n";
         body += "import bertrand.python;\n";
         body += "namespace py = bertrand::py;\n";
         body += "\n";
-        body += "import " + import_name + ";\n";
         body += "\n";
         body += "BERTRAND_MODULE(" + export_name + ", m) {\n";
     }
 
     ~ExportVisitor() {
-        body += "}\n";
+        body += "}";
 
+        // write the binding file
         impl::FileLock file(path);
         if (file) {
             std::stringstream buffer;
             buffer << file->rdbuf();
             std::string contents = buffer.str();
-            if (contents != body + "\n") {  // TODO: if I remove automatic newlines, then I can remove + "\n"
-                file->clear();  // clear EOF flag before writing
-                file->seekp(0, std::ios::beg);
-                file << body;  // only overwrite if the contents have changed
-                file->flush();
+
+            // only overwrite if the contents have changed
+            if (contents != body + "\n") {
+                file->close();
+                file->open(path, std::ios::out | std::ios::trunc);
+                file << body;
             } else {
                 llvm::errs() << "no changes to file: " << path << "\n";
             }
@@ -356,8 +356,8 @@ public:
 
     /* C++'s `export` keyword can be applied to many kinds of declarations, including:
      *
-     *  - TypeDecl: in which a py::Class is instantiated and attached to the module
-     *    using pybind11.
+     *  - TypeDecl (CXXRecordDecl): in which a py::Class is instantiated and attached
+     *    to the module using pybind11.
      *  - FunctionDecl: in which a py::Function is instantiated and attached to the
      *    module binding.
      *  - VarDecl: in which the variable is converted to a Python object and attached
@@ -379,8 +379,7 @@ public:
                 emit(*func);
                 llvm::errs() << "exported function " << func->getNameAsString() << "\n";
 
-            // CXXRecordDecl?
-            } else if (auto* type = dyn_cast<clang::TypeDecl>(decl)) {
+            } else if (auto* type = dyn_cast<clang::CXXRecordDecl>(decl)) {
                 if (noexport(*type)) {
                     continue;
                 }

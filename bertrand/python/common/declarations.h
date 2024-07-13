@@ -1,4 +1,9 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
+
+#ifndef BERTRAND_PYTHON_COMMON_DECLARATIONS_H
+#define BERTRAND_PYTHON_COMMON_DECLARATIONS_H
 
 #include <algorithm>
 #include <cstddef>
@@ -40,10 +45,8 @@ module;
 #include <bertrand/common.h>
 #include <bertrand/static_str.h>
 
-export module bertrand.python:common.declarations;
 
-
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -1147,3 +1150,6 @@ template <std::derived_from<Object> T>
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

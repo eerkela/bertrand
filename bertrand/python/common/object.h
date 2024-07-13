@@ -1,20 +1,16 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <sstream>
+#ifndef BERTRAND_PYTHON_COMMON_OBJECT_H
+#define BERTRAND_PYTHON_COMMON_OBJECT_H
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
-
-#include <bertrand/common.h>
-
-export module bertrand.python:common.object;
-
-import :common.declarations;
-import :common.except;
-import :common.ops;
+#include "declarations.h"
+#include "except.h"
+#include "ops.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -616,3 +612,6 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

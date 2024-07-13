@@ -1,15 +1,15 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
+#ifndef BERTRAND_PYTHON_RANGE_H
+#define BERTRAND_PYTHON_RANGE_H
 
-export module bertrand.python:range;
-
-import :common;
-import :int_;
+#include "common.h"
+#include "int.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -197,3 +197,6 @@ struct __init__<Range>                                      : Returns<Range> {
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

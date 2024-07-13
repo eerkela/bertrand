@@ -1,24 +1,18 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <functional>
-#include <list>
-#include <map>
-#include <set>
+#ifndef BERTRAND_PYTHON_COMMON_CONTROL_H
+#define BERTRAND_PYTHON_COMMON_CONTROL_H
 
-#include <pybind11/pybind11.h>
-
-#include <bertrand/static_str.h>
-
-export module bertrand.python:common.control;
-
-import :common.declarations;
-import :common.except;
-import :common.ops;
-import :common.object;
-import :common.func;
+#include "declarations.h"
+#include "except.h"
+#include "ops.h"
+#include "object.h"
+#include "func.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -4582,3 +4576,6 @@ struct __ixor__<L, R>                                       : Returns<FrozenSet<
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

@@ -609,6 +609,7 @@ class Clang(Target):
                     "-DBOOTSTRAP_LIBCXX_USE_COMPILER_RT=YES",
                     "-DBOOTSTRAP_LIBCXXABI_USE_COMPILER_RT=YES",
                     "-DBOOTSTRAP_LIBCXXABI_USE_LLVM_UNWINDER=YES",
+                    "-DBOOTSTRAP_LIBCXX_INSTALL_MODULES=ON",
 
                     str(source / "llvm"),
                 ],
@@ -661,6 +662,12 @@ class Clang(Target):
             )
             for lib in (env / "lib" / self.host_target).iterdir():
                 os.symlink(lib, env / "lib" / lib.name)
+            module_dir = env / "modules"
+            shutil.copytree(
+                env / "share" / "libc++" / "v1",
+                module_dir,
+                dirs_exist_ok=True,
+            )
 
         finally:
             for k in os.environ:

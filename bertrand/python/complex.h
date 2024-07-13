@@ -1,19 +1,16 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <complex>
-#include <type_traits>
+#ifndef BERTRAND_PYTHON_COMPLEX_H
+#define BERTRAND_PYTHON_COMPLEX_H
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
-
-export module bertrand.python:complex;
-
-import :common;
-import :float_;
-import :str;
+#include "common.h"
+#include "float.h"
+#include "str.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -216,7 +213,7 @@ struct __cast__<From, std::complex<To>>                     : Returns<std::compl
 }  // namespace bertrand
 
 
-export namespace pybind11 {
+namespace pybind11 {
 namespace detail {
 
 template <>
@@ -303,3 +300,6 @@ COMPLEX_CASTER(long double);
 
 } // namespace detail
 } // namespace pybind11
+
+
+#endif

@@ -1,14 +1,14 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <concepts>
-#include <functional>
-#include <string>
-#include <tuple>
-#include <type_traits>
-#include <unordered_map>
-#include <utility>
+#ifndef BERTRAND_PYTHON_COMMON_FUNC_H
+#define BERTRAND_PYTHON_COMMON_FUNC_H
 
-#include <Python.h>
+#include "declarations.h"
+#include "except.h"
+#include "ops.h"
+#include "object.h"
 
 #if defined(__GNUC__) || defined(__clang__)
 #include <cxxabi.h>
@@ -19,22 +19,11 @@ module;
 #pragma comment(lib, "dbghelp.lib")
 #endif
 
-export module bertrand.python:common.func;
-
-import :common.declarations;
-import :common.except;
-import :common.ops;
-import :common.object;
-
-
-// TODO: ensure interpreter is properly initialized when a C++ function is converted
-// into a Python equivalent.
-
 
 // TODO: not sure if Arg.value() is being used correctly everywhere.
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -3069,3 +3058,6 @@ namespace impl {
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

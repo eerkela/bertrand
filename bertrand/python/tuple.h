@@ -1,20 +1,17 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <algorithm>
-#include <concepts>
-#include <list>
+#ifndef BERTRAND_PYTHON_TUPLE_H
+#define BERTRAND_PYTHON_TUPLE_H
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
+#include "common.h"
 
-export module bertrand.python:tuple;
-
-import :common;
 
 // TODO: support py::deque?
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -972,3 +969,6 @@ public:
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif

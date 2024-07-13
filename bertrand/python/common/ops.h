@@ -1,21 +1,15 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <concepts>
-#include <ranges>
-#include <type_traits>
+#ifndef BERTRAND_PYTHON_COMMON_OPS_H
+#define BERTRAND_PYTHON_COMMON_OPS_H
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
-
-#include <bertrand/static_str.h>
-
-export module bertrand.python:common.ops;
-
-import :common.declarations;
-import :common.except;
+#include "declarations.h"
+#include "except.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -1880,7 +1874,7 @@ L& operator^=(L& lhs, const R& rhs) {
 }  // namespace bertrand
 
 
-export namespace std {
+namespace std {
 
     template <typename T> requires (bertrand::py::__hash__<T>::enable)
     struct hash<T> {
@@ -1920,3 +1914,6 @@ export namespace std {
     #undef BERTRAND_STD_EQUAL_TO
 
 };  // namespace std
+
+
+#endif

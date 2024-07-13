@@ -1,29 +1,21 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <array>
-#include <concepts>
-#include <initializer_list>
-#include <string>
-#include <type_traits>
+#ifndef BERTRAND_PYTHON_COMMON_H
+#define BERTRAND_PYTHON_COMMON_H
 
-#include <Python.h>
-#include <pybind11/pybind11.h>
-
-#include <bertrand/static_str.h>
-
-export module bertrand.python:common;
-
-export import :common.declarations;
-export import :common.except;
-export import :common.ops;
-export import :common.object;
-export import :common.func;
-export import :common.item;
-export import :common.iter;
-export import :common.control;
+#include "common/declarations.h"
+#include "common/except.h"
+#include "common/ops.h"
+#include "common/object.h"
+#include "common/func.h"
+#include "common/item.h"
+#include "common/iter.h"
+#include "common/control.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -717,7 +709,7 @@ template <typename Self> requires (__reversed__<Self>::enable)
 ////////////////////////////
 
 
-export namespace pybind11 {
+namespace pybind11 {
 namespace detail {
 
 
@@ -761,3 +753,6 @@ struct type_caster<T> {
 
 }  // namespace detail
 }  // namespace pybind11
+
+
+#endif

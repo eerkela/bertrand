@@ -1,22 +1,21 @@
-module;
+// #ifndef BERTRAND_PYTHON_MODULE_GUARD
+// #error "Header implementations should not be included directly.  Import 'bertrand.python' instead."
+// #endif
 
-#include <concepts>
+#ifndef BERTRAND_PYTHON_MATH_H
+#define BERTRAND_PYTHON_MATH_H
+
 #include <cmath>
-#include <utility>
 
-#include <Python.h>
-
-export module bertrand.python:math;
-
-import :common;
-import :int_;
-import :float_;
+#include "common.h"
+#include "int.h"
+#include "float.h"
 
 
 // TODO: allow for complex/Decimal operands?
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -1003,3 +1002,6 @@ template <typename T, typename Mode> requires (impl::round_mode<T, Mode>)
 
 }  // namespace py
 }  // namespace bertrand
+
+
+#endif
