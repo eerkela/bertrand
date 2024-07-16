@@ -1,6 +1,7 @@
 """Build tools for bertrand-enabled C++ extensions."""
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
@@ -53,6 +54,18 @@ def get_include() -> str:
 
 # TODO: Object-orientation for Conan dependencies similar to Source?  Users would
 # specify dependencies as Package("name", "version", "find", "link").
+
+
+# TODO: each Source should hold a path to its associated build directory, under which
+# .pcm files will be emitted.  The .o file is emitted under a nested source tree in
+# the same directory, so we need to do some path manipulation to get it right.
+# -> The build directory can be set during finalize_options, before the build process
+# begins.  Finalize_options will set each source's _build_directory attribute, which
+# is used in a public property of the same name, and a .object accessor that points
+# to the output .o file.  There should also be another property that checks whether
+# the .o file needs to be rebuilt, or if it can be reused from a previous build.  This
+# has to recur through the dependency graph in order to account for changes in
+# dependencies.
 
 
 class Source(setuptools.Extension):
@@ -386,7 +399,7 @@ class Source(setuptools.Extension):
         path: str | Path,
         *,
         cpp_std: int | None = None,
-        extra_sources: list[str | Path] | None = None,
+        extra_sources: list[str | Path | Source] | None = None,
         extra_include_dirs: list[Path] | None = None,
         extra_define_macros: list[tuple[str, str | None]] | None = None,
         extra_library_dirs: list[Path] | None = None,
@@ -423,18 +436,41 @@ class Source(setuptools.Extension):
             extra_link_args=extra_link_args or [],
             language="c++",
         )
+        self._in_tree = False  # set in finalize_options
         self._path = path
         self._cpp_std = cpp_std
-        self._extra_sources = set(Source(s) for s in extra_sources or [])
+        self._extra_sources = set(
+            s if isinstance(s, Source) else Source(s)
+            for s in extra_sources or []
+        )
         self._extra_cmake_args = extra_cmake_args or []
         self._traceback = traceback
         self._requires = self.Dependencies(self)
         self._provides: set[Source] = set()
         self._module = ""
-        self._is_interface = False  # TODO: set in stage 1
+        self._is_interface = False  # set in stage 1
         self._is_executable = False  # set in stage 2
 
         self.include_dirs.append(get_include())  # TODO: eventually not necessary
+
+    @property
+    def in_tree(self) -> bool:
+        """Indicates whether this source is part of the project tree.
+
+        Returns
+        -------
+        bool
+            True if the source was provided to `bertrand.setup()`, or False if it was
+            synthesized by the build system.
+
+        Notes
+        -----
+        In-tree sources will be built as targets over the course of the build process,
+        while out-of-tree sources are used to model external dependencies.  The latter
+        are typically modules that have been imported from the environment or emitted
+        by the build system itself (i.e. Python bindings).
+        """
+        return self._in_tree
 
     @property
     def path(self) -> Path:
@@ -858,6 +894,49 @@ class Source(setuptools.Extension):
         """
         return self._is_executable
 
+    def spawn(self, path: Path, module: str = "") -> Source:
+        """Create a new Source that inherits the options from this source, but with a
+        different path and optional module name.
+
+        Parameters
+        ----------
+        path : Path
+            The path to the new source file.
+        module : str, optional
+            The module name to assign to the new source.
+
+        Returns
+        -------
+        Source
+            A new Source object that inherits the options from this source.
+
+        Notes
+        -----
+        This method is used to synthesize new source files during the build process and
+        helps keep all the sources in sync with the original configuration.  Users
+        should not need to consider it unless they are extending the build system to
+        inject new sources into the dependency graph.
+        """
+        result = Source(
+            path,
+            cpp_std=self._cpp_std,
+            extra_sources=list(self.extra_sources),
+            extra_include_dirs=self.extra_include_dirs,
+            extra_define_macros=self.extra_define_macros,
+            extra_library_dirs=self.extra_library_dirs,
+            extra_libraries=self.extra_libraries,
+            extra_runtime_library_dirs=self.extra_runtime_library_dirs,
+            extra_compile_args=self.extra_compile_args,
+            extra_link_args=self.extra_link_args,
+            extra_cmake_args=self.extra_cmake_args,
+            traceback=self.traceback,
+        )
+        if module:
+            # pylint: disable=protected-access
+            result._module = module
+            result._is_interface = True
+        return result
+
     def __repr__(self) -> str:
         return f"<Source {self.path}>"
 
@@ -923,6 +1002,7 @@ class BuildSources(setuptools_build_ext):
         self._bertrand_module_lookup: dict[str, Source] = {}
         self._bertrand_build_dir: Path
         self._bertrand_module_root: Path
+        self._bertrand_module_cache: Path
         self._bertrand_binding_root: Path
         self._bertrand_binding_cache: Path
         self._bertrand_executable_cache: Path
@@ -941,6 +1021,7 @@ class BuildSources(setuptools_build_ext):
         self._bertrand_source_lookup = {s.path: s for s in self.extensions}
         self._bertrand_build_dir = Path(self.build_lib)
         self._bertrand_module_root = self._bertrand_build_dir / "modules"
+        self._bertrand_module_cache = self._bertrand_build_dir / ".modules"
         self._bertrand_binding_root = self._bertrand_build_dir / "bindings"
         self._bertrand_binding_cache = self._bertrand_build_dir / ".bindings"
         self._bertrand_executable_cache = self._bertrand_build_dir / ".executables"
@@ -997,7 +1078,7 @@ class BuildSources(setuptools_build_ext):
                     f"not {CYAN}{self.workers}{WHITE}"
                 )
 
-    def search_source(self, path: Path) -> Source:
+    def find_source(self, path: Path) -> Source:
         """Find the Source object corresponding to a given source file path.
 
         Parameters
@@ -1013,7 +1094,7 @@ class BuildSources(setuptools_build_ext):
         """
         return self._bertrand_source_lookup[path.resolve().relative_to(Path.cwd())]
 
-    def search_module(self, name: str) -> Source:
+    def find_module(self, name: str) -> Source:
         """Find the Source object corresponding to a given module name.
 
         Parameters
@@ -1028,38 +1109,6 @@ class BuildSources(setuptools_build_ext):
             The Source object that corresponds to the module name.
         """
         return self._bertrand_module_lookup[name]
-
-    def conan_install(self) -> None:
-        """Invoke conan to install C++ dependencies for the project and link them
-        against the environment.
-        """
-        path = self._bertrand_build_dir / "conanfile.txt"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w") as f:
-            f.write("[requires]\n")
-            for package in self._bertrand_cpp_deps:
-                f.write(f"{package.name}/{package.version}\n")
-            f.write("\n")
-            f.write("[generators]\n")
-            f.write("CMakeDeps\n")
-            f.write("CMakeToolchain\n")
-            f.write("\n")
-            f.write("[layout]\n")
-            f.write("cmake_layout\n")
-
-        subprocess.check_call(
-            [
-                "conan",
-                "install",
-                str(path.absolute()),
-                "--build=missing",
-                "--output-folder",
-                str(path.parent),
-                "-verror",
-            ],
-            cwd=path.parent,
-        )
-        env.packages.extend(p for p in self._bertrand_cpp_deps if p not in env.packages)
 
     def _cmakelists_header(self) -> str:
         build_type = "Debug" if self.debug else "Release"
@@ -1125,58 +1174,56 @@ class BuildSources(setuptools_build_ext):
         out += "\n"
         return out
 
-    def _cmakelists_target(
-        self,
-        source: Source,
-        library: bool,
-        executable: bool,
-        ast_plugin: bool,
-    ) -> str:
-        assert not (library and executable), "target cannot be both a library and executable"
-
+    def _add_object(self, target: str, source: Source) -> str:
         source_list = [source] if not source.module else []
-        source_list.extend(s for s in source.extra_sources)
-        if library:
-            target = f"{source.name}{sysconfig.get_config_var('EXT_SUFFIX')}"
-            if not source_list:
-                out = f"add_library({target} MODULE)\n"
-            else:
-                out = f"add_library({target} MODULE\n"
-                for s in source_list:
-                    out += f"    {s.path.absolute()}\n"
-                out += ")\n"
-        elif executable:
-            target = source.name
-            if not source_list:
-                out = f"add_executable({target})\n"
-            else:
-                out = f"add_executable({target}\n"
-                for s in source_list:
-                    out += f"    {s.path.absolute()}\n"
-                out += ")\n"
-        else:
-            target = source.name
-            if not source_list:
-                out = f"add_library({target} OBJECT)\n"
-            else:
-                out = f"add_library({target} OBJECT\n"
-                for s in source_list:
-                    out += f"    {s.path.absolute()}\n"
-                out += ")\n"
+        source_list.extend(source.extra_sources)
+        if not source_list:
+            return f"add_library({target} OBJECT)\n"
+        out = f"add_library({target} OBJECT\n"
+        for s in source_list:
+            out += f"    {s.path.absolute()}\n"
+        return out + ")\n"
 
-        out += f"target_sources({target} PRIVATE\n"
-        out += f"    FILE_SET CXX_MODULES BASE_DIRS {Path.cwd()}\n"
-        out +=  "    FILES\n"
-        for s in source.requires.collapse():
-            out += f"        {s.path.absolute()}\n"
-        out += ")\n"
+    def _add_library(self, target: str, source: Source) -> str:
+        source_list = [source] if not source.module else []
+        source_list.extend(source.extra_sources)
+        if not source_list:
+            return f"add_library({target} SHARED)\n"
+        out = f"add_library({target} SHARED\n"
+        for s in source_list:
+            out += f"    {s.path.absolute()}\n"
+        return out + ")\n"
 
-        out += f"set_target_properties({target} PROPERTIES\n"
+    def _add_executable(self, target: str, source: Source) -> str:
+        source_list = [source] if not source.module else []
+        source_list.extend(source.extra_sources)
+        if not source_list:
+            return f"add_executable({target})\n"
+        out = f"add_executable({target}\n"
+        for s in source_list:
+            out += f"    {s.path.absolute()}\n"
+        return out + ")\n"
+
+    def _target_sources(self, target: str, source: Source) -> str:
+        out = ""
+        prebuilt = {name for name, path in self._prebuilt_bmis(source)}
+        modules = {s for s in source.requires.collapse() if s.module not in prebuilt}
+        if modules:
+            out += f"target_sources({target} PRIVATE\n"
+            out += f"    FILE_SET CXX_MODULES BASE_DIRS {Path.cwd()}\n"
+            out +=  "    FILES\n"
+            for s in modules:
+                out += f"    {s.path.absolute()}\n"
+            out += ")\n"
+        return out
+
+    def _set_target_properties(self, target: str, source: Source, cpp_std: int) -> str:
+        out =  f"set_target_properties({target} PROPERTIES\n"
         out +=  "    PREFIX \"\"\n"
         out += f"    OUTPUT_NAME {target}\n"
         out +=  "    SUFFIX \"\"\n"
         try:
-            out += f"    CXX_STANDARD {source.cpp_std}\n"
+            out += f"    CXX_STANDARD {cpp_std}\n"
         except ValueError:
             # pylint: disable=protected-access
             FAIL(
@@ -1189,23 +1236,33 @@ class BuildSources(setuptools_build_ext):
                 out += f"    {key}\n"
             else:
                 out += f"    {key} {value}\n"
-        out += ")\n"
+        return out + ")\n"
 
+    def _target_compile_options(
+        self,
+        target: str,
+        source: Source,
+        ast_plugin: bool,
+    ) -> str:
         # NOTE: importing std from env/modules/ causes clang to emit a warning about
         # a reserved module name, even when `std.cppm` came from clang itself.  When
         # `import std;` is officially supported by CMake, this can be removed.
         # NOTE: attribute plugins mess with clangd, which can't recognize them by
         # default.  Until LLVM implements some way around this, disabling the warning
         # is the only option.
-        out += f"target_compile_options({target} PRIVATE\n"
+        out = f"target_compile_options({target} PRIVATE\n"
         out +=  "    -Wno-reserved-module-identifier\n"
         out +=  "    -Wno-unknown-attributes\n"
+        for name, pcm in self._prebuilt_bmis(source):
+            out += f"    -fmodule-file={name}={pcm.absolute()}\n"
         out += f"    -fplugin={env / 'lib' / 'bertrand-attrs.so'}\n"
         if source.extra_compile_args or ast_plugin:
             if ast_plugin:
+                executable_cache = self._bertrand_executable_cache.absolute()
                 out += f"    -fplugin={env / 'lib' / 'bertrand-ast.so'}\n"
-                out += f"    -fplugin-arg-main-cache={self._bertrand_executable_cache}\n"
+                out += f"    -fplugin-arg-main-cache={executable_cache}\n"
                 if source.is_primary_module_interface:
+                    binding_cache = self._bertrand_binding_cache
                     python_path = self._bertrand_binding_root / source.path
                     python_path.parent.mkdir(parents=True, exist_ok=True)
                     python_module = source.module.split(".")[-1]
@@ -1213,46 +1270,104 @@ class BuildSources(setuptools_build_ext):
                     out += f"    -fplugin-arg-export-import={source.module}\n"
                     out += f"    -fplugin-arg-export-export={python_module}\n"
                     out += f"    -fplugin-arg-export-python={python_path.absolute()}\n"
-                    out += f"    -fplugin-arg-export-cache={self._bertrand_binding_cache}\n"
+                    out += f"    -fplugin-arg-export-cache={binding_cache.absolute()}\n"
             for flag in source.extra_compile_args:
                 out += f"    {flag}\n"
-        out += ")\n"
+        return out + ")\n"
 
-        if source.define_macros:
+    def _target_compile_definitions(self, target: str, source: Source) -> str:
+        out = ""
+        if source.extra_define_macros:
             out += f"target_compile_definitions({target} PRIVATE\n"
-            for define in source.define_macros:
+            for define in source.extra_define_macros:
                 out += f"    {define[0]}={define[1]}\n"
             out += ")\n"
+        return out
 
-        if source.include_dirs:
+    def _target_include_directories(self, target: str, source: Source) -> str:
+        out = ""
+        if source.extra_include_dirs:
             out += f"target_include_directories({target} PRIVATE\n"
-            for include in source.include_dirs:
-                out += f"    {include}\n"
+            for include in source.extra_include_dirs:
+                out += f"    {include.absolute()}\n"
             out += ")\n"
+        return out
 
-        if source.library_dirs:
+    def _target_link_directories(self, target: str, source: Source) -> str:
+        out = ""
+        if source.extra_library_dirs:
             out += f"target_link_directories({target} PRIVATE\n"
-            for lib_dir in source.library_dirs:
-                out += f"    {lib_dir}\n"
+            for lib_dir in source.extra_library_dirs:
+                out += f"    {lib_dir.absolute()}\n"
             out += ")\n"
+        return out
 
-        if source.libraries:
+    def _target_link_libraries(self, target: str, source: Source) -> str:
+        out = ""
+        if source.extra_libraries:
             out += f"target_link_libraries({target} PRIVATE\n"
-            for lib in source.libraries:
+            for lib in source.extra_libraries:
                 out += f"    {lib}\n"
             out += ")\n"
+        return out
 
-        if source.extra_link_args or source.runtime_library_dirs:
+    def _target_link_options(self, target: str, source: Source) -> str:
+        out = ""
+        if source.extra_link_args or source.extra_runtime_library_dirs:
             out += f"target_link_options({target} PRIVATE\n"
             for flag in source.extra_link_args:
                 out += f"    {flag}\n"
-            if source.runtime_library_dirs:
-                for lib_dir in source.runtime_library_dirs:
-                    out += f"    \"-Wl,-rpath,{lib_dir}\"\n"
+            for lib_dir in source.extra_runtime_library_dirs:
+                out += f"    -Wl,-rpath,{lib_dir.absolute()}\n"
             out += ")\n"
+        return out
 
-        # TODO: what the hell to do with export_symbols?
-        return out + "\n"
+    def stage0(self) -> None:
+        """Install C++ dependencies into the environment before building the project.
+
+        Notes
+        -----
+        This method represents a prerequisite step to the main build process, allowing
+        users to specify C++ dependencies via the Conan package manager.  When Bertrand
+        encounters these dependencies, it will automatically download and install them
+        into the environment's `.conan` directory, and then export the necessary
+        symbols to `env.toml` so that CMake can find them during the rest of the build
+        process.
+        """
+        if self._bertrand_cpp_deps:
+            self._conan_install()
+
+    def _conan_install(self) -> None:
+        """Invoke conan to install C++ dependencies for the project and link them
+        against the environment.
+        """
+        path = self._bertrand_build_dir / "conanfile.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w") as f:
+            f.write("[requires]\n")
+            for package in self._bertrand_cpp_deps:
+                f.write(f"{package.name}/{package.version}\n")
+            f.write("\n")
+            f.write("[generators]\n")
+            f.write("CMakeDeps\n")
+            f.write("CMakeToolchain\n")
+            f.write("\n")
+            f.write("[layout]\n")
+            f.write("cmake_layout\n")
+
+        subprocess.check_call(
+            [
+                "conan",
+                "install",
+                str(path.absolute()),
+                "--build=missing",
+                "--output-folder",
+                str(path.parent),
+                "-verror",
+            ],
+            cwd=path.parent,
+        )
+        env.packages.extend(p for p in self._bertrand_cpp_deps if p not in env.packages)
 
     def stage1(self) -> None:
         """Run a dependency scan over the source files to resolve imports and exports.
@@ -1265,8 +1380,8 @@ class BuildSources(setuptools_build_ext):
 
         Here's a brief overview of the process:
 
-            1.  Generate a temporary CMakeLists.txt file that includes all source files
-                as a single build target.
+            1.  Generate a temporary CMakeLists.txt file that includes all sources as a
+                single build target.
             2.  Configure the project using CMake to emit a compile_commands.json
                 database for use with clang-scan-deps.
             3.  Run clang-scan-deps to generate a graph of all imports and exports in
@@ -1288,11 +1403,6 @@ class BuildSources(setuptools_build_ext):
         compile_commands = self._get_compile_commands(cmakelists)
         self._resolve_imports(compile_commands)
 
-    # TODO: consider using INTERFACE libraries to avoid actually compiling anything.
-    # This might also emit the .pcm files needed in stage 2?  If so, then I could pass
-    # them efficiently to stage 3 and compile everything else (anything that's not a
-    # module) as a .o file that gets linked in at the same time.
-
     def _stage1_cmakelists(self) -> Path:
         path = self._bertrand_build_dir / "CMakeLists.txt"
         extra_include_dirs: set[Path] = set()
@@ -1304,42 +1414,43 @@ class BuildSources(setuptools_build_ext):
             extra_libraries.update(lib for lib in source.libraries)
 
         with path.open("w") as f:
-            f.write(self._cmakelists_header())
-            f.write("# stage 1 target includes all sources\n")
-            f.write("add_library(${PROJECT_NAME} OBJECT\n")
+            out = self._cmakelists_header()
+            out += "# stage 1 target includes all sources\n"
+            out += "add_library(${PROJECT_NAME}\n"
             for source in self.extensions:
-                f.write(f"    {source.path.absolute()}\n")
-            f.write(")\n")
-            f.write("target_sources(${PROJECT_NAME} PRIVATE\n")
-            f.write( "    FILE_SET CXX_MODULES\n")
-            f.write(f"    BASE_DIRS {Path.cwd()}\n")
-            f.write( "    FILES\n")
+                out += f"    {source.path.absolute()}\n"
+            out += ")\n"
+            out += "target_sources(${PROJECT_NAME} PRIVATE\n"
+            out +=  "    FILE_SET CXX_MODULES\n"
+            out += f"    BASE_DIRS {Path.cwd()}\n"
+            out +=  "    FILES\n"
             for source in self.extensions:
-                f.write(f"        {source.path.absolute()}\n")
-            f.write(")\n")
-            f.write("set_target_properties(${PROJECT_NAME} PROPERTIES\n")
-            f.write( "    PREFIX \"\"\n")
-            f.write( "    OUTPUT_NAME ${PROJECT_NAME}\n")
-            f.write( "    SUFFIX \"\"\n")
-            f.write(f"    CXX_STANDARD {self._bertrand_cpp_std}\n")
-            f.write( "    CXX_STANDARD_REQUIRED ON\n")
-            f.write(")\n")
+                out += f"        {source.path.absolute()}\n"
+            out += ")\n"
+            out += "set_target_properties(${PROJECT_NAME} PROPERTIES\n"
+            out +=  "    PREFIX \"\"\n"
+            out +=  "    OUTPUT_NAME ${PROJECT_NAME}\n"
+            out +=  "    SUFFIX \"\"\n"
+            out += f"    CXX_STANDARD {self._bertrand_cpp_std}\n"
+            out +=  "    CXX_STANDARD_REQUIRED ON\n"
+            out += ")\n"
             if extra_include_dirs:
-                f.write("target_include_directories(${PROJECT_NAME} PRIVATE\n")
+                out += "target_include_directories(${PROJECT_NAME} PRIVATE\n"
                 for include in extra_include_dirs:
-                    f.write(f"    {include}\n")
-                f.write(")\n")
+                    out += f"    {include}\n"
+                out += ")\n"
             if extra_library_dirs:
-                f.write("target_link_directories(${PROJECT_NAME} PRIVATE\n")
+                out += "target_link_directories(${PROJECT_NAME} PRIVATE\n"
                 for lib_dir in extra_library_dirs:
-                    f.write(f"    {lib_dir}\n")
-                f.write(")\n")
+                    out += f"    {lib_dir}\n"
+                out += ")\n"
             if extra_libraries:
-                f.write("target_link_libraries(${PROJECT_NAME} PRIVATE\n")
+                out += "target_link_libraries(${PROJECT_NAME} PRIVATE\n"
                 for lib in extra_libraries:
-                    f.write(f"    {lib}\n")
-                f.write(")\n")
-            f.write("\n")
+                    out += f"    {lib}\n"
+                out += ")\n"
+            out += "\n"
+            f.write(out)
 
         return path
 
@@ -1380,63 +1491,6 @@ class BuildSources(setuptools_build_ext):
 
         return path
 
-    def _import(self, source: Source, logical_name: str) -> Source:
-        # check for a cached result first.  This covers absolute imports that are
-        # contained within the source tree, as well as out-of-tree imports that have
-        # already been resolved.
-        if logical_name in self._bertrand_module_lookup:
-            return self._bertrand_module_lookup[logical_name]
-
-        # check for an equivalent .cppm file under env/modules/ and copy it into the
-        # build directory along with its dependencies.  This covers out-of-tree imports
-        # that are provided by the environment, including `import std`.
-        search = env / "modules" / f"{logical_name}.cppm"
-        if search.exists():
-            self._bertrand_module_root.mkdir(parents=True, exist_ok=True)
-            dest = self._bertrand_module_root / search.name
-            shutil.copy2(search, dest)
-            result = Source(dest)
-
-            # dependencies are attached to the resulting Source just like normal, under
-            # keys that may or may not reflect the actual imports within the .cppm file
-            # itself.  This is done to avoid an additional scan over the file, and does
-            # not impact how the module is built.
-            deps = search.with_suffix("")
-            if deps.exists() and deps.is_dir():
-                dest = self._bertrand_module_root / deps.name
-                shutil.copytree(deps, dest, dirs_exist_ok=True)
-                for path in dest.rglob("*.cppm"):
-                    dep = Source(path)
-                    name = ".".join(path.relative_to(dest).with_suffix("").parts)
-                    result.requires[name] = dep
-                    self._bertrand_source_lookup[dep.path] = dep
-
-            self._bertrand_source_lookup[result.path] = result
-            self._bertrand_module_lookup[logical_name] = result
-            return result
-
-        breakpoint()
-
-        # if the import is not found at the C++ level, then we attempt it from Python
-        # and synthesize an equivalent C++ binding to resolve it.
-        try:
-            raise ImportError()
-            module = importlib.import_module(logical_name)
-        except ImportError:
-            FAIL(
-                f"unresolved import: '{YELLOW}{logical_name}{WHITE}' in "
-                f"{CYAN}{source.path}{WHITE}"
-            )
-
-        self._bertrand_module_root.mkdir(parents=True, exist_ok=True)
-        binding = self._bertrand_module_root / f"{logical_name}.cppm"
-        PyModule(module).generate(binding)
-        result = Source(binding)
-        self._import(result, "bertrand.python")
-        self._bertrand_source_lookup[result.path] = result
-        self._bertrand_module_lookup[logical_name] = result
-        return result
-
     def _resolve_imports(self, compile_commands: Path) -> None:
         # module dependencies are represented according to the p1689r5 spec, which is
         # what CMake uses internally to generate the build graph.  We need some
@@ -1461,7 +1515,7 @@ class BuildSources(setuptools_build_ext):
         def _find(module: dict[str, Any]) -> Source:
             path = Path(module["primary-output"]).relative_to(trunk)
             path = (cwd.root / path).with_suffix("")  # strip .o suffix
-            return self.search_source(path)
+            return self.find_source(path)
 
         # exports are represented by a "provides" array, which - for C++ modules -
         # should only have a single entry (but possibly more as an implementation
@@ -1541,44 +1595,206 @@ class BuildSources(setuptools_build_ext):
                     name = edge["logical-name"]
                     source.requires[name] = self._import(source, name)
 
+    def _import(self, source: Source, logical_name: str) -> Source:
+        # check for a cached result first.  This covers absolute imports that are
+        # contained within the source tree, as well as out-of-tree imports that have
+        # already been resolved.
+        if logical_name in self._bertrand_module_lookup:
+            return self._bertrand_module_lookup[logical_name]
+
+        # check for an equivalent .cppm file under env/modules/ and copy it into the
+        # build directory along with its dependencies.  This covers out-of-tree imports
+        # that are provided by the environment, including `import std`.
+        search = env / "modules" / f"{logical_name}.cppm"
+        if search.exists():
+            self._bertrand_module_root.mkdir(parents=True, exist_ok=True)
+            dest = self._bertrand_module_root / search.name
+            shutil.copy2(search, dest)
+            result = source.spawn(dest, logical_name)
+
+            # dependencies are attached to the resulting Source just like normal, under
+            # keys that may or may not reflect the actual imports within the .cppm file
+            # itself.  This is done to avoid an additional scan over the file, and does
+            # not impact how the module is built.
+            deps = search.with_suffix("")
+            if deps.exists() and deps.is_dir():
+                dest = self._bertrand_module_root / deps.name
+                shutil.copytree(deps, dest, dirs_exist_ok=True)
+                for path in dest.rglob("*.cppm"):
+                    dep = source.spawn(path, path.stem)
+                    name = ".".join(path.relative_to(dest).with_suffix("").parts)
+                    result.requires[name] = dep
+                    self._bertrand_source_lookup[dep.path] = dep
+
+            self._bertrand_source_lookup[result.path] = result
+            self._bertrand_module_lookup[logical_name] = result
+            return result
+
+        breakpoint()
+
+        # if the import is not found at the C++ level, then we attempt it from Python
+        # and synthesize an equivalent C++ binding to resolve it.
+        try:
+            raise ImportError()
+            module = importlib.import_module(logical_name)
+        except ImportError:
+            FAIL(
+                f"unresolved import: '{YELLOW}{logical_name}{WHITE}' in "
+                f"{CYAN}{source.path}{WHITE}"
+            )
+
+        self._bertrand_module_root.mkdir(parents=True, exist_ok=True)
+        binding = self._bertrand_module_root / f"{logical_name}.cppm"
+        PyModule(module).generate(binding)
+        result = Source(binding)
+        self._import(result, "bertrand.python")
+        self._bertrand_source_lookup[result.path] = result
+        self._bertrand_module_lookup[logical_name] = result
+        return result
+
     def stage2(self) -> None:
-        """Instrument clang with bertrand's AST plugin and compile the project to
-        emit Python bindings and identify executables.
+        """Instrument clang with bertrand's AST plugin and compile the project.
 
         Notes
         -----
         This method represents the second stage of the automated build process.  Its
-        goal is to access the AST of the C++ source files in order to determine the
-        bindings needed to expose modules to the Python interpreter.  It also
-        identifies the source files that contain a `main()` entry point, which will be
-        linked as executables in stage 3.
+        goal is to compile the source files into objects and built module interfaces
+        (BMIs), parse the AST to compute Python bindings, and cache the results for
+        future use.  The AST parser also identifies which source files contain a
+        `main()` entry point, which will be linked as executables in stage 3.
 
-        The output from this stage consists of `.o` files for each source file, along
-        with a `.pcm` file for those that refer to modules, and a `.cpp` file for each
-        primary module interface unit.  These will all be fed into stage 3, where they
-        are linked to produce the final build artifacts.
+        Here's a brief overview of the process:
+
+            1.  Generate a temporary CMakeLists.txt file that builds all sources as
+                OBJECT libraries, excluding private module partitions or implementation
+                units, which are implicitly included in the primary module interface.
+            2.  Check the build directory for precompiled BMIs and reuse them where
+                possible to speed up compilation.
+            3.  Pass the AST parser and related attributes to clang using the
+                `-fplugin` flag, which will emit Python bindings as part of the
+                compilation process.
+            4.  Build the project, which emits `.o` artifacts for each source, along
+                with BMIs for uncached modules and additional Python bindings for
+                primary module interface units.
+            5.  Copy the BMIs into the build directory's `.modules/` cache, which
+                allows them to be reused on subsequent builds provided the compile
+                command remains compatible and the underlying modules have not changed.
+
+        The output from this stage will then be reused during stage 3 to link the
+        final build artifacts using the results of the AST parser.
         """
         try:
             cmakelists = self._stage2_cmakelists()
             self._cmake_build(cmakelists)
-            self._parse_ast()
+            self._update_ast()
+            for source in self.extensions:
+                bmi_dir = self._bertrand_module_cache / self._bmi_hash(source)
+                for pcm in self._build_dir(source).glob("*.pcm"):
+                    bmi_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(pcm, bmi_dir / pcm.name)
         finally:
             self._bertrand_binding_cache.unlink(missing_ok=True)
             self._bertrand_executable_cache.unlink(missing_ok=True)
+
+    def _build_dir(self, source: Source) -> Path:
+        return self._bertrand_build_dir / "CMakeFiles" / f"{source.name}.dir"
+
+    def _object(self, source: Source) -> Path:
+        path = self._build_dir(source) / source.path.absolute().relative_to(Path.cwd().root)
+        return path.parent / f"{path.name}.o"
+
+    # TODO: this pretty much works, but it fails to account for external dependencies,
+    # which should not be considered when determining if a source file needs to be
+    # updated.
+
+    def _needs_updating(self, source: Source) -> bool:
+        # out-of-tree sources need special treatment since they are not included in the
+        # stage 1 dependency scan.  In this case, we only need to check for an
+        # equivalent .pcm file in the module cache and compare its modification time
+        # against the source file.
+        if not source.in_tree:
+            bmi = self._bertrand_module_cache / self._bmi_hash(source)
+            bmi /= f"{source.module}.pcm"
+            return not bmi.exists() or bmi.stat().st_mtime < source.path.stat().st_mtime
+
+        # if the source is in-tree, then it will be associated with a `.o` file in the
+        # final build products, possibly in addition to a `.pcm` file if it is a module.
+        # If these don't exist or are outdated for the source or any of its
+        # dependencies, then it needs to be rebuilt.
+        obj = self._object(source)
+        if not obj.exists() or obj.stat().st_mtime < source.path.stat().st_mtime:
+            return True
+        if source.module:
+            bmi = self._bertrand_module_cache / self._bmi_hash(source)
+            bmi /= f"{source.module}.pcm"
+            if not bmi.exists() or bmi.stat().st_mtime < source.path.stat().st_mtime:
+                return True
+
+        return any(
+            self._needs_updating(dep)
+            for dep in source.requires.collapse()
+            if dep is not source
+        )
+
+    def _bmi_hash(self, source: Source) -> str:
+        args = self._bertrand_compile_args + source.extra_compile_args
+        definitions = self._bertrand_define_macros + source.extra_define_macros
+        return hashlib.sha256(" ".join([
+            str(source.cpp_std),
+            " ".join(args),
+            " ".join(
+                f"{first}={second}" if second else first
+                for first, second in definitions
+            ),
+        ]).encode("utf-8")).hexdigest()
+
+    def _prebuilt_bmis(self, source: Source) -> Iterator[tuple[str, Path]]:
+        bmi_dir = self._bertrand_module_cache / self._bmi_hash(source)
+        for dep in source.requires.collapse():
+            if dep.module:
+                pcm = bmi_dir / f"{dep.module}.pcm"
+                if pcm.exists() and pcm.stat().st_mtime > dep.path.stat().st_mtime:
+                    yield dep.module, pcm
+
+    # TODO: I should not build objects for any source that has a precompiled .o file
+    # and has not been modified since the last build.  Excluding these sources will
+    # speed up the build process as much as possible.
 
     def _stage2_cmakelists(self) -> Path:
         path = self._bertrand_build_dir / "CMakeLists.txt"
         with path.open("w") as f:
             f.write(self._cmakelists_header())
-            for ext in self.extensions:
-                if ext.module and not ext.is_primary_module_interface:
+            for source in self.extensions:
+                # avoid rebuilding sources that have not been modified since last build
+                if not self._needs_updating(source):
                     continue
-                f.write(self._cmakelists_target(
-                    ext,
-                    library=False,
-                    executable=False,
-                    ast_plugin=True
-                ))
+
+                # do not build private module partitions - they are implicitly
+                # included in the primary module interface
+                if source.module and not source.is_primary_module_interface:
+                    continue
+
+                # BMIs can be reused where possible to speed up compilation
+                bmis: dict[str, Path] = {}
+                for dep in source.requires.collapse():
+                    if dep.module:
+                        pcm = self._bertrand_module_cache / self._bmi_hash(dep)
+                        pcm /= f"{dep.module}.pcm"
+                        if pcm.exists() and pcm.stat().st_mtime > dep.path.stat().st_mtime:
+                            bmis[dep.module] = pcm
+
+                # build as a CMake OBJECT library
+                target = source.name
+                out = self._add_object(target, source)
+                out += self._target_sources(target, source)
+                out += self._set_target_properties(target, source, cpp_std=source.cpp_std)
+                out += self._target_compile_options(target, source, ast_plugin=True)
+                out += self._target_compile_definitions(target, source)
+                out += self._target_include_directories(target, source)
+                out += self._target_link_directories(target, source)
+                out += self._target_link_libraries(target, source)
+                out += self._target_link_options(target, source)
+                f.write(out + "\n")
 
         return path
 
@@ -1618,7 +1834,7 @@ class BuildSources(setuptools_build_ext):
     # -> These extra sources would not appear in the command's .extensions list, which
     # allows us to segregate them from the main build process.
 
-    def _parse_ast(self) -> None:
+    def _update_ast(self) -> None:
         # The AST plugin dumps the Python bindings to the build directory using a
         # nested directory structure under bindings/ that mirrors the source tree.  We
         # need to add these bindings to the appropriate Source objects so that they can
@@ -1635,7 +1851,7 @@ class BuildSources(setuptools_build_ext):
         if self._bertrand_executable_cache.exists():
             with self._bertrand_executable_cache.open("r") as f:
                 for line in f:
-                    source = self.search_source(Path(line.strip()))
+                    source = self.find_source(Path(line.strip()))
                     source._is_executable = True  # pylint: disable=protected-access
 
     # TODO: stage3 AST can use .o objects that were compiled in stage 2 to avoid
@@ -1655,6 +1871,10 @@ class BuildSources(setuptools_build_ext):
 
     # The last two are really the same problem, which is that instrumenting the
     # compiler causes all BMIs to be rebuilt.
+
+    # -> use OBJECT IMPORTED libraries to pass the products from stage 2 to stage 3.
+    # Also, don't pass a modules file set, just pass
+    # -fprebuilt-module-path=source.object.parent to force the compiler to reuse them.
 
     def stage3(self) -> None:
         """Link the products from stage 2 into Python-compatible shared libraries and
@@ -1706,27 +1926,42 @@ class BuildSources(setuptools_build_ext):
         path = self._bertrand_build_dir / "CMakeLists.txt"
         with path.open("w") as f:
             f.write(self._cmakelists_header())
-            for ext in self.extensions:
+            for source in self.extensions:
                 # TODO: pass the stage 2 outputs to stage 3
-                # ext.extra_compile_args.append(
-                #     f"-fmodule-file={ext.name}"
-                # )
+                # -> pass precompiled .o files into CMake as IMPORTED OBJECT libraries,
+                # and then pass them to the link_libraries() function
 
-                if ext.is_primary_module_interface:
-                    f.write(self._cmakelists_target(
-                        ext,
-                        library=True,
-                        executable=False,
-                        ast_plugin=False
-                    ))
+                if source.is_primary_module_interface:
+                    target = source.name
+                    out = self._add_library(target, source)
+                    out += self._set_target_properties(
+                        target,
+                        source,
+                        cpp_std=source.cpp_std
+                    )
+                    out += self._target_compile_options(target, source, ast_plugin=False)
+                    out += self._target_compile_definitions(target, source)
+                    out += self._target_include_directories(target, source)
+                    out += self._target_link_directories(target, source)
+                    out += self._target_link_libraries(target, source)
+                    out += self._target_link_options(target, source)
+                    f.write(out + "\n")
 
-                if ext.is_executable:
-                    f.write(self._cmakelists_target(
-                        ext,
-                        library=True,
-                        executable=False,
-                        ast_plugin=False
-                    ))
+                if source.is_executable:
+                    target = source.name
+                    out = self._add_executable(target, source)
+                    out += self._set_target_properties(
+                        target,
+                        source,
+                        cpp_std=source.cpp_std
+                    )
+                    out += self._target_compile_options(target, source, ast_plugin=False)
+                    out += self._target_compile_definitions(target, source)
+                    out += self._target_include_directories(target, source)
+                    out += self._target_link_directories(target, source)
+                    out += self._target_link_libraries(target, source)
+                    out += self._target_link_options(target, source)
+                    f.write(out + "\n")
 
         return path
 
@@ -1737,27 +1972,26 @@ class BuildSources(setuptools_build_ext):
     # resulting paths in the registry for cleanup.
 
     def build_extensions(self) -> None:
-        """Build all extensions in the project.
-
-        Raises
-        ------
-        RuntimeError
-            If setup.py is invoked outside of a bertrand virtual environment.
-        TypeError
-            If any extensions are not of type bertrand.Source.
-        """
+        """Run Bertrand's automated build process."""
         if self.extensions and "BERTRAND_HOME" not in os.environ:
             FAIL(
                 "setup.py must be run inside a bertrand virtual environment in order "
                 "to compile C++ extensions."
             )
 
-        if self._bertrand_cpp_deps:
-            self.conan_install()
-
+        self.stage0()
         self.stage1()
         self.stage2()
+        breakpoint()
         self.stage3()
+
+    # TODO: copy_extensions_to_source() will only be called if setup.py was invoked with
+    # --inplace, so it can't do any copying that would otherwise be done by the install
+    # process.  It should *only* copy the shared libraries into the source tree.
+    # Everything else (exporting executables to bin/, module sources to env/modules/,
+    # etc.) should be handled by a stage 4 method that is called by build_extensions().
+    # This has the sole job of copying the build products to the appropriate
+    # directories.
 
     # TODO: if files are copied out of the build directory, then they should be added
     # to a persistent registry so that they can be cleaned up later with a simple
@@ -1915,21 +2149,23 @@ def setup(
                     )
             cmdclass["build_ext"] = _BuildSourcesSubclassWrapper
 
+    # update sources with the global settings
     sources = sources or []
     for source in sources:
         # pylint: disable=protected-access
+        source._in_tree = True
 
         if source._cpp_std is None:
             source._cpp_std = cpp_std
 
         if source._traceback is None:
             source._traceback = traceback
-
         if source.traceback:
             source.extra_compile_args.append("-g")
         else:
             source.define_macros.append(("BERTRAND_NO_TRACEBACK", None))
 
+    # defer to setuptools
     setuptools.setup(
         ext_modules=sources,
         cmdclass=cmdclass,

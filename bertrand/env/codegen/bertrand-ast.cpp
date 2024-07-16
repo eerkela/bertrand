@@ -323,9 +323,7 @@ public:
         const std::string& path
     ) : path(path) {
         body += "import " + import_name + ";\n";
-        body += "\n";
         body += "import bertrand.python;\n";
-        body += "namespace py = bertrand::py;\n";
         body += "\n";
         body += "\n";
         body += "BERTRAND_MODULE(" + export_name + ", m) {\n";
