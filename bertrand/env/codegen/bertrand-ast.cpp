@@ -324,6 +324,7 @@ public:
     ) : path(path) {
         body += "import " + import_name + ";\n";
         body += "import bertrand.python;\n";
+        body += "#include <bertrand/python.h>\n";
         body += "\n";
         body += "\n";
         body += "BERTRAND_MODULE(" + export_name + ", m) {\n";
