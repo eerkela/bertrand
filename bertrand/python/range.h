@@ -9,7 +9,7 @@
 #include "int.h"
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 

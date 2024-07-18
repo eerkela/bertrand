@@ -9,7 +9,7 @@
 #include "except.h"
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -1874,7 +1874,7 @@ L& operator^=(L& lhs, const R& rhs) {
 }  // namespace bertrand
 
 
-namespace std {
+export namespace std {
 
     template <typename T> requires (bertrand::py::__hash__<T>::enable)
     struct hash<T> {

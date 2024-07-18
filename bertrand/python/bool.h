@@ -8,7 +8,7 @@
 #include "common.h"
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 

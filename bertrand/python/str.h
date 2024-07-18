@@ -16,7 +16,7 @@
 #endif
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -873,7 +873,7 @@ struct __imul__<L, R>                                       : Returns<Str&> {
 }  // namespace bertrand
 
 
-namespace std {
+export namespace std {
 
     template <>
     struct hash<bertrand::py::Str> {

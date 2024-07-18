@@ -15,7 +15,7 @@
 // NOTE: ChainMap is complicated, but maybe possible to support as well.
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 

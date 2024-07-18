@@ -5,6 +5,7 @@ import datetime
 import hashlib
 import importlib
 import json
+import re
 import os
 import shlex
 import shutil
@@ -47,26 +48,8 @@ def get_include() -> str:
     return str(Path(__file__).absolute().parent.parent.parent)
 
 
-# TODO: I have to figure out how to get the stage 3 build to use the .pcm files
-# generated in stage 2, and not recompile them itself.
-
-# https://clang.llvm.org/docs/StandardCPlusPlusModules.html#header-units
-
-
 # TODO: Object-orientation for Conan dependencies similar to Source?  Users would
 # specify dependencies as Package("name", "version", "find", "link").
-
-
-# TODO: each Source should hold a path to its associated build directory, under which
-# .pcm files will be emitted.  The .o file is emitted under a nested source tree in
-# the same directory, so we need to do some path manipulation to get it right.
-# -> The build directory can be set during finalize_options, before the build process
-# begins.  Finalize_options will set each source's _build_directory attribute, which
-# is used in a public property of the same name, and a .object accessor that points
-# to the output .o file.  There should also be another property that checks whether
-# the .o file needs to be rebuilt, or if it can be reused from a previous build.  This
-# has to recur through the dependency graph in order to account for changes in
-# dependencies.
 
 
 class Source(setuptools.Extension):
@@ -91,6 +74,8 @@ class Source(setuptools.Extension):
     with the flag, while A will be built without it.  If A requires the flag as well,
     then it should be added to its `Source` constructor.
     """
+
+    # pylint: disable=protected-access
 
     class Paths(list):  # type: ignore
         """A collection of paths that automatically converts between posix-style
@@ -278,8 +263,6 @@ class Source(setuptools.Extension):
         owning source file.
         """
 
-        # pylint: disable=protected-access
-
         def __init__(self, source: "Source") -> None:
             super().__init__()
             self._source = source
@@ -395,22 +378,8 @@ class Source(setuptools.Extension):
             self.update(other)
             return self
 
-    def __init__(
-        self,
-        path: str | Path,
-        *,
-        cpp_std: int | None = None,
-        extra_sources: list[str | Path | Source] | None = None,
-        extra_include_dirs: list[Path] | None = None,
-        extra_define_macros: list[tuple[str, str | None]] | None = None,
-        extra_library_dirs: list[Path] | None = None,
-        extra_libraries: list[str] | None = None,
-        extra_runtime_library_dirs: list[Path] | None = None,
-        extra_compile_args: list[str] | None = None,
-        extra_link_args: list[str] | None = None,
-        extra_cmake_args: list[tuple[str, str | None]] | None = None,
-        traceback: bool | None = None,
-    ) -> None:
+    @staticmethod
+    def _get_path(path: str | Path) -> Path:
         if isinstance(path, str):
             path = Path(path)
         path = path.resolve()
@@ -424,55 +393,56 @@ class Source(setuptools.Extension):
             FAIL(f"source file does not exist: {CYAN}{path}{WHITE}")
         if path.is_dir():
             FAIL(f"source file is a directory: {CYAN}{path}{WHITE}")
+        return path
 
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        cpp_std: int | None = None,
+        traceback: bool | None = None,
+        extra_sources: Iterable[str | Path | Source] | None = None,
+        extra_include_dirs: Iterable[Path] | None = None,
+        extra_define_macros: Iterable[tuple[str, str | None]] | None = None,
+        extra_library_dirs: Iterable[Path] | None = None,
+        extra_libraries: Iterable[str] | None = None,
+        extra_runtime_library_dirs: Iterable[Path] | None = None,
+        extra_compile_args: Iterable[str] | None = None,
+        extra_link_args: Iterable[str] | None = None,
+        extra_cmake_args: Iterable[tuple[str, str | None]] | None = None,
+    ) -> None:
+        path = self._get_path(path)
         super().__init__(
             ".".join(path.with_suffix("").parts),
             [path.as_posix()],
             include_dirs=[p.as_posix() for p in extra_include_dirs or []],
-            define_macros=extra_define_macros or [],
+            define_macros=list(extra_define_macros) if extra_define_macros else [],
             library_dirs=[p.as_posix() for p in extra_library_dirs or []],
-            libraries=extra_libraries or [],
+            libraries=list(extra_libraries) if extra_libraries else [],
             runtime_library_dirs=[p.as_posix() for p in extra_runtime_library_dirs or []],
-            extra_compile_args=extra_compile_args or [],
-            extra_link_args=extra_link_args or [],
+            extra_compile_args=list(extra_compile_args) if extra_compile_args else [],
+            extra_link_args=list(extra_link_args) if extra_link_args else [],
             language="c++",
         )
-        self._in_tree = False  # set in finalize_options
         self._path = path
         self._cpp_std = cpp_std
-        self._extra_sources = set(
-            s if isinstance(s, Source) else Source(s)
-            for s in extra_sources or []
-        )
-        self._extra_cmake_args = extra_cmake_args or []
         self._traceback = traceback
+        self._extra_sources = set(
+            s if isinstance(s, Source) else self.spawn(s) for s in extra_sources or []
+        )
+        self._extra_cmake_args = list(extra_cmake_args) if extra_cmake_args else []
+        self._makedeps: set[Path] = {self.path}
         self._requires = self.Dependencies(self)
         self._provides: set[Source] = set()
         self._module = ""
+        self._command: BuildSources  # set in finalize_options
         self._is_interface = False  # set in stage 1
         self._is_executable = False  # set in stage 2
         self._stage2_sources: set[Source] = set()  # set in stage 2
 
-        self.include_dirs.append(get_include())  # TODO: eventually not necessary
-
-    @property
-    def in_tree(self) -> bool:
-        """Indicates whether this source is part of the project tree.
-
-        Returns
-        -------
-        bool
-            True if the source was provided to `bertrand.setup()`, or False if it was
-            synthesized by the build system.
-
-        Notes
-        -----
-        In-tree sources will be built as targets over the course of the build process,
-        while out-of-tree sources are used to model external dependencies.  The latter
-        are typically modules that have been imported from the environment or emitted
-        by the build system itself (i.e. Python bindings).
-        """
-        return self._in_tree
+    ######################
+    ####    CONFIG    ####
+    ######################
 
     @property
     def path(self) -> Path:
@@ -500,6 +470,10 @@ class Source(setuptools.Extension):
     def name(self, value: str) -> None:
         self.__dict__["name"] = value
 
+    @name.deleter
+    def name(self) -> None:
+        self.__dict__["name"] = ".".join(self.path.with_suffix("").parts)
+
     @property
     def cpp_std(self) -> int:
         """The C++ standard to use when compiling the source as a target.
@@ -523,16 +497,51 @@ class Source(setuptools.Extension):
         This property is initialized by the equivalent `setup()` argument if it is not
         explicitly overridden in the `Source` constructor.
         """
-        assert self._cpp_std is not None
-        if self._cpp_std < 23:
+        std = self.command._bertrand_cpp_std if self._cpp_std is None else self._cpp_std
+        if std < 23:
             raise ValueError(f"C++ standard must be >= 23: {self._cpp_std}")
-        return self._cpp_std
+        return std
 
     @cpp_std.setter
     def cpp_std(self, value: int) -> None:
         if value < 23:
             raise ValueError(f"C++ standard must be >= 23: {value}")
         self._cpp_std = value
+
+    @cpp_std.deleter
+    def cpp_std(self) -> None:
+        self._cpp_std = None
+
+    @property
+    def traceback(self) -> bool:
+        """Indicates whether mixed-language tracebacks are enabled for this source.
+
+        Returns
+        -------
+        bool
+            True if errors should maintain a full traceback across the language
+            boundary.  False if they should be truncated instead.
+
+        See Also
+        --------
+        bertrand.setup : sets global options and executes the build process.
+
+        Notes
+        -----
+        This property is initialized by the equivalent `setup()` argument if it is not
+        explicitly overridden in the `Source` constructor.
+        """
+        if self._traceback is None:
+            return self.command._bertrand_traceback
+        return self._traceback
+
+    @traceback.setter
+    def traceback(self, value: bool) -> None:
+        self._traceback = value
+
+    @traceback.deleter
+    def traceback(self) -> None:
+        self._traceback = None
 
     @property
     def extra_sources(self) -> set[Source]:
@@ -561,6 +570,10 @@ class Source(setuptools.Extension):
     def extra_sources(self, value: set[Source]) -> None:
         self._extra_sources = value
 
+    @extra_sources.deleter
+    def extra_sources(self) -> None:
+        self._extra_sources.clear()
+
     @property
     def extra_include_dirs(self) -> Paths:
         """A list of additional `-I` directories to pass to the compiler when this
@@ -585,6 +598,10 @@ class Source(setuptools.Extension):
     @extra_include_dirs.setter
     def extra_include_dirs(self, value: list[Path]) -> None:
         self.include_dirs = [p.as_posix() for p in value]
+
+    @extra_include_dirs.deleter
+    def extra_include_dirs(self) -> None:
+        self.include_dirs.clear()
 
     @property
     def extra_define_macros(self) -> list[tuple[str, str | None]]:
@@ -612,6 +629,10 @@ class Source(setuptools.Extension):
     def extra_define_macros(self, value: list[tuple[str, str | None]]) -> None:
         self.define_macros = value
 
+    @extra_define_macros.deleter
+    def extra_define_macros(self) -> None:
+        self.define_macros.clear()
+
     @property
     def extra_library_dirs(self) -> Paths:
         """A list of additional `-L` directories to pass to the linker when this
@@ -636,6 +657,10 @@ class Source(setuptools.Extension):
     @extra_library_dirs.setter
     def extra_library_dirs(self, value: list[Path]) -> None:
         self.library_dirs = [p.as_posix() for p in value]
+
+    @extra_library_dirs.deleter
+    def extra_library_dirs(self) -> None:
+        self.library_dirs.clear()
 
     @property
     def extra_libraries(self) -> list[str]:
@@ -662,6 +687,10 @@ class Source(setuptools.Extension):
     def extra_libraries(self, value: list[str]) -> None:
         self.libraries = value
 
+    @extra_libraries.deleter
+    def extra_libraries(self) -> None:
+        self.libraries.clear()
+
     @property
     def extra_runtime_library_dirs(self) -> Paths:
         """A list of additional `rpath` library directories to pass to the linker when
@@ -687,6 +716,10 @@ class Source(setuptools.Extension):
     def extra_runtime_library_dirs(self, value: list[Path]) -> None:
         self.runtime_library_dirs = [p.as_posix() for p in value]
 
+    @extra_runtime_library_dirs.deleter
+    def extra_runtime_library_dirs(self) -> None:
+        self.runtime_library_dirs.clear()
+
     @property
     def extra_compile_args(self) -> list[str]:
         """A list of additional flags to pass to the compiler when this source is built.
@@ -711,6 +744,10 @@ class Source(setuptools.Extension):
     def extra_compile_args(self, value: list[str]) -> None:
         self.__dict__["extra_compile_args"] = value
 
+    @extra_compile_args.deleter
+    def extra_compile_args(self) -> None:
+        self.__dict__["extra_compile_args"].clear()
+
     @property
     def extra_link_args(self) -> list[str]:
         """A list of additional flags to pass to the linker when this source is built.
@@ -734,6 +771,10 @@ class Source(setuptools.Extension):
     @extra_link_args.setter
     def extra_link_args(self, value: list[str]) -> None:
         self.__dict__["extra_link_args"] = value
+
+    @extra_link_args.deleter
+    def extra_link_args(self) -> None:
+        self.__dict__["extra_link_args"].clear()
 
     @property
     def extra_cmake_args(self) -> list[tuple[str, str | None]]:
@@ -761,31 +802,61 @@ class Source(setuptools.Extension):
     def extra_cmake_args(self, value: list[tuple[str, str | None]]) -> None:
         self._extra_cmake_args = value
 
+    @extra_cmake_args.deleter
+    def extra_cmake_args(self) -> None:
+        self._extra_cmake_args.clear()
+
+    ############################
+    ####    BUILD SYSTEM    ####
+    ############################
+
     @property
-    def traceback(self) -> bool:
-        """Indicates whether mixed-language tracebacks are enabled for this source.
+    def command(self) -> BuildSources:
+        """A reference to the build command being used to compile this source.
+
+        Returns
+        -------
+        BuildSources
+            The build command that was set by the `bertrand.setup()` function.
+        """
+        return self._command
+
+    @property
+    def in_tree(self) -> bool:
+        """Indicates whether this source is part of the project tree.
 
         Returns
         -------
         bool
-            True if errors should maintain a full traceback across the language
-            boundary.  False if they should be truncated instead.
-
-        See Also
-        --------
-        bertrand.setup : sets global options and executes the build process.
+            True if the source was provided to `bertrand.setup()`, or False if it was
+            synthesized by the build system.
 
         Notes
         -----
-        This property is initialized by the equivalent `setup()` argument if it is not
-        explicitly overridden in the `Source` constructor.
+        In-tree sources will be built as targets over the course of the build process,
+        while out-of-tree sources are used to model external dependencies.  The latter
+        are typically modules that have been imported from the environment or emitted
+        by the build system itself (i.e. Python bindings).
         """
-        assert self._traceback is not None
-        return self._traceback
+        return self in self.command.extensions
 
-    @traceback.setter
-    def traceback(self, value: bool) -> None:
-        self._traceback = value
+    @property
+    def makedeps(self) -> set[Path]:
+        """A set of Make-style dependencies for this source file.
+
+        Returns
+        -------
+        set[Path]
+            A set of paths that the source file depends on, including headers and the
+            source file itself.
+
+        Notes
+        -----
+        This set contributes to the `outdated` property.  Since it includes header
+        dependencies, any changes to the source file or any of its included headers
+        will trigger a rebuild.
+        """
+        return self._makedeps
 
     @property
     def requires(self) -> Dependencies:
@@ -808,11 +879,6 @@ class Source(setuptools.Extension):
         needed, but can be useful for debugging or manual intervention.
         """
         return self._requires
-
-    @requires.setter
-    def requires(self, value: dict[str, Source]) -> None:
-        self._requires.clear()
-        self._requires.update(value)
 
     @property
     def provides(self) -> set[Source]:
@@ -896,13 +962,197 @@ class Source(setuptools.Extension):
         """
         return self._is_executable
 
-    def spawn(self, path: Path, module: str = "") -> Source:
+    @property
+    def build_dir(self) -> Path:
+        """The path to the build directory for this source.
+
+        Returns
+        -------
+        Path
+            The path to the CMake build directory for this source.
+
+        Notes
+        -----
+        This directory is used to store the intermediate build artifacts when this
+        source is built as a target in stage 2.
+        """
+        return self.command._bertrand_build_dir / "CMakeFiles" / f"{self.name}.dir"
+
+    @property
+    def mtime(self) -> float:
+        """Get the latest modification time of the source file or any of its
+        dependencies.
+
+        Returns
+        -------
+        float
+            The most recent modification time observed for the source file and its
+            dependencies.  If any of the files are missing, then this value will be set
+            to infinity.
+
+        Notes
+        -----
+        This property is used to determine whether the source file has been modified
+        since the last build.  If any of the build products are older than this time,
+        they will be rebuilt automatically in stage 2.
+
+        The modification time is computed by taking the maximum of the source file's
+        modification time and the modification times of all its header and module
+        dependencies.  If any of these files are missing, then the modification time is
+        set to infinity, which will always trigger a rebuild, and therefore force the
+        compiler to emit an error if the file is not found.
+        """
+        times = [
+            dep.stat().st_mtime if dep.exists() else float("inf")
+            for dep in self.makedeps
+        ]
+        times.extend(
+            src.path.stat().st_mtime if src.path.exists() else float("inf")
+            for src in self.extra_sources
+        )
+        times.extend(src.mtime for src in self.requires.collapse() if src is not self)
+        return max(times)
+
+    @property
+    def object(self) -> Path:
+        """The path to the compiled object for this source.
+
+        Returns
+        -------
+        Path
+            The path to the output object.
+
+        Notes
+        -----
+        This file is guaranteed to exist after stage 2 of the build process, and will
+        be reused in subsequent builds if the source file has not changed.  The object
+        file is used to link the shared library and executable targets that depend on
+        this source in stage 3.
+        """
+        path = self.build_dir / self.path.absolute().relative_to(Path.cwd().root)
+        return path.parent / f"{path.name}.o"
+
+    @property
+    def bmi_hash(self) -> str:
+        """A token encoding the relevant command-line arguments to determine
+        compatibility with prebuilt BMI files.
+
+        Returns
+        -------
+        str
+            A SHA256 hash of the relevant command-line arguments, in hexadecimal form.
+
+        Notes
+        -----
+        Module interfaces are more stringent than headers when it comes to
+        compatibility requirements.  Because they are essentially precompiled ASTs,
+        they are sensitive to the exact compiler and command-line arguments that were
+        used to produce them.  Luckily, we control the compiler since we're using
+        Bertrand virtual environments, and we know the exact compile arguments because
+        we're passing them in ourselves.  Thus, we can compute a unique identifier to
+        label each BMI file and ensure that we only reuse them when the hash matches.
+        """
+        return hashlib.sha256(" ".join([
+            str(self.cpp_std),
+            " ".join(self.get_compile_args()),
+            " ".join(f"{k}={v}" if v else k for k, v in self.get_define_macros()),
+        ]).encode("utf-8")).hexdigest()
+
+    @property
+    def bmi_dir(self) -> Path:
+        """Get the parent directory where compatible BMIs are stored.
+
+        Returns
+        -------
+        Path
+            A path to the build directory containing prebuilt BMI files that are
+            compatible with this source.
+
+        Notes
+        -----
+        When this source is compiled in stage 2, the build system will check this
+        directory for cached BMI files that can be reused during incremental builds.
+        By the end of stage 2, it is guaranteed to contain BMIs for this source and all
+        of its dependencies.
+        """
+        return self.command._bertrand_module_cache / self.bmi_hash
+
+    @property
+    def bmis(self) -> Iterator[tuple[str, Path]]:
+        """Return an iterator over the prebuilt BMIs that will be used when compiling
+        this source.
+
+        Yields
+        ------
+        tuple[str, Path]
+            A tuple containing the cached module name and the path to the corresponding
+            BMI file.
+
+        Notes
+        -----
+        This property is used to determine which prebuilt BMIs can be reused when
+        compiling this source in stage 2.  It will only include BMIs that are
+        both compatible with this source and up-to-date with respect to its
+        dependencies.
+        """
+        bmi_dir = self.bmi_dir
+        mtime = self.mtime
+        for dep in self.requires.collapse():
+            if dep.module:
+                bmi = bmi_dir / f"{dep.module}.pcm"
+                if bmi.exists() and bmi.stat().st_mtime > mtime:
+                    yield dep.module, bmi
+
+    @property
+    def outdated(self) -> bool:
+        """Indicates whether this source should be rebuilt in stage 2.
+
+        Returns
+        -------
+        bool
+            True if any of the build artifacts are missing or out of date with respect
+            to the source file or any of its dependencies.  False if they can be
+            reused.
+
+        Notes
+        -----
+        This property controls whether the target is added to the stage 2 build list,
+        after which it will always evaluate to false.
+        """
+        mtime = self.mtime
+
+        # in-tree sources are associated with full objects and BMIs
+        if self.in_tree:
+            # check all bmis are up to date
+            if len(list(self.bmis)) != len(self.requires):
+                return True
+
+            # check object output is up to date
+            if self.is_primary_module_interface or not self.module:
+                obj = self.object
+                if not obj.exists() or obj.stat().st_mtime < mtime:
+                    return True
+
+        # out-of-tree sources are not covered by the dependency scan, and are only
+        # reliably associated with a BMI file.
+        elif self.module:
+            bmi = self.bmi_dir / f"{self.module}.pcm"
+            if not bmi.exists() or bmi.stat().st_mtime < mtime:
+                return True
+
+        return any(dep.outdated for dep in self.requires.values() if dep is not self)
+
+    #######################
+    ####    HELPERS    ####
+    #######################
+
+    def spawn(self, path: str | Path, module: str = "") -> Source:
         """Create a new Source that inherits the options from this source, but with a
         different path and optional module name.
 
         Parameters
         ----------
-        path : Path
+        path : str | Path
             The path to the new source file.
         module : str, optional
             The module name to assign to the new source.
@@ -920,9 +1170,9 @@ class Source(setuptools.Extension):
         inject new sources into the dependency graph.
         """
         result = Source(
-            path,
+            self._get_path(path),
             cpp_std=self._cpp_std,
-            extra_sources=list(self.extra_sources),
+            traceback=self._traceback,
             extra_include_dirs=self.extra_include_dirs,
             extra_define_macros=self.extra_define_macros,
             extra_library_dirs=self.extra_library_dirs,
@@ -931,13 +1181,108 @@ class Source(setuptools.Extension):
             extra_compile_args=self.extra_compile_args,
             extra_link_args=self.extra_link_args,
             extra_cmake_args=self.extra_cmake_args,
-            traceback=self.traceback,
         )
+        self._command._bertrand_source_lookup[result.path] = result
+        result._command = self._command
         if module:
-            # pylint: disable=protected-access
+            self._command._bertrand_module_lookup[module] = result
             result._module = module
             result._is_interface = True
         return result
+
+    def get_include_dirs(self) -> list[Path]:
+        """Get the complete list of include directories for this source.
+
+        Returns
+        -------
+        list[Path]
+            A list of paths that concatenates the global include directories with the
+            extras for this source.
+        """
+        return self.extra_include_dirs + self.command.global_include_dirs
+
+    def get_define_macros(self) -> list[tuple[str, str | None]]:
+        """Get the complete list of define macros for this source.
+
+        Returns
+        -------
+        list[tuple[str, str | None]]
+            A list of tuples that concatenates the global define macros with the extras
+            for this source.
+        """
+        out = self.command.global_define_macros + self.extra_define_macros
+        if not self.traceback:
+            out.append(("BERTRAND_NO_TRACEBACK", None))
+        return out
+
+    def get_library_dirs(self) -> list[Path]:
+        """Get the complete list of library directories for this source.
+
+        Returns
+        -------
+        list[Path]
+            A list of paths that concatenates the global library directories with the
+            extras for this source.
+        """
+        return self.extra_library_dirs + self.command.global_library_dirs
+
+    def get_libraries(self) -> list[str]:
+        """Get the complete list of libraries for this source.
+
+        Returns
+        -------
+        list[str]
+            A list of library names that concatenates the global libraries with the
+            extras for this source.
+        """
+        return self.command.global_libraries + self.extra_libraries
+
+    def get_runtime_library_dirs(self) -> list[Path]:
+        """Get the complete list of runtime library directories for this source.
+
+        Returns
+        -------
+        list[Path]
+            A list of paths that concatenates the global runtime library directories
+            with the extras for this source
+        """
+        return self.extra_runtime_library_dirs + self.command.global_runtime_library_dirs
+
+    def get_compile_args(self) -> list[str]:
+        """Get the complete list of compiler flags for this source.
+
+        Returns
+        -------
+        list[str]
+            A list of flags that concatenates the global compile flags with the extras
+            for this source.
+        """
+        out = self.command.global_compile_args + self.extra_compile_args
+        if self.traceback:
+            out.append("-g")
+        return out
+
+    def get_link_args(self) -> list[str]:
+        """Get the complete list of linker flags for this source.
+
+        Returns
+        -------
+        list[str]
+            A list of flags that concatenates the global linker flags with the extras
+            for this source.
+        """
+        return self.command.global_link_args + self.extra_link_args
+
+    def get_cmake_args(self) -> list[tuple[str, str | None]]:
+        """Get the complete list of cmake arguments for this source.
+
+        Returns
+        -------
+        list[tuple[str, str | None]]
+            A list of tuples that concatenates the global cmake arguments with the
+            extras for this source.
+        """
+        return self.command.global_cmake_args + self.extra_cmake_args
 
     def __repr__(self) -> str:
         return f"<Source {self.path}>"
@@ -959,6 +1304,8 @@ class BuildSources(setuptools_build_ext):
     virtual environment or not.
     """
 
+    # pylint: disable=protected-access
+
     MIN_CMAKE_VERSION = Version("3.28")
 
     # additional command-line options accepted by the command
@@ -974,32 +1321,38 @@ class BuildSources(setuptools_build_ext):
         self,
         *args: Any,
         bertrand_cpp_std: int,
-        bertrand_cpp_deps: list[Package],
-        bertrand_include_dirs: list[str],
-        bertrand_define_macros: list[tuple[str, str]],
+        bertrand_traceback: bool,
+        bertrand_conan_deps: list[Package],
+        bertrand_include_dirs: list[str | Path],
+        bertrand_define_macros: list[tuple[str, str | None]],
         bertrand_compile_args: list[str],
-        bertrand_library_dirs: list[str],
+        bertrand_library_dirs: list[str | Path],
         bertrand_libraries: list[str],
         bertrand_link_args: list[str],
-        bertrand_cmake_args: dict[str, str],
-        bertrand_runtime_library_dirs: list[str],
-        bertrand_export_symbols: list[str],
+        bertrand_cmake_args: list[tuple[str, str | None]],
+        bertrand_runtime_library_dirs: list[str | Path],
         bertrand_workers: int,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.workers = bertrand_workers
         self._bertrand_cpp_std = bertrand_cpp_std
-        self._bertrand_cpp_deps = bertrand_cpp_deps
-        self._bertrand_include_dirs = bertrand_include_dirs
+        self._bertrand_traceback = bertrand_traceback
+        self._bertrand_conan_deps = bertrand_conan_deps
+        self._bertrand_include_dirs = [
+            Path(p) if isinstance(p, str) else p for p in bertrand_include_dirs
+        ]
         self._bertrand_define_macros = bertrand_define_macros
         self._bertrand_compile_args = bertrand_compile_args
-        self._bertrand_library_dirs = bertrand_library_dirs
+        self._bertrand_library_dirs = [
+            Path(p) if isinstance(p, str) else p for p in bertrand_library_dirs
+        ]
         self._bertrand_libraries = bertrand_libraries
         self._bertrand_link_args = bertrand_link_args
         self._bertrand_cmake_args = bertrand_cmake_args
-        self._bertrand_runtime_library_dirs = bertrand_runtime_library_dirs
-        self._bertrand_export_symbols = bertrand_export_symbols
+        self._bertrand_runtime_library_dirs = [
+            Path(p) if isinstance(p, str) else p for p in bertrand_runtime_library_dirs
+        ]
         self._bertrand_source_lookup: dict[Path, Source] = {}
         self._bertrand_module_lookup: dict[str, Source] = {}
         self._bertrand_build_dir: Path
@@ -1020,7 +1373,6 @@ class BuildSources(setuptools_build_ext):
             If the workers option is not set to a positive integer or 0.
         """
         super().finalize_options()
-        self._bertrand_source_lookup = {s.path: s for s in self.extensions}
         self._bertrand_build_dir = Path(self.build_lib)
         self._bertrand_module_root = self._bertrand_build_dir / "modules"
         self._bertrand_module_cache = self._bertrand_build_dir / ".modules"
@@ -1030,44 +1382,48 @@ class BuildSources(setuptools_build_ext):
         if "-fdeclspec" not in self._bertrand_compile_args:
             self._bertrand_compile_args.append("-fdeclspec")
 
-        # force the use of the coupled Source class to describe build targets
+        # give each source a backreference to the global command
         self.check_extensions_list(self.extensions)
-        incompabile_extensions = [
-            ext for ext in self.extensions if not isinstance(ext, Source)
-        ]
-        if incompabile_extensions:
-            FAIL(
-                f"Extensions must be of type bertrand.Source: "
-                f"{YELLOW}{incompabile_extensions}{WHITE}"
-            )
+        for source in self.extensions:
+            if not isinstance(source, Source):
+                FAIL(
+                    f"Extensions must be of type bertrand.Source: "
+                    f"{YELLOW}{repr(source)}{WHITE}"
+                )
+            source._command = self
+            self._bertrand_source_lookup[source.path] = source
 
         # add environment variables to the build configuration
+        self._bertrand_include_dirs.append(Path(get_include()))
         cpath = env.get("CPATH", "")
         if cpath:
-            self._bertrand_include_dirs = (
-                self._bertrand_include_dirs + cpath.split(os.pathsep)
+            self._bertrand_include_dirs.extend(
+                Path(s) for s in cpath.split(os.pathsep)
             )
 
         ld_library_path = env.get("LD_LIBRARY_PATH", "")
         if ld_library_path:
-            self._bertrand_library_dirs = (
-                self._bertrand_library_dirs + ld_library_path.split(os.pathsep)
+            self._bertrand_library_dirs.extend(
+                Path(s) for s in ld_library_path.split(os.pathsep)
             )
 
         runtime_library_path = env.get("RUNTIME_LIBRARY_PATH", "")
         if runtime_library_path:
-            self._bertrand_runtime_library_dirs = (
-                self._bertrand_runtime_library_dirs +
-                runtime_library_path.split(os.pathsep)
+            self._bertrand_runtime_library_dirs.extend(
+                Path(s) for s in runtime_library_path.split(os.pathsep)
             )
 
         cxxflags = env.get("CXXFLAGS", "")
         if cxxflags:
-            self._bertrand_compile_args = shlex.split(cxxflags) + self._bertrand_compile_args
+            self._bertrand_compile_args = (
+                shlex.split(cxxflags) + self._bertrand_compile_args
+            )
 
         ldflags = env.get("LDFLAGS", "")
         if ldflags:
-            self._bertrand_link_args = shlex.split(ldflags) + self._bertrand_link_args
+            self._bertrand_link_args = (
+                shlex.split(ldflags) + self._bertrand_link_args
+            )
 
         # parse workers from command line
         if self.workers:
@@ -1080,37 +1436,112 @@ class BuildSources(setuptools_build_ext):
                     f"not {CYAN}{self.workers}{WHITE}"
                 )
 
-    def find_source(self, path: Path) -> Source:
-        """Find the Source object corresponding to a given source file path.
-
-        Parameters
-        ----------
-        path : Path
-            The path to the source file.  Absolute paths will be normalized with
-            respect to the current working directory.
+    @property
+    def global_build_dir(self) -> Path:
+        """The path to the build directory for this command.
 
         Returns
         -------
-        Source
-            The Source object that corresponds to the given file path.
+        Path
+            The path to the CMake build directory for this command.
         """
-        return self._bertrand_source_lookup[path.resolve().relative_to(Path.cwd())]
+        return self._bertrand_build_dir
 
-    def find_module(self, name: str) -> Source:
-        """Find the Source object corresponding to a given module name.
-
-        Parameters
-        ----------
-        name : str
-            The fully-qualified (dotted) name of the module, which must be absolute,
-            with no leading dots.
+    @property
+    def global_include_dirs(self) -> list[Path]:
+        """Get the global list of include directories.
 
         Returns
         -------
-        Source
-            The Source object that corresponds to the module name.
+        list[Path]
+            A list of paths that will be appended as include directories of every
+            source file.
         """
-        return self._bertrand_module_lookup[name]
+        return self._bertrand_include_dirs
+
+    @property
+    def global_define_macros(self) -> list[tuple[str, str | None]]:
+        """Get the global list of define macros.
+
+        Returns
+        -------
+        list[tuple[str, str | None]]
+            A list of tuples that will be appended as define macros of every source
+            file.
+        """
+        return self._bertrand_define_macros
+
+    @property
+    def global_library_dirs(self) -> list[Path]:
+        """Get the global list of library directories.
+
+        Returns
+        -------
+        list[Path]
+            A list of paths that will be appended as library directories of every
+            source file.
+        """
+        return self._bertrand_library_dirs
+
+    @property
+    def global_libraries(self) -> list[str]:
+        """Get the global list of libraries.
+
+        Returns
+        -------
+        list[str]
+            A list of library names that will be appended as libraries of every source
+            file.
+        """
+        return self._bertrand_libraries
+
+    @property
+    def global_runtime_library_dirs(self) -> list[Path]:
+        """Get the global list of runtime library directories.
+
+        Returns
+        -------
+        list[Path]
+            A list of paths that will be appended as runtime library directories of
+            every source file.
+        """
+        return self._bertrand_runtime_library_dirs
+
+    @property
+    def global_compile_args(self) -> list[str]:
+        """Get the global list of compile arguments for a given source.
+
+        Returns
+        -------
+        list[str]
+            A list of compiler flags that will be appended as compile args of every
+            source file.
+        """
+        return self._bertrand_compile_args
+
+    @property
+    def global_link_args(self) -> list[str]:
+        """Get the global list of link arguments.
+
+        Returns
+        -------
+        list[str]
+            A list of linker flags that will be appended as link args of every source
+            file.
+        """
+        return self._bertrand_link_args
+
+    @property
+    def global_cmake_args(self) -> list[tuple[str, str | None]]:
+        """Get the global list of CMake arguments.
+
+        Returns
+        -------
+        list[tuple[str, str | None]]
+            A list of tuples that will be appended as CMake arguments of every source
+            file.
+        """
+        return self._bertrand_cmake_args
 
     def stage0(self) -> None:
         """Install C++ dependencies into the environment before building the project.
@@ -1124,18 +1555,19 @@ class BuildSources(setuptools_build_ext):
         symbols to `env.toml` so that CMake can find them during the rest of the build
         process.
         """
-        if self._bertrand_cpp_deps:
+        if self._bertrand_conan_deps:
             self._conan_install()
+        self.global_libraries.extend(p.link for p in env.packages)  # type: ignore
 
     def _conan_install(self) -> None:
         """Invoke conan to install C++ dependencies for the project and link them
         against the environment.
         """
-        path = self._bertrand_build_dir / "conanfile.txt"
+        path = self.global_build_dir / "conanfile.txt"
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w") as f:
             f.write("[requires]\n")
-            for package in self._bertrand_cpp_deps:
+            for package in self._bertrand_conan_deps:
                 f.write(f"{package.name}/{package.version}\n")
             f.write("\n")
             f.write("[generators]\n")
@@ -1157,7 +1589,7 @@ class BuildSources(setuptools_build_ext):
             ],
             cwd=path.parent,
         )
-        env.packages.extend(p for p in self._bertrand_cpp_deps if p not in env.packages)
+        env.packages.extend(p for p in self._bertrand_conan_deps if p not in env.packages)
 
     def stage1(self) -> None:
         """Run a dependency scan over the source files to resolve imports and exports.
@@ -1191,15 +1623,15 @@ class BuildSources(setuptools_build_ext):
         """
         cmakelists = self._stage1_cmakelists()
         compile_commands = self._get_compile_commands(cmakelists)
+        self._get_makedeps(compile_commands)
         self._resolve_imports(compile_commands)
 
     def _cmakelists_header(self) -> str:
         build_type = "Debug" if self.debug else "Release"
         toolchain = (
-            self._bertrand_build_dir / "build" / build_type / "generators" /
+            self.global_build_dir / "build" / build_type / "generators" /
             "conan_toolchain.cmake"
         )
-        libraries = self._bertrand_libraries + [p.link for p in env.packages]
 
         out = f"# CMakeLists.txt automatically generated by bertrand {__version__}\n"
         out += f"cmake_minimum_required(VERSION {self.MIN_CMAKE_VERSION})\n"
@@ -1211,21 +1643,24 @@ class BuildSources(setuptools_build_ext):
         out += "set(CMAKE_CXX_SCAN_FOR_MODULES ON)\n"
         out += "set(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n"
         out += "set(CMAKE_COLOR_DIAGNOSTICS ON)\n"
-        for k, v in self._bertrand_cmake_args.items():
-            out += f"set({k} {v})\n"
-        if self._bertrand_define_macros:
+        for k, v in self.global_cmake_args:
+            if v is None:
+                out += f"set({k})\n"
+            else:
+                out += f"set({k} {v})\n"
+        if self.global_define_macros:
             out += "add_compile_definitions(\n"
-            for define in self._bertrand_define_macros:
+            for define in self.global_define_macros:
                 out += f"    {define[0]}={define[1]}\n"
             out += ")\n"
-        if self._bertrand_compile_args:
+        if self.global_compile_args:
             out += "add_compile_options(\n"
-            for flag in self._bertrand_compile_args:
+            for flag in self.global_compile_args:
                 out += f"    {flag}\n"
             out += ")\n"
-        if self._bertrand_link_args:
+        if self.global_link_args:
             out += "add_link_options(\n"
-            for flag in self._bertrand_link_args:
+            for flag in self.global_link_args:
                 out += f"    {flag}\n"
             out += ")\n"
         out += "\n"
@@ -1233,38 +1668,33 @@ class BuildSources(setuptools_build_ext):
         out += f"include({toolchain})\n"
         out += "\n".join(f'find_package({p.find} REQUIRED)' for p in env.packages)
         out += "\n"
-        if self._bertrand_include_dirs:
+        if self.global_include_dirs:
             out += "include_directories(\n"
-            for include in self._bertrand_include_dirs:
-                out += f"    {include}\n"
+            for include in self.global_include_dirs:
+                out += f"    {include.absolute()}\n"
             out += ")\n"
-        if self._bertrand_library_dirs:
+        if self.global_library_dirs:
             out += "link_directories(\n"
-            for lib_dir in self._bertrand_library_dirs:
-                out += f"    {lib_dir}\n"
+            for lib_dir in self.global_library_dirs:
+                out += f"    {lib_dir.absolute()}\n"
             out += ")\n"
-        if libraries:
+        if self.global_libraries:
             out += "link_libraries(\n"
-            for lib in libraries:
+            for lib in self.global_libraries:
                 out += f"    {lib}\n"
             out += ")\n"
-        if self._bertrand_runtime_library_dirs:
+        if self.global_runtime_library_dirs:
             out += "set(CMAKE_INSTALL_RPATH\n"
-            for lib_dir in self._bertrand_runtime_library_dirs:
-                out += f"    \"{lib_dir}\"\n"
+            for lib_dir in self.global_runtime_library_dirs:
+                out += f"    \"{lib_dir.absolute()}\"\n"
             out += ")\n"
-        # TODO: what the hell to do with export_symbols?
         return out
 
     def _stage1_cmakelists(self) -> Path:
-        path = self._bertrand_build_dir / "CMakeLists.txt"
-        extra_include_dirs: set[Path] = set()
-        extra_library_dirs: set[Path] = set()
-        extra_libraries: set[str] = set()
+        path = self.global_build_dir / "CMakeLists.txt"
+        include_dirs: set[Path] = set()
         for source in self.extensions:
-            extra_include_dirs.update(include for include in source.include_dirs)
-            extra_library_dirs.update(lib_dir for lib_dir in source.library_dirs)
-            extra_libraries.update(lib for lib in source.libraries)
+            include_dirs.update(p for p in source.extra_include_dirs)
 
         with path.open("w") as f:
             out = self._cmakelists_header()
@@ -1288,20 +1718,10 @@ class BuildSources(setuptools_build_ext):
             out += f"    CXX_STANDARD {self._bertrand_cpp_std}\n"
             out +=  "    CXX_STANDARD_REQUIRED ON\n"
             out += ")\n"
-            if extra_include_dirs:
+            if include_dirs:
                 out += "target_include_directories(${PROJECT_NAME} PRIVATE\n"
-                for include in extra_include_dirs:
-                    out += f"    {include}\n"
-                out += ")\n"
-            if extra_library_dirs:
-                out += "target_link_directories(${PROJECT_NAME} PRIVATE\n"
-                for lib_dir in extra_library_dirs:
-                    out += f"    {lib_dir}\n"
-                out += ")\n"
-            if extra_libraries:
-                out += "target_link_libraries(${PROJECT_NAME} PRIVATE\n"
-                for lib in extra_libraries:
-                    out += f"    {lib}\n"
+                for include in include_dirs:
+                    out += f"    {include.absolute()}\n"
                 out += ")\n"
             out += "\n"
             f.write(out)
@@ -1328,6 +1748,7 @@ class BuildSources(setuptools_build_ext):
         # might not be present at the time this method is invoked
         path = cmakelists.parent / "compile_commands.json"
         with path.open("r+") as f:
+            contents = json.load(f)
             filtered = [
                 {
                     "directory": cmd["directory"],
@@ -1337,13 +1758,50 @@ class BuildSources(setuptools_build_ext):
                     "file": cmd["file"],
                     "output": cmd["output"],
                 }
-                for cmd in json.load(f)
+                for cmd in contents
             ]
             f.seek(0)
             json.dump(filtered, f, indent=4)
             f.truncate()
 
         return path
+
+    def _find_source_from_output(self, output: Path) -> Source:
+        # clang-scan-deps lists the dependencies by build *target* rather than
+        # source path, so we need to cross reference that with our Source objects.
+        # Luckily, CMake stores the targets in a nested source tree, so we can strip
+        # the appropriate prefix/suffix and do some path arithmetic to get a 1:1 map.
+        trunk = Path("CMakeFiles") / f"{self.distribution.get_name()}.dir"
+        path = (Path.cwd().root / output.relative_to(trunk)).with_suffix("")
+        return self._bertrand_source_lookup[path.relative_to(Path.cwd())]
+
+    def _get_makedeps(self, compile_commands: Path) -> None:
+        # p1689 format doesn't include header dependencies, so we have to re-run
+        # clang-scan-deps to ensure these are considered when checking for updates.
+        make = subprocess.run(
+            [
+                str(env / "bin" / "clang-scan-deps"),
+                "-format=make",
+                "-compilation-database",
+                str(compile_commands),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout.decode("utf-8").strip()
+
+        # the output is in makefile format, consisting of a target followed by a
+        # colon, and then a list of dependencies separated by spaces.  Trailing
+        # backslashes are used for line continuation.
+        source: Source | None = None
+        sep = re.compile(r"(?<!\\)\s+")  # split on non-escaped whitespace
+        for line in make.splitlines():
+            line = line.rstrip("\\").strip()
+            if line.endswith(":"):  # this is a target
+                source = self._find_source_from_output(Path(line[:-1]))
+            else:  # this is a dependency
+                assert source is not None
+                for dep in sep.split(line):
+                    source.makedeps.add(Path(dep))
 
     def _resolve_imports(self, compile_commands: Path) -> None:
         # module dependencies are represented according to the p1689r5 spec, which is
@@ -1360,27 +1818,16 @@ class BuildSources(setuptools_build_ext):
             stdout=subprocess.PIPE,
         ).stdout.decode("utf-8").strip())
 
-        # first of all, p1689 lists the dependencies by build *target* rather than
-        # source path, so we need to cross reference that with our Source objects.
-        # Luckily, CMake stores the targets in a nested source tree, so we can strip
-        # the appropriate prefix/suffix and do some path arithmetic to get a 1:1 map.
-        trunk = Path("CMakeFiles") / f"{self.distribution.get_name()}.dir"
-        cwd = Path.cwd()
-        def _find(module: dict[str, Any]) -> Source:
-            path = Path(module["primary-output"]).relative_to(trunk)
-            path = (cwd.root / path).with_suffix("")  # strip .o suffix
-            return self.find_source(path)
-
         # exports are represented by a "provides" array, which - for C++ modules -
         # should only have a single entry (but possibly more as an implementation
         # detail for private partitions, etc. depending on vendor).
         for module in p1689["rules"]:
             provides = module.get("provides", [])
             if provides:
-                source = _find(module)
+                source = self._find_source_from_output(Path(module["primary-output"]))
                 edge = provides[0]
-                source._module = edge["logical-name"]  # pylint: disable=protected-access
-                source._is_interface = edge["is-interface"]  # pylint: disable=protected-access
+                source._module = edge["logical-name"]
+                source._is_interface = edge["is-interface"]
                 source.requires[source.module] = source
                 self._bertrand_module_lookup[source.module] = source
 
@@ -1444,7 +1891,7 @@ class BuildSources(setuptools_build_ext):
         # table is correctly populated.
         for module in p1689["rules"]:
             if "requires" in module:
-                source = _find(module)
+                source = self._find_source_from_output(Path(module["primary-output"]))
                 for edge in module["requires"]:
                     name = edge["logical-name"]
                     source.requires[name] = self._import(source, name)
@@ -1478,10 +1925,7 @@ class BuildSources(setuptools_build_ext):
                     dep = source.spawn(path, path.stem)
                     name = ".".join(path.relative_to(dest).with_suffix("").parts)
                     result.requires[name] = dep
-                    self._bertrand_source_lookup[dep.path] = dep
 
-            self._bertrand_source_lookup[result.path] = result
-            self._bertrand_module_lookup[logical_name] = result
             return result
 
         breakpoint()
@@ -1500,10 +1944,8 @@ class BuildSources(setuptools_build_ext):
         self._bertrand_module_root.mkdir(parents=True, exist_ok=True)
         binding = self._bertrand_module_root / f"{logical_name}.cppm"
         PyModule(module).generate(binding)
-        result = Source(binding)
+        result = source.spawn(binding, logical_name)
         self._import(result, "bertrand.python")
-        self._bertrand_source_lookup[result.path] = result
-        self._bertrand_module_lookup[logical_name] = result
         return result
 
     def stage2(self) -> None:
@@ -1542,92 +1984,26 @@ class BuildSources(setuptools_build_ext):
             self._cmake_build(cmakelists)
             self._update_ast()
             for source in self.extensions:
-                bmi_dir = self._bertrand_module_cache / self._bmi_hash(source)
-                for pcm in self._build_dir(source).glob("*.pcm"):
+                bmi_dir = source.bmi_dir
+                for pcm in source.build_dir.glob("*.pcm"):
                     bmi_dir.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(pcm, bmi_dir / pcm.name)
         finally:
             self._bertrand_binding_cache.unlink(missing_ok=True)
             self._bertrand_executable_cache.unlink(missing_ok=True)
 
-    def _build_dir(self, source: Source) -> Path:
-        return self._bertrand_build_dir / "CMakeFiles" / f"{source.name}.dir"
-
-    def _object(self, source: Source) -> Path:
-        path = self._build_dir(source) / source.path.absolute().relative_to(Path.cwd().root)
-        return path.parent / f"{path.name}.o"
-
-    def _needs_updating(self, source: Source) -> bool:
-        # out-of-tree sources need special treatment since they are not included in the
-        # stage 1 dependency scan.  In this case, we only need to check for an
-        # equivalent .pcm file in the module cache and compare its modification time
-        # against the source file.
-        if not source.in_tree:
-            bmi = self._bertrand_module_cache / self._bmi_hash(source)
-            bmi /= f"{source.module}.pcm"
-            return not bmi.exists() or bmi.stat().st_mtime < source.path.stat().st_mtime
-
-        # if the source is in-tree, then it will be associated with a `.o` file in the
-        # final build products, possibly in addition to a `.pcm` file if it is a module.
-        # If these don't exist or are outdated for the source or any of its
-        # dependencies, then it needs to be rebuilt.
-        obj = self._object(source)
-        if not obj.exists() or obj.stat().st_mtime < source.path.stat().st_mtime:
-            return True
-        if source.module:
-            bmi = self._bertrand_module_cache / self._bmi_hash(source)
-            bmi /= f"{source.module}.pcm"
-            if not bmi.exists() or bmi.stat().st_mtime < source.path.stat().st_mtime:
-                return True
-
-        return any(
-            self._needs_updating(dep)
-            for dep in source.requires.collapse()
-            if dep is not source
-        )
-
-    def _bmi_hash(self, source: Source) -> str:
-        args = self._bertrand_compile_args + source.extra_compile_args
-        definitions = self._bertrand_define_macros + source.extra_define_macros
-        return hashlib.sha256(" ".join([
-            str(source.cpp_std),
-            " ".join(args),
-            " ".join(
-                f"{first}={second}" if second else first
-                for first, second in definitions
-            ),
-        ]).encode("utf-8")).hexdigest()
-
-    def _prebuilt_bmis(self, source: Source) -> Iterator[tuple[str, Path]]:
-        bmi_dir = self._bertrand_module_cache / self._bmi_hash(source)
-        for dep in source.requires.collapse():
-            if dep.module:
-                pcm = bmi_dir / f"{dep.module}.pcm"
-                if pcm.exists() and pcm.stat().st_mtime > dep.path.stat().st_mtime:
-                    yield dep.module, pcm
-
     def _stage2_cmakelists(self) -> Path:
-        # pylint: disable=protected-access
         out = self._cmakelists_header()
         out += "\n"
         for source in self.extensions:
             # avoid rebuilding sources that have not been modified since last build
-            if not self._needs_updating(source):
+            if not source.outdated:
                 continue
 
             # do not build private module partitions - they are implicitly included in
             # the primary module interface
             if source.module and not source.is_primary_module_interface:
                 continue
-
-            # BMIs can be reused where possible to speed up compilation
-            bmis: dict[str, Path] = {}
-            for dep in source.requires.collapse():
-                if dep.module:
-                    pcm = self._bertrand_module_cache / self._bmi_hash(dep)
-                    pcm /= f"{dep.module}.pcm"
-                    if pcm.exists() and pcm.stat().st_mtime > dep.path.stat().st_mtime:
-                        bmis[dep.module] = pcm
 
             # build as a CMake OBJECT library
             target = source.name
@@ -1638,8 +2014,10 @@ class BuildSources(setuptools_build_ext):
             out += ")\n"
 
             # add FILE_SET for all modules that need to be built
-            prebuilt = {name: path for name, path in self._prebuilt_bmis(source)}
+            prebuilt = dict(source.bmis)
             modules = {s for s in source.requires.collapse() if s.module not in prebuilt}
+            if source.module:
+                modules.add(source)
             if modules:
                 out += f"target_sources({target} PRIVATE\n"
                 out += f"    FILE_SET CXX_MODULES BASE_DIRS {Path.cwd()}\n"
@@ -1661,7 +2039,8 @@ class BuildSources(setuptools_build_ext):
                     f"{WHITE} in {CYAN}{source.path}{WHITE}"
                 )
             out +=  "    CXX_STANDARD_REQUIRED ON\n"
-            for key, value in source.extra_cmake_args:
+            cmake_args = source.get_cmake_args()
+            for key, value in cmake_args:
                 if value is None:
                     out += f"    {key}\n"
                 else:
@@ -1694,46 +2073,53 @@ class BuildSources(setuptools_build_ext):
                 out += f"    -fplugin-arg-export-export={python_module}\n"
                 out += f"    -fplugin-arg-export-python={python_path.absolute()}\n"
                 out += f"    -fplugin-arg-export-cache={binding_cache.absolute()}\n"
-            for flag in source.extra_compile_args:
+            compile_args = source.get_compile_args()
+            for flag in compile_args:
                 out += f"    {flag}\n"
             out += ")\n"
 
             # pass any extra compile definitions, include directories, link dirs, and
             # link libraries to the target
-            if source.extra_define_macros:
+            define_macros = source.get_define_macros()
+            if define_macros:
                 out += f"target_compile_definitions({target} PRIVATE\n"
-                for first, second in source.extra_define_macros:
+                for first, second in define_macros:
                     if second is None:
                         out += f"    {first}\n"
                     else:
                         out += f"    {first}={second}\n"
                 out += ")\n"
-            if source.extra_include_dirs:
+            include_dirs = source.get_include_dirs()
+            if include_dirs:
                 out += f"target_include_directories({target} PRIVATE\n"
-                for include in source.extra_include_dirs:
+                for include in include_dirs:
                     out += f"    {include.absolute()}\n"
                 out += ")\n"
-            if source.extra_library_dirs:
+            library_dirs = source.get_library_dirs()
+            if library_dirs:
                 out += f"target_link_directories({target} PRIVATE\n"
-                for lib_dir in source.extra_library_dirs:
+                for lib_dir in library_dirs:
                     out += f"    {lib_dir.absolute()}\n"
                 out += ")\n"
-            if source.extra_libraries:
+            libraries = source.get_libraries()
+            if libraries:
                 out += f"target_link_libraries({target} PRIVATE\n"
-                for lib in source.extra_libraries:
+                for lib in libraries:
                     out += f"    {lib}\n"
                 out += ")\n"
-            if source.extra_link_args or source.extra_runtime_library_dirs:
+            link_args = source.get_link_args()
+            runtime_library_dirs = source.get_runtime_library_dirs()
+            if link_args or runtime_library_dirs:
                 out += f"target_link_options({target} PRIVATE\n"
-                for flag in source.extra_link_args:
+                for flag in link_args:
                     out += f"    {flag}\n"
-                for lib_dir in source.extra_runtime_library_dirs:
+                for lib_dir in runtime_library_dirs:
                     out += f"    -Wl,-rpath,{lib_dir.absolute()}\n"
                 out += ")\n"
 
             out += "\n"
 
-        path = self._bertrand_build_dir / "CMakeLists.txt"
+        path = self.global_build_dir / "CMakeLists.txt"
         with path.open("w") as f:
             f.write(out)
         return path
@@ -1753,13 +2139,7 @@ class BuildSources(setuptools_build_ext):
             cwd=cmakelists.parent,
             stdout=subprocess.PIPE,
         )
-        build_args = [
-            str(env / "bin" / "cmake"),
-            "--build",
-            ".",
-            "--config",
-            "Debug" if self.debug else "Release",  # TODO: probably not necessary
-        ]
+        build_args = [str(env / "bin" / "cmake"), "--build", "."]
         if self.workers:
             build_args += ["--parallel", str(self.workers)]
         try:
@@ -1782,7 +2162,7 @@ class BuildSources(setuptools_build_ext):
         for source in self.extensions:
             if source.is_primary_module_interface:
                 source.extra_sources.add(
-                    Source(self._bertrand_binding_root / source.path)
+                    Source(self._bertrand_binding_root / source.path)  # TODO: use Source.spawn() here
                 )
 
         # Additionally, the AST plugin produces a cache that notes all of the source
@@ -1791,8 +2171,10 @@ class BuildSources(setuptools_build_ext):
         if self._bertrand_executable_cache.exists():
             with self._bertrand_executable_cache.open("r") as f:
                 for line in f:
-                    source = self.find_source(Path(line.strip()))
-                    source._is_executable = True  # pylint: disable=protected-access
+                    source = self._bertrand_source_lookup[
+                        Path(line.strip()).resolve().relative_to(Path.cwd())
+                    ]
+                    source._is_executable = True
 
     # TODO: stage3 AST can use .o objects that were compiled in stage 2 to avoid
     # recompiling the world
@@ -1825,7 +2207,6 @@ class BuildSources(setuptools_build_ext):
         simply copied out of the build directory, avoiding the need to recompile them.
         """
         cmakelists = self._stage3_cmakelists()
-        breakpoint()
         self._cmake_build(cmakelists)
         shutil.copy2(
             cmakelists.parent / "compile_commands.json",
@@ -1846,7 +2227,6 @@ class BuildSources(setuptools_build_ext):
         Path
             The path to the generated CMakeLists.txt.
         """
-        # pylint: disable=protected-access
         out = self._cmakelists_header()
         out += "\n"
 
@@ -1856,7 +2236,7 @@ class BuildSources(setuptools_build_ext):
         for source in self.extensions:
             out += f"add_library({source.name}.{timestamp} OBJECT IMPORTED)\n"
             out += f"set_target_properties({source.name}.{timestamp} PROPERTIES\n"
-            out += f"    IMPORTED_LOCATION \"{self._object(source)}\"\n"
+            out += f"    IMPORTED_LOCATION \"{source.object}\"\n"
             out += ")\n"
         out += "\n"
 
@@ -1886,7 +2266,7 @@ class BuildSources(setuptools_build_ext):
                     out += ")\n"
                 out += self._stage3_target(source, target, timestamp) + "\n"
 
-        path = self._bertrand_build_dir / "CMakeLists.txt"
+        path = self.global_build_dir / "CMakeLists.txt"
         with path.open("w") as f:
             f.write(out)
         return path
@@ -1914,7 +2294,6 @@ class BuildSources(setuptools_build_ext):
         try:
             out += f"    CXX_STANDARD {source.cpp_std}\n"
         except ValueError:
-            # pylint: disable=protected-access
             FAIL(
                 f"C++ standard must be >= 23: found {YELLOW}{source._cpp_std}"
                 f"{WHITE} in {CYAN}{source.path}{WHITE}"
@@ -1936,6 +2315,14 @@ class BuildSources(setuptools_build_ext):
         out += f"    -fplugin={env / 'lib' / 'bertrand-attrs.so'}\n"
         for flag in source.extra_compile_args:
             out += f"    {flag}\n"
+        out += ")\n"
+
+        out += f"target_link_options({target} PRIVATE\n"
+        out += f"    -fprebuilt-module-path={bmi_dir.absolute()}\n"
+        for flag in source.extra_link_args:
+            out += f"    {flag}\n"
+        for lib_dir in source.extra_runtime_library_dirs:
+            out += f"    -Wl,-rpath,{lib_dir.absolute()}\n"
         out += ")\n"
 
         # link against imported objects from stage 2, as well as any additional link
@@ -1966,13 +2353,6 @@ class BuildSources(setuptools_build_ext):
             for lib_dir in source.extra_library_dirs:
                 out += f"    {lib_dir.absolute()}\n"
             out += ")\n"
-        if source.extra_link_args or source.extra_runtime_library_dirs:
-            out += f"target_link_options({target} PRIVATE\n"
-            for flag in source.extra_link_args:
-                out += f"    {flag}\n"
-            for lib_dir in source.extra_runtime_library_dirs:
-                out += f"    -Wl,-rpath,{lib_dir.absolute()}\n"
-            out += ")\n"
 
         return out
 
@@ -1992,9 +2372,12 @@ class BuildSources(setuptools_build_ext):
 
         self.stage0()
         self.stage1()
+        # breakpoint()
+        self.extensions[0].outdated
         self.stage2()
         breakpoint()
         self.stage3()
+        # self.stage4()  # TODO: copies build products to environment
 
     # TODO: copy_extensions_to_source() will only be called if setup.py was invoked with
     # --inplace, so it can't do any copying that would otherwise be done by the install
@@ -2032,10 +2415,10 @@ class BuildSources(setuptools_build_ext):
         """
         for ext in self.extensions:
             lib_path = (
-                self._bertrand_build_dir /
+                self.global_build_dir /
                 f"{ext.name}{sysconfig.get_config_var('EXT_SUFFIX')}"
             )
-            exe_path = self._bertrand_build_dir / ext.name
+            exe_path = self.global_build_dir / ext.name
             if lib_path.exists():
                 self.copy_file(
                     lib_path,
@@ -2058,15 +2441,14 @@ def setup(
     cpp_std: int = 23,
     cpp_deps: Iterable[PackageLike] | None = None,
     traceback: bool = True,
-    include_dirs: Iterable[str] | None = None,
-    define_macros: Iterable[tuple[str, str]] | None = None,
+    include_dirs: Iterable[str | Path] | None = None,
+    define_macros: Iterable[tuple[str, str | None]] | None = None,
     compile_args: Iterable[str] | None = None,
-    library_dirs: Iterable[str] | None = None,
+    library_dirs: Iterable[str | Path] | None = None,
     libraries: Iterable[str] | None = None,
     link_args: Iterable[str] | None = None,
-    cmake_args: dict[str, str] | None = None,
-    runtime_library_dirs: Iterable[str] | None = None,
-    export_symbols: Iterable[str] | None = None,
+    cmake_args: Iterable[tuple[str, str | None]] | None = None,
+    runtime_library_dirs: Iterable[str | Path] | None = None,
     workers: int = 0,
     cmdclass: dict[str, Any] | None = None,
     **kwargs: Any
@@ -2100,7 +2482,7 @@ def setup(
     """
     deps: list[Package] = list(env.packages) if env else []
     for p in cpp_deps or []:
-        package = Package(p, allow_shorthand=False)
+        package = Package(p, allow_shorthand=False)  # TODO: do this in the original call
         if package not in deps:
             deps.append(package)
 
@@ -2109,17 +2491,17 @@ def setup(
             super().__init__(
                 *a,
                 bertrand_cpp_std=cpp_std,
-                bertrand_cpp_deps=deps,
+                bertrand_traceback=traceback,
+                bertrand_conan_deps=deps,
                 bertrand_include_dirs=list(include_dirs) if include_dirs else [],
                 bertrand_define_macros=list(define_macros) if define_macros else [],
                 bertrand_compile_args=list(compile_args) if compile_args else [],
                 bertrand_library_dirs=list(library_dirs) if library_dirs else [],
                 bertrand_libraries=list(libraries) if libraries else [],
                 bertrand_link_args=list(link_args) if link_args else [],
-                bertrand_cmake_args=dict(cmake_args) if cmake_args else {},
+                bertrand_cmake_args=list(cmake_args) if cmake_args else [],
                 bertrand_runtime_library_dirs=
                     list(runtime_library_dirs) if runtime_library_dirs else [],
-                bertrand_export_symbols=list(export_symbols) if export_symbols else [],
                 bertrand_workers=workers,
                 **kw
             )
@@ -2136,7 +2518,8 @@ def setup(
                     super().__init__(
                         *a,
                         bertrand_cpp_std=cpp_std,
-                        bertrand_cpp_deps=deps,
+                        bertrand_traceback=traceback,
+                        bertrand_conan_deps=deps,
                         bertrand_include_dirs=
                             list(include_dirs) if include_dirs else [],
                         bertrand_define_macros=
@@ -2150,35 +2533,17 @@ def setup(
                         bertrand_link_args=
                             list(link_args) if link_args else [],
                         bertrand_cmake_args=
-                            dict(cmake_args) if cmake_args else {},
+                            list(cmake_args) if cmake_args else [],
                         bertrand_runtime_library_dirs=
                             list(runtime_library_dirs) if runtime_library_dirs else [],
-                        bertrand_export_symbols=
-                            list(export_symbols) if export_symbols else [],
                         bertrand_workers=workers,
                         **kw
                     )
             cmdclass["build_ext"] = _BuildSourcesSubclassWrapper
 
-    # update sources with the global settings
-    sources = sources or []
-    for source in sources:
-        # pylint: disable=protected-access
-        source._in_tree = True
-
-        if source._cpp_std is None:
-            source._cpp_std = cpp_std
-
-        if source._traceback is None:
-            source._traceback = traceback
-        if source.traceback:
-            source.extra_compile_args.append("-g")
-        else:
-            source.define_macros.append(("BERTRAND_NO_TRACEBACK", None))
-
     # defer to setuptools
     setuptools.setup(
-        ext_modules=sources,
+        ext_modules=sources or [],
         cmdclass=cmdclass,
         **kwargs
     )

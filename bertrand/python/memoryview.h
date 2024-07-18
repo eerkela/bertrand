@@ -8,7 +8,7 @@
 #include "common.h"
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 /* TODO: memoryview interface is the main way to access the buffer protocol.  They can

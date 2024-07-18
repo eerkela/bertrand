@@ -11,7 +11,7 @@
 // TODO: check to make sure control structs are properly enabled after CTAD refactor
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 

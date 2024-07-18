@@ -20,6 +20,6 @@ export void baz(const std::string& name) {
 
 
 int main() {
-    py::print("Hello from bertrand!");
+    // py::print("Hello from bertrand!");
     std::println("import std is awesome!");
 }

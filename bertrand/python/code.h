@@ -5,8 +5,6 @@
 #ifndef BERTRAND_PYTHON_CODE_H
 #define BERTRAND_PYTHON_CODE_H
 
-#include <fstream>
-
 #include "common.h"
 #include "dict.h"
 #include "str.h"
@@ -16,7 +14,7 @@
 #include "type.h"
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -1036,7 +1034,7 @@ struct __init__<Frame, File, Func, Line> : Returns<Frame> {
 }  // namespace bertrand
 
 
-namespace pybind11 {
+export namespace pybind11 {
 namespace detail {
 
 template <bertrand::py::impl::is_callable_any T>

@@ -12,7 +12,7 @@
 #include "func.h"
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 

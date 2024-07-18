@@ -9,6 +9,7 @@
 
 
 #include <pybind11/pybind11.h>
+import bertrand.python;
 
 
 /* A replacement for PYBIND11_MODULE that reinterprets the resulting module as a

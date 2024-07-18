@@ -10,7 +10,7 @@
 #include "ops.h"
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 

@@ -18,7 +18,7 @@
 // implicit conversion.
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 

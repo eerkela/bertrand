@@ -23,7 +23,7 @@
 // TODO: not sure if Arg.value() is being used correctly everywhere.
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 

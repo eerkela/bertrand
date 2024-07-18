@@ -15,7 +15,7 @@
 #include "common/control.h"
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -687,7 +687,7 @@ template <typename Self> requires (__reversed__<Self>::enable)
 ////////////////////////////
 
 
-namespace pybind11 {
+export namespace pybind11 {
 namespace detail {
 
 

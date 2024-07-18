@@ -12,7 +12,7 @@
 // if this occurs.
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 

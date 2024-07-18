@@ -11,7 +11,7 @@
 // TODO: support py::deque?
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 

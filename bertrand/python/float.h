@@ -9,7 +9,7 @@
 #include "str.h"
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 

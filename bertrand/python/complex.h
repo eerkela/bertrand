@@ -10,7 +10,7 @@
 #include "str.h"
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 
@@ -213,7 +213,7 @@ struct __cast__<From, std::complex<To>>                     : Returns<std::compl
 }  // namespace bertrand
 
 
-namespace pybind11 {
+export namespace pybind11 {
 namespace detail {
 
 template <>

@@ -15,7 +15,7 @@
 // TODO: allow for complex/Decimal operands?
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 
 

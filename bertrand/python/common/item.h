@@ -12,7 +12,7 @@
 #include "control.h"
 
 
-namespace bertrand {
+export namespace bertrand {
 namespace py {
 namespace impl {
 
