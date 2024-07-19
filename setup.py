@@ -80,10 +80,8 @@ setup(
         "cpptrace/0.6.1@cpptrace/cpptrace::cpptrace",
     ],
     sources=[
-        Source(
-            "bertrand/example_module.cpp",
-            # extra_compile_args=[f"-fmodule-file={PYTHON_PCM}"]
-        ),
+        Source("bertrand/example_module.cpp"),
+        # Source("bertrand/executable.cpp"),
         *(Source(p) for p in Path("bertrand/python").rglob("*.cpp")),
     ],
     cmdclass={"build_ext": BuildSourcesHeadless},

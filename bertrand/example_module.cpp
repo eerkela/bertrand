@@ -17,9 +17,3 @@ export [[py::noexport]] void bar() {
 export void baz(const std::string& name) {
     std::cout << "Hello, " << name << "!\n";
 }
-
-
-int main() {
-    // py::print("Hello from bertrand!");
-    std::println("import std is awesome!");
-}

@@ -598,6 +598,7 @@ class Clang(Target):
                     "-DBOOTSTRAP_LLVM_ENABLE_LTO=Thin",
                     "-DBOOTSTRAP_LLVM_ENABLE_LLD=ON",
                     "-DBOOTSTRAP_LLVM_ENABLE_LIBCXX=ON",
+                    "-DBOOTSTRAP_LLVM_ENABLE_RPMALLOC=ON",
                     "-DBOOTSTRAP_CLANG_DEFAULT_CXX_STDLIB=libc++",
                     "-DBOOTSTRAP_CLANG_DEFAULT_LINKER=lld",
                     "-DBOOTSTRAP_CLANG_DEFAULT_RTLIB=compiler-rt",
@@ -623,7 +624,7 @@ class Clang(Target):
             )
 
             # stage 1.5: forward correct paths of the stage 1 runtimes to stage 2
-            self.host_target = subprocess.run(
+            host_target = subprocess.run(
                 [str(build / "bin" / "llvm-config"), "--host-target"],
                 check=True,
                 capture_output=True,
@@ -632,9 +633,9 @@ class Clang(Target):
             stage1_lib = build / "lib"
             stage2_lib = build / "tools" / "clang" / "stage2-bins" / "lib"
             libraries = [
-                str(stage2_lib / self.host_target),
+                str(stage2_lib / host_target),
                 str(stage2_lib),
-                str(stage1_lib / self.host_target),
+                str(stage1_lib / host_target),
                 str(stage1_lib),
             ]
             ldflags = [f"-L{lib}" for lib in libraries]
@@ -660,7 +661,7 @@ class Clang(Target):
                 [str(env / "bin" / "ninja"), "stage2-install"],
                 cwd=build
             )
-            for lib in (env / "lib" / self.host_target).iterdir():
+            for lib in (env / "lib" / host_target).iterdir():
                 os.symlink(lib, env / "lib" / lib.name)
             module_dir = env / "modules"
             shutil.copytree(
@@ -942,8 +943,6 @@ class Conan(Target):
                     f"Conan version must be {self.MIN_VERSION} or greater."
                 )
             super().__init__(v)
-
-    # TODO: conan needs to use compiler.libcxx=libc++
 
     def __call__(self, workers: int) -> None:
         os.environ["CONAN_HOME"] = str(env / ".conan")
