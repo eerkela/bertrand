@@ -81,7 +81,7 @@ setup(
     ],
     sources=[
         Source("bertrand/example_module.cpp"),
-        # Source("bertrand/executable.cpp"),
+        Source("bertrand/executable.cpp"),
         *(Source(p) for p in Path("bertrand/python").rglob("*.cpp")),
     ],
     cmdclass={"build_ext": BuildSourcesHeadless},

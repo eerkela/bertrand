@@ -2166,27 +2166,43 @@ class BuildSources(setuptools_build_ext):
     # -> These extra sources would not appear in the command's .extensions list, which
     # allows us to segregate them from the main build process.
 
-    def _update_ast(self) -> None:
-        # The AST plugin dumps the Python bindings to the build directory using a
-        # nested directory structure under bindings/ that mirrors the source tree.  We
-        # need to add these bindings to the appropriate Source objects so that they can
-        # be included in the final build.
-        for source in self.extensions:
-            if source.is_primary_module_interface:
-                source.extra_sources.add(
-                    source.spawn(self._bertrand_binding_root / source.path)
-                )
+    # TODO: because we're aggressively culling sources for incremental builds, the
+    # AST parser loses track of the executable status of the source files.  This can
+    # only be resolved by persisting the cache across builds, and updating it whenever
+    # a source file is modified.  This is going to be a pain, but it's the only way to
+    # ensure the build system remains consistent across builds.
 
-        # Additionally, the AST plugin produces a cache that notes all of the source
-        # files that possess a `main()` entry point.  We mark these in order to build
-        # them as executables in stage 3.
+    # -> https://conan.io/center/recipes/nlohmann_json?version=3.11.3
+
+    # Bringing in a library for this is the way to go.  That way I can use json as a
+    # portable format for all caches.
+
+    def _update_ast(self) -> None:
+        # The AST plugin produces a cache that marks all of the source files that have
+        # a `main()` entry point.  These will be built as executables in stage 3.
         if self._bertrand_executable_cache.exists():
             with self._bertrand_executable_cache.open("r") as f:
                 for line in f:
                     source = self._bertrand_source_lookup[
                         Path(line.strip()).resolve().relative_to(Path.cwd())
                     ]
+                    if source.module:
+                        FAIL(
+                            f"source file {CYAN}{source.path}{WHITE} cannot be both a "
+                            f"{YELLOW}module{WHITE} and contain a "
+                            f"{YELLOW}main(){WHITE} entry point.  Please import the "
+                            f"module in a separate source file instead."
+                        )
                     source._is_executable = True
+
+        # The AST plugin also dumps Python bindings to the build directory using a
+        # nested tree under bindings/.  These are added as extra sources to the shared
+        # library targets, which make them importable from Python.
+        for source in self.extensions:
+            if source.is_primary_module_interface:
+                source.extra_sources.add(
+                    source.spawn(self._bertrand_binding_root / source.path)
+                )
 
     def stage3(self) -> None:
         """Link the products from stage 2 into shared libraries and executables.
@@ -2403,67 +2419,67 @@ class BuildSources(setuptools_build_ext):
         cache is used to implement the `$ bertrand clean` command, which removes any
         files that were copied out by this method.
         """
+        cache: set[str] = set()
+        for source in self.extensions:
+            # executables are installed to the environment's bin/ directory
+            if source.is_executable:
+                target = f"{source.name}.exe"
+                dest = env / "bin" / source.path.stem
+                shutil.copy2(self.global_build_dir / target, dest)
+                cache.add(str(dest))
 
-    # TODO: copy_extensions_to_source() is only called when `--inplace` is provided to
-    # the build system.  All it needs to do is symlink the shared libraries to their
-    # equivalents in the environment's lib/ directory.
+            # primary module interface units are installed to both the environment's
+            # lib/ and modules/ directories
+            if source.is_primary_module_interface:
+                # shared libraries go in lib/
+                target = f"{source.name}{sysconfig.get_config_var('EXT_SUFFIX')}"
+                dest = env / "lib" / source.path.with_suffix(
+                    sysconfig.get_config_var("SHLIB_SUFFIX")
+                )
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(self.global_build_dir / target, dest)
+                cache.add(str(dest))
 
+                # source files for the module interfaces go in modules/
+                dest = env / "modules" / f"{source.module}.cppm"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source.path, dest)
+                cache.add(str(dest))
 
+        path = env / "clean.json"
+        if not path.exists():
+            with path.open("w") as f:
+                f.write("{}")
 
-    # TODO: copy_extensions_to_source() will only be called if setup.py was invoked with
-    # --inplace, so it can't do any copying that would otherwise be done by the install
-    # process.  It should *only* copy the shared libraries into the source tree.
-    # Everything else (exporting executables to bin/, module sources to env/modules/,
-    # etc.) should be handled by a stage 4 method that is called by build_extensions().
-    # This has the sole job of copying the build products to the appropriate
-    # directories.
-
-    # TODO: if files are copied out of the build directory, then they should be added
-    # to a persistent registry so that they can be cleaned up later with a simple
-    # command.  This is not necessary unless the project is being built inplace (i.e.
-    # through `$ bertrand compile`), in which case the copy_extensions_to_source()
-    # method will be called.  It should update a temp file in the registry with the
-    # paths of all copied files, and then the clean command should read this file and
-    # delete all the paths listed in it if they exist.
-    # -> perhaps this is modeled as a directory within the virtual environment that
-    # replicates the root directory structure.  Whenever `$ bertrand clean` is called,
-    # we glob all the files in this directory and delete them, reflecting any changes
-    # to the equivalent files in the source directory.  If `$ bertrand clean` is given
-    # a particular file or directory, then it will only delete that file or directory
-    # from the build directory.  If called without any arguments, it will clean the
-    # whole environment.
-
-    # TODO: `$ bertrand compile` should also have an --install option that will copy
-    # executables and shared libraries into the environment's bin and lib directories.
-    # These should also be reflected in the `$ bertrand clean` command, which should
-    # remove them if they exist, forcing a recompile.  `pip install .` will bypass
-    # this by not writing them to the environment, which will disregard them from the
-    # cleaning process unless they are recompiled with `$ bertrand compile`.
+        with path.open("r+") as f:
+            contents = json.load(f)
+            cwd = str(Path.cwd())
+            current = contents.get(cwd, [])
+            current.extend(p for p in cache if p not in current)
+            contents[cwd] = current
+            f.seek(0)
+            json.dump(contents, f, indent=4)
+            f.truncate()
 
     def copy_extensions_to_source(self) -> None:
-        """Copy executables as well as shared libraries to the source directory if
-        setup.py was invoked with the --inplace option.
+        """Link the shared libraries into the source tree if the `--inplace` flag was
+        used.
+
+        Notes
+        -----
+        This method is only called if the `--inplace` flag is provided to setup.py.
+        It creates a series of symlinks in the source tree that point to the shared
+        libraries that were installed into the environment's `lib/` directory, allowing
+        them to be imported locally alongside their source files, for rapid development
+        and testing.
         """
-        for ext in self.extensions:
-            lib_path = (
-                self.global_build_dir /
-                f"{ext.name}{sysconfig.get_config_var('EXT_SUFFIX')}"
+        for source in self.extensions:
+            lib_path = env / "lib" / source.path.with_suffix(
+                sysconfig.get_config_var("SHLIB_SUFFIX")
             )
-            exe_path = self.global_build_dir / ext.name
-            if lib_path.exists():
-                self.copy_file(
-                    lib_path,
-                    self.get_ext_fullpath(ext.name),
-                    level=self.verbose,  # type: ignore
-                )
-            if exe_path.exists():
-                new_path = Path(self.get_ext_fullpath(ext.name)).parent
-                idx = ext.name.rfind(".")
-                if idx < 0:
-                    new_path /= ext.name
-                else:
-                    new_path /= ext.name[idx + 1:]
-                self.copy_file(exe_path, new_path, level=self.verbose)  # type: ignore
+            dest = Path(self.get_ext_fullpath(source.name))
+            if lib_path.exists() and not dest.exists():
+                os.symlink(lib_path, dest)
 
 
 # TODO: LIBRARY_PATH -> library_dirs.  LD_LIBRARY_PATH -> runtime_library_dirs.
