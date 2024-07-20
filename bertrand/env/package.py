@@ -3,8 +3,7 @@ installing and configuring C++ dependencies within a virtual environment.
 """
 from __future__ import annotations
 
-import re
-from typing import Any, TypeAlias
+from typing import Any
 
 from packaging.version import Version
 
@@ -30,53 +29,21 @@ class Package:
     # TODO: account for version ranges/any extra conan syntax
 
     VALID_KEYS = {"name", "version", "find", "link"}
-    PATTERN = re.compile(
-        r"^(?P<name>\w+)/(?P<version>[0-9.]+)(@(?P<find>\w+)/(?P<link>\w+::\w+))?$"
-    )
 
-    name: str
-    version: Version
-    find: str | None
-    link: str | None
-
-    def __new__(cls, specifier: PackageLike, allow_shorthand: bool = True) -> Package:
-        if isinstance(specifier, Package):
-            if not allow_shorthand and specifier.shorthand:
-                raise ValueError(f"Specifier must not be shorthand: {repr(specifier)}")
-            return specifier
-
-        if isinstance(specifier, str):
-            regex = cls.PATTERN.match(specifier)
-            if not regex:
-                raise ValueError(f"Invalid package specifier: {specifier}")
-
-            self = super().__new__(cls)
-            self.name = regex.group("name")
-            self.version = Version(regex.group("version"))
-            self.find = regex.group("find")
-            self.link = regex.group("link")
-            if not allow_shorthand and self.shorthand:
-                raise ValueError(f"Package must not be shorthand: {specifier}")
-            return self
-
-        if isinstance(specifier, dict):
-            for key in cls.VALID_KEYS:
-                if key not in specifier:
-                    raise ValueError(f"Package table is missing required key: {key}")
-            for key in specifier:
-                if key not in cls.VALID_KEYS:
-                    raise ValueError(f"Package table has unexpected key: {key}")
-
-            self = super().__new__(cls)
-            self.name = specifier["name"]
-            self.version = Version(specifier["version"])
-            self.find = specifier.get("find", None)
-            self.link = specifier.get("link", None)
-            if not allow_shorthand and self.shorthand:
-                raise ValueError(f"Package must not be shorthand: {specifier}")
-            return self
-
-        raise TypeError(f"Invalid package specifier: {specifier}")
+    def __init__(
+        self,
+        name: str,
+        version: str | Version,
+        find: str | None = None,
+        link: str | None = None,
+        allow_shorthand: bool = True,
+    ) -> None:
+        self.name = name
+        self.version = Version(version) if isinstance(version, str) else version
+        self.find = find
+        self.link = link
+        if not allow_shorthand and self.shorthand:
+            raise ValueError(f"Package must have find and link symbols: {self}")
 
     @property
     def shorthand(self) -> bool:
@@ -89,6 +56,44 @@ class Package:
             True if the package lacks `find` or `link` symbols.  False otherwise.
         """
         return not self.find or not self.link
+
+    @classmethod
+    def from_dict(cls, table: dict[str, str], allow_shorthand: bool = True) -> Package:
+        """Convert a dictionary representation of a package into a `Package` object.
+
+        Parameters
+        ----------
+        table : dict[str, str]
+            A dictionary representation of a package, with keys "name" and "version",
+            and optionally "find" and "link".
+        allow_shorthand : bool, optional
+            Whether to allow shorthand package specifiers, by default True.
+
+        Returns
+        -------
+        Package
+            The package object.
+
+        Raises
+        ------
+        ValueError
+            If the package table is missing required keys or contains unexpected keys.
+        """
+        for key in cls.VALID_KEYS:
+            if key not in table:
+                raise ValueError(f"Package table is missing required key: {key}")
+        for key in table:
+            if key not in cls.VALID_KEYS:
+                raise ValueError(f"Package table has unexpected key: {key}")
+
+        self = super().__new__(cls)
+        self.name = table["name"]
+        self.version = Version(table["version"])
+        self.find = table.get("find", None)
+        self.link = table.get("link", None)
+        if not allow_shorthand and self.shorthand:
+            raise ValueError(f"Package must not be shorthand: {table}")
+        return self
 
     def to_dict(self) -> dict[str, str]:
         """Convert the package to a dictionary representation.
@@ -138,6 +143,3 @@ class Package:
 
     def __repr__(self) -> str:
         return f"{self.name}/{self.version}"
-
-
-PackageLike: TypeAlias = Package | str | dict[str, str]

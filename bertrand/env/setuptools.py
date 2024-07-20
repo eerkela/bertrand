@@ -21,7 +21,7 @@ from setuptools.command.build_ext import build_ext as setuptools_build_ext
 from .codegen import PyModule
 from .environment import env
 from .messages import FAIL, WHITE, RED, YELLOW, GREEN, CYAN
-from .package import Package, PackageLike
+from .package import Package
 from .version import __version__
 
 
@@ -39,10 +39,6 @@ def get_include() -> str:
         The path to the include directory for this package.
     """
     return str(Path(__file__).absolute().parent.parent.parent)
-
-
-# TODO: Object-orientation for Conan dependencies similar to Source?  Users would
-# specify dependencies as Package("name", "version", "find", "link").
 
 
 class Source(setuptools.Extension):
@@ -1316,14 +1312,14 @@ class BuildSources(setuptools_build_ext):
         bertrand_conan_deps: list[Package],
         bertrand_cpp_std: int,
         bertrand_traceback: bool,
-        bertrand_include_dirs: list[str | Path],
+        bertrand_include_dirs: list[Path],
         bertrand_define_macros: list[tuple[str, str | None]],
         bertrand_compile_args: list[str],
-        bertrand_library_dirs: list[str | Path],
+        bertrand_library_dirs: list[Path],
         bertrand_libraries: list[str],
         bertrand_link_args: list[str],
         bertrand_cmake_args: list[tuple[str, str | None]],
-        bertrand_runtime_library_dirs: list[str | Path],
+        bertrand_runtime_library_dirs: list[Path],
         bertrand_workers: int,
         **kwargs: Any,
     ) -> None:
@@ -1332,28 +1328,22 @@ class BuildSources(setuptools_build_ext):
         self._bertrand_cpp_std = bertrand_cpp_std
         self._bertrand_traceback = bertrand_traceback
         self._bertrand_conan_deps = bertrand_conan_deps
-        self._bertrand_include_dirs = [
-            Path(p) if isinstance(p, str) else p for p in bertrand_include_dirs
-        ]
+        self._bertrand_include_dirs = bertrand_include_dirs
         self._bertrand_define_macros = bertrand_define_macros
         self._bertrand_compile_args = bertrand_compile_args
-        self._bertrand_library_dirs = [
-            Path(p) if isinstance(p, str) else p for p in bertrand_library_dirs
-        ]
+        self._bertrand_library_dirs = bertrand_library_dirs
         self._bertrand_libraries = bertrand_libraries
         self._bertrand_link_args = bertrand_link_args
         self._bertrand_cmake_args = bertrand_cmake_args
-        self._bertrand_runtime_library_dirs = [
-            Path(p) if isinstance(p, str) else p for p in bertrand_runtime_library_dirs
-        ]
+        self._bertrand_runtime_library_dirs = bertrand_runtime_library_dirs
         self._bertrand_source_lookup: dict[Path, Source] = {}
         self._bertrand_module_lookup: dict[str, Source] = {}
         self._bertrand_build_dir: Path
         self._bertrand_module_root: Path
         self._bertrand_module_cache: Path
         self._bertrand_binding_root: Path
-        self._bertrand_binding_cache: Path
-        self._bertrand_executable_cache: Path
+        self._bertrand_binding_cache: Path  # TODO: might be totally redundant, since the path is stored in a nested tree
+        self._bertrand_executable_cache: Path  # TODO: should be a json that's constantly updated
 
     def finalize_options(self) -> None:
         """Parse command-line options and convert them to the appropriate types.
@@ -1393,32 +1383,28 @@ class BuildSources(setuptools_build_ext):
             self._bertrand_include_dirs.extend(
                 Path(s) for s in cpath.split(os.pathsep)
             )
-
         ld_library_path = env.get("LD_LIBRARY_PATH", "")
         if ld_library_path:
             self._bertrand_library_dirs.extend(
                 Path(s) for s in ld_library_path.split(os.pathsep)
             )
-
         runtime_library_path = env.get("RUNTIME_LIBRARY_PATH", "")
         if runtime_library_path:
             self._bertrand_runtime_library_dirs.extend(
                 Path(s) for s in runtime_library_path.split(os.pathsep)
             )
-
         cxxflags = env.get("CXXFLAGS", "")
         if cxxflags:
             self._bertrand_compile_args = (
                 shlex.split(cxxflags) + self._bertrand_compile_args
             )
-
         ldflags = env.get("LDFLAGS", "")
         if ldflags:
             self._bertrand_link_args = (
                 shlex.split(ldflags) + self._bertrand_link_args
             )
 
-        # parse workers from command line
+        # parse and validate command line options
         if self.workers:
             self.workers = int(self.workers)
             if self.workers == 0:
@@ -2441,6 +2427,7 @@ class BuildSources(setuptools_build_ext):
                 cache.add(str(dest))
 
                 # source files for the module interfaces go in modules/
+                # TODO: this has to also copy over dependencies into a parallel directory
                 dest = env / "modules" / f"{source.module}.cppm"
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source.path, dest)
@@ -2486,13 +2473,9 @@ class BuildSources(setuptools_build_ext):
 # https://www.baeldung.com/linux/library_path-vs-ld_library_path
 
 
-
-# TODO: ensure all sources, packages, etc. are given as the correct type
-
-
 def setup(
     *,
-    cpp_deps: Iterable[PackageLike] | None = None,
+    cpp_deps: Iterable[Package] | None = None,
     sources: list[Source] | None = None,
     cpp_std: int = 23,
     traceback: bool = True,
@@ -2594,38 +2577,92 @@ def setup(
     docs for `bertrand.Source` and `bertrand.BuildSources` for more information on how
     this is done.
     """
-    # TODO: this loop is not necessary.  Just force the user to use object-oriented
-    # package instances.
-    deps: list[Package] = list(env.packages) if env else []
-    for p in cpp_deps or []:
-        package = Package(p, allow_shorthand=False)  # TODO: do this in the original call
-        if package not in deps:
-            deps.append(package)
+    _cpp_deps: list[Package] = list(env.packages) if env else []
+    for dep in cpp_deps or []:
+        if not isinstance(dep, Package) or dep.shorthand:
+            FAIL(
+                f"C++ dependencies must be specified as Package objects with full "
+                f"'{YELLOW}link{WHITE}' and '{YELLOW}find{WHITE}' symbols: "
+                f"{CYAN}{dep}{WHITE}"
+            )
+        if dep not in _cpp_deps:
+            _cpp_deps.append(dep)
 
-    # cpp_std = int(cpp_std)
-    # if cpp_std < 23:
-    #     FAIL(f"C++ standard must be >= 23: found {YELLOW}{cpp_std}{WHITE}")
+    for source in sources or []:
+        if not isinstance(source, Source):
+            FAIL(
+                f"sources must be instances of `{YELLOW}bertrand.Source{WHITE}`: "
+                f" {CYAN}{source}{WHITE}"
+            )
 
-    # traceback = bool(traceback)
-    # include_dirs = [Path(p) if isinstance(p, str) else p for p in include_dirs or []]
-    # define_macros = list(define_macros or [])
+    _cpp_std = int(cpp_std)
+    if _cpp_std < 23:
+        FAIL(f"C++ standard must be >= 23: found {YELLOW}{_cpp_std}{WHITE}")
+
+    _traceback = bool(traceback)
+    _include_dirs = [p if isinstance(p, Path) else Path(p) for p in include_dirs or []]
+
+    _define_macros = list(define_macros) if define_macros else []
+    for macro in _define_macros:
+        if (
+            not isinstance(macro, tuple) or
+            len(macro) != 2 or
+            not isinstance(macro[0], str) or
+            not isinstance(macro[1], (str, type(None)))
+        ):
+            FAIL(
+                f"define macros must be specified as 2-tuples containing strings of "
+                f"the form `{YELLOW}(name, value){WHITE}`: {CYAN}{macro}{WHITE}"
+            )
+
+    _compile_args = list(compile_args) if compile_args else []
+    for arg in _compile_args:
+        if not isinstance(arg, str):
+            FAIL(f"compile arguments must be strings: {CYAN}{arg}{WHITE}")
+
+    _library_dirs = [p if isinstance(p, Path) else Path(p) for p in library_dirs or []]
+    _libraries = list(libraries) if libraries else []
+    for lib in _libraries:
+        if not isinstance(lib, str):
+            FAIL(f"libraries must be strings: {CYAN}{lib}{WHITE}")
+
+    _link_args = list(link_args) if link_args else []
+    for arg in _link_args:
+        if not isinstance(arg, str):
+            FAIL(f"link arguments must be strings: {CYAN}{arg}{WHITE}")
+
+    _cmake_args = list(cmake_args) if cmake_args else []
+    for macro in _cmake_args:
+        if (
+            not isinstance(macro, tuple) or
+            len(macro) != 2 or
+            not isinstance(macro[0], str) or
+            not isinstance(macro[1], (str, type(None)))
+        ):
+            FAIL(
+                f"CMake arguments must be specified as 2-tuples containing strings of "
+                f"the form `{YELLOW}(key, value){WHITE}`: {CYAN}{macro}{WHITE}"
+            )
+
+    _runtime_library_dirs = [
+        p if isinstance(p, Path) else Path(p) for p in runtime_library_dirs or []
+    ]
 
     class _BuildSourcesWrapper(BuildSources):
         def __init__(self, *a: Any, **kw: Any):
             super().__init__(
                 *a,
-                bertrand_conan_deps=deps,
-                bertrand_cpp_std=cpp_std,
-                bertrand_traceback=traceback,
-                bertrand_include_dirs=list(include_dirs) if include_dirs else [],
-                bertrand_define_macros=list(define_macros) if define_macros else [],
-                bertrand_compile_args=list(compile_args) if compile_args else [],
-                bertrand_library_dirs=list(library_dirs) if library_dirs else [],
-                bertrand_libraries=list(libraries) if libraries else [],
-                bertrand_link_args=list(link_args) if link_args else [],
-                bertrand_cmake_args=list(cmake_args) if cmake_args else [],
-                bertrand_runtime_library_dirs=
-                    list(runtime_library_dirs) if runtime_library_dirs else [],
+                bertrand_conan_deps=_cpp_deps,
+                bertrand_cpp_std=_cpp_std,
+                bertrand_traceback=_traceback,
+                bertrand_include_dirs=_include_dirs,
+                bertrand_define_macros=_define_macros,
+                bertrand_compile_args=_compile_args,
+                bertrand_library_dirs=_library_dirs,
+                bertrand_libraries=_libraries,
+                bertrand_link_args=_link_args,
+                bertrand_cmake_args=_cmake_args,
+                bertrand_runtime_library_dirs=_runtime_library_dirs,
                 bertrand_workers=workers,
                 **kw
             )
@@ -2636,34 +2673,31 @@ def setup(
         cmdclass["build_ext"] = _BuildSourcesWrapper
     else:
         cmd: type = cmdclass["build_ext"]
-        if issubclass(cmd, BuildSources):
-            class _BuildSourcesSubclassWrapper(cmd):
-                def __init__(self, *a: Any, **kw: Any):
-                    super().__init__(
-                        *a,
-                        bertrand_cpp_std=cpp_std,
-                        bertrand_traceback=traceback,
-                        bertrand_conan_deps=deps,
-                        bertrand_include_dirs=
-                            list(include_dirs) if include_dirs else [],
-                        bertrand_define_macros=
-                            list(define_macros) if define_macros else [],
-                        bertrand_compile_args=
-                            list(compile_args) if compile_args else [],
-                        bertrand_library_dirs=
-                            list(library_dirs) if library_dirs else [],
-                        bertrand_libraries=
-                            list(libraries) if libraries else [],
-                        bertrand_link_args=
-                            list(link_args) if link_args else [],
-                        bertrand_cmake_args=
-                            list(cmake_args) if cmake_args else [],
-                        bertrand_runtime_library_dirs=
-                            list(runtime_library_dirs) if runtime_library_dirs else [],
-                        bertrand_workers=workers,
-                        **kw
-                    )
-            cmdclass["build_ext"] = _BuildSourcesSubclassWrapper
+        if not issubclass(cmd, BuildSources):
+            FAIL(
+                f"custom build_ext commands must subclass "
+                f"`{YELLOW}bertrand.BuildSources{WHITE}`: {CYAN}{cmd}{WHITE}"
+            )
+
+        class _BuildSourcesSubclassWrapper(cmd):
+            def __init__(self, *a: Any, **kw: Any):
+                super().__init__(
+                    *a,
+                    bertrand_conan_deps=_cpp_deps,
+                    bertrand_cpp_std=_cpp_std,
+                    bertrand_traceback=_traceback,
+                    bertrand_include_dirs=_include_dirs,
+                    bertrand_define_macros=_define_macros,
+                    bertrand_compile_args=_compile_args,
+                    bertrand_library_dirs=_library_dirs,
+                    bertrand_libraries=_libraries,
+                    bertrand_link_args=_link_args,
+                    bertrand_cmake_args=_cmake_args,
+                    bertrand_runtime_library_dirs=_runtime_library_dirs,
+                    bertrand_workers=workers,
+                    **kw
+                )
+        cmdclass["build_ext"] = _BuildSourcesSubclassWrapper
 
     # defer to setuptools
     setuptools.setup(

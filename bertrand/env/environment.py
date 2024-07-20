@@ -11,19 +11,14 @@ from typing import (
 )
 
 import tomlkit
+from tomlkit.items import AbstractTable as tomlkit_AbstractTable
+from tomlkit.items import AoT as tomlkit_AoT
+from tomlkit.items import Array as tomlkit_Array
 
-from .package import Package, PackageLike
+from .package import Package
 
 
 T = TypeVar("T")
-
-
-PACKAGE_PATTERN = re.compile(
-    r"^(?P<name>\w+)/(?P<version>[0-9.]+)@(?P<find>\w+)/(?P<link>\w+::\w+)$"
-)
-PARTIAL_PACKAGE_PATTERN = re.compile(
-    r"^(?P<name>\w+)/(?P<version>[0-9.]+)$"
-)
 
 
 class Table(Generic[T]):
@@ -72,7 +67,7 @@ class Table(Generic[T]):
         if self.name not in content:
             raise KeyError(f"no [{self.name}] table in file: {toml}")
         table = content[self.name]
-        if not isinstance(table, tomlkit.items.AbstractTable):
+        if not isinstance(table, tomlkit_AbstractTable):
             raise TypeError(f"[{self.name}] must be a table, not {type(table)}")
 
         return dict(table)
@@ -364,7 +359,7 @@ class Array(Generic[T]):
         if self.name not in content:
             raise KeyError(f"no [{self.name}] array in file: {toml}")
         array = content[self.name]
-        if not isinstance(array, tomlkit.items.Array):
+        if not isinstance(array, tomlkit_Array):
             raise TypeError(f"[{self.name}] must be an array, not {type(array)}")
 
         return list(array)
@@ -704,7 +699,7 @@ class Array(Generic[T]):
             If the array is not an array, or the keys are not comparable.
         """
         array = self.array
-        array.sort(key=key, reverse=reverse)
+        array.sort(key=key, reverse=reverse)  # type: ignore
         self.array = array
 
     def reverse(self) -> None:
@@ -902,7 +897,7 @@ class Vars(Table[str]):
 # is in keeping with the other tables.  It might be simpler to think about that way.
 
 
-class Paths(Table["Paths.Entry"]):
+class Paths(Table["Paths.Entry"]):  # type: ignore
     """A table that represents the [paths] section of an env.toml file.  Entries in the
     table are joined with the system's path separator and prepended to the corresponding
     environment variable when modified.
@@ -969,7 +964,7 @@ class Paths(Table["Paths.Entry"]):
             if "paths" not in content:
                 raise KeyError(f"no [paths] table in file: {toml}")
             table = content["paths"]
-            if not isinstance(table, tomlkit.items.AbstractTable):
+            if not isinstance(table, tomlkit_AbstractTable):
                 raise TypeError(f"[paths] must be a table, not {type(table)}")
 
             if self.name not in table:
@@ -1613,7 +1608,7 @@ class Paths(Table["Paths.Entry"]):
         return self
 
 
-class Flags(Table["Flags.Entry"]):
+class Flags(Table["Flags.Entry"]):  # type: ignore
     """A table that represents the [flags] section of an env.toml file.  Entries in the
     table are joined with spaces and prepended to the corresponding environment variable
     when modified.
@@ -1679,7 +1674,7 @@ class Flags(Table["Flags.Entry"]):
             if "flags" not in content:
                 raise KeyError(f"no [flags] table in file: {toml}")
             table = content["flags"]
-            if not isinstance(table, tomlkit.items.AbstractTable):
+            if not isinstance(table, tomlkit_AbstractTable):
                 raise TypeError(f"[flags] must be a table, not {type(table)}")
 
             if self.name not in table:
@@ -2371,12 +2366,12 @@ class Packages(Array[Package]):
         if self.name not in content:
             return []
         array = content[self.name]
-        if not isinstance(array, tomlkit.items.AoT):
+        if not isinstance(array, tomlkit_AoT):
             raise TypeError(
                 f"[{self.name}] must be an array of tables, not {type(array)}"
             )
 
-        return [Package(table, allow_shorthand=False) for table in array]  # type: ignore
+        return [Package.from_dict(table, allow_shorthand=False) for table in array]
 
     @array.setter
     def array(self, value: list[Package]) -> None:
@@ -2415,14 +2410,13 @@ class Packages(Array[Package]):
     # through the conan wrappers that have yet to be written.  This would prevent the
     # package list from getting out of sync with the actual environment.
 
-    def append(self, value: PackageLike) -> None:
+    def append(self, value: Package) -> None:
         """Append a package to the env.toml file.
 
         Parameters
         ----------
-        value : PackageLike
-            A package object, a string specifying a package object, or a table taken
-            from the env.toml file (or similar).
+        value : Package
+            A package object.
 
         Raises
         ------
@@ -2439,16 +2433,17 @@ class Packages(Array[Package]):
         packaging.version.InvalidVersion
             If the package's version number is invalid.
         """
-        super().append(Package(value, allow_shorthand=False))
+        if value.shorthand:
+            raise ValueError("env.packages must contain full package entries")
+        super().append(value)
 
-    def appendleft(self, value: PackageLike) -> None:
+    def appendleft(self, value: Package) -> None:
         """Prepend a package entry to the array.
 
         Parameters
         ----------
-        value : PackageLike
-            A package object, a string specifying a package object, or a table taken
-            from the env.toml file (or similar).
+        value : Package
+            A package object.
 
         Raises
         ------
@@ -2465,17 +2460,17 @@ class Packages(Array[Package]):
         packaging.version.InvalidVersion
             If the package's version number is invalid.
         """
-        super().appendleft(Package(value, allow_shorthand=False))
+        if value.shorthand:
+            raise ValueError("env.packages must contain full package entries")
+        super().appendleft(value)
 
-    def extend(self, other: Iterable[PackageLike]) -> None:
+    def extend(self, other: Iterable[Package]) -> None:
         """Extend the array with the contents of another sequence.
 
         Parameters
         ----------
-        other : Iterable[PackageLike]
-            The sequence to extend the array with.  Each item can be a package object,
-            a string specifying a package object, or a table taken from the env.toml
-            file (or similar).
+        other : Iterable[Package]
+            The sequence of packages to extend the array with.
 
         Raises
         ------
@@ -2492,19 +2487,19 @@ class Packages(Array[Package]):
         packaging.version.InvalidVersion
             If a package's version number is invalid.
         """
-        super().extend(Package(value, allow_shorthand=False) for value in other)
+        if any(value.shorthand for value in other):
+            raise ValueError("env.packages must contain full package entries")
+        super().extend(other)
 
-    def extendleft(self, other: Iterable[PackageLike]) -> None:
+    def extendleft(self, other: Iterable[Package]) -> None:
         """Extend the array with the contents of another sequence, prepending each item.
 
         Note that this implicitly reverses the order of the items in the sequence.
 
         Parameters
         ----------
-        other : Iterable[PackageLike]
-            The sequence to extend the array with.  Each item can be a package object,
-            a string specifying a package object, or a table taken from the env.toml
-            file (or similar).
+        other : Iterable[Package]
+            The sequence of packages to extend the array with.
 
         Raises
         ------
@@ -2521,18 +2516,19 @@ class Packages(Array[Package]):
         packaging.version.InvalidVersion
             If a package's version number is invalid.
         """
-        super().extendleft(Package(value, allow_shorthand=False) for value in other)
+        if any(value.shorthand for value in other):
+            raise ValueError("env.packages must contain full package entries")
+        super().extendleft(other)
 
-    def insert(self, index: int, value: PackageLike) -> None:
+    def insert(self, index: int, value: Package) -> None:
         """Insert a package entry into the array at a specific index.
 
         Parameters
         ----------
         index : int
             The index to insert the package entry at.
-        value : PackageLike
-            A package object, a string specifying a package object, or a table taken
-            from the env.toml file (or similar).
+        value : Package
+            A package object.
 
         Raises
         ------
@@ -2549,16 +2545,17 @@ class Packages(Array[Package]):
         packaging.version.InvalidVersion
             If the package's version number is invalid.
         """
-        super().insert(index, Package(value, allow_shorthand=False))
+        if value.shorthand:
+            raise ValueError("env.packages must contain full package entries")
+        super().insert(index, value)
 
-    def remove(self, value: PackageLike) -> None:
+    def remove(self, value: Package) -> None:
         """Remove the first occurrence of a package entry from the array.
 
         Parameters
         ----------
-        value : PackageLike
-            A package object, a string specifying a package object, or a table taken
-            from the env.toml file (or similar).
+        value : Package
+            A package object.
 
         Raises
         ------
@@ -2575,16 +2572,15 @@ class Packages(Array[Package]):
         packaging.version.InvalidVersion
             If the package's version number is invalid.
         """
-        super().remove(Package(value))
+        super().remove(value)
 
-    def index(self, value: PackageLike) -> int:
+    def index(self, value: Package) -> int:
         """Return the index of the first occurrence of a package entry in the array.
 
         Parameters
         ----------
-        value : PackageLike
-            A package object, a string specifying a package object, or a table taken
-            from the env.toml file (or similar).
+        value : Package
+            A package object.
 
         Returns
         -------
@@ -2606,16 +2602,15 @@ class Packages(Array[Package]):
         packaging.version.InvalidVersion
             If the package's version number is invalid.
         """
-        return super().index(Package(value))
+        return super().index(value)
 
-    def count(self, value: PackageLike) -> int:
+    def count(self, value: Package) -> int:
         """Return the number of occurrences of a package entry in the array.
 
         Parameters
         ----------
-        value : PackageLike
-            A package object, a string specifying a package object, or a table taken
-            from the env.toml file (or similar).
+        value : Package
+            A package object.
 
         Returns
         -------
@@ -2637,28 +2632,30 @@ class Packages(Array[Package]):
         packaging.version.InvalidVersion
             If the package's version number is invalid.
         """
-        return super().count(Package(value))
+        return super().count(value)
 
     @overload
-    def __setitem__(self, index: SupportsIndex, value: PackageLike) -> None: ...
+    def __setitem__(self, index: SupportsIndex, value: Package) -> None: ...
     @overload
-    def __setitem__(self, index: slice, value: Iterable[PackageLike]) -> None: ...
+    def __setitem__(self, index: slice, value: Iterable[Package]) -> None: ...
     def __setitem__(
         self,
         index: SupportsIndex | slice,
-        value: PackageLike | Iterable[PackageLike]
+        value: Package | Iterable[Package]
     ) -> None:
         if isinstance(index, slice):
-            super().__setitem__(Package(v, allow_shorthand=False) for v in value)  # type: ignore
-        else:
-            super().__setitem__(index, Package(value, allow_shorthand=False))  # type: ignore
+            if any(v.shorthand for v in value):  # type: ignore
+                raise ValueError("env.packages must contain full package entries")
+        elif value.shorthand:  # type: ignore
+            raise ValueError("env.packages must contain full package entries")
+        super().__setitem__(index, value)  # type: ignore
 
-    def __add__(self, other: Iterable[PackageLike]) -> list[Package]:
+    def __add__(self, other: Iterable[Package]) -> list[Package]:
         result = self.array.copy()
-        result.extend(Package(value, allow_shorthand=False) for value in other)
+        result.extend(other)
         return result
 
-    def __iadd__(self, other: Iterable[PackageLike]) -> Packages:  # type: ignore
+    def __iadd__(self, other: Iterable[Package]) -> Packages:  # type: ignore
         self.extend(other)
         return self
 
@@ -2885,7 +2882,7 @@ class Environment:
         return self._packages
 
     @packages.setter
-    def packages(self, value: list[str]) -> None:
+    def packages(self, value: list[Package]) -> None:
         self._packages.clear()
         self._packages.extend(value)
 

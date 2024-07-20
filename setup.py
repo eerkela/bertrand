@@ -3,7 +3,7 @@ import subprocess
 import sysconfig
 from pathlib import Path
 
-from bertrand import BuildSources, Source, setup, env
+from bertrand import BuildSources, Source, Package, setup, env
 
 
 # TODO: for headless installation, use pipx to install bertrand:
@@ -76,8 +76,8 @@ class BuildSourcesHeadless(BuildSources):
 
 setup(
     cpp_deps=[
-        "pcre2/10.43@PCRE2/pcre2::pcre2",  # TODO: standardize on | separators
-        "cpptrace/0.6.1@cpptrace/cpptrace::cpptrace",
+        Package("pcre2", "10.43", "PCRE2", "pcre2::pcre2"),
+        Package("cpptrace", "0.6.1", "cpptrace", "cpptrace::cpptrace"),
     ],
     sources=[
         Source("bertrand/example_module.cpp"),
