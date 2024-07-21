@@ -901,8 +901,6 @@ class Environment:
         os.environ.pop("BERTRAND_HOME", None)
         return commands
 
-    # TODO: init()?
-
     @property
     def dir(self) -> Path:
         """The path to the directory containing the env.toml file for the current

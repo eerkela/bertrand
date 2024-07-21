@@ -4,7 +4,7 @@ import argparse
 import subprocess
 from pathlib import Path
 
-from .env import init, env
+from .env import init, env, clean
 from . import __version__
 
 
@@ -29,63 +29,6 @@ class Parser:
     def version(self) -> None:
         """Add the 'version' query to the parser."""
         self.root.add_argument("-v", "--version", action="version", version=__version__)
-
-    def binaries(self) -> None:
-        """Add the 'binaries' query to the parser."""
-        self.root.add_argument(
-            "-b", "--binaries",
-            action="store_true",
-            help=(
-                "List the path to the virtual environment's binaries directory.  This "
-                "includes the path to the C++ compiler, Python interpreter, and any "
-                "other binaries that are installed within the environment."
-            )
-        )
-
-    def include(self) -> None:
-        """Add the 'include' query to the parser."""
-        self.root.add_argument(
-            "-I", "--include",
-            action="store_true",
-            help=(
-                "List all the include paths needed to compile a pure-C++ project that "
-                "relies on Bertrand as a dependency.  This includes the path to the "
-                "C++ standard library, Python development headers, as well as those "
-                "of any C++ dependency installed through conan.  Users can quickly "
-                "include all of these in a single command by adding `$(bertrand -I)` "
-                "to their compilation flags."
-            )
-        )
-
-    def libraries(self) -> None:
-        """Add the 'libraries' query to the parser."""
-        self.root.add_argument(
-            "-L", "--libraries",
-            action="store_true",
-            help=(
-                "List all the library paths needed to compile a pure-C++ project that "
-                "relies on Bertrand as a dependency.  This includes the C++ standard "
-                "library, Python standard library, as well as those of any C++ "
-                "dependency installed through conan.  Users can quickly link all of "
-                "these in a single command by adding `$(bertrand -L)` to their "
-                "compilation flags."
-            )
-        )
-
-    def link(self) -> None:
-        """Add the 'link' query to the parser."""
-        self.root.add_argument(
-            "-l", "--link",
-            action="store_true",
-            help=(
-                "List all the link symbols needed to compile a pure-C++ project that "
-                "relies on Bertrand as a dependency.  This includes the C++ standard "
-                "library, Python standard library, as well as those of any C++ "
-                "dependency installed through conan.  Users can quickly link all of "
-                "these in a single command by adding `$(bertrand -l)` to their "
-                "compilation flags."
-            )
-        )
 
     def init(self) -> None:
         """Add the 'init' command to the parser."""
@@ -341,8 +284,9 @@ class Parser:
             help=(
                 "Compile a C++ project within the virtual environment by invoking "
                 "bertrand's setuptools extensions.  This automatically generates "
-                "equivalent Python bindings for all exported modules, and passes any "
-                "additional arguments to the installed compiler."
+                "equivalent Python bindings for all exported modules and installs the "
+                "products into the environment's `bin/`, `lib/`, and `modules/` "
+                "directories, as well as optionally "
             ),
         )
         command.add_argument(
@@ -350,12 +294,10 @@ class Parser:
             nargs=1,
             type=Path,
             help=(
-                "Either a path to a single C++ source file or a directory containing "
-                "a setup.py script.  If a single file is given, then its dependencies "
-                "will be automatically determined from the file's AST and included as "
-                "sources in the build.  If a directory is given, then the setup.py "
-                "script will be invoked, as if the user had run "
-                "`python setup.py build_ext` from the command line."
+                "A path to a directory containing a `setup.py` script, which will be "
+                "invoked to build the project.  The script should use bertrand's "
+                "setuptools extensions to compile the project, which enables "
+                "fine-grained control over the build process."
             ),
         )
         command.add_argument(
@@ -370,6 +312,30 @@ class Parser:
             ),
         )
 
+    def clean(self) -> None:
+        """Add the 'clean' command to the parser."""
+        command = self.commands.add_parser(
+            "clean",
+            help=(
+                "Remove a project's build artifacts from the virtual environment.  "
+                "This deletes all of the installed files outside of the project's "
+                "build directory.  The build directory itself is left untouched, and "
+                "can be used to rebuild the project without having to recompile it "
+                "from scratch."
+            ),
+        )
+        command.add_argument(
+            "path",
+            nargs=1,
+            type=Path,
+            help=(
+                "A path to a directory containing a `setup.py` script, which will be "
+                "searched against the environment cache to determine which files to "
+                "delete.  The script should use bertrand's setuptools extensions to "
+                "allow the environment to track the project's build artifacts."
+            ),
+        )
+
     def __call__(self) -> argparse.Namespace:
         """Run the command-line parser.
 
@@ -380,10 +346,6 @@ class Parser:
         """
         # queries
         self.version()
-        self.binaries()
-        self.link()
-        self.include()
-        self.libraries()
 
         # commands
         self.init()
@@ -391,6 +353,7 @@ class Parser:
         self.deactivate()
         # self.install()
         self.compile()
+        self.clean()
 
         return self.root.parse_args()
 
@@ -449,17 +412,8 @@ def main() -> None:
             raise  # TODO: delete this and rely on internal messaging
             pass  # error messages are already printed to stdout
 
-    elif args.binaries:
-        print(get_bin())
-
-    elif args.include:
-        print(" ".join(f"-I{path}" for path in get_include()))
-
-    elif args.libraries:
-        print(" ".join(f"-L{path}" for path in get_lib()))
-
-    elif args.link:
-        print(" ".join(f"-l{symbol}" for symbol in get_link()))
+    elif args.command == "clean":
+        clean(args.path[0])
 
     else:
         parser.root.print_help()

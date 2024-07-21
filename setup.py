@@ -68,6 +68,7 @@ class BuildSourcesHeadless(BuildSources):
                         "--build=missing",
                         "--output-folder",
                         ".",
+                        "-verror",
                     ],
                     cwd=build,
                 )

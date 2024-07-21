@@ -2460,13 +2460,26 @@ class BuildSources(setuptools_build_ext):
         them to be imported locally alongside their source files, for rapid development
         and testing.
         """
+        cache: set[str] = set()
         for source in self.extensions:
             lib_path = env / "lib" / source.path.with_suffix(
                 sysconfig.get_config_var("SHLIB_SUFFIX")
             )
-            dest = Path(self.get_ext_fullpath(source.name))
+            str_path = self.get_ext_fullpath(source.name)
+            cache.add(str_path)
+            dest = Path(str_path)
             if lib_path.exists() and not dest.exists():
                 os.symlink(lib_path, dest)
+
+        with (env / "clean.json").open("r+") as f:
+            contents = json.load(f)
+            cwd = str(Path.cwd())
+            curr = contents.get(cwd, [])
+            curr.extend(p for p in cache if p not in curr)
+            contents[cwd] = curr
+            f.seek(0)
+            json.dump(contents, f, indent=4)
+            f.truncate()
 
 
 # TODO: LIBRARY_PATH -> library_dirs.  LD_LIBRARY_PATH -> runtime_library_dirs.
@@ -2705,3 +2718,51 @@ def setup(
         cmdclass=cmdclass,
         **kwargs
     )
+
+
+def clean(path: Path) -> None:
+    """Remove all files that were copied out of the build directory by Bertrand's
+    automated build system.
+
+    Parameters
+    ----------
+    path : Path
+        The path to the project's root directory, which contains the `setup.py` file.
+
+    Raises
+    ------
+    RuntimeError
+        If no environment is currently active.
+    FileNotFoundError
+        If no `clean.json` cache file could be found in the environment directory.
+
+    Notes
+    -----
+    This function is invoked by the `$ bertrand clean` command, which removes all files
+    that were installed into the environment by the automated build process.  These are
+    tracked using a cache in the environment itself, which means users don't need to
+    specify any of the paths themselves.
+
+    If the project was built with the `--inplace` flag, then the shared libraries that
+    were copied into the source tree will also be removed, leaving the project in a
+    clean state for the next build.
+    """
+    cache = env / "clean.json"
+    if not cache.exists():
+        raise FileNotFoundError(f"cache file not found: {cache}")
+
+    with cache.open("r+") as f:
+        contents = json.load(f)
+        cwd = str(path.resolve())
+        for s in contents.get(cwd, []):
+            p = Path(s)
+            print(f"removing {p}")
+            p.unlink(missing_ok=True)
+            p = p.parent
+            while not next(p.iterdir(), False):
+                p.rmdir()
+                p = p.parent
+        contents.pop(cwd, None)
+        f.seek(0)
+        json.dump(contents, f, indent=4)
+        f.truncate()
