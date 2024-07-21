@@ -1342,7 +1342,9 @@ class BuildSources(setuptools_build_ext):
         self._bertrand_module_root: Path
         self._bertrand_module_cache: Path
         self._bertrand_binding_root: Path
-        self._bertrand_binding_cache: Path  # TODO: might be totally redundant, since the path is stored in a nested tree
+        self._bertrand_binding_cache: Path  # TODO: might not be necessary
+        # -> _binding_cache is used in the AST parser to avoid repeated parsing of
+        #    the same module interface units
         self._bertrand_executable_cache: Path  # TODO: should be a json that's constantly updated
 
     def finalize_options(self) -> None:
@@ -1529,12 +1531,10 @@ class BuildSources(setuptools_build_ext):
                 "setup.py must be run inside a bertrand virtual environment in order "
                 "to compile C++ extensions."
             )
-
         self.stage0()
         self.stage1()
         self.stage2()
         self.stage3()
-        breakpoint()
         self.stage4()
 
     def stage0(self) -> None:
@@ -1573,12 +1573,12 @@ class BuildSources(setuptools_build_ext):
 
         subprocess.check_call(
             [
-                "conan",
+                str(env / "bin" / "conan"),
                 "install",
                 str(path.absolute()),
                 "--build=missing",
                 "--output-folder",
-                str(path.parent),
+                str(path.parent.absolute()),
                 "-verror",
             ],
             cwd=path.parent,
@@ -1660,7 +1660,7 @@ class BuildSources(setuptools_build_ext):
             out += ")\n"
         out += "\n"
         out += "# package management\n"
-        out += f"include({toolchain})\n"
+        out += f"include({toolchain.absolute()})\n"
         out += "\n".join(f'find_package({p.find} REQUIRED)' for p in env.packages)
         out += "\n"
         if self.global_include_dirs:
@@ -2362,7 +2362,7 @@ class BuildSources(setuptools_build_ext):
         if libraries:
             out += f"target_link_libraries({target} PRIVATE\n"
             for lib in libraries:
-                out += f"        {lib}\n"
+                out += f"    {lib}\n"
             out += ")\n"
 
         return out

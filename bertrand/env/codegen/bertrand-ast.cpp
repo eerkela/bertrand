@@ -1,5 +1,6 @@
 #include <fstream>
 #include <ios>
+#include <sstream>
 #include <string>
 
 #include "clang/AST/Decl.h"
@@ -21,6 +22,9 @@
     #include <fcntl.h>
     #include <sys/file.h>
 #endif
+
+
+#include <nlohmann/json.hpp>
 
 
 // https://www.youtube.com/watch?v=A9COzFs-gEg
@@ -480,6 +484,8 @@ public:
                 file->clear();  // clear EOF flag before writing
                 file->seekp(0, std::ios::end);  // append to end of file
                 file << source_path;
+            } else {
+                llvm::errs() << "skipping already-exported module: " << source_path << "\n";
             }
         }
     }
@@ -502,13 +508,9 @@ public:
         for (const clang::Decl* decl : decl_group) {
             auto* func = llvm::dyn_cast<clang::FunctionDecl>(decl);
             if (func && func->isMain()) {
-                // compare against main file ID to ensure only the file that actually
-                // defines main() is considered to be executable
+                // ensure only the file that actually defines main() is considered
                 const clang::SourceManager& src_mgr = compiler.getSourceManager();
-                clang::SourceLocation loc = func->getLocation();
-                clang::FileID main_file_id = src_mgr.getMainFileID();
-                clang::FileID func_file_id = src_mgr.getFileID(loc);
-                if (func_file_id != main_file_id) {
+                if (src_mgr.getFileID(func->getLocation()) != src_mgr.getMainFileID()) {
                     continue;
                 }
 

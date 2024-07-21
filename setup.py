@@ -38,6 +38,8 @@ class BuildSourcesHeadless(BuildSources):
         """Build if in a virtual environment, otherwise skip."""
         if env:
             try:
+                self.stage0()
+
                 # precompile Python.h so that it can be efficiently imported
                 # subprocess.check_call(
                 #     [
@@ -51,9 +53,25 @@ class BuildSourcesHeadless(BuildSources):
                 #     ]
                 # )
 
-                # build clang AST parser first
+                # NOTE: we need to bootstrap the AST parser so that it can be used when
+                # compiling Bertrand itself.
                 build = Path.cwd() / "bertrand" / "env" / "codegen" / "build"
                 build.mkdir(exist_ok=True)
+
+                # the AST parser depends on a json parsing library, so we need to
+                # build that first
+                subprocess.check_call(
+                    [
+                        str(env / "bin" / "conan"),
+                        "install",
+                        str(build.parent / "conanfile.txt"),
+                        "--build=missing",
+                        "--output-folder",
+                        ".",
+                    ],
+                    cwd=build,
+                )
+
                 subprocess.check_call(
                     [
                         str(env / "bin" / "cmake"),
@@ -68,14 +86,20 @@ class BuildSourcesHeadless(BuildSources):
                 subprocess.check_call(["ninja"], cwd=build)
                 subprocess.check_call(["ninja", "install"], cwd=build)
 
+                self.stage1()
+                self.stage2()
+                self.stage3()
+                self.stage4()
+
                 # then build extensions using it
-                super().build_extensions()
+                # super().build_extensions()
             finally:
                 PYTHON_PCM.unlink(missing_ok=True)
 
 
 setup(
     cpp_deps=[
+        Package("nlohmann_json", "3.11.3", "nlohmann_json", "nlohmann_json::nlohmann_json"),
         Package("pcre2", "10.43", "PCRE2", "pcre2::pcre2"),
         Package("cpptrace", "0.6.1", "cpptrace", "cpptrace::cpptrace"),
     ],

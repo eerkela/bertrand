@@ -4,6 +4,8 @@ from typing import NoReturn
 
 import colorama
 
+# pylint: disable=invalid-name
+
 
 colorama.init(autoreset=True)
 WHITE = colorama.Fore.WHITE                 # default
@@ -13,9 +15,6 @@ GREEN = colorama.Fore.LIGHTGREEN_EX         # corrections
 CYAN = colorama.Fore.LIGHTCYAN_EX           # diagnostics/verbose output
 BLUE = colorama.Fore.LIGHTBLUE_EX
 MAGENTA = colorama.Fore.LIGHTMAGENTA_EX     # debug (internal)
-
-
-# pylint: disable=invalid-name
 
 
 def DEBUG(message: str) -> None:

@@ -4,7 +4,7 @@ import argparse
 import subprocess
 from pathlib import Path
 
-from .env import init, activate, deactivate
+from .env import init, env
 from . import __version__
 
 
@@ -423,11 +423,11 @@ def main() -> None:
             print("again with the --bootstrap (and possibly --swap=N) flag.")
 
     elif args.command == "activate":
-        for command in activate(args.file[0]):
+        for command in env.activate(args.file[0]):
             print(command)
 
     elif args.command == "deactivate":
-        for command in deactivate():
+        for command in env.deactivate():
             print(command)
 
     elif args.command == "compile":

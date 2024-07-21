@@ -2,7 +2,7 @@
 *
 !*/
 
-# except for these root files...
+# except for these files...
 !/.gitignore
 !/CHANGELOG.rst
 !/LICENSE
@@ -11,6 +11,7 @@
 !/pyproject.toml
 !/README*
 !/setup.py
+!/bertrand/env/codegen/conanfile.txt
 
 # the source directory...
 !/bertrand/**/py.typed
@@ -45,7 +46,7 @@
 # CI/CD workflows...
 !/.github/workflows/**
 
-# ...explicitly excluding any files/directories that match these patterns
+# ...while explicitly ignoring any files/directories that match these patterns
 /**/.*/
 /venv/
 build/

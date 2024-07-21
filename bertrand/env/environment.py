@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import re
 from collections import deque
 from collections.abc import KeysView, ValuesView, ItemsView
 from pathlib import Path
@@ -15,302 +14,11 @@ from tomlkit.items import AbstractTable as tomlkit_AbstractTable
 from tomlkit.items import AoT as tomlkit_AoT
 from tomlkit.items import Array as tomlkit_Array
 
+from .messages import YELLOW, CYAN, WHITE
 from .package import Package
 
 
 T = TypeVar("T")
-
-
-class Table(Generic[T]):
-    """A wrapper around a TOML table that is lazily loaded and written back to the
-    env.toml file when modified.  Subclasses can add behavior for modifying the
-    environment as needed.
-    """
-
-    def __init__(
-        self,
-        environment: Environment,
-        name: str,
-        table: dict[str, T] | None = None
-    ) -> None:
-        self.environment = environment
-        self.name = name
-        self._table = table
-
-    @property
-    def table(self) -> dict[str, T]:
-        """Read the table from the env.toml file.
-
-        Returns
-        -------
-        dict[str, T]
-            An up-to-date view of the table.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        if self._table is not None:
-            return self._table
-
-        toml = self.environment.toml
-        with toml.open("r") as f:
-            content = tomlkit.load(f)
-
-        if self.name not in content:
-            raise KeyError(f"no [{self.name}] table in file: {toml}")
-        table = content[self.name]
-        if not isinstance(table, tomlkit_AbstractTable):
-            raise TypeError(f"[{self.name}] must be a table, not {type(table)}")
-
-        return dict(table)
-
-    @table.setter
-    def table(self, value: dict[str, T]) -> None:
-        toml = self.environment.toml
-        with toml.open("r+") as f:
-            content = tomlkit.load(f)
-            content[self.name] = value
-            f.seek(0)
-            tomlkit.dump(content, f)
-            f.truncate()
-
-    def keys(self) -> KeysView[str]:
-        """
-        Returns
-        -------
-        KeysView[str]
-            A view on the keys stored in the table.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        return self.table.keys()
-
-    def values(self) -> ValuesView[T]:
-        """
-        Returns
-        -------
-        ValuesView[T]
-            A view on the values stored in the table.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        return self.table.values()
-
-    def items(self) -> ItemsView[str, T]:
-        """
-        Returns
-        -------
-        ItemsView[str, T]
-            A view on the key-value pairs stored in the table.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        return self.table.items()
-
-    def copy(self) -> dict[str, T]:
-        """
-        Returns
-        -------
-        dict[str, T]
-            A shallow copy of the table.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        return self.table
-
-    def clear(self) -> None:
-        """Remove all items from the table.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        table = self.table
-        table.clear()
-        self.table = table
-
-    def get(self, key: str, default: T | None = None) -> T | None:
-        """Get an item from the table or a default value if the key is not found.
-
-        Parameters
-        ----------
-        key : str
-            The key to look up.
-        default : T | None, optional
-            The value to return if the key is not found.  Defaults to None.
-
-        Returns
-        -------
-        T | None
-            The value associated with the key, or the default value if the key is not
-            found.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        return self.table.get(key, default)
-
-    def pop(self, key: str, default: T | None = None) -> T | None:
-        """Remove an item from the table and return its value or a default value if the
-        key is not found.
-
-        Parameters
-        ----------
-        key : str
-            The key to remove from the table.
-        default : T, optional
-            The value to return if the key is not found.  Defaults to None.
-
-        Returns
-        -------
-        T
-            The value associated with the key, or the default value if the key is not
-            found.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        table = self.table
-        result = table.pop(key, default)
-        self.table = table
-        return result
-
-    def update(self, other: dict[str, T]) -> None:
-        """Update the table with the contents of another dictionary.
-
-        Parameters
-        ----------
-        other : dict[str, T]
-            The dictionary to update the table with.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        table = self.table
-        table.update(other)
-        self.table = table
-
-    def __bool__(self) -> bool:
-        return bool(self.table)
-
-    def __len__(self) -> int:
-        return len(self.table)
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self.table)
-
-    def __reversed__(self) -> Iterator[str]:
-        return reversed(self.table)
-
-    def __getitem__(self, key: str) -> T:
-        return self.table[key]
-
-    def __setitem__(self, key: str, value: T) -> None:
-        table = self.table
-        table[key] = value
-        self.table = table
-
-    def __delitem__(self, key: str) -> None:
-        table = self.table
-        del table[key]
-        self.table = table
-
-    def __contains__(self, key: str) -> bool:
-        return key in self.table
-
-    def __eq__(self, other: Any) -> bool:
-        return self.table == other
-
-    def __ne__(self, other: Any) -> bool:
-        return self.table != other
-
-    def __or__(self, other: dict[str, T]) -> dict[str, T]:
-        return self.table | other
-
-    def __ior__(self, other: dict[str, T]) -> Table[T]:
-        self.update(other)
-        return self
-
-    def __str__(self) -> str:
-        return str(self.table)
-
-    def __repr__(self) -> str:
-        return repr(self.table)
 
 
 class Array(Generic[T]):
@@ -322,12 +30,12 @@ class Array(Generic[T]):
     def __init__(
         self,
         environment: Environment,
-        name: str,
-        array: list[T] | None = None
+        getter: Callable[[tomlkit.TOMLDocument], list[T]],
+        setter: Callable[[tomlkit.TOMLDocument, list[T]], None],
     ) -> None:
         self.environment = environment
-        self.name = name
-        self._array = array
+        self.getter = getter
+        self.setter = setter
 
     @property
     def array(self) -> list[T]:
@@ -349,27 +57,16 @@ class Array(Generic[T]):
         TypeError
             If the array is not an array.
         """
-        if self._array is not None:
-            return self._array
-
         toml = self.environment.toml
         with toml.open("r") as f:
-            content = tomlkit.load(f)
-
-        if self.name not in content:
-            raise KeyError(f"no [{self.name}] array in file: {toml}")
-        array = content[self.name]
-        if not isinstance(array, tomlkit_Array):
-            raise TypeError(f"[{self.name}] must be an array, not {type(array)}")
-
-        return list(array)
+            return self.getter(tomlkit.load(f))
 
     @array.setter
     def array(self, value: list[T]) -> None:
         toml = self.environment.toml
         with toml.open("r+") as f:
             content = tomlkit.load(f)
-            content[self.name] = value
+            self.setter(content, value)
             f.seek(0)
             tomlkit.dump(content, f)
             f.truncate()
@@ -796,10 +493,119 @@ class Array(Generic[T]):
         return repr(self.array)
 
 
-class Vars(Table[str]):
-    """A table that represents the [vars] section of an env.toml file.  Pushes any
-    changes to both the toml file and the current environment.
+class Table(Generic[T]):
+    """A wrapper around the [info] table of an `env.toml` file.  This is lazily
+    loaded and written back to the toml file when modified, so that everything
+    stays in sync.
     """
+
+    def __init__(
+        self,
+        environment: Environment,
+        getter: Callable[[tomlkit.TOMLDocument], dict[str, T]],
+        setter: Callable[[tomlkit.TOMLDocument, dict[str, T]], None],
+    ) -> None:
+        self.environment = environment
+        self.getter = getter
+        self.setter = setter
+
+    @property
+    def table(self) -> dict[str, T]:
+        """Read the table from the env.toml file.
+
+        Returns
+        -------
+        dict[str, T]
+            An up-to-date copy of the table.
+
+        Raises
+        ------
+        RuntimeError
+            If no environment is currently active.
+        FileNotFoundError
+            If the env.toml file is not found.
+        KeyError
+            If the table is not found in the file.
+        TypeError
+            If the table is not a table.
+        """
+        toml = self.environment.toml
+        with toml.open("r") as f:
+            return self.getter(tomlkit.load(f))
+
+    @table.setter
+    def table(self, value: dict[str, T]) -> None:
+        toml = self.environment.toml
+        with toml.open("r+") as f:
+            content = tomlkit.load(f)
+            self.setter(content, value)
+            f.seek(0)
+            tomlkit.dump(content, f)
+            f.truncate()
+
+    @table.deleter
+    def table(self) -> None:
+        self.table = {}
+
+    def keys(self) -> KeysView[str]:
+        """
+        Returns
+        -------
+        KeysView[str]
+            A view on the keys stored in the table.
+
+        Raises
+        ------
+        RuntimeError
+            If no environment is currently active.
+        FileNotFoundError
+            If the env.toml file is not found.
+        KeyError
+            If the table is not found in the file.
+        TypeError
+            If the table is not a table.
+        """
+        return self.table.keys()
+
+    def values(self) -> ValuesView[T]:
+        """
+        Returns
+        -------
+        ValuesView[T]
+            A view on the values stored in the table.
+
+        Raises
+        ------
+        RuntimeError
+            If no environment is currently active.
+        FileNotFoundError
+            If the env.toml file is not found.
+        KeyError
+            If the table is not found in the file.
+        TypeError
+            If the table is not a table.
+        """
+        return self.table.values()
+
+    def items(self) -> ItemsView[str, T]:
+        """
+        Returns
+        -------
+        ItemsView[str, T]
+            A view on the key-value pairs stored in the table.
+
+        Raises
+        ------
+        RuntimeError
+            If no environment is currently active.
+        FileNotFoundError
+            If the env.toml file is not found.
+        KeyError
+            If the table is not found in the file.
+        TypeError
+            If the table is not a table.
+        """
+        return self.table.items()
 
     def clear(self) -> None:
         """Remove all items from the table.
@@ -816,25 +622,60 @@ class Vars(Table[str]):
             If the table is not a table.
         """
         table = self.table
-        keys = list(table)
         table.clear()
-        for key in keys:
-            os.environ.pop(key, None)
         self.table = table
 
-    def pop(self, key: str, default: str | None = None) -> str | None:
-        """Remove an item from the table and return its value.
+    @overload
+    def get(self, key: str, default: T) -> T: ...
+    @overload
+    def get(self, key: str, default: None = ...) -> T | None: ...
+    def get(self, key: str, default: T | None = None) -> T | None:
+        """Get an item from the table or a default value if the key is not found.
+
+        Parameters
+        ----------
+        key : str
+            The key to look up.
+        default : T, optional
+            The value to return if the key is not found.  Defaults to None.
+
+        Returns
+        -------
+        Any
+            The value associated with the key, or the default value if the key is not
+            found.
+
+        Raises
+        ------
+        RuntimeError
+            If no environment is currently active.
+        FileNotFoundError
+            If the env.toml file is not found.
+        KeyError
+            If the table is not found in the file.
+        TypeError
+            If the table is not a table.
+        """
+        return self.table.get(key, default)
+
+    @overload
+    def pop(self, key: str, default: T) -> T: ...
+    @overload
+    def pop(self, key: str, default: None = ...) -> T | None: ...
+    def pop(self, key: str, default: T | None = None) -> T | None:
+        """Remove an item from the table and return its value or a default value if the
+        key is not found.
 
         Parameters
         ----------
         key : str
             The key to remove from the table.
-        default : Any, optional
+        default : T, optional
             The value to return if the key is not found.  Defaults to None.
 
         Returns
         -------
-        str
+        Any
             The value associated with the key, or the default value if the key is not
             found.
 
@@ -851,16 +692,15 @@ class Vars(Table[str]):
         """
         table = self.table
         result = table.pop(key, default)
-        os.environ.pop(key, None)
         self.table = table
         return result
 
-    def update(self, other: dict[str, str]) -> None:
+    def update(self, other: dict[str, T]) -> None:
         """Update the table with the contents of another dictionary.
 
         Parameters
         ----------
-        other : dict[str, Any]
+        other : dict[str, T]
             The dictionary to update the table with.
 
         Raises
@@ -876,1788 +716,54 @@ class Vars(Table[str]):
         """
         table = self.table
         table.update(other)
-        for key, value in other.items():
-            os.environ[key] = value
         self.table = table
 
-    def __setitem__(self, key: str, value: str) -> None:
+    def __bool__(self) -> bool:
+        return bool(self.table)
+
+    def __len__(self) -> int:
+        return len(self.table)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.table)
+
+    def __reversed__(self) -> Iterator[str]:
+        return reversed(self.table)
+
+    def __getitem__(self, key: str) -> T:
+        return self.table[key]
+
+    def __setitem__(self, key: str, value: T) -> None:
         table = self.table
         table[key] = value
-        os.environ[key] = value
         self.table = table
 
     def __delitem__(self, key: str) -> None:
         table = self.table
         del table[key]
-        os.environ.pop(key, None)
         self.table = table
 
+    def __contains__(self, key: str) -> bool:
+        return key in self.table
 
-# TODO: maybe it's fine for the paths and flags to not be lazily-evaluated, since that
-# is in keeping with the other tables.  It might be simpler to think about that way.
+    def __eq__(self, other: Any) -> bool:
+        return self.table == other
 
+    def __ne__(self, other: Any) -> bool:
+        return self.table != other
 
-class Paths(Table["Paths.Entry"]):  # type: ignore
-    """A table that represents the [paths] section of an env.toml file.  Entries in the
-    table are joined with the system's path separator and prepended to the corresponding
-    environment variable when modified.
-    """
+    def __or__(self, other: dict[str, T]) -> dict[str, T]:
+        return self.table | other
 
-    @staticmethod
-    def _reset_path(key: str, old: list[Path]) -> None:
-        if key in os.environ:
-            os.environ[key] = os.pathsep.join(
-                p for p in os.environ[key].split(os.pathsep) if Path(p) not in old
-            )
-
-    @staticmethod
-    def _extend_path(key: str, value: list[Path]) -> None:
-        if key in os.environ:
-            os.environ[key] = os.pathsep.join([*[str(p) for p in value], os.environ[key]])
-        else:
-            os.environ[key] = os.pathsep.join(str(p) for p in value)
-
-    class Entry(Array[Path]):
-        """Represents a single value in the [paths] table."""
-
-        # pylint: disable=protected-access
-
-        def __init__(
-            self,
-            paths: Paths,
-            key: str,
-            array: list[Path] | None = None
-        ) -> None:
-            super().__init__(paths.environment, key)
-            self.paths = paths
-            self._array = array
-
-        @property
-        def array(self) -> list[Path]:
-            """Read the array from the env.toml file.
-
-            Returns
-            -------
-            list[Path]
-                An up-to-date view of the array.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [paths] table is not found in the file, or if it does not
-                contain the key.
-            TypeError
-                If the [paths] table is not a table, or the array is not an array of
-                pathlike strings.
-            """
-            if self._array is not None:
-                return self._array
-
-            toml = self.paths.environment.toml
-            with toml.open("r") as f:
-                content = tomlkit.load(f)
-
-            if "paths" not in content:
-                raise KeyError(f"no [paths] table in file: {toml}")
-            table = content["paths"]
-            if not isinstance(table, tomlkit_AbstractTable):
-                raise TypeError(f"[paths] must be a table, not {type(table)}")
-
-            if self.name not in table:
-                raise KeyError(f"no '{self.name}' entry in [paths] table")
-            array = table[self.name]
-            if not isinstance(array, list):
-                raise TypeError(
-                    f"[paths.{self.name}] must be an array, not {type(array)}"
-                )
-            elif not all(isinstance(p, str) for p in array):
-                raise TypeError(
-                    f"[paths.{self.name}] must be an array of pathlike strings"
-                )
-
-            return [Path(p) for p in array]
-
-        @array.setter
-        def array(self, value: list[Path]) -> None:
-            toml = self.paths.environment.toml
-            with toml.open("r+") as f:
-                content = tomlkit.load(f)
-                content.setdefault("paths", {})[self.name] = [str(p) for p in value]
-                f.seek(0)
-                tomlkit.dump(content, f)
-                f.truncate()
-
-        def append(self, value: Path) -> None:
-            """Append a path to the entry.
-
-            Parameters
-            ----------
-            value : Path
-                The path to append.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [paths] table is not found in the file, or if it does not
-                contain the key.
-            TypeError
-                If the [paths] table is not a table, or the array is not an array of
-                pathlike strings.
-            """
-            array = self.array
-            old = array.copy()
-            array.append(value)
-            Paths._reset_path(self.name, old)
-            Paths._extend_path(self.name, array)
-            self.array = array
-
-        def appendleft(self, value: Path) -> None:
-            """Prepend a path to the entry.
-
-            Parameters
-            ----------
-            value : Path
-                The path to prepend.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [paths] table is not found in the file, or if it does not
-                contain the key.
-            TypeError
-                If the [paths] table is not a table, or the array is not an array of
-                pathlike strings.
-            """
-            array = self.array
-            old = array.copy()
-            array = [value]
-            array.extend(old)
-            Paths._reset_path(self.name, old)
-            Paths._extend_path(self.name, array)
-            self.array = array
-
-        def extend(self, other: Iterable[Path]) -> None:
-            """Extend the entry with the contents of another sequence.
-
-            Parameters
-            ----------
-            other : Iterable[Path]
-                The sequence to extend the entry with.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [paths] table is not found in the file, or if it does not
-                contain the key.
-            TypeError
-                If the [paths] table is not a table, or the array is not an array of
-                pathlike strings, or the sequence is not iterable.
-            """
-            array = self.array
-            old = array.copy()
-            array.extend(other)
-            Paths._reset_path(self.name, old)
-            Paths._extend_path(self.name, array)
-            self.array = array
-
-        def extendleft(self, other: Iterable[Path]) -> None:
-            """Extend the entry with the contents of another sequence, prepending each
-            item.
-
-            Note that this implicitly reverses the order of the items in the sequence.
-
-            Parameters
-            ----------
-            other : Iterable[Path]
-                The sequence to extend the entry with.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [paths] table is not found in the file, or if it does not
-                contain the key.
-            TypeError
-                If the [paths] table is not a table, or the array is not an array of
-                pathlike strings, or the sequence is not iterable.
-            """
-            array = self.array
-            old = array.copy()
-            temp = deque(array)
-            temp.extendleft(other)
-            array = list(temp)
-            Paths._reset_path(self.name, old)
-            Paths._extend_path(self.name, array)
-            self.array = array
-
-        def insert(self, index: int, value: Path) -> None:
-            """Insert a path into the entry at a specific index.
-
-            Parameters
-            ----------
-            index : int
-                The index to insert the path at.
-            value : Path
-                The path to insert into the entry.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [paths] table is not found in the file, or if it does not
-                contain the key.
-            TypeError
-                If the [paths] table is not a table, or the array is not an array of
-                pathlike strings.
-            """
-            array = self.array
-            old = array.copy()
-            array.insert(index, value)
-            Paths._reset_path(self.name, old)
-            Paths._extend_path(self.name, array)
-            self.array = array
-
-        def remove(self, value: Path) -> None:
-            """Remove the first occurrence of a path from the entry.
-
-            Parameters
-            ----------
-            value : Path
-                The path to remove from the entry.
-                
-            Raises
-            ------
-            ValueError
-                If the path is not found in the entry.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [paths] table is not found in the file, or if it does not
-                contain the key.
-            TypeError
-                If the [paths] table is not a table, or the array is not an array of
-                pathlike strings.
-            ValueError
-                If the path is not found.
-            """
-            array = self.array
-            old = array.copy()
-            array.remove(value)
-            Paths._reset_path(self.name, old)
-            Paths._extend_path(self.name, array)
-            self.array = array
-
-        def pop(self) -> Path:
-            """Remove and return the last path in the entry.
-
-            Returns
-            -------
-            Path
-                The path that was removed.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [paths] table is not found in the file, or if it does not
-                contain the key.
-            TypeError
-                If the [paths] table is not a table, or the array is not an array of
-                pathlike strings.
-            IndexError
-                If the array is empty.
-            """
-            array = self.array
-            old = array.copy()
-            result = array.pop()
-            Paths._reset_path(self.name, old)
-            Paths._extend_path(self.name, array)
-            self.array = array
-            return result
-
-        def popleft(self) -> Path:
-            """Remove and return the first path in the entry.
-
-            Returns
-            -------
-            Path
-                The path that was removed.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [paths] table is not found in the file, or if it does not
-                contain the key.
-            TypeError
-                If the [paths] table is not a table, or the array is not an array of
-                pathlike strings.
-            IndexError
-                If the array is empty.
-            """
-            array = self.array
-            if not array:
-                raise IndexError("pop from empty list")
-            old = array.copy()
-            result = array[0]
-            array = array[1:]
-            Paths._reset_path(self.name, old)
-            Paths._extend_path(self.name, array)
-            self.array = array
-            return result
-
-        def clear(self) -> None:
-            """Remove all paths from the entry.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [paths] table is not found in the file, or if it does not
-                contain the key.
-            TypeError
-                If the [paths] table is not a table, or the array is not an array of
-                pathlike strings.
-            """
-            array = self.array
-            old = array.copy()
-            array.clear()
-            Paths._reset_path(self.name, old)
-            self.array = array
-
-        def sort(
-            self,
-            *,
-            key: Callable[[Path], bool] | None = None,
-            reverse: bool = False
-        ) -> None:
-            """Sort the entry in place.
-
-            Parameters
-            ----------
-            key : Callable, optional
-                A function to use as the key for sorting.  Defaults to None.
-            reverse : bool, optional
-                Whether to sort the entry in descending order, by default False.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [paths] table is not found in the file, or if it does not
-                contain the key.
-            TypeError
-                If the [paths] table is not a table, or the array is not an array of
-                pathlike strings, or the keys are not comparable.
-            """
-            array = self.array
-            array.sort(key=key, reverse=reverse)
-            Paths._reset_path(self.name, array)
-            Paths._extend_path(self.name, array)
-            self.array = array
-
-        def reverse(self) -> None:
-            """Reverse the order of the paths in the entry.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [paths] table is not found in the file, or if it does not
-                contain the key.
-            TypeError
-                If the [paths] table is not a table, or the array is not an array of
-                pathlike strings.
-            """
-            array = self.array
-            array.reverse()
-            Paths._reset_path(self.name, array)
-            Paths._extend_path(self.name, array)
-            self.array = array
-
-        def rotate(self, n: int = 1) -> None:
-            """Rotate the entry n steps to the right.
-
-            Parameters
-            ----------
-            n : int
-                The number of steps to rotate the entry to the right.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [paths] table is not found in the file, or if it does not
-                contain the key.
-            TypeError
-                If the [paths] table is not a table, or the array is not an array of
-                pathlike strings.
-            """
-            array = self.array
-            temp = deque(array)
-            temp.rotate(n)
-            array = list(temp)
-            Paths._reset_path(self.name, array)
-            Paths._extend_path(self.name, array)
-            self.array = array
-
-        @overload
-        def __setitem__(self, index: SupportsIndex, value: Path) -> None: ...
-        @overload
-        def __setitem__(self, index: slice, value: Iterable[Path]) -> None: ...
-        def __setitem__(
-            self,
-            index: SupportsIndex | slice,
-            value: Path | Iterable[Path]
-        ) -> None:
-            array = self.array
-            old = array.copy()
-            array[index] = value  # type: ignore
-            Paths._reset_path(self.name, old)
-            Paths._extend_path(self.name, array)
-            self.array = array
-
-        def __delitem__(self, index: SupportsIndex | slice) -> None:
-            array = self.array
-            old = array.copy()
-            del array[index]
-            Paths._reset_path(self.name, old)
-            Paths._extend_path(self.name, array)
-            self.array = array
-
-    @property
-    def table(self) -> dict[str, Entry]:
-        """Read the table from the env.toml file.
-
-        Returns
-        -------
-        dict[str, Entry]
-            An up-to-date view of the table.  The values are lazily-evaluated so that
-            they always reflect the current state of the environment.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        return {k: Paths.Entry(self, k) for k in super().table}
-
-    @table.setter
-    def table(self, value: dict[str, Entry]) -> None:
-        toml = self.environment.toml
-        with toml.open("r+") as f:
-            content = tomlkit.load(f)
-            content["paths"] = {k: [str(p) for p in v] for k, v in value.items()}
-            f.seek(0)
-            tomlkit.dump(content, f)
-            f.truncate()
-
-    def copy(self) -> dict[str, list[Path]]:  # type: ignore
-        """Return a shallow copy of the table.
-
-        Returns
-        -------
-        dict[str, list[Path]]
-            A shallow copy of the table.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        return {k: list(v) for k, v in self.table.items()}
-
-    def clear(self) -> None:
-        """Remove all items from the table and the environment.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        table = self.table
-        old = {k: list(v) for k, v in table.items()}
-        table.clear()
-        for key in old:
-            Paths._reset_path(key, old[key])
-        self.table = table
-
-    def pop(self, key: str, default: list[Path] | None = None) -> list[Path] | None:  # type: ignore
-        """Remove an item from the table and return its value.
-
-        Parameters
-        ----------
-        key : str
-            The key to remove from the table and the environment.
-        default : list[Path] | None, optional
-            The value to return if the key is not found.  Defaults to None.
-
-        Returns
-        -------
-        list[Path] | None
-            The value associated with the key, or the default value if the key is not
-            present.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        table = self.table
-        if key in table:
-            result = list(table.pop(key))
-            Paths._reset_path(key, result)
-            self.table = table
-            return result
-        return default
-
-    def get(self, key: str, default: list[Path] | None = None) -> list[Path] | None:  # type: ignore
-        """Get an item from the table.
-
-        Parameters
-        ----------
-        key : str
-            The key to look up in the table.
-        default : list[Path] | None, optional
-            The value to return if the key is not found.  Defaults to None.
-
-        Returns
-        -------
-        list[Path] | None
-            The value associated with the key, or the default value if the key is not
-            present.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        result = self.table.get(key, default)
-        if isinstance(result, Paths.Entry):
-            return list(result)
-        return result
-
-    def setdefault(self, key: str, default: list[Path]) -> Entry:
-        """Get an item from the table or set it to a default value and return the
-        default value.
-
-        Parameters
-        ----------
-        key : str
-            The key to look up in the table.
-        default : list[Path]
-            The value to set if the key is not found.
-
-        Returns
-        -------
-        Entry
-            A lazily-evaluated view of the value associated with the key.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        table = self.table
-        if key in table:
-            return table[key]
-        result = Paths.Entry(self, key, default)
-        table[key] = result
-        Paths._extend_path(key, default)
-        self.table = table
-        return result
-
-    def update(self, other: dict[str, list[Path]]) -> None:  # type: ignore
-        """Update the table with the contents of another dictionary.
-
-        Parameters
-        ----------
-        other : dict[str, list[Path]]
-            The dictionary to update the table with.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        table = self.table
-        old = {k: list(v) for k, v in table.items()}
-        table.update({k: Paths.Entry(self, k, v) for k, v in other.items()})
-        for key, value in other.items():
-            if key in old:
-                Paths._reset_path(key, old[key])
-            Paths._extend_path(key, value)
-        self.table = table
-
-    def __getitem__(self, key: str) -> Entry:
-        return Paths.Entry(self, key)
-
-    def __setitem__(self, key: str, value: list[Path]) -> None:  # type: ignore
-        table = self.table
-        entry = Paths.Entry(self, key, value)
-        if key in table:
-            old = list(table[key])
-            table[key] = entry
-            Paths._reset_path(key, old)
-        else:
-            table[key] = entry
-        Paths._extend_path(key, value)
-        self.table = table
-
-    def __delitem__(self, key: str) -> None:
-        table = self.table
-        if key not in table:
-            raise KeyError(key)
-        old = list(table[key])
-        del table[key]
-        Paths._reset_path(key, old)
-        self.table = table
-
-    def __or__(self, other: dict[str, list[Path]]) -> dict[str, list[Path]]:  # type: ignore
-        return {k: list(v) for k, v in self.table.items()} | other
-
-    def __ior__(self, other: dict[str, list[Path]]) -> Paths:  # type: ignore
+    def __ior__(self, other: dict[str, T]) -> Table[T]:
         self.update(other)
         return self
 
-
-class Flags(Table["Flags.Entry"]):  # type: ignore
-    """A table that represents the [flags] section of an env.toml file.  Entries in the
-    table are joined with spaces and prepended to the corresponding environment variable
-    when modified.
-    """
-
-    @staticmethod
-    def _reset_flags(key: str, old: list[str]) -> None:
-        if key in os.environ:
-            os.environ[key] = " ".join(
-                f for f in os.environ[key].split(" ") if f not in old
-            )
-
-    @staticmethod
-    def _extend_flags(key: str, value: list[str]) -> None:
-        if key in os.environ:
-            os.environ[key] = " ".join([os.environ[key], *value])
-        else:
-            os.environ[key] = " ".join(value)
-
-    class Entry(Array[str]):
-        """Represents a single entry in the [flags] table."""
-
-        # pylint: disable=protected-access
-
-        def __init__(
-            self,
-            flags: Flags,
-            key: str,
-            array: list[str] | None = None
-        ) -> None:
-            super().__init__(flags.environment, key)
-            self.flags = flags
-            self._array = array
-
-        @property
-        def array(self) -> list[str]:
-            """Read the array from the env.toml file.
-
-            Returns
-            -------
-            list[str]
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [flags] table is not found in the file, or if it does not contain
-                the key.
-            TypeError
-                If the [flags] table is not a table, or the array is not an array of
-                strings.
-            """
-            if self._array is not None:
-                return self._array
-
-            toml = self.flags.environment.toml
-            with toml.open("r") as f:
-                content = tomlkit.load(f)
-
-            if "flags" not in content:
-                raise KeyError(f"no [flags] table in file: {toml}")
-            table = content["flags"]
-            if not isinstance(table, tomlkit_AbstractTable):
-                raise TypeError(f"[flags] must be a table, not {type(table)}")
-
-            if self.name not in table:
-                raise KeyError(f"no '{self.name}' entry in [flags] table")
-            array = table[self.name]
-            if not isinstance(array, list):
-                raise TypeError(
-                    f"[flags.{self.name}] must be an array, not {type(array)}"
-                )
-            elif not all(isinstance(f, str) for f in array):
-                raise TypeError(
-                    f"[flags.{self.name}] must be an array of strings"
-                )
-
-            return array
-
-        @array.setter
-        def array(self, value: list[str]) -> None:
-            toml = self.flags.environment.toml
-            with toml.open("r+") as f:
-                content = tomlkit.load(f)
-                content.setdefault("flags", {})[self.name] = value
-                f.seek(0)
-                tomlkit.dump(content, f)
-                f.truncate()
-
-        def append(self, value: str) -> None:
-            """Append a flag to the entry.
-
-            Parameters
-            ----------
-            value : str
-                The flag to append.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [flags] table is not found in the file, or if it does not contain
-                the key.
-            TypeError
-                If the [flags] table is not a table, or the array is not an array of
-                strings.
-            """
-            array = self.array
-            old = array.copy()
-            array.append(value)
-            Flags._reset_flags(self.name, old)
-            Flags._extend_flags(self.name, array)
-            self.array = array
-
-        def appendleft(self, value: str) -> None:
-            """Prepend a flag to the entry.
-
-            Parameters
-            ----------
-            value : str
-                The flag to prepend.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [flags] table is not found in the file, or if it does not contain
-                the key.
-            TypeError
-                If the [flags] table is not a table, or the array is not an array of
-                strings.
-            """
-            array = self.array
-            old = array.copy()
-            array = [value]
-            array.extend(old)
-            Flags._reset_flags(self.name, old)
-            Flags._extend_flags(self.name, array)
-            self.array = array
-
-        def extend(self, other: Iterable[str]) -> None:
-            """Extend the entry with the contents of another sequence.
-
-            Parameters
-            ----------
-            other : Iterable[str]
-                The sequence to extend the entry with.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [flags] table is not found in the file, or if it does not contain
-                the key.
-            TypeError
-                If the [flags] table is not a table, or the array is not an array of
-                strings, or the sequence is not iterable.
-            """
-            array = self.array
-            old = array.copy()
-            array.extend(other)
-            Flags._reset_flags(self.name, old)
-            Flags._extend_flags(self.name, array)
-            self.array = array
-
-        def extendleft(self, other: Iterable[str]) -> None:
-            """Extend the entry with the contents of another sequence, prepending each
-            item.
-
-            Note that this implicitly reverses the order of the items in the sequence.
-
-            Parameters
-            ----------
-            other : Iterable[str]
-                The sequence to extend the entry with.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [flags] table is not found in the file, or if it does not contain
-                the key.
-            TypeError
-                If the [flags] table is not a table, or the array is not an array of
-                strings, or the sequence is not iterable.
-            """
-            array = self.array
-            old = array.copy()
-            temp = deque(array)
-            temp.extendleft(other)
-            array = list(temp)
-            Flags._reset_flags(self.name, old)
-            Flags._extend_flags(self.name, array)
-            self.array = array
-
-        def insert(self, index: int, value: str) -> None:
-            """Insert a flag into the entry at a specific index.
-
-            Parameters
-            ----------
-            index : int
-                The index to insert the flag at.
-            value : str
-                The flag to insert into the entry.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [flags] table is not found in the file, or if it does not contain
-                the key.
-            TypeError
-                If the [flags] table is not a table, or the array is not an array of
-                strings.
-            """
-            array = self.array
-            old = array.copy()
-            array.insert(index, value)
-            Flags._reset_flags(self.name, old)
-            Flags._extend_flags(self.name, array)
-            self.array = array
-
-        def remove(self, value: str) -> None:
-            """Remove the first occurrence of a flag from the entry.
-
-            Parameters
-            ----------
-            value : str
-                The flag to remove from the entry.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [flags] table is not found in the file, or if it does not contain
-                the key.
-            TypeError
-                If the [flags] table is not a table, or the array is not an array of
-                strings.
-            ValueError
-                If the flag is not found.
-            """
-            array = self.array
-            old = array.copy()
-            array.remove(value)
-            Flags._reset_flags(self.name, old)
-            Flags._extend_flags(self.name, array)
-            self.array = array
-
-        def pop(self) -> str:
-            """Remove and return the last flag in the entry.
-
-            Returns
-            -------
-            str
-                The flag that was removed.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [flags] table is not found in the file, or if it does not contain
-                the key.
-            TypeError
-                If the [flags] table is not a table, or the array is not an array of
-                strings.
-            IndexError
-                If the array is empty.
-            """
-            array = self.array
-            old = array.copy()
-            result = array.pop()
-            Flags._reset_flags(self.name, old)
-            Flags._extend_flags(self.name, array)
-            self.array = array
-            return result
-
-        def popleft(self) -> str:
-            """Remove and return the first flag in the entry.
-
-            Returns
-            -------
-            str
-                The flag that was removed.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [flags] table is not found in the file, or if it does not contain
-                the key.
-            TypeError
-                If the [flags] table is not a table, or the array is not an array of
-                strings.
-            IndexError
-                If the array is empty.
-            """
-            array = self.array
-            if not array:
-                raise IndexError("pop from empty list")
-            old = array.copy()
-            result = array[0]
-            array = array[1:]
-            Flags._reset_flags(self.name, old)
-            Flags._extend_flags(self.name, array)
-            self.array = array
-            return result
-
-        def clear(self) -> None:
-            """Remove all flags from the entry.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [flags] table is not found in the file, or if it does not contain
-                the key.
-            TypeError
-                If the [flags] table is not a table, or the array is not an array of
-                strings.
-            """
-            array = self.array
-            old = array.copy()
-            array.clear()
-            Flags._reset_flags(self.name, old)
-            self.array = array
-
-        def sort(
-            self,
-            *,
-            key: Callable[[str], bool] | None = None,
-            reverse: bool = False
-        ) -> None:
-            """Sort the entry in place.
-
-            Parameters
-            ----------
-            key : Callable, optional
-                A function to use as the key for sorting.  Defaults to None.
-            reverse : bool, optional
-                Whether to sort the entry in descending order, by default False.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [flags] table is not found in the file, or if it does not contain
-                the key.
-            TypeError
-                If the [flags] table is not a table, or the array is not an array of
-                strings, or the keys are not comparable.
-            """
-            array = self.array
-            array.sort(key=key, reverse=reverse)
-            Flags._reset_flags(self.name, array)
-            Flags._extend_flags(self.name, array)
-            self.array = array
-
-        def reverse(self) -> None:
-            """Reverse the order of the flags in the entry.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [flags] table is not found in the file, or if it does not contain
-                the key.
-            TypeError
-                If the [flags] table is not a table, or the array is not an array of
-                strings.
-            """
-            array = self.array
-            array.reverse()
-            Flags._reset_flags(self.name, array)
-            Flags._extend_flags(self.name, array)
-            self.array = array
-
-        def rotate(self, n: int = 1) -> None:
-            """Rotate the entry n steps to the right.
-
-            Parameters
-            ----------
-            n : int
-                The number of steps to rotate the entry to the right.
-
-            Raises
-            ------
-            RuntimeError
-                If no environment is currently active.
-            FileNotFoundError
-                If the env.toml file is not found.
-            KeyError
-                If the [flags] table is not found in the file, or if it does not contain
-                the key.
-            TypeError
-                If the [flags] table is not a table, or the array is not an array of
-                strings.
-            """
-            array = self.array
-            temp = deque(array)
-            temp.rotate(n)
-            array = list(temp)
-            Flags._reset_flags(self.name, array)
-            Flags._extend_flags(self.name, array)
-            self.array = array
-
-        @overload
-        def __setitem__(self, index: SupportsIndex, value: str) -> None: ...
-        @overload
-        def __setitem__(self, index: slice, value: Iterable[str]) -> None: ...
-        def __setitem__(
-            self,
-            index: SupportsIndex | slice,
-            value: str | Iterable[str]
-        ) -> None:
-            array = self.array
-            old = array.copy()
-            array[index] = value  # type: ignore
-            Flags._reset_flags(self.name, old)
-            Flags._extend_flags(self.name, array)
-            self.array = array
-
-        def __delitem__(self, index: SupportsIndex | slice) -> None:
-            array = self.array
-            old = array.copy()
-            del array[index]
-            Flags._reset_flags(self.name, old)
-            Flags._extend_flags(self.name, array)
-            self.array = array
-
-    @property
-    def table(self) -> dict[str, Entry]:
-        """Read the table from the env.toml file.
-
-        Returns
-        -------
-        dict[str, Entry]
-            An up-to-date view of the table.  The values are lazily-evaluated so that
-            they always reflect the current state of the environment.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        return {k: Flags.Entry(self, k) for k in super().table}
-
-    @table.setter
-    def table(self, value: dict[str, Entry]) -> None:
-        toml = self.environment.toml
-        with toml.open("r+") as f:
-            content = tomlkit.load(f)
-            content["flags"] = {k: list(v) for k, v in value.items()}
-            f.seek(0)
-            tomlkit.dump(content, f)
-            f.truncate()
-
-    def copy(self) -> dict[str, list[str]]:  # type: ignore
-        """Return a shallow copy of the table.
-
-        Returns
-        -------
-        dict[str, list[Path]]
-            A shallow copy of the table.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        return {k: list(v) for k, v in self.table.items()}
-
-    def clear(self) -> None:
-        """Remove all items from the table and the environment.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        table = self.table
-        old = {k: list(v) for k, v in table.items()}
-        table.clear()
-        for key in old:
-            Flags._reset_flags(key, old[key])
-        self.table = table
-
-    def pop(self, key: str, default: list[str] | None = None) -> list[str] | None:  # type: ignore
-        """Remove an item from the table and the environment and return its value.
-
-        Parameters
-        ----------
-        key : str
-            The key to remove from the table and the environment.
-        default : list[str] | None, optional
-            The value to return if the key is not found.  Defaults to None.
-
-        Returns
-        -------
-        list[str] | None
-            The value associated with the key, or the default value if the key is not
-            found.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        table = self.table
-        if key in table:
-            result = list(table.pop(key))
-            Flags._reset_flags(key, result)
-            self.table = table
-            return result
-        return default
-
-    @overload  # type: ignore
-    def get(self, key: str, default: list[str]) -> list[str]: ...  # pylint: disable=signature-differs
-    @overload
-    def get(self, key: str, default: None = None) -> list[str] | None: ...
-    def get(self, key: str, default: list[str] | None = None) -> list[str] | None:  # type: ignore
-        """Get an item from the table.
-
-        Parameters
-        ----------
-        key : str
-            The key to look up in the table.
-        default : list[str] | None, optional
-            The value to return if the key is not found.  Defaults to None.
-
-        Returns
-        -------
-        list[str] | None
-            The value associated with the key, or the default value if the key is not
-            found.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        result = self.table.get(key, default)
-        if isinstance(result, Flags.Entry):
-            return list(result)
-        return result
-
-    def setdefault(self, key: str, default: list[str]) -> Entry:
-        """Get an item from the table or set it to a default value and return the
-        default value.
-
-        Parameters
-        ----------
-        key : str
-            The key to look up in the table.
-        default : list[str]
-            The value to set if the key is not found.
-
-        Returns
-        -------
-        Entry
-            A lazily-evaluated view of the value associated with the key.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        table = self.table
-        if key in table:
-            return table[key]
-        result = Flags.Entry(self, key, default)
-        table[key] = result
-        Flags._extend_flags(key, default)
-        self.table = table
-        return result
-
-    def update(self, other: dict[str, list[str]]) -> None:  # type: ignore
-        """Update the table with the contents of another dictionary.
-
-        Parameters
-        ----------
-        other : dict[str, list[str]]
-            The dictionary to update the table with.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the table is not found in the file.
-        TypeError
-            If the table is not a table.
-        """
-        table = self.table
-        old = {k: list(v) for k, v in table.items()}
-        table.update({k: Flags.Entry(self, k, v) for k, v in other.items()})
-        for key, value in other.items():
-            if key in old:
-                Flags._reset_flags(key, old[key])
-            Flags._extend_flags(key, value)
-        self.table = table
-
-    def __getitem__(self, key: str) -> Entry:
-        return Flags.Entry(self, key)
-
-    def __setitem__(self, key: str, value: list[str]) -> None:  # type: ignore
-        table = self.table
-        entry = Flags.Entry(self, key, value)
-        if key in table:
-            old = list(table[key])
-            table[key] = entry
-            Flags._reset_flags(key, old)
-        else:
-            table[key] = entry
-        Flags._extend_flags(key, value)
-        self.table = table
-
-    def __delitem__(self, key: str) -> None:
-        table = self.table
-        if key not in table:
-            raise KeyError(key)
-        old = list(table[key])
-        del table[key]
-        Flags._reset_flags(key, old)
-        self.table = table
-
-    def __or__(self, other: dict[str, list[str]]) -> dict[str, list[str]]:  # type: ignore
-        return {k: list(v) for k, v in self.table.items()} | other
-
-    def __ior__(self, other: dict[str, list[str]]) -> Flags:  # type: ignore
-        self.update(other)
-        return self
-
-
-class Packages(Array[Package]):
-    """An array of immutable tables that represent the [packages] section of an
-    env.toml file.  Each table has the following fields:
-
-        - name: The name of the package.
-        - version: The installed version.
-        - find: The symbol to pass to CMake's `find_package()` function in order to
-            locate the package's headers and libraries.
-        - link: The symbol to pass to CMake's `target_link_libraries()` function in
-            order to link against the package's libraries.
-
-    There is no environment variable associated with this section, and it is
-    automatically updated whenever a package is installed or removed from the virtual
-    environment.
-    """
-
-    @property
-    def array(self) -> list[Package]:
-        """Read the array from the env.toml file.
-
-        Returns
-        -------
-        list[Package]
-            An up-to-date view of the array.  The values are lazily-evaluated so that
-            they always reflect the current state of the environment.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the array is not found in the file.
-        TypeError
-            If the array is not an array.
-        ValueError
-            If set to a list containing duplicate package entries.
-        """
-        if self._array is not None:
-            return self._array
-
-        toml = self.environment.toml
-        with toml.open("r") as f:
-            content = tomlkit.load(f)
-
-        if self.name not in content:
-            return []
-        array = content[self.name]
-        if not isinstance(array, tomlkit_AoT):
-            raise TypeError(
-                f"[{self.name}] must be an array of tables, not {type(array)}"
-            )
-
-        return [Package.from_dict(table, allow_shorthand=False) for table in array]
-
-    @array.setter
-    def array(self, value: list[Package]) -> None:
-        observed: set[Package] = set()
-        duplicates: list[Package] = []
-        for entry in value:
-            if entry in observed:
-                duplicates.append(entry)
-            else:
-                observed.add(entry)
-        if duplicates:
-            raise ValueError(f"package(s) already installed: {duplicates}")
-
-        toml = self.environment.toml
-        with toml.open("r+") as f:
-            content = tomlkit.load(f)
-            if value:
-                content[self.name] = [entry.to_dict() for entry in value]
-            else:
-                content.pop(self.name, None)
-            f.seek(0)
-            tomlkit.dump(content, f)
-            f.truncate()
-
-    # TODO: all I really need is an add()/remove()/extend()/clear() method.  I don't
-    # need all the other noise.  I can also add some methods specifically for
-    # inspecting packages, like maybe an update() method that replaces a package with
-    # the same name, etc.
-
-    # Perhaps I can also store the array in sorted order, so that the most recent
-    # versions are always listed first, in alphabetical order?  The versions would
-    # also have to be converted into proper version numbers so that they can be sorted
-    # correctly.
-
-    # TODO: perhaps manually adding/removing packages should not be allowed, except
-    # through the conan wrappers that have yet to be written.  This would prevent the
-    # package list from getting out of sync with the actual environment.
-
-    def append(self, value: Package) -> None:
-        """Append a package to the env.toml file.
-
-        Parameters
-        ----------
-        value : Package
-            A package object.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the array is not found in the file.
-        TypeError
-            If the array is not an array.
-        ValueError
-            If the package is malformed or already installed.
-        packaging.version.InvalidVersion
-            If the package's version number is invalid.
-        """
-        if value.shorthand:
-            raise ValueError("env.packages must contain full package entries")
-        super().append(value)
-
-    def appendleft(self, value: Package) -> None:
-        """Prepend a package entry to the array.
-
-        Parameters
-        ----------
-        value : Package
-            A package object.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the array is not found in the file.
-        TypeError
-            If the array is not an array.
-        ValueError
-            If the package is malformed or already installed.
-        packaging.version.InvalidVersion
-            If the package's version number is invalid.
-        """
-        if value.shorthand:
-            raise ValueError("env.packages must contain full package entries")
-        super().appendleft(value)
-
-    def extend(self, other: Iterable[Package]) -> None:
-        """Extend the array with the contents of another sequence.
-
-        Parameters
-        ----------
-        other : Iterable[Package]
-            The sequence of packages to extend the array with.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the array is not found in the file.
-        TypeError
-            If the array is not an array, or the sequence is not iterable.
-        ValueError
-            If a package is malformed or already installed.
-        packaging.version.InvalidVersion
-            If a package's version number is invalid.
-        """
-        if any(value.shorthand for value in other):
-            raise ValueError("env.packages must contain full package entries")
-        super().extend(other)
-
-    def extendleft(self, other: Iterable[Package]) -> None:
-        """Extend the array with the contents of another sequence, prepending each item.
-
-        Note that this implicitly reverses the order of the items in the sequence.
-
-        Parameters
-        ----------
-        other : Iterable[Package]
-            The sequence of packages to extend the array with.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the array is not found in the file.
-        TypeError
-            If the array is not an array, or the sequence is not iterable.
-        ValueError
-            If a package is malformed or already installed.
-        packaging.version.InvalidVersion
-            If a package's version number is invalid.
-        """
-        if any(value.shorthand for value in other):
-            raise ValueError("env.packages must contain full package entries")
-        super().extendleft(other)
-
-    def insert(self, index: int, value: Package) -> None:
-        """Insert a package entry into the array at a specific index.
-
-        Parameters
-        ----------
-        index : int
-            The index to insert the package entry at.
-        value : Package
-            A package object.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the array is not found in the file.
-        TypeError
-            If the array is not an array.
-        ValueError
-            If the package is malformed or already installed.
-        packaging.version.InvalidVersion
-            If the package's version number is invalid.
-        """
-        if value.shorthand:
-            raise ValueError("env.packages must contain full package entries")
-        super().insert(index, value)
-
-    def remove(self, value: Package) -> None:
-        """Remove the first occurrence of a package entry from the array.
-
-        Parameters
-        ----------
-        value : Package
-            A package object.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the array is not found in the file.
-        TypeError
-            If the array is not an array.
-        ValueError
-            If the package is malformed or not found.
-        packaging.version.InvalidVersion
-            If the package's version number is invalid.
-        """
-        super().remove(value)
-
-    def index(self, value: Package) -> int:
-        """Return the index of the first occurrence of a package entry in the array.
-
-        Parameters
-        ----------
-        value : Package
-            A package object.
-
-        Returns
-        -------
-        int
-            The index of the package entry in the array.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the array is not found in the file.
-        TypeError
-            If the array is not an array.
-        ValueError
-            If the package is malformed or not found.
-        packaging.version.InvalidVersion
-            If the package's version number is invalid.
-        """
-        return super().index(value)
-
-    def count(self, value: Package) -> int:
-        """Return the number of occurrences of a package entry in the array.
-
-        Parameters
-        ----------
-        value : Package
-            A package object.
-
-        Returns
-        -------
-        int
-            The number of occurrences of the package entry in the array.
-
-        Raises
-        ------
-        RuntimeError
-            If no environment is currently active.
-        FileNotFoundError
-            If the env.toml file is not found.
-        KeyError
-            If the array is not found in the file.
-        TypeError
-            If the array is not an array.
-        ValueError
-            If the package is malformed or not found.
-        packaging.version.InvalidVersion
-            If the package's version number is invalid.
-        """
-        return super().count(value)
-
-    @overload
-    def __setitem__(self, index: SupportsIndex, value: Package) -> None: ...
-    @overload
-    def __setitem__(self, index: slice, value: Iterable[Package]) -> None: ...
-    def __setitem__(
-        self,
-        index: SupportsIndex | slice,
-        value: Package | Iterable[Package]
-    ) -> None:
-        if isinstance(index, slice):
-            if any(v.shorthand for v in value):  # type: ignore
-                raise ValueError("env.packages must contain full package entries")
-        elif value.shorthand:  # type: ignore
-            raise ValueError("env.packages must contain full package entries")
-        super().__setitem__(index, value)  # type: ignore
-
-    def __add__(self, other: Iterable[Package]) -> list[Package]:
-        result = self.array.copy()
-        result.extend(other)
-        return result
-
-    def __iadd__(self, other: Iterable[Package]) -> Packages:  # type: ignore
-        self.extend(other)
-        return self
+    def __str__(self) -> str:
+        return str(self.table)
+
+    def __repr__(self) -> str:
+        return repr(self.table)
 
 
 class Environment:
@@ -2666,25 +772,136 @@ class Environment:
     """
 
     OLD_PREFIX = "_OLD_VIRTUAL_"
-    _info: Table[Any]
-    _vars: Vars
-    _paths: Paths
-    _flags: Flags
-    _packages: Packages
 
     def __init__(self) -> None:
+        self._info: Environment.Info
+        self._vars: Environment.Vars
+        self._paths: Environment.Paths
+        self._flags: Environment.Flags
+        self._packages: Environment.Packages
         raise NotImplementedError(
             "Environment should be used as a global object, not instantiated directly."
         )
 
     def __new__(cls) -> Environment:
         self = super().__new__(cls)
-        self._info = Table(self, "info")
-        self._vars = Vars(self, "vars")
-        self._paths = Paths(self, "paths")
-        self._flags = Flags(self, "flags")
-        self._packages = Packages(self, "packages")
+        self._info = self.Info(self)
+        self._vars = self.Vars(self)
+        self._paths = self.Paths(self)
+        self._flags = self.Flags(self)
+        self._packages = self.Packages(self)
         return self
+
+    def activate(self, venv: Path) -> list[str]:
+        """Enter the environment from a Python process and return the sequence of bash
+        commands necessary to activate it from the command line.
+
+        Parameters
+        ----------
+        venv : Path
+            The path to the environment directory to activate.  Must contain an
+            `env.toml` file that conforms to this specification.
+
+        Returns
+        -------
+        list[str]
+            A list of bash commands that will set the required environment variables when
+            sourced from the command line.
+
+        Raises
+        ------
+        FileNotFoundError
+            If no env.toml file was found.
+        TypeError
+            If the env.toml file is not formatted correctly.
+
+        Notes
+        -----
+        This method is called by the `$ bertrand activate venv` shell command, which is
+        in turn called by the virtual environment's `activate` script to enter the
+        environment.  Each command will be executed verbatim when the activation script
+        is sourced, allowing the environment to be attached to the shell itself.
+        """
+        os.environ["BERTRAND_HOME"] = str(venv)
+        commands = []
+
+        # [vars] get exported directly
+        for key, value in self.vars.items():
+            if key in os.environ:
+                k = f"{self.OLD_PREFIX}{key}"
+                v = os.environ[key]
+                os.environ[k] = v
+                commands.append(f"export {k}=\"{v}\"")
+            os.environ[key] = value
+            commands.append(f"export {key}=\"{value}\"")
+
+        # [paths] get prepended to existing paths
+        for key, paths in self.paths.items():
+            if key in os.environ:
+                k = f"{self.OLD_PREFIX}{key}"
+                v = os.environ[key]
+                os.environ[k] = v
+                commands.append(f"export {k}=\"{v}\"")
+                fragment = os.pathsep.join([*(str(p) for p in paths), v])
+            else:
+                fragment = os.pathsep.join(str(p) for p in paths)
+            if fragment:
+                os.environ[key] = fragment
+                commands.append(f'export {key}=\"{fragment}\"')
+
+        # [flags] get appended to existing flags
+        for key, flaglist in self.flags.items():
+            if key in os.environ:
+                k = f"{self.OLD_PREFIX}{key}"
+                v = os.environ[key]
+                os.environ[k] = v
+                commands.append(f"export {k}=\"{v}\"")
+                fragment = " ".join([v, *flaglist])
+            else:
+                fragment = " ".join(flaglist)
+            if fragment:
+                os.environ[key] = fragment
+                commands.append(f'export {key}=\"{fragment}\"')
+
+        return commands
+
+    def deactivate(self) -> list[str]:
+        """Exit the environment from a Python process and return the sequence of bash
+        commands necessary to deactivate it from the command line.
+
+        Returns
+        -------
+        list[str]
+            A list of bash commands that will restore the previous environment
+            variables when sourced.
+
+        Notes
+        -----
+        When the `activate()` method is called, the environment variables are saved
+        with a special prefix to prevent conflicts.  This method undoes that by
+        transferring the value of the prefixed variable back to the original, and then
+        clearing the temporary variable.
+
+        If the variable did not exist before the environment was activated, this method
+        will clear it without replacement.
+        """
+        commands = []
+
+        for key in list(self.flags) + list(self.paths) + list(self.vars):
+            old = f"{self.OLD_PREFIX}{key}"
+            if old in os.environ:
+                os.environ[key] = os.environ[old]
+                commands.append(f"export {key}=\"{os.environ[old]}\"")
+                os.environ.pop(old)
+                commands.append(f"unset {old}")
+            else:
+                os.environ.pop(key, None)
+                commands.append(f"unset {key}")
+
+        os.environ.pop("BERTRAND_HOME", None)
+        return commands
+
+    # TODO: init()?
 
     @property
     def dir(self) -> Path:
@@ -2723,8 +940,31 @@ class Environment:
             raise RuntimeError("no environment is currently active.")
         return Path(os.environ["BERTRAND_HOME"]) / "env.toml"
 
+    class Info(Table[Any]):
+        """The [info] table from the env.toml file."""
+
+        def __init__(self, environment: Environment) -> None:
+            super().__init__(environment, self._getter, self._setter)
+
+        def _getter(self, content: tomlkit.TOMLDocument) -> dict[str, Any]:
+            if "info" not in content:
+                raise KeyError(
+                    f"no {YELLOW}[info]{WHITE} table in file: "
+                    f"{CYAN}{self.environment.toml}{WHITE}"
+                )
+            table = content["info"]
+            if not isinstance(table, tomlkit_AbstractTable):
+                raise TypeError(
+                    f"{YELLOW}[info]{WHITE} must be a table, not "
+                    f"{CYAN}{type(table)}{WHITE}"
+                )
+            return dict(table)
+
+        def _setter(self, content: tomlkit.TOMLDocument, value: dict[str, Any]) -> None:
+            content["info"] = value
+
     @property
-    def info(self) -> Table[Any]:
+    def info(self) -> Info:
         """The [info] table from the env.toml file.
 
         Returns
@@ -2745,8 +985,36 @@ class Environment:
     def info(self) -> None:
         self._info.clear()
 
+    class Vars(Table[str]):
+        """The [vars] table from the env.toml file."""
+
+        def __init__(self, environment: Environment) -> None:
+            super().__init__(environment, self._getter, self._setter)
+
+        def _getter(self, content: tomlkit.TOMLDocument) -> dict[str, str]:
+            if "vars" not in content:
+                raise KeyError(
+                    f"no {YELLOW}[vars]{WHITE} table in file: "
+                    f"{CYAN}{self.environment.toml}{WHITE}"
+                )
+            table = content["vars"]
+            if not isinstance(table, tomlkit_AbstractTable):
+                raise TypeError(
+                    f"{YELLOW}[vars]{WHITE} must be a table, not "
+                    f"{CYAN}{type(table)}{WHITE}"
+                )
+            return dict(table)
+
+        def _setter(self, content: tomlkit.TOMLDocument, value: dict[str, str]) -> None:
+            for k, v in content.get("vars", {}).items():
+                if k not in value:
+                    os.environ.pop(k, None)
+            for k, v in value.items():
+                os.environ[k] = v
+            content["vars"] = value
+
     @property
-    def vars(self) -> Vars:
+    def vars(self) -> Table[str]:
         """The [vars] table from the env.toml file.
 
         Returns
@@ -2777,6 +1045,209 @@ class Environment:
     @vars.deleter
     def vars(self) -> None:
         self._vars.clear()
+
+    class Paths(Table["Paths.Entry | list[Path]"]):  # type: ignore
+        """A table that represents the [paths] section of an env.toml file.  Entries in
+        the table are joined with the system's path separator and prepended to the
+        corresponding environment variable when modified.
+        """
+
+        def __init__(self, environment: Environment) -> None:
+            super().__init__(environment, self._getter, self._setter)
+
+        def _getter(self, content: tomlkit.TOMLDocument) -> dict[str, Entry | list[Path]]:
+            if "paths" not in content:
+                raise KeyError(
+                    f"no {YELLOW}[paths]{WHITE} table in file: "
+                    f"{CYAN}{self.environment.toml}{WHITE}"
+                )
+            table = content["paths"]
+            if not isinstance(table, tomlkit_AbstractTable):
+                raise TypeError(
+                    f"{YELLOW}[paths]{WHITE} must be a table, not "
+                    f"{CYAN}{type(table)}{WHITE}"
+                )
+            return {k: Environment.Paths.Entry(self, k) for k in table}
+
+        def _setter(
+            self,
+            content: tomlkit.TOMLDocument,
+            value: dict[str, Entry | list[Path]]
+        ) -> None:
+            for k, v in content.get("paths", {}).items():
+                if k in os.environ:
+                    os.environ[k] = os.pathsep.join(
+                        p for p in os.environ[k].split(os.pathsep) if Path(p) not in v
+                    )
+
+            for k, v in value.items():
+                if k in os.environ:
+                    os.environ[k] = os.pathsep.join([*(str(p) for p in v), os.environ[k]])
+                else:
+                    os.environ[k] = os.pathsep.join(str(p) for p in v)
+
+            content["paths"] = {k: [str(p) for p in v] for k, v in value.items()}
+
+        class Entry(Array[Path]):
+            """Represents a single value in the [paths] table."""
+
+            def __init__(self, paths: Environment.Paths, key: str) -> None:
+                super().__init__(paths.environment, self._getter, self._setter)
+                self.cache: list[Path] = []
+                self.paths = paths
+                self.key = key
+
+            def _getter(self, content: tomlkit.TOMLDocument) -> list[Path]:
+                if "paths" not in content:
+                    raise KeyError(
+                        f"no [paths] table in file: {self.paths.environment.toml}"
+                    )
+                table = content["paths"]
+                if not isinstance(table, tomlkit_AbstractTable):
+                    raise TypeError(f"[paths] must be a table, not {type(table)}")
+
+                if self.key not in table:
+                    raise KeyError(f"no '{self.key}' entry in [paths] table")
+                array = table[self.key]
+                if not isinstance(array, tomlkit_Array):
+                    raise TypeError(
+                        f"[paths.{self.key}] must be an array, not {type(array)}"
+                    )
+                if not all(isinstance(p, str) for p in array):
+                    raise TypeError(
+                        f"[paths.{self.key}] must be an array of pathlike strings"
+                    )
+
+                self.cache = [Path(p) for p in array]
+                return [p for p in self.cache]
+
+            def _setter(self, content: tomlkit.TOMLDocument, value: list[Path]) -> None:
+                if self.key in os.environ:
+                    os.environ[self.key] = os.pathsep.join(
+                        p for p in os.environ[self.key].split(os.pathsep)
+                        if Path(p) not in self.cache
+                    )
+                    os.environ[self.key] = os.pathsep.join(
+                        [*(str(p) for p in value), os.environ[self.key]]
+                    )
+                else:
+                    os.environ[self.key] = os.pathsep.join(str(p) for p in value)
+
+                self.cache = value
+                content.setdefault("paths", {})[self.key] = [str(p) for p in value]
+
+        @overload  # type: ignore
+        def get(self, key: str, default: list[Path]) -> list[Path]: ...
+        @overload
+        def get(self, key: str, default: None = ...) -> list[Path] | None: ...
+        def get(self, key: str, default: list[Path] | None = None) -> list[Path] | None:
+            """Get an item from the table.
+
+            Parameters
+            ----------
+            key : str
+                The key to look up in the table.
+            default : list[Path] | None, optional
+                The value to return if the key is not found.  Defaults to None.
+
+            Returns
+            -------
+            list[Path] | None
+                The value associated with the key, or the default value if the key is not
+                present.
+
+            Raises
+            ------
+            RuntimeError
+                If no environment is currently active.
+            FileNotFoundError
+                If the env.toml file is not found.
+            KeyError
+                If the table is not found in the file.
+            TypeError
+                If the table is not a table.
+            """
+            table = self.table
+            if key in table:
+                return list(table[key])
+            return default
+
+        @overload  # type: ignore
+        def pop(self, key: str, default: list[Path]) -> list[Path]: ...
+        @overload
+        def pop(self, key: str, default: None = ...) -> list[Path] | None: ...
+        def pop(self, key: str, default: list[Path] | None = None) -> list[Path] | None:
+            """Remove an item from the table and return its value.
+
+            Parameters
+            ----------
+            key : str
+                The key to remove from the table and the environment.
+            default : list[Path] | None, optional
+                The value to return if the key is not found.  Defaults to None.
+
+            Returns
+            -------
+            list[Path] | None
+                The value associated with the key, or the default value if the key is not
+                present.
+
+            Raises
+            ------
+            RuntimeError
+                If no environment is currently active.
+            FileNotFoundError
+                If the env.toml file is not found.
+            KeyError
+                If the table is not found in the file.
+            TypeError
+                If the table is not a table.
+            """
+            table = self.table
+            if key in table:
+                result = list(table[key])
+                del table[key]
+                self.table = table
+                return result
+            return default
+
+        def update(self, other: dict[str, list[Path]]) -> None:  # type: ignore
+            """Update the table with the contents of another dictionary.
+
+            Parameters
+            ----------
+            other : dict[str, list[Path]]
+                The dictionary to update the table with.
+
+            Raises
+            ------
+            RuntimeError
+                If no environment is currently active.
+            FileNotFoundError
+                If the env.toml file is not found.
+            KeyError
+                If the table is not found in the file.
+            TypeError
+                If the table is not a table.
+            """
+            table = self.table
+            table.update(other)
+            self.table = table
+
+        def __getitem__(self, key: str) -> Entry:
+            return self.Entry(self, key)  # lazily evaluated
+
+        def __setitem__(self, key: str, value: list[Path]) -> None:  # type: ignore
+            table = self.table
+            table[key] = value
+            self.table = table
+
+        def __or__(self, other: dict[str, list[Path]]) -> dict[str, list[Path]]:  # type: ignore
+            return {k: list(v) for k, v in self.table.items()} | other
+
+        def __ior__(self, other: dict[str, list[Path]]) -> Environment.Paths:  # type: ignore
+            self.update(other)  # type: ignore
+            return self
 
     @property
     def paths(self) -> Paths:
@@ -2817,6 +1288,209 @@ class Environment:
     def paths(self) -> None:
         self._paths.clear()
 
+    class Flags(Table["Flags.Entry | list[str]"]):  # type: ignore
+        """A table that represents the [flags] section of an env.toml file.  Entries in
+        the table are joined with spaces and appended to the corresponding environment
+        variable when modified.
+        """
+
+        def __init__(self, environment: Environment) -> None:
+            super().__init__(environment, self._getter, self._setter)
+
+        def _getter(self, content: tomlkit.TOMLDocument) -> dict[str, Entry | list[str]]:
+            if "flags" not in content:
+                raise KeyError(
+                    f"no {YELLOW}[flags]{WHITE} table in file: "
+                    f"{CYAN}{self.environment.toml}{WHITE}"
+                )
+            table = content["flags"]
+            if not isinstance(table, tomlkit_AbstractTable):
+                raise TypeError(
+                    f"{YELLOW}[flags]{WHITE} must be a table, not "
+                    f"{CYAN}{type(table)}{WHITE}"
+                )
+            return {k: Environment.Flags.Entry(self, k) for k in table}
+
+        def _setter(
+            self,
+            content: tomlkit.TOMLDocument,
+            value: dict[str, Entry | list[str]]
+        ) -> None:
+            for k, v in content.get("flags", {}).items():
+                if k in os.environ:
+                    os.environ[k] = " ".join(
+                        f for f in os.environ[k].split(" ") if f not in v
+                    )
+
+            for k, v in value.items():
+                if k in os.environ:
+                    os.environ[k] = " ".join([os.environ[k], *v])
+                else:
+                    os.environ[k] = " ".join(v)
+
+            content["flags"] = {k: list(v) for k, v in value.items()}
+
+        class Entry(Array[str]):
+            """Represents a single value in the [flags] table."""
+
+            def __init__(self, flags: Environment.Flags, key: str) -> None:
+                super().__init__(flags.environment, self._getter, self._setter)
+                self.cache: list[str] = []
+                self.flags = flags
+                self.key = key
+
+            def _getter(self, content: tomlkit.TOMLDocument) -> list[str]:
+                if "flags" not in content:
+                    raise KeyError(
+                        f"no [flags] table in file: {self.flags.environment.toml}"
+                    )
+                table = content["flags"]
+                if not isinstance(table, tomlkit_AbstractTable):
+                    raise TypeError(f"[flags] must be a table, not {type(table)}")
+
+                if self.key not in table:
+                    raise KeyError(f"no '{self.key}' entry in [flags] table")
+                array = table[self.key]
+                if not isinstance(array, tomlkit_Array):
+                    raise TypeError(
+                        f"[flags.{self.key}] must be an array, not {type(array)}"
+                    )
+                if not all(isinstance(p, str) for p in array):
+                    raise TypeError(
+                        f"[flags.{self.key}] must be an array of strings"
+                    )
+
+                self.cache = list(array)
+                return self.cache.copy()
+
+            def _setter(self, content: tomlkit.TOMLDocument, value: list[str]) -> None:
+                if self.key in os.environ:
+                    os.environ[self.key] = " ".join(
+                        f for f in os.environ[self.key].split(" ")
+                        if f not in self.cache
+                    )
+                    os.environ[self.key] = " ".join(
+                        [os.environ[self.key], *value]
+                    )
+                else:
+                    os.environ[self.key] = " ".join(value)
+
+                self.cache = value
+                content.setdefault("flags", {})[self.key] = value
+
+        @overload  # type: ignore
+        def get(self, key: str, default: list[str]) -> list[str]: ...
+        @overload
+        def get(self, key: str, default: None = ...) -> list[str] | None: ...
+        def get(self, key: str, default: list[str] | None = None) -> list[str] | None:
+            """Get an item from the table.
+
+            Parameters
+            ----------
+            key : str
+                The key to look up in the table.
+            default : list[str] | None, optional
+                The value to return if the key is not found.  Defaults to None.
+
+            Returns
+            -------
+            list[str] | None
+                The value associated with the key, or the default value if the key is not
+                present.
+
+            Raises
+            ------
+            RuntimeError
+                If no environment is currently active.
+            FileNotFoundError
+                If the env.toml file is not found.
+            KeyError
+                If the table is not found in the file.
+            TypeError
+                If the table is not a table.
+            """
+            table = self.table
+            if key in table:
+                return list(table[key])
+            return default
+
+        @overload  # type: ignore
+        def pop(self, key: str, default: list[str]) -> list[str]: ...
+        @overload
+        def pop(self, key: str, default: None = ...) -> list[str] | None: ...
+        def pop(self, key: str, default: list[str] | None = None) -> list[str] | None:
+            """Remove an item from the table and return its value.
+
+            Parameters
+            ----------
+            key : str
+                The key to remove from the table and the environment.
+            default : list[str] | None, optional
+                The value to return if the key is not found.  Defaults to None.
+
+            Returns
+            -------
+            list[str] | None
+                The value associated with the key, or the default value if the key is not
+                present.
+
+            Raises
+            ------
+            RuntimeError
+                If no environment is currently active.
+            FileNotFoundError
+                If the env.toml file is not found.
+            KeyError
+                If the table is not found in the file.
+            TypeError
+                If the table is not a table.
+            """
+            table = self.table
+            if key in table:
+                result = list(table[key])
+                del table[key]
+                self.table = table
+                return result
+            return default
+
+        def update(self, other: dict[str, list[str]]) -> None:  # type: ignore
+            """Update the table with the contents of another dictionary.
+
+            Parameters
+            ----------
+            other : dict[str, list[str]]
+                The dictionary to update the table with.
+
+            Raises
+            ------
+            RuntimeError
+                If no environment is currently active.
+            FileNotFoundError
+                If the env.toml file is not found.
+            KeyError
+                If the table is not found in the file.
+            TypeError
+                If the table is not a table.
+            """
+            table = self.table
+            table.update(other)
+            self.table = table
+
+        def __getitem__(self, key: str) -> Entry:
+            return self.Entry(self, key)  # lazily evaluated
+
+        def __setitem__(self, key: str, value: list[str]) -> None:  # type: ignore
+            table = self.table
+            table[key] = value
+            self.table = table
+
+        def __or__(self, other: dict[str, list[str]]) -> dict[str, list[str]]:  # type: ignore
+            return {k: list(v) for k, v in self.table.items()} | other
+
+        def __ior__(self, other: dict[str, list[str]]) -> Environment.Flags:  # type: ignore
+            self.update(other)  # type: ignore
+            return self
+
     @property
     def flags(self) -> Flags:
         """The [flags] table from the env.toml file.
@@ -2856,6 +1530,58 @@ class Environment:
     def flags(self) -> None:
         self._flags.clear()
 
+    class Packages(Array[Package]):
+        """An array of immutable tables that represent the [packages] section of an
+        env.toml file.  Each table has the following fields:
+
+            - name: The name of the package.
+            - version: The installed version.
+            - find: The symbol to pass to CMake's `find_package()` function in order to
+                locate the package's headers and libraries.
+            - link: The symbol to pass to CMake's `target_link_libraries()` function in
+                order to link against the package's libraries.
+
+        There is no environment variable associated with this section, and it is
+        automatically updated whenever a package is installed or removed from the
+        virtual environment.
+        """
+
+        def __init__(self, environment: Environment) -> None:
+            super().__init__(environment, self._getter, self._setter)
+
+        def _getter(self, content: tomlkit.TOMLDocument) -> list[Package]:
+            if "packages" not in content:
+                return []
+
+            array = content["packages"]
+            if not isinstance(array, tomlkit_AoT):
+                raise TypeError(
+                    f"{YELLOW}[[packages]]{WHITE} must be an array of tables, not "
+                    f"{CYAN}{type(array)}{WHITE}"
+                )
+
+            return [Package.from_dict(d) for d in array]
+
+        def _setter(self, content: tomlkit.TOMLDocument, value: list[Package]) -> None:
+            observed: set[Package] = set()
+            duplicates: list[Package] = []
+            for entry in value:
+                if entry in observed:
+                    duplicates.append(entry)
+                elif entry.shorthand:
+                    raise ValueError(
+                        f"package must define `find` and `link` symbols: {entry}"
+                    )
+                else:
+                    observed.add(entry)
+            if duplicates:
+                raise ValueError(f"package(s) already installed: {duplicates}")
+
+            if value:
+                content["packages"] = [p.to_dict() for p in value]
+            else:
+                content.pop("packages", None)
+
     @property
     def packages(self) -> Packages:
         """The [[packages]] array from the env.toml file.
@@ -2890,6 +1616,58 @@ class Environment:
     def packages(self) -> None:
         self._packages.clear()
 
+    @property
+    def table(self) -> dict[str, Any]:
+        """A dictionary containing the current contents of the env.toml file.
+
+        Returns
+        -------
+        dict[str, Any]
+            An up-to-date dictionary representation of the env.toml file.
+        """
+        return {
+            "info": self.info.table,
+            "vars": self.vars.table,
+            "paths": self.paths.table,
+            "flags": self.flags.table,
+            "packages": self.packages.array,
+        }
+
+    @table.setter
+    def table(self, value: dict[str, Any]) -> None:
+        """Update the env.toml file with the contents of a dictionary.
+
+        Parameters
+        ----------
+        value : dict[str, Any]
+            The dictionary to write to the env.toml file.
+
+        Raises
+        ------
+        KeyError
+            If the dictionary contains keys that are not valid for the env.toml file.
+        """
+        expected = {"info", "vars", "paths", "flags", "packages"}
+        new: dict[str, Any] = {}
+        for k, v in value.items():
+            if k not in expected:
+                raise KeyError(k)
+            new[k] = v
+
+        self.info = new.get("info", {})
+        self.vars = new.get("vars", {})
+        self.paths = new.get("paths", {})
+        self.flags = new.get("flags", {})
+        self.packages = new.get("packages", [])
+
+    @table.deleter
+    def table(self) -> None:
+        self.info.clear()
+        self.vars.clear()
+        self.paths.clear()
+        self.flags.clear()
+        self.packages.clear()
+
     def keys(self) -> KeysView[str]:
         """
         Returns
@@ -2897,7 +1675,7 @@ class Environment:
         KeysView[str]
             The keys of the environment.
         """
-        return os.environ.keys()
+        return self.table.keys()
 
     def values(self) -> ValuesView[Any]:
         """
@@ -2906,7 +1684,7 @@ class Environment:
         ValuesView[str]
             The values of the environment.
         """
-        return os.environ.values()
+        return self.table.values()
 
     def items(self) -> ItemsView[str, Any]:
         """
@@ -2915,22 +1693,15 @@ class Environment:
         ItemsView[str, str]
             The items of the environment.
         """
-        return os.environ.items()
-
-    def copy(self) -> dict[str, Any]:
-        """
-        Returns
-        -------
-        dict[str, Any]
-            A shallow copy of the environment.
-        """
-        return os.environ.copy()
-
-    # TODO: methods that modify the environment should propagate to toml as well?
+        return self.table.items()
 
     def clear(self) -> None:
         """Clear the environment."""
-        os.environ.clear()
+        self.info.clear()
+        self.vars.clear()
+        self.paths.clear()
+        self.flags.clear()
+        self.packages.clear()
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a value from the environment.
@@ -2948,7 +1719,7 @@ class Environment:
             The value of the variable, or the default value if the variable is not
             found.
         """
-        return os.environ.get(key, default)
+        return self.table.get(key, default)
 
     def pop(self, key: str, default: Any = None) -> Any:
         """Remove a variable from the environment and return its value.
@@ -2966,7 +1737,28 @@ class Environment:
             The value of the variable, or the default value if the variable is not
             found.
         """
-        return os.environ.pop(key, default)
+        if key == "info":
+            value = self.info.table
+            self.info.clear()
+            return value
+        if key == "vars":
+            value = self.vars.table
+            self.vars.clear()
+            return value
+        if key == "paths":
+            value = self.paths.table
+            self.paths.clear()
+            return value
+        if key == "flags":
+            value = self.flags.table
+            self.flags.clear()
+            return value
+        if key == "packages":
+            value = self.packages.array  # type: ignore
+            self.packages.clear()
+            return value
+
+        return default
 
     def update(self, other: dict[str, Any]) -> None:
         """Update the environment with the contents of another dictionary.
@@ -2976,7 +1768,11 @@ class Environment:
         other : dict[str, Any]
             The dictionary to update the environment with.
         """
-        os.environ.update(other)
+        self.info.update(other.get("info", {}))
+        self.vars.update(other.get("vars", {}))
+        self.paths.update(other.get("paths", {}))
+        self.flags.update(other.get("flags", {}))
+        self.packages.extend(other.get("packages", []))
 
     def __bool__(self) -> bool:
         """Check if there is an active virtual environment."""
@@ -2992,39 +1788,59 @@ class Environment:
         return reversed(os.environ.keys())
 
     def __getitem__(self, key: str) -> Any:
-        return os.environ[key]
+        if key == "info":
+            return self.info
+        if key == "vars":
+            return self.vars
+        if key == "paths":
+            return self.paths
+        if key == "flags":
+            return self.flags
+        if key == "packages":
+            return self.packages
+        raise KeyError(key)
 
     def __setitem__(self, key: str, value: Any) -> None:
-        vars_ = self.vars
-        paths = self.paths
-        flags = self.flags
-        if key in paths:
-            paths[key].clear()
-            paths[key].extend(value)
-        elif key in flags:
-            flags[key].clear()
-            flags[key].extend(value)
+        if key == "info":
+            self.info = value
+        elif key == "vars":
+            self.vars = value
+        elif key == "paths":
+            self.paths = value
+        elif key == "flags":
+            self.flags = value
+        elif key == "packages":
+            self.packages = value
         else:
-            vars_[key] = value
+            raise KeyError(key)
 
     def __delitem__(self, key: str) -> None:
-        self.vars.pop(key)
-        self.paths.pop(key)
-        self.flags.pop(key)
+        if key == "info":
+            del self.info
+        elif key == "vars":
+            del self.vars
+        elif key == "paths":
+            del self.paths
+        elif key == "flags":
+            del self.flags
+        elif key == "packages":
+            del self.packages
+        else:
+            raise KeyError(key)
 
     def __contains__(self, key: str) -> bool:
-        return key in os.environ
+        return key in {"info", "vars", "paths", "flags", "packages"}
 
     def __eq__(self, other: Any) -> bool:
         if isinstance(other, Environment):
-            return self.toml == other.toml and self.toml.exists() and other.toml.exists()
+            return self.table == other.table
         return False
 
     def __ne__(self, other: Any) -> bool:
         return not self == other
 
     def __or__(self, other: dict[str, Any]) -> dict[str, Any]:
-        return os.environ | other
+        return self.table | other
 
     def __ior__(self, other: dict[str, Any]) -> Environment:
         self.update(other)
@@ -3048,146 +1864,3 @@ class Environment:
 
 
 env = Environment.__new__(Environment)
-
-
-# TODO: avoid pushing empty strings into the environment?
-
-
-def activate(venv: Path) -> list[str]:
-    """Return the sequence of bash commands used to enter a virtual environment for the
-    current process.
-
-    Parameters
-    ----------
-    venv : Path
-        The path to the environment directory to activate.
-
-    Returns
-    -------
-    list[str]
-        A list of bash commands that will set the required environment variables when
-        sourced.
-
-    Raises
-    ------
-    FileNotFoundError
-        If no env.toml file was found.
-    TypeError
-        If the env.toml file is not formatted correctly.
-
-    Notes
-    -----
-    This method is called by the `$ bertrand activate venv` shell command, which is
-    in turn called by the virtual environment's `activate` script.  Each command
-    will be executed verbatim when the script is sourced.
-    """
-    toml = venv / "env.toml"
-    if not toml.exists():
-        raise FileNotFoundError("Environment file not found.")
-    with toml.open("r") as f:
-        content = tomlkit.load(f)
-
-    _vars = content.get("vars", {})
-    if not isinstance(_vars, dict) and all(isinstance(v, str) for v in _vars.values()):
-        raise TypeError("[vars] table must be a table of strings.")
-
-    paths = content.get("paths", {})
-    if not (
-        isinstance(paths, dict) and all(
-            isinstance(v, list) and all(isinstance(p, str) for p in v)
-            for v in paths.values()
-        )
-    ):
-        raise TypeError(
-            "[paths] table must be a table containing lists of pathlike strings."
-        )
-
-    flags = content.get("flags", {})
-    if not (
-        isinstance(flags, dict) and all(
-            isinstance(v, list) and all(isinstance(p, str) for p in v)
-            for v in flags.values()
-        )
-    ):
-        raise TypeError("[flags] table must be a table containing lists of strings.")
-
-    # save the current environment variables
-    old: list[str] = []
-    new: list[str] = []
-
-    # [vars] get exported directly
-    for key, value in _vars.items():
-        if key in os.environ:
-            old.append(f"export {Environment.OLD_PREFIX}{key}=\"{os.environ[key]}\"")
-        new.append(f"export {key}=\"{value}\"")
-
-    # [paths] get prepended to existing paths
-    for key, pathlist in paths.items():
-        if key in os.environ:
-            old.append(f"export {Environment.OLD_PREFIX}{key}=\"{os.environ[key]}\"")
-            fragment = os.pathsep.join([*pathlist, os.environ[key]])
-        else:
-            fragment = os.pathsep.join(pathlist)
-        if fragment:
-            new.append(f'export {key}=\"{fragment}\"')
-
-    # [flags] get appended to existing flags
-    for key, flaglist in flags.items():
-        if key in os.environ:
-            old.append(f"export {Environment.OLD_PREFIX}{key}=\"{os.environ[key]}\"")
-            fragment = " ".join([os.environ[key], *flaglist])
-        else:
-            fragment = " ".join(flaglist)
-        if fragment:
-            new.append(f'export {key}=\"{fragment}\"')
-
-    return old + new
-
-
-def deactivate() -> list[str]:
-    """Return the sequence of bash commands used to exit the current virtual
-    environment for the current process.
-
-    Returns
-    -------
-    list[str]
-        A list of bash commands that will restore the environment variables when
-        sourced.
-
-    Notes
-    -----
-    When the activate() method is called, the environment variables are saved
-    with a prefix of "_OLD_VIRTUAL_" to prevent conflicts.  This method undoes that
-    by transferring the value from the prefixed variable back to the original, and
-    then clearing the temporary variable.
-
-    If the variable did not exist before the environment was activated, it will
-    clear it without replacement.
-    """
-    commands: list[str] = []
-
-    for key in env.flags:
-        old = f"{Environment.OLD_PREFIX}{key}"
-        if old in os.environ:
-            commands.append(f"export {key}=\"{os.environ[old]}\"")
-            commands.append(f"unset {old}")
-        else:
-            commands.append(f"unset {key}")
-
-    for key in env.paths:
-        old = f"{Environment.OLD_PREFIX}{key}"
-        if old in os.environ:
-            commands.append(f"export {key}=\"{os.environ[old]}\"")
-            commands.append(f"unset {old}")
-        else:
-            commands.append(f"unset {key}")
-
-    for key in env.vars:
-        old = f"{Environment.OLD_PREFIX}{key}"
-        if old in os.environ:
-            commands.append(f"export {key}=\"{os.environ[old]}\"")
-            commands.append(f"unset {old}")
-        else:
-            commands.append(f"unset {key}")
-
-    return commands
