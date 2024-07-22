@@ -766,6 +766,11 @@ class Table(Generic[T]):
         return repr(self.table)
 
 
+# TODO: maybe it makes the most sense to have activate/deactivate be normal functions
+# in order to fit in with init(), setup(), clean(), and eventually install(),
+# uninstall(), update(), etc.
+
+
 class Environment:
     """A wrapper around an env.toml file that can be used to activate and deactivate
     the environment, as well as check or modify its state.

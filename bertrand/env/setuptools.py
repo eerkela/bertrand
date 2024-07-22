@@ -428,6 +428,7 @@ class Source(setuptools.Extension):
         self._is_interface = False  # set in stage 1
         self._is_executable = False  # set in stage 2
         self._stage2_sources: set[Source] = set()  # set in stage 2
+        self._previous_compile_hash = ""  # set in stage 2
 
     ######################
     ####    CONFIG    ####
@@ -1022,6 +1023,35 @@ class Source(setuptools.Extension):
         return path.parent / f"{path.name}.o"
 
     @property
+    def compile_hash(self) -> str:
+        """A token encoding the command-line arguments that are used to compile this
+        source.
+
+        Returns
+        -------
+        str
+            A SHA256 hash of the relevant command-line arguments, in hexadecimal form.
+
+        Notes
+        -----
+        This property is used to determine whether the source file has been modified
+        since the last build, if the mtime is not sufficient.  This means that changing
+        either the file itself, any of its dependencies, or the command used to compile
+        it will trigger a rebuild.
+        """
+        return hashlib.sha256(" ".join([
+            str(self.cpp_std),
+            " ".join(str(p) for p in self.get_include_dirs()),
+            " ".join(f"{k}={v}" if v else k for k, v in self.get_define_macros()),
+            " ".join(str(p) for p in self.get_library_dirs()),
+            " ".join(self.get_libraries()),
+            " ".join(str(p) for p in self.get_runtime_library_dirs()),
+            " ".join(self.get_compile_args()),
+            " ".join(self.get_link_args()),
+            " ".join(f"{k}={v}" if v else k for k, v in self._extra_cmake_args),
+        ]).encode("utf-8")).hexdigest()
+
+    @property
     def bmi_hash(self) -> str:
         """A token encoding the relevant command-line arguments to determine
         compatibility with prebuilt BMI files.
@@ -1108,7 +1138,9 @@ class Source(setuptools.Extension):
         This property controls whether the target is added to the stage 2 build list,
         after which it will always evaluate to false.
         """
-        mtime = self.mtime
+        # if a source's compile command has changed, then it is outdated by definition
+        if self._previous_compile_hash and self.compile_hash != self._previous_compile_hash:
+            return True
 
         # in-tree sources are associated with full objects and BMIs
         if self.in_tree:
@@ -1119,14 +1151,14 @@ class Source(setuptools.Extension):
             # check object output is up to date
             if self.is_primary_module_interface or not self.module:
                 obj = self.object
-                if not obj.exists() or obj.stat().st_mtime < mtime:
+                if not obj.exists() or obj.stat().st_mtime < self.mtime:
                     return True
 
         # out-of-tree sources are not covered by the dependency scan, and are only
         # reliably associated with a BMI file.
         elif self.module:
             bmi = self.bmi_dir / f"{self.module}.pcm"
-            if not bmi.exists() or bmi.stat().st_mtime < mtime:
+            if not bmi.exists() or bmi.stat().st_mtime < self.mtime:
                 return True
 
         return any(dep.outdated for dep in self.requires.values() if dep is not self)
@@ -1339,13 +1371,10 @@ class BuildSources(setuptools_build_ext):
         self._bertrand_source_lookup: dict[Path, Source] = {}
         self._bertrand_module_lookup: dict[str, Source] = {}
         self._bertrand_build_dir: Path
+        self._bertrand_binding_root: Path
         self._bertrand_module_root: Path
         self._bertrand_module_cache: Path
-        self._bertrand_binding_root: Path
-        self._bertrand_binding_cache: Path  # TODO: might not be necessary
-        # -> _binding_cache is used in the AST parser to avoid repeated parsing of
-        #    the same module interface units
-        self._bertrand_executable_cache: Path  # TODO: should be a json that's constantly updated
+        self._bertrand_ast_cache: Path
 
     def finalize_options(self) -> None:
         """Parse command-line options and convert them to the appropriate types.
@@ -1359,11 +1388,10 @@ class BuildSources(setuptools_build_ext):
         """
         super().finalize_options()
         self._bertrand_build_dir = Path(self.build_lib)
+        self._bertrand_binding_root = self._bertrand_build_dir / "bindings"
         self._bertrand_module_root = self._bertrand_build_dir / "modules"
         self._bertrand_module_cache = self._bertrand_build_dir / ".modules"
-        self._bertrand_binding_root = self._bertrand_build_dir / "bindings"
-        self._bertrand_binding_cache = self._bertrand_build_dir / ".bindings"
-        self._bertrand_executable_cache = self._bertrand_build_dir / ".executables"
+        self._bertrand_ast_cache = self._bertrand_build_dir / ".bertrand_ast.json"
         if "-fdeclspec" not in self._bertrand_compile_args:
             self._bertrand_compile_args.append("-fdeclspec")
 
@@ -1974,22 +2002,18 @@ class BuildSources(setuptools_build_ext):
         The output from this stage will then be reused during stage 3 to link the
         final build artifacts using the results of the AST parser.
         """
-        try:
-            cmakelists = self._stage2_cmakelists()
-            self._cmake_build(cmakelists)
-            self._update_ast()
-            for source in self.extensions:
-                bmi_dir = source.bmi_dir
-                for pcm in source.build_dir.glob("*.pcm"):
-                    bmi_dir.mkdir(parents=True, exist_ok=True)
-                    # NOTE: don't use shutil.copy2 here, since we want the modification
-                    # time of the BMI to come AFTER the creation of the binding file,
-                    # if any.  This makes sure that stage 3 supports incremental builds
-                    # just like stage 2.
-                    shutil.copy(pcm, bmi_dir / pcm.name)
-        finally:
-            self._bertrand_binding_cache.unlink(missing_ok=True)
-            self._bertrand_executable_cache.unlink(missing_ok=True)
+        self._ast_setup()
+        cmakelists = self._stage2_cmakelists()
+        self._cmake_build(cmakelists)
+        self._ast_teardown()
+        for source in self.extensions:
+            bmi_dir = source.bmi_dir
+            for pcm in source.build_dir.glob("*.pcm"):
+                bmi_dir.mkdir(parents=True, exist_ok=True)
+                # NOTE: don't use shutil.copy2 here, since we want the modification
+                # time of the BMI to come AFTER the creation of the binding file.
+                # This ensures stage 3 supports incremental builds like stage 2.
+                shutil.copy(pcm, bmi_dir / pcm.name)
 
     def _stage2_cmakelists(self) -> Path:
         out = self._cmakelists_header()
@@ -2008,7 +2032,7 @@ class BuildSources(setuptools_build_ext):
             target = source.name
             out += f"add_library({target} OBJECT\n"
             source._stage2_sources = {source, *source.extra_sources}
-            for s in source._stage2_sources:  
+            for s in source._stage2_sources:
                 out += f"    {s.path.absolute()}\n"
             out += ")\n"
 
@@ -2061,9 +2085,8 @@ class BuildSources(setuptools_build_ext):
                 out += f"    -fmodule-file={name}={bmi.absolute()}\n"
             out += f"    -fplugin={env / 'lib' / 'bertrand-attrs.so'}\n"
             out += f"    -fplugin={env / 'lib' / 'bertrand-ast.so'}\n"
-            out += f"    -fplugin-arg-main-cache={self._bertrand_executable_cache.absolute()}\n"
+            out += f"    -fplugin-arg-main-cache={self._bertrand_ast_cache.absolute()}\n"
             if source.is_primary_module_interface:
-                binding_cache = self._bertrand_binding_cache
                 python_path = self._bertrand_binding_root / source.path
                 python_path.parent.mkdir(parents=True, exist_ok=True)
                 python_module = source.module.split(".")[-1]
@@ -2071,7 +2094,7 @@ class BuildSources(setuptools_build_ext):
                 out += f"    -fplugin-arg-export-import={source.module}\n"
                 out += f"    -fplugin-arg-export-export={python_module}\n"
                 out += f"    -fplugin-arg-export-python={python_path.absolute()}\n"
-                out += f"    -fplugin-arg-export-cache={binding_cache.absolute()}\n"
+                out += f"    -fplugin-arg-export-cache={self._bertrand_ast_cache.absolute()}\n"
             compile_args = source.get_compile_args()
             for flag in compile_args:
                 out += f"    {flag}\n"
@@ -2122,6 +2145,44 @@ class BuildSources(setuptools_build_ext):
             f.write(out)
         return path
 
+    def _ast_setup(self) -> None:
+        # if we're doing an incremental build, then we need to parse the cache and
+        # identify which sources have been modified since the last build.  We then
+        # reset those sources and allow the AST parser to update them accordingly.
+        if self._bertrand_ast_cache.exists():
+            cwd = Path.cwd()
+            with self._bertrand_ast_cache.open("r+") as f:
+                content = json.load(f)
+                for k in content.copy():
+                    p = Path(k).relative_to(cwd)
+                    if p in self._bertrand_source_lookup:
+                        v = content[k]
+                        source = self._bertrand_source_lookup[p]
+                        source._previous_compile_hash = v["command"]
+                        if source.outdated:
+                            v["command"] = source.compile_hash
+                            v["parsed"] = False
+                            v["executable"] = False
+                    else:
+                        del content[k]
+                f.seek(0)
+                json.dump(content, f, indent=4)
+                f.truncate()
+
+        # if this is a fresh build, then everything is initialized to false and will
+        # be populated by the AST parser directly.
+        else:
+            with self._bertrand_ast_cache.open("w") as f:
+                init: dict[str, dict[str, str | bool]] = {}
+                for source in self.extensions:
+                    source._previous_compile_hash = source.compile_hash
+                    init[str(source.path.absolute())] = {
+                        "command": source._previous_compile_hash,
+                        "parsed": False,
+                        "executable": False,
+                    }
+                json.dump(init, f)
+
     def _cmake_build(self, cmakelists: Path) -> None:
         # building the project using the AST plugin will emit the Python bindings
         # automatically as part of compilation, so we don't need to do anything
@@ -2145,50 +2206,25 @@ class BuildSources(setuptools_build_ext):
         except subprocess.CalledProcessError:
             sys.exit()  # errors are already printed to the console
 
-    # TODO: the AST parser should only consider in-tree sources when generating
-    # Python bindings.  Maybe the solution to that is to store a separate set
-    # containing the sources that were manually provided to setup().  I can then
-    # use the argument system to pass this information along to the parser.
-    # -> These extra sources would not appear in the command's .extensions list, which
-    # allows us to segregate them from the main build process.
-
-    # TODO: because we're aggressively culling sources for incremental builds, the
-    # AST parser loses track of the executable status of the source files.  This can
-    # only be resolved by persisting the cache across builds, and updating it whenever
-    # a source file is modified.  This is going to be a pain, but it's the only way to
-    # ensure the build system remains consistent across builds.
-
-    # -> https://conan.io/center/recipes/nlohmann_json?version=3.11.3
-
-    # Bringing in a library for this is the way to go.  That way I can use json as a
-    # portable format for all caches.
-
-    def _update_ast(self) -> None:
-        # The AST plugin produces a cache that marks all of the source files that have
-        # a `main()` entry point.  These will be built as executables in stage 3.
-        if self._bertrand_executable_cache.exists():
-            with self._bertrand_executable_cache.open("r") as f:
-                for line in f:
-                    source = self._bertrand_source_lookup[
-                        Path(line.strip()).resolve().relative_to(Path.cwd())
-                    ]
-                    if source.module:
-                        FAIL(
-                            f"source file {CYAN}{source.path}{WHITE} cannot be both a "
-                            f"{YELLOW}module{WHITE} and contain a "
-                            f"{YELLOW}main(){WHITE} entry point.  Please import the "
-                            f"module in a separate source file instead."
-                        )
-                    source._is_executable = True
-
-        # The AST plugin also dumps Python bindings to the build directory using a
-        # nested tree under bindings/.  These are added as extra sources to the shared
-        # library targets, which make them importable from Python.
-        for source in self.extensions:
-            if source.is_primary_module_interface:
-                source.extra_sources.add(
-                    source.spawn(self._bertrand_binding_root / source.path)
-                )
+    def _ast_teardown(self) -> None:
+        # The AST plugin modifies the build cache in-place, so we just read the results
+        # back in to update the build system.
+        with self._bertrand_ast_cache.open("r") as f:
+            cwd = Path.cwd()
+            for k, v in json.load(f).items():
+                source = self._bertrand_source_lookup[Path(k).relative_to(cwd)]
+                source._is_executable = v["executable"]
+                if source._is_executable and source.module:
+                    FAIL(
+                        f"source file {CYAN}{source.path}{WHITE} cannot be both a "
+                        f"{YELLOW}module{WHITE} and contain a {YELLOW}main(){WHITE} "
+                        f"entry point.  Please import the module in a separate source "
+                        f"file instead."
+                    )
+                if source.is_primary_module_interface:
+                    source.extra_sources.add(
+                        source.spawn(self._bertrand_binding_root / source.path)
+                    )
 
     def stage3(self) -> None:
         """Link the products from stage 2 into shared libraries and executables.
