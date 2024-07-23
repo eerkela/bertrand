@@ -766,11 +766,6 @@ class Table(Generic[T]):
         return repr(self.table)
 
 
-# TODO: maybe it makes the most sense to have activate/deactivate be normal functions
-# in order to fit in with init(), setup(), clean(), and eventually install(),
-# uninstall(), update(), etc.
-
-
 class Environment:
     """A wrapper around an env.toml file that can be used to activate and deactivate
     the environment, as well as check or modify its state.
@@ -796,115 +791,6 @@ class Environment:
         self._flags = self.Flags(self)
         self._packages = self.Packages(self)
         return self
-
-    def activate(self, venv: Path) -> list[str]:
-        """Enter the environment from a Python process and return the sequence of bash
-        commands necessary to activate it from the command line.
-
-        Parameters
-        ----------
-        venv : Path
-            The path to the environment directory to activate.  Must contain an
-            `env.toml` file that conforms to this specification.
-
-        Returns
-        -------
-        list[str]
-            A list of bash commands that will set the required environment variables when
-            sourced from the command line.
-
-        Raises
-        ------
-        FileNotFoundError
-            If no env.toml file was found.
-        TypeError
-            If the env.toml file is not formatted correctly.
-
-        Notes
-        -----
-        This method is called by the `$ bertrand activate venv` shell command, which is
-        in turn called by the virtual environment's `activate` script to enter the
-        environment.  Each command will be executed verbatim when the activation script
-        is sourced, allowing the environment to be attached to the shell itself.
-        """
-        os.environ["BERTRAND_HOME"] = str(venv)
-        commands = []
-
-        # [vars] get exported directly
-        for key, value in self.vars.items():
-            if key in os.environ:
-                k = f"{self.OLD_PREFIX}{key}"
-                v = os.environ[key]
-                os.environ[k] = v
-                commands.append(f"export {k}=\"{v}\"")
-            os.environ[key] = value
-            commands.append(f"export {key}=\"{value}\"")
-
-        # [paths] get prepended to existing paths
-        for key, paths in self.paths.items():
-            if key in os.environ:
-                k = f"{self.OLD_PREFIX}{key}"
-                v = os.environ[key]
-                os.environ[k] = v
-                commands.append(f"export {k}=\"{v}\"")
-                fragment = os.pathsep.join([*(str(p) for p in paths), v])
-            else:
-                fragment = os.pathsep.join(str(p) for p in paths)
-            if fragment:
-                os.environ[key] = fragment
-                commands.append(f'export {key}=\"{fragment}\"')
-
-        # [flags] get appended to existing flags
-        for key, flaglist in self.flags.items():
-            if key in os.environ:
-                k = f"{self.OLD_PREFIX}{key}"
-                v = os.environ[key]
-                os.environ[k] = v
-                commands.append(f"export {k}=\"{v}\"")
-                fragment = " ".join([v, *flaglist])
-            else:
-                fragment = " ".join(flaglist)
-            if fragment:
-                os.environ[key] = fragment
-                commands.append(f'export {key}=\"{fragment}\"')
-
-        return commands
-
-    def deactivate(self) -> list[str]:
-        """Exit the environment from a Python process and return the sequence of bash
-        commands necessary to deactivate it from the command line.
-
-        Returns
-        -------
-        list[str]
-            A list of bash commands that will restore the previous environment
-            variables when sourced.
-
-        Notes
-        -----
-        When the `activate()` method is called, the environment variables are saved
-        with a special prefix to prevent conflicts.  This method undoes that by
-        transferring the value of the prefixed variable back to the original, and then
-        clearing the temporary variable.
-
-        If the variable did not exist before the environment was activated, this method
-        will clear it without replacement.
-        """
-        commands = []
-
-        for key in list(self.flags) + list(self.paths) + list(self.vars):
-            old = f"{self.OLD_PREFIX}{key}"
-            if old in os.environ:
-                os.environ[key] = os.environ[old]
-                commands.append(f"export {key}=\"{os.environ[old]}\"")
-                os.environ.pop(old)
-                commands.append(f"unset {old}")
-            else:
-                os.environ.pop(key, None)
-                commands.append(f"unset {key}")
-
-        os.environ.pop("BERTRAND_HOME", None)
-        return commands
 
     @property
     def dir(self) -> Path:
@@ -1867,3 +1753,114 @@ class Environment:
 
 
 env = Environment.__new__(Environment)
+
+
+def activate(venv: Path) -> list[str]:
+    """Enter the environment from a Python process and return the sequence of bash
+    commands necessary to activate it from the command line.
+
+    Parameters
+    ----------
+    venv : Path
+        The path to the environment directory to activate.  Must contain an
+        `env.toml` file that conforms to this specification.
+
+    Returns
+    -------
+    list[str]
+        A list of bash commands that will set the required environment variables when
+        sourced from the command line.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no env.toml file was found.
+    TypeError
+        If the env.toml file is not formatted correctly.
+
+    Notes
+    -----
+    This method is called by the `$ bertrand activate venv` shell command, which is
+    in turn called by the virtual environment's `activate` script to enter the
+    environment.  Each command will be executed verbatim when the activation script
+    is sourced, allowing the environment to be attached to the shell itself.
+    """
+    os.environ["BERTRAND_HOME"] = str(venv)
+    commands = []
+
+    # [vars] get exported directly
+    for key, value in env.vars.items():
+        if key in os.environ:
+            k = f"{env.OLD_PREFIX}{key}"
+            v = os.environ[key]
+            os.environ[k] = v
+            commands.append(f"export {k}=\"{v}\"")
+        os.environ[key] = value
+        commands.append(f"export {key}=\"{value}\"")
+
+    # [paths] get prepended to existing paths
+    for key, paths in env.paths.items():
+        if key in os.environ:
+            k = f"{env.OLD_PREFIX}{key}"
+            v = os.environ[key]
+            os.environ[k] = v
+            commands.append(f"export {k}=\"{v}\"")
+            fragment = os.pathsep.join([*(str(p) for p in paths), v])
+        else:
+            fragment = os.pathsep.join(str(p) for p in paths)
+        if fragment:
+            os.environ[key] = fragment
+            commands.append(f'export {key}=\"{fragment}\"')
+
+    # [flags] get appended to existing flags
+    for key, flaglist in env.flags.items():
+        if key in os.environ:
+            k = f"{env.OLD_PREFIX}{key}"
+            v = os.environ[key]
+            os.environ[k] = v
+            commands.append(f"export {k}=\"{v}\"")
+            fragment = " ".join([v, *flaglist])
+        else:
+            fragment = " ".join(flaglist)
+        if fragment:
+            os.environ[key] = fragment
+            commands.append(f'export {key}=\"{fragment}\"')
+
+    return commands
+
+
+def deactivate() -> list[str]:
+    """Exit the environment from a Python process and return the sequence of bash
+    commands necessary to deactivate it from the command line.
+
+    Returns
+    -------
+    list[str]
+        A list of bash commands that will restore the previous environment
+        variables when sourced.
+
+    Notes
+    -----
+    When the `activate()` method is called, the environment variables are saved
+    with a special prefix to prevent conflicts.  This method undoes that by
+    transferring the value of the prefixed variable back to the original, and then
+    clearing the temporary variable.
+
+    If the variable did not exist before the environment was activated, this method
+    will clear it without replacement.
+    """
+    commands = []
+
+    for key in list(env.flags) + list(env.paths) + list(env.vars):
+        old = f"{env.OLD_PREFIX}{key}"
+        if old in os.environ:
+            os.environ[key] = os.environ[old]
+            commands.append(f"export {key}=\"{os.environ[old]}\"")
+            os.environ.pop(old)
+            commands.append(f"unset {old}")
+        else:
+            os.environ.pop(key, None)
+            commands.append(f"unset {key}")
+
+    os.environ.pop("BERTRAND_HOME", None)
+    return commands

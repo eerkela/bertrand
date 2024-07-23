@@ -4,7 +4,7 @@ import argparse
 import subprocess
 from pathlib import Path
 
-from .env import init, env, clean
+from .env import activate, clean, deactivate, init
 from . import __version__
 
 
@@ -359,7 +359,7 @@ class Parser:
 
 
 def main() -> None:
-    """Run Bertrand as a command-line utility."""
+    """Run the Bertrand command-line interface."""
     parser = Parser()
     args = parser()
 
@@ -386,11 +386,11 @@ def main() -> None:
             print("again with the --bootstrap (and possibly --swap=N) flag.")
 
     elif args.command == "activate":
-        for command in env.activate(args.file[0]):
+        for command in activate(args.file[0]):
             print(command)
 
     elif args.command == "deactivate":
-        for command in env.deactivate():
+        for command in deactivate():
             print(command)
 
     elif args.command == "compile":

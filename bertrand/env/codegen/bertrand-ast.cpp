@@ -23,8 +23,8 @@
     #include <sys/file.h>
 #endif
 
-
 #include <nlohmann/json.hpp>
+using json = nlohmann::json;
 
 
 // https://www.youtube.com/watch?v=A9COzFs-gEg
@@ -441,7 +441,7 @@ class ExportConsumer : public clang::ASTConsumer {
     std::string module_path;
     std::string import_name;
     std::string export_name;
-    std::string python_path;
+    std::string binding_path;
     std::string cache_path;
 
 public:
@@ -451,10 +451,10 @@ public:
         std::string module_path,
         std::string import_name,
         std::string export_name,
-        std::string python_path,
+        std::string binding_path,
         std::string cache_path
     ) : compiler(compiler), module_path(module_path), import_name(import_name),
-        export_name(export_name), python_path(python_path), cache_path(cache_path)
+        export_name(export_name), binding_path(binding_path), cache_path(cache_path)
     {}
 
     void HandleTranslationUnit(clang::ASTContext& context) override {
@@ -470,22 +470,22 @@ public:
                 llvm::errs() << "failed to open cache file: " << cache_path << "\n";
                 return;
             }
-            bool cached = false;
-            std::string line;
-            while (file >> line) {
-                if (line == source_path) {
-                    cached = true;
-                    break;
+            auto cache = json::parse(file.file);
+            if (cache.contains(source_path)) {
+                std::string parsed = cache[source_path]["parsed"];
+                if (parsed.empty()) {
+                    ExportVisitor visitor(import_name, export_name, binding_path);
+                    visitor.TraverseDecl(context.getTranslationUnitDecl());
+                    cache[source_path]["parsed"] = binding_path;
+                    file->close();
+                    file->open(cache_path, std::ios::out | std::ios::trunc);
+                    file << cache.dump(4);
+                } else {
+                    llvm::errs() << "skipping already-exported module: "
+                                 << source_path << "\n";
                 }
-            }
-            if (!cached) {
-                ExportVisitor visitor(import_name, export_name, python_path);
-                visitor.TraverseDecl(context.getTranslationUnitDecl());
-                file->clear();  // clear EOF flag before writing
-                file->seekp(0, std::ios::end);  // append to end of file
-                file << source_path;
             } else {
-                llvm::errs() << "skipping already-exported module: " << source_path << "\n";
+                llvm::errs() << "skipping out-of-tree module: " << source_path << "\n";
             }
         }
     }
@@ -510,7 +510,8 @@ public:
             if (func && func->isMain()) {
                 // ensure only the file that actually defines main() is considered
                 const clang::SourceManager& src_mgr = compiler.getSourceManager();
-                if (src_mgr.getFileID(func->getLocation()) != src_mgr.getMainFileID()) {
+                auto file_id = src_mgr.getFileID(func->getLocation());
+                if (file_id != src_mgr.getMainFileID()) {
                     continue;
                 }
 
@@ -527,21 +528,12 @@ public:
                     return false;
                 }
 
-                // check for a cached entry for this path or write a new one
-                bool cached = false;
-                std::string line;
-                while (file >> line) {
-                    if (line == source_path) {
-                        cached = true;
-                        break;
-                    }
-                }
-                if (!cached) {
-                    llvm::errs() << "found main() in: " << source_path << "\n";
-                    file->clear();  // clear EOF flag before writing
-                    file->seekp(0, std::ios::end);  // append to end of file
-                    file << source_path;
-                }
+                auto cache = json::parse(file.file);
+                cache[source_path]["executable"] = true;
+                llvm::errs() << "found main() in: " << source_path << "\n";
+                file->close();
+                file->open(cache_path, std::ios::out | std::ios::trunc);
+                file << cache.dump(4);
             }
         }
         return true;
@@ -576,7 +568,7 @@ class ExportAction : public clang::PluginASTAction {
     std::string module_path;
     std::string import_name;
     std::string export_name;
-    std::string python_path;
+    std::string binding_path;
     std::string cache_path;
 
 protected:
@@ -590,7 +582,7 @@ protected:
             module_path,
             import_name,
             export_name,
-            python_path,
+            binding_path,
             cache_path
         );
     }
@@ -613,8 +605,8 @@ protected:
                 export_name = arg.substr(arg.find('=') + 1);
 
             // path to output binding file
-            } else if (arg.starts_with("python=")) {
-                python_path = arg.substr(arg.find('=') + 1);
+            } else if (arg.starts_with("binding=")) {
+                binding_path = arg.substr(arg.find('=') + 1);
 
             // path to cache to avoid repeated work
             } else if (arg.starts_with("cache=")) {

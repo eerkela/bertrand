@@ -68,7 +68,10 @@
 # del timedelta       # type: ignore
 
 
-from .env import BuildSources, Source, Package, get_include, setup, env, __version__
+from .env import (
+    __version__, activate, BuildSources, clean, deactivate, env, init, Package, setup,
+    Source
+)
 
 
 # try:

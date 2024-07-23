@@ -25,20 +25,7 @@ from .package import Package
 from .version import __version__
 
 
-# TODO: eventually, get_include() won't be necessary, since all the headers will be
-# converted into modules, and the python module might be imported by default.
-
-
-def get_include() -> str:
-    """Get the path to the include directory for this package, which is necessary to
-    make C++ headers available to the compiler.
-
-    Returns
-    -------
-    str
-        The path to the include directory for this package.
-    """
-    return str(Path(__file__).absolute().parent.parent.parent)
+# pylint: disable=protected-access
 
 
 class Source(setuptools.Extension):
@@ -63,8 +50,6 @@ class Source(setuptools.Extension):
     with the flag, while A will be built without it.  If A requires the flag as well,
     then it should be added to its `Source` constructor.
     """
-
-    # pylint: disable=protected-access
 
     class Paths(list):  # type: ignore
         """A collection of paths that automatically converts between posix-style
@@ -1325,8 +1310,6 @@ class BuildSources(setuptools_build_ext):
     virtual environment or not.
     """
 
-    # pylint: disable=protected-access
-
     MIN_CMAKE_VERSION = Version("3.28")
 
     # additional command-line options accepted by the command
@@ -1391,7 +1374,7 @@ class BuildSources(setuptools_build_ext):
         self._bertrand_binding_root = self._bertrand_build_dir / "bindings"
         self._bertrand_module_root = self._bertrand_build_dir / "modules"
         self._bertrand_module_cache = self._bertrand_build_dir / ".modules"
-        self._bertrand_ast_cache = self._bertrand_build_dir / ".bertrand_ast.json"
+        self._bertrand_ast_cache = self._bertrand_build_dir / ".bertrand-ast.json"
         if "-fdeclspec" not in self._bertrand_compile_args:
             self._bertrand_compile_args.append("-fdeclspec")
 
@@ -1407,7 +1390,8 @@ class BuildSources(setuptools_build_ext):
             self._bertrand_source_lookup[source.path] = source
 
         # add environment variables to the build configuration
-        self._bertrand_include_dirs.append(Path(get_include()))
+        get_include = Path(__file__).parent.parent.parent  # evaluates to site-packages
+        self._bertrand_include_dirs.append(get_include)
         cpath = env.get("CPATH", "")
         if cpath:
             self._bertrand_include_dirs.extend(
@@ -2015,6 +1999,44 @@ class BuildSources(setuptools_build_ext):
                 # This ensures stage 3 supports incremental builds like stage 2.
                 shutil.copy(pcm, bmi_dir / pcm.name)
 
+    def _ast_setup(self) -> None:
+        # if we're doing an incremental build, then we need to parse the cache and
+        # identify which sources have been modified since the last build.  We then
+        # reset those sources and allow the AST parser to update them accordingly.
+        if self._bertrand_ast_cache.exists():
+            cwd = Path.cwd()
+            with self._bertrand_ast_cache.open("r+") as f:
+                content = json.load(f)
+                for k in content.copy():
+                    p = Path(k).relative_to(cwd)
+                    if p in self._bertrand_source_lookup:
+                        v = content[k]
+                        source = self._bertrand_source_lookup[p]
+                        source._previous_compile_hash = v["command"]
+                        if source.outdated:
+                            v["command"] = source.compile_hash
+                            v["executable"] = False
+                            v["parsed"] = ""
+                    else:
+                        del content[k]
+                f.seek(0)
+                json.dump(content, f, indent=4)
+                f.truncate()
+
+        # if this is a fresh build, then everything is initialized to false and will
+        # be populated by the AST parser directly.
+        else:
+            with self._bertrand_ast_cache.open("w") as f:
+                init: dict[str, dict[str, str | bool]] = {}
+                for source in self.extensions:
+                    source._previous_compile_hash = source.compile_hash
+                    init[str(source.path.absolute())] = {
+                        "command": source._previous_compile_hash,
+                        "executable": False,
+                        "parsed": "",
+                    }
+                json.dump(init, f, indent=4)
+
     def _stage2_cmakelists(self) -> Path:
         out = self._cmakelists_header()
         out += "\n"
@@ -2087,14 +2109,16 @@ class BuildSources(setuptools_build_ext):
             out += f"    -fplugin={env / 'lib' / 'bertrand-ast.so'}\n"
             out += f"    -fplugin-arg-main-cache={self._bertrand_ast_cache.absolute()}\n"
             if source.is_primary_module_interface:
-                python_path = self._bertrand_binding_root / source.path
-                python_path.parent.mkdir(parents=True, exist_ok=True)
-                python_module = source.module.split(".")[-1]
+                cache_path = self._bertrand_ast_cache
+                binding_path = self._bertrand_binding_root / source.path
+                binding_path.parent.mkdir(parents=True, exist_ok=True)
+                imported_cpp_module = source.module
+                exported_python_module = source.module.split(".")[-1]
                 out += f"    -fplugin-arg-export-module={source.path.absolute()}\n"
-                out += f"    -fplugin-arg-export-import={source.module}\n"
-                out += f"    -fplugin-arg-export-export={python_module}\n"
-                out += f"    -fplugin-arg-export-python={python_path.absolute()}\n"
-                out += f"    -fplugin-arg-export-cache={self._bertrand_ast_cache.absolute()}\n"
+                out += f"    -fplugin-arg-export-import={imported_cpp_module}\n"
+                out += f"    -fplugin-arg-export-export={exported_python_module}\n"
+                out += f"    -fplugin-arg-export-binding={binding_path.absolute()}\n"
+                out += f"    -fplugin-arg-export-cache={cache_path.absolute()}\n"
             compile_args = source.get_compile_args()
             for flag in compile_args:
                 out += f"    {flag}\n"
@@ -2144,44 +2168,6 @@ class BuildSources(setuptools_build_ext):
         with path.open("w") as f:
             f.write(out)
         return path
-
-    def _ast_setup(self) -> None:
-        # if we're doing an incremental build, then we need to parse the cache and
-        # identify which sources have been modified since the last build.  We then
-        # reset those sources and allow the AST parser to update them accordingly.
-        if self._bertrand_ast_cache.exists():
-            cwd = Path.cwd()
-            with self._bertrand_ast_cache.open("r+") as f:
-                content = json.load(f)
-                for k in content.copy():
-                    p = Path(k).relative_to(cwd)
-                    if p in self._bertrand_source_lookup:
-                        v = content[k]
-                        source = self._bertrand_source_lookup[p]
-                        source._previous_compile_hash = v["command"]
-                        if source.outdated:
-                            v["command"] = source.compile_hash
-                            v["parsed"] = False
-                            v["executable"] = False
-                    else:
-                        del content[k]
-                f.seek(0)
-                json.dump(content, f, indent=4)
-                f.truncate()
-
-        # if this is a fresh build, then everything is initialized to false and will
-        # be populated by the AST parser directly.
-        else:
-            with self._bertrand_ast_cache.open("w") as f:
-                init: dict[str, dict[str, str | bool]] = {}
-                for source in self.extensions:
-                    source._previous_compile_hash = source.compile_hash
-                    init[str(source.path.absolute())] = {
-                        "command": source._previous_compile_hash,
-                        "parsed": False,
-                        "executable": False,
-                    }
-                json.dump(init, f)
 
     def _cmake_build(self, cmakelists: Path) -> None:
         # building the project using the AST plugin will emit the Python bindings
@@ -2403,6 +2389,15 @@ class BuildSources(setuptools_build_ext):
 
         return out
 
+    # TODO: stage 4 should consider the possibility that a source file conflicts with
+    # an existing executable, shared library, or module in the environment.  By default,
+    # this should probably fail unless the command is executed with a --force flag,
+    # which overrides this.
+    # -> This might be able to check against the clean.json file to see if the
+    # conflicting file was previously generated by bertrand's build system, and if so,
+    # suppress this error.  That way, you'd be protected from overwriting outside
+    # files, but can still incrementally build without issue.
+
     def stage4(self) -> None:
         """Copy the build products into the enclosing environment.
 
@@ -2463,11 +2458,17 @@ class BuildSources(setuptools_build_ext):
                 cache.add(str(dest))
 
                 # source files for the module interfaces go in modules/
-                # TODO: this has to also copy over dependencies into a parallel directory
                 dest = env / "modules" / f"{source.module}.cppm"
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source.path, dest)
                 cache.add(str(dest))
+                dest = dest.with_suffix("")
+                for dep in source.requires.collapse():
+                    if dep is not source:
+                        dest.mkdir(parents=True, exist_ok=True)
+                        p = dest / f"{dep.name}.cppm"
+                        shutil.copy2(dep.path, p)
+                        cache.add(str(p))
 
         path = env / "clean.json"
         if not path.exists():
@@ -2792,7 +2793,6 @@ def clean(path: Path) -> None:
         cwd = str(path.resolve())
         for s in contents.get(cwd, []):
             p = Path(s)
-            print(f"removing {p}")
             p.unlink(missing_ok=True)
             p = p.parent
             while not next(p.iterdir(), False):
