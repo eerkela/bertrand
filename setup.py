@@ -107,6 +107,8 @@ setup(
     sources=[
         Source("bertrand/example_module.cpp"),
         Source("bertrand/executable.cpp"),
+        # TODO: if I comment this out and try to use the bertrand.python module stored
+        # in the environment, it fails due to the symlink not being respected.
         *(Source(p) for p in Path("bertrand/python").rglob("*.cpp")),
     ],
     cmdclass={"build_ext": BuildSourcesHeadless},

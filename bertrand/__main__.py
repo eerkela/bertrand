@@ -277,10 +277,10 @@ class Parser:
 
     # TODO: update command
 
-    def compile(self) -> None:
-        """Add the 'compile' command to the parser."""
+    def build(self) -> None:
+        """Add the 'build' command to the parser."""
         command = self.commands.add_parser(
-            "compile",
+            "build",
             help=(
                 "Compile a C++ project within the virtual environment by invoking "
                 "bertrand's setuptools extensions.  This automatically generates "
@@ -326,8 +326,7 @@ class Parser:
         )
         command.add_argument(
             "path",
-            nargs=1,
-            type=Path,
+            nargs="?",
             help=(
                 "A path to a directory containing a `setup.py` script, which will be "
                 "searched against the environment cache to determine which files to "
@@ -352,7 +351,7 @@ class Parser:
         self.activate()
         self.deactivate()
         # self.install()
-        self.compile()
+        self.build()
         self.clean()
 
         return self.root.parse_args()
@@ -393,7 +392,7 @@ def main() -> None:
         for command in deactivate():
             print(command)
 
-    elif args.command == "compile":
+    elif args.command == "build":
         # TODO: pass the compiler options to the compiler as an environment variable
         # that gets caught in the setup.py script.
         # -> inplace is always on by default?  If you're executing this command, then
@@ -413,7 +412,10 @@ def main() -> None:
             pass  # error messages are already printed to stdout
 
     elif args.command == "clean":
-        clean(args.path[0])
+        path = args.path
+        if path:
+            clean(Path(path))
+        clean()
 
     else:
         parser.root.print_help()

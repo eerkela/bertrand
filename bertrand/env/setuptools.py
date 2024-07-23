@@ -834,6 +834,34 @@ class Source(setuptools.Extension):
         return self._makedeps
 
     @property
+    def relative_headers(self) -> set[Path]:
+        """A set of in-tree header files that may be the target of a relative
+        `#include` directive.
+
+        Returns
+        -------
+        set[Path]
+            A set of header files that are accessible via a relative path from the
+            source file.
+
+        Notes
+        -----
+        This property is used to copy over header dependencies when installing the
+        project into the environment's `modules/` directory.  Each header will be
+        copied into the module's subdirectory, such that the relative path from the
+        source file is preserved.  When the module is included in a different project,
+        all the headers will be in the expected location, and the compiler will be able
+        to find them without any additional configuration.
+        """
+        return {
+            p.relative_to(Path.cwd()) for p in self.makedeps if (
+                Path.cwd() in p.parents and
+                env.dir not in p.parents and
+                p != self.path.absolute()
+            )
+        }
+
+    @property
     def requires(self) -> Dependencies:
         """A mapping of imported module names to their corresponding Source objects.
 
@@ -1905,6 +1933,15 @@ class BuildSources(setuptools_build_ext):
                     name = edge["logical-name"]
                     source.requires[name] = self._import(source, name)
 
+    # TODO: I have to subtly change the way out-of-tree imports are handled in order to
+    # allow relative headers to be properly resolved.  This means the module directory
+    # includes a full source tree relative to setup.py, and the top-level .cppm file
+    # should be a symlink to the actual source file within that tree.
+    # -> Maybe this is not a problem, since the dotted module name will always match
+    # the directory structure?  the bertrand.example_module directory will always have
+    # a bertrand.example_module/bertrand/example_module.cppm file, and all other files
+    # will be dependencies of that file.
+
     def _import(self, source: Source, logical_name: str) -> Source:
         # check for a cached result first.  This covers absolute imports that are
         # contained within the source tree, as well as out-of-tree imports that have
@@ -1912,28 +1949,30 @@ class BuildSources(setuptools_build_ext):
         if logical_name in self._bertrand_module_lookup:
             return self._bertrand_module_lookup[logical_name]
 
-        # check for an equivalent .cppm file under env/modules/ and copy it into the
-        # build directory along with its dependencies.  This covers out-of-tree imports
+        # check for an equivalent module directory under env/modules/ and copy it into
+        # the build tree along with its dependencies.  This covers out-of-tree imports
         # that are provided by the environment, including `import std`.
-        search = env / "modules" / f"{logical_name}.cppm"
+        search = env / "modules" / logical_name
         if search.exists():
             self._bertrand_module_root.mkdir(parents=True, exist_ok=True)
-            dest = self._bertrand_module_root / search.name
-            shutil.copy2(search, dest)
-            result = source.spawn(dest, logical_name)
+            dest = self._bertrand_module_root / logical_name
+            shutil.copytree(search, dest, dirs_exist_ok=True)
+
+            # the primary module interface's dotted name always matches the directory
+            # structure, so we can trace it to obtain the correct source file.
+            primary = dest / Path(*logical_name.split("."))
+            if primary.with_suffix(".cppm").exists():
+                result = source.spawn(primary.with_suffix(".cppm"), logical_name)
+            elif primary.exists() and primary.is_dir():
+                result = source.spawn(primary / "__init__.cppm", logical_name)
 
             # dependencies are attached to the resulting Source just like normal, under
             # keys that may or may not reflect the actual imports within the .cppm file
             # itself.  This is done to avoid an additional scan over the file, and does
             # not impact how the module is built.
-            deps = search.with_suffix("")
-            if deps.exists() and deps.is_dir():
-                dest = self._bertrand_module_root / deps.name
-                shutil.copytree(deps, dest, dirs_exist_ok=True)
-                for path in dest.rglob("*.cppm"):
-                    dep = source.spawn(path, path.stem)
-                    name = ".".join(path.relative_to(dest).with_suffix("").parts)
-                    result.requires[name] = dep
+            for path in dest.rglob("*.cppm"):
+                name = ".".join(path.relative_to(dest).with_suffix("").parts)
+                result.requires[name] = source.spawn(path, name)
 
             return result
 
@@ -2273,7 +2312,7 @@ class BuildSources(setuptools_build_ext):
             )
             module_dir = source.build_dir / "modules"
             if module_dir.exists():
-                objects.extend(str(dep.absolute()) for dep in module_dir.glob("*.o"))
+                objects.extend(str(dep.absolute()) for dep in module_dir.rglob("*.o"))
             out += f"set_target_properties({source.name}.o PROPERTIES\n"
             out += f"    IMPORTED_OBJECTS \"{';'.join(objects)}\"\n"
             out += ")\n"
@@ -2400,12 +2439,12 @@ class BuildSources(setuptools_build_ext):
         such that they can be accessed from the command line or used by other projects.
 
         Executables will be installed to the environment's `bin/` directory, which is
-        automatically added to the system path when activated.  This means that after
-        installation, the executables can be run directly from the command line without
-        any additional setup.  They will always be listed under the same name as the
-        source file minus the file extension, so installing an executable with the
-        source path `path/to/my_executable.cpp` will yield a binary called
-        `my_executable` in the `bin/` directory, which can be invoked by running
+        automatically added to the system path when the environment is activated.  This
+        means that after installation, the executables can be run directly from the
+        command line without any additional setup.  They will always be listed under
+        the same name as the source file minus the file extension, so installing an
+        executable with the source path `path/to/my_executable.cpp` will yield a binary
+        called `my_executable` in the `bin/` directory, which can be invoked by running
         `$ my_executable` from the command line when the environment is active.
 
         Sources that describe primary module interface units will also be copied to the
@@ -2424,10 +2463,19 @@ class BuildSources(setuptools_build_ext):
         This facilitates editable installs, and avoids the need to go through
         `pip install` to test incremental changes.
 
-        Lastly, as the build products are copied out of the build directory, they are
-        also added to a persistent cache that is stored within the environment.  This
-        cache is used to implement the `$ bertrand clean` command, which removes any
-        files that were copied out by this method.
+        As the build products are copied out of the build directory, they are also
+        added to a persistent cache that is stored within the environment.  This cache
+        is used to implement the `$ bertrand clean` command, which removes any files
+        that were copied out by this method.
+
+        If any pre-existing files are detected in the environment that conflict with
+        the final products, the build will be aborted by default and the environment
+        will be left untouched.  This is to prevent accidental overwrites of core tools
+        or libraries that may be in use by other projects.  Note that this behavior
+        will *not* be triggered for files that were previously generated by Bertrand,
+        as these are considered safe to overwrite.  If you wish to force the build and
+        overwrite any conflicting files, you can use the `--force` flag when invoking
+        `setup.py`.
         """
         # we need to load the previous contents of the clean.json file (if any) in
         # order to detect which files were previously generated by bertrand in the
@@ -2438,63 +2486,89 @@ class BuildSources(setuptools_build_ext):
         else:
             prev_cache = {}
 
+        def _file_conflict(p: Path) -> bool:
+            p = p.resolve()
+            return (
+                not self.force and
+                p.exists() and
+                str(p) not in prev_cache.get(str(Path.cwd()), [])
+            )
+
+        def _dir_conflict(p: Path) -> bool:
+            p = p.resolve()
+            return (
+                not self.force and
+                p.exists() and
+                not any(p in Path(p2).parents for p2 in prev_cache.get(str(Path.cwd()), []))
+            )
+
         try:
             cache: set[str] = set()
             for source in self.extensions:
                 # executables are installed to the environment's bin/ directory
                 if source.is_executable:
                     target = f"{source.name}.exe"
-                    dest = env / "bin" / source.path.stem
-                    if dest.exists() and str(dest) not in prev_cache.get(str(Path.cwd()), []):
+                    exe = env / "bin" / source.path.stem
+                    if _file_conflict(exe):
                         raise FileExistsError(
-                            f"cannot overwrite existing executable at {CYAN}{dest}{WHITE}"
+                            f"cannot overwrite existing executable at {CYAN}{exe}{WHITE}"
                         )
-                    shutil.copy2(self.global_build_dir / target, dest)
-                    cache.add(str(dest))
+                    shutil.copy2(self.global_build_dir / target, exe)
+                    cache.add(str(exe))
 
                 # primary module interface units are installed to both the environment's
                 # lib/ and modules/ directories
                 if source.is_primary_module_interface:
                     # shared libraries go in lib/
                     target = f"{source.name}{sysconfig.get_config_var('EXT_SUFFIX')}"
-                    dest = env / "lib" / source.path.with_suffix(
+                    lib = env / "lib" / source.path.with_suffix(
                         sysconfig.get_config_var("SHLIB_SUFFIX")
                     )
-                    if dest.exists() and str(dest) not in prev_cache.get(str(Path.cwd()), []):
+                    if _file_conflict(lib):
                         raise FileExistsError(
-                            f"cannot overwrite existing library at {CYAN}{dest}{WHITE}"
+                            f"cannot overwrite existing library at {CYAN}{lib}{WHITE}"
                         )
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(self.global_build_dir / target, dest)
-                    cache.add(str(dest))
+                    lib.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(self.global_build_dir / target, lib)
+                    cache.add(str(lib))
 
                     # source files for the module interfaces go in modules/
-                    dest = env / "modules" / f"{source.module}.cppm"
-                    if dest.exists() and str(dest) not in prev_cache.get(str(Path.cwd()), []):
+                    module = env / "modules" / source.module
+                    if _dir_conflict(module):
                         raise FileExistsError(
-                            f"cannot overwrite existing module at {CYAN}{dest}{WHITE}"
+                            f"cannot overwrite existing module at {CYAN}{module}{WHITE}"
                         )
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source.path, dest)
-                    cache.add(str(dest))
-                    dest = dest.with_suffix("")
+                    primary = module / source.path.with_suffix(".cppm")
+                    primary.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source.path, primary)
+                    cache.add(str(primary))
+                    for header in source.relative_headers:
+                        p = module / header
+                        p.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(header, p)
+                        cache.add(str(p))
                     for dep in source.requires.collapse():
-                        if dep is not source:
-                            p = dest / f"{dep.name}.cppm"
-                            if p.exists() and str(p) not in prev_cache.get(str(Path.cwd()), []):
-                                raise FileExistsError(
-                                    f"cannot overwrite existing module at {CYAN}{p}{WHITE}"
-                                )
-                            dest.mkdir(parents=True, exist_ok=True)
+                        if (
+                            dep is not source and
+                            self.global_build_dir not in dep.path.parents
+                        ):
+                            p = module / dep.path.with_suffix(".cppm")
+                            p.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(dep.path, p)
                             cache.add(str(p))
-
-                self._update_clean_cache(cache)
+                            for header in dep.relative_headers:
+                                p = module / header
+                                p.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(header, p)
+                                cache.add(str(p))
 
         except FileExistsError as e:
             self._update_clean_cache(cache)
             clean(Path.cwd())
             FAIL(str(e))
+
+        finally:
+            self._update_clean_cache(cache)
 
     def _update_clean_cache(self, cache: set[str]) -> None:
         if not self._bertrand_clean_cache.exists():
@@ -2505,7 +2579,7 @@ class BuildSources(setuptools_build_ext):
             contents = json.load(f)
             cwd = str(Path.cwd())
             current = contents.get(cwd, [])
-            current.extend(p for p in cache if p not in current)
+            current.extend(p for p in sorted(cache) if p not in current)
             contents[cwd] = current
             f.seek(0)
             json.dump(contents, f, indent=4)
@@ -2775,7 +2849,7 @@ def setup(
     )
 
 
-def clean(path: Path) -> None:
+def clean(path: Path | None = None) -> None:
     """Remove all files that were copied out of the build directory by Bertrand's
     automated build system.
 
@@ -2808,15 +2882,27 @@ def clean(path: Path) -> None:
 
     with cache.open("r+") as f:
         contents = json.load(f)
-        cwd = str(path.resolve())
-        for s in contents.get(cwd, []):
-            p = Path(s)
-            p.unlink(missing_ok=True)
-            p = p.parent
-            while not next(p.iterdir(), False):
-                p.rmdir()
+
+        if not path:
+            for k, v in contents.copy().items():
+                for s in v:
+                    p = Path(s)
+                    p.unlink(missing_ok=True)
+                    p = p.parent
+                    while not next(p.iterdir(), False):
+                        p.rmdir()
+                        p = p.parent
+                contents.pop(k, None)
+        else:
+            cwd = str(path.resolve())
+            for s in contents.get(cwd, []):
+                p = Path(s)
+                p.unlink(missing_ok=True)
                 p = p.parent
-        contents.pop(cwd, None)
+                while not next(p.iterdir(), False):
+                    p.rmdir()
+                    p = p.parent
+            contents.pop(cwd, None)
         f.seek(0)
         json.dump(contents, f, indent=4)
         f.truncate()

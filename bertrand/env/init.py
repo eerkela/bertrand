@@ -663,10 +663,31 @@ class Clang(Target):
             )
             for lib in (env / "lib" / host_target).iterdir():
                 os.symlink(lib, env / "lib" / lib.name)
-            module_dir = env / "modules"
+
+            # install std and std.compat modules into environment
+            source_std_cppm = env / "share" / "libc++" / "v1" / "std.cppm"
+            source_std_dir = env / "share" / "libc++" / "v1" / "std"
+            source_std_compat_cppm = env / "share" / "libc++" / "v1" / "std.compat.cppm"
+            source_std_compat_dir = env / "share" / "libc++" / "v1" / "std.compat"
+
+            target_std_cppm = env / "modules" / "std" / "std.cppm"
+            target_std_dir = env / "modules" / "std" / "std"
+            target_std_compat_cppm = env / "modules" / "std.compat" / "std" / "compat.cppm"
+            target_std_compat_dir = env / "modules" / "std.compat" / "std" / "compat"
+
+            target_std_dir.mkdir(parents=True, exist_ok=True)
+            target_std_compat_dir.mkdir(parents=True, exist_ok=True)
+
+            shutil.copy2(source_std_cppm, target_std_cppm)
+            shutil.copy2(source_std_compat_cppm, target_std_compat_cppm)
             shutil.copytree(
-                env / "share" / "libc++" / "v1",
-                module_dir,
+                source_std_dir,
+                target_std_dir,
+                dirs_exist_ok=True,
+            )
+            shutil.copytree(
+                source_std_compat_dir,
+                target_std_compat_dir,
                 dirs_exist_ok=True,
             )
 
