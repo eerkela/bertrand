@@ -33,241 +33,114 @@ using json = nlohmann::json;
 namespace {
 
 
-class PrintFunctionsConsumer : public clang::ASTConsumer {
-    clang::CompilerInstance& instance;
-    std::set<std::string> parsed_templates;
+/* An RAII-based file handle that acts like a std:fstream, but also holds an
+OS-level file lock to prevent concurrent writes.  Note that this creates the file
+if it did not previously exist, and reads and writes from it 1 line at a time,
+meaning consumers should not need to append manual newline characters.  The `->`
+operator allows access to named fstream methods. */
+struct FileLock {
+    std::string path;
+    std::fstream file;
 
-public:
+    #ifdef _WIN32
+        HANDLE handle;
 
-    PrintFunctionsConsumer(
-        clang::CompilerInstance& instance,
-        std::set<std::string> parsed_templates
-    ) : instance(instance), parsed_templates(parsed_templates)
-    {}
-
-    bool HandleTopLevelDecl(clang::DeclGroupRef decl_group) override {
-        for (const clang::Decl* decl : decl_group) {
-            const clang::NamedDecl* named = clang::dyn_cast<clang::NamedDecl>(decl);
-            if (named) {
-                llvm::errs() << "top-level-decl: \"" << named->getNameAsString() << "\"\n";
-            }
-        }
-        return true;
-    }
-
-    void HandleTranslationUnit(clang::ASTContext& context) override {
-        if (!instance.getLangOpts().DelayedTemplateParsing)
-            return;
-
-        // This demonstrates how to force instantiation of some templates in
-        // -fdelayed-template-parsing mode. (Note: Doing this unconditionally for
-        // all templates is similar to not using -fdelayed-template-parsing in the
-        // first place.)
-        // The advantage of doing this in HandleTranslationUnit() is that all
-        // codegen (when using -add-plugin) is completely finished and this can't
-        // affect the compiler output.
-        struct Visitor : public clang::RecursiveASTVisitor<Visitor> {
-            const std::set<std::string> &parsed_templates;
-            std::set<clang::FunctionDecl*> late_parsed;
-
-            Visitor(const std::set<std::string>& parsed_templates) :
-                parsed_templates(parsed_templates)
-            {}
-
-            bool VisitFunctionDecl(clang::FunctionDecl* func) {
-                if (
-                    func->isLateTemplateParsed() &&
-                    parsed_templates.count(func->getNameAsString())
-                ) {
-                    late_parsed.insert(func);
-                }
-                return true;
-            }
-        };
-
-        Visitor visitor(parsed_templates);
-        visitor.TraverseDecl(context.getTranslationUnitDecl());
-
-        clang::Sema& sema = instance.getSema();
-        for (const clang::FunctionDecl* func : visitor.late_parsed) {
-            clang::LateParsedTemplate& late =
-                *sema.LateParsedTemplateMap.find(func)->second;
-            sema.LateTemplateParser(sema.OpaqueParser, late);
-            llvm::errs() << "late-parsed-decl: \"" << func->getNameAsString() << "\"\n";
-        }
-    }
-};
-
-
-class PrintFunctionNamesAction : public clang::PluginASTAction {
-    std::set<std::string> parsed_templates;
-
-protected:
-
-    std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
-        clang::CompilerInstance& CI,
-        llvm::StringRef
-    ) override {
-        return std::make_unique<PrintFunctionsConsumer>(CI, parsed_templates);
-    }
-
-    bool ParseArgs(
-        const clang::CompilerInstance& compiler,
-        const std::vector<std::string>& args
-    ) override {
-        for (unsigned i = 0, e = args.size(); i != e; ++i) {
-            llvm::errs() << "PrintFunctionNames arg = " << args[i] << "\n";
-
-            // Example error handling.
-            clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
-            if (args[i] == "-an-error") {
-                unsigned DiagID = diagnostics.getCustomDiagID(
-                    clang::DiagnosticsEngine::Error,
-                    "invalid argument '%0'"
-                );
-                diagnostics.Report(DiagID) << args[i];
-                return false;
-            } else if (args[i] == "-parse-template") {
-                if (i + 1 >= e) {
-                    diagnostics.Report(diagnostics.getCustomDiagID(
-                        clang::DiagnosticsEngine::Error,
-                        "missing -parse-template argument"
-                    ));
-                    return false;
-                }
-                ++i;
-                parsed_templates.insert(args[i]);
-            }
-        }
-
-        if (!args.empty() && args[0] == "help") {
-            PrintHelp(llvm::errs());
-        }
-
-        return true;
-    }
-
-    void PrintHelp(llvm::raw_ostream& ros) {
-        ros << "Help for PrintFunctionNames plugin goes here\n";
-    }
-
-    PluginASTAction::ActionType getActionType() override {
-        return AddBeforeMainAction;
-    }
-
-};
-
-
-namespace impl {
-
-    /* An RAII-based file handle that acts like a std:fstream, but also holds an
-    OS-level file lock to prevent concurrent writes.  Note that this creates the file
-    if it did not previously exist, and reads and writes from it 1 line at a time,
-    meaning consumers should not need to append manual newline characters.  The `->`
-    operator allows access to named fstream methods. */
-    struct FileLock {
-        std::string path;
-        std::fstream file;
-
-        #ifdef _WIN32
-            HANDLE handle;
-
-            FileLock(const std::string& filepath) : path(filepath), handle(CreateFileA(
-                path.c_str(),
-                GENERIC_READ | GENERIC_WRITE,
-                0,
-                NULL,
-                OPEN_ALWAYS,
-                FILE_ATTRIBUTE_NORMAL,
-                NULL
-            )) {
-                if (handle == INVALID_HANDLE_VALUE) {
-                    llvm::errs() << "Failed to open file: " << path << "\n";
-                } else {
-                    OVERLAPPED overlapped = {0};
-                    if (!LockFileEx(
-                        handle,
-                        LOCKFILE_EXCLUSIVE_LOCK,
-                        0,
-                        MAXDWORD,
-                        MAXDWORD,
-                        &overlapped
-                    )) {
-                        CloseHandle(handle);
-                        handle = INVALID_HANDLE_VALUE;
-                        llvm::errs() << "Failed to lock file: " << path << "\n";
-                    } else {
-                        file.open(path, std::ios::in | std::ios::out);
-                    }
-                }
-            }
-
-            ~FileLock() {
-                if (handle != INVALID_HANDLE_VALUE) {
-                    file.close();
-                    OVERLAPPED overlapped = {0};
-                    UnlockFileEx(handle, 0, MAXDWORD, MAXDWORD, &overlapped);
+        FileLock(const std::string& filepath) : path(filepath), handle(CreateFileA(
+            path.c_str(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            NULL,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            NULL
+        )) {
+            if (handle == INVALID_HANDLE_VALUE) {
+                llvm::errs() << "Failed to open file: " << path << "\n";
+            } else {
+                OVERLAPPED overlapped = {0};
+                if (!LockFileEx(
+                    handle,
+                    LOCKFILE_EXCLUSIVE_LOCK,
+                    0,
+                    MAXDWORD,
+                    MAXDWORD,
+                    &overlapped
+                )) {
                     CloseHandle(handle);
-                }
-            }
-
-        #else
-            int handle;
-
-            FileLock(const std::string& filepath) : path(filepath), handle(
-                open(path.c_str(), O_RDWR | O_CREAT, 0666)
-            ) {
-                if (handle == -1) {
-                    llvm::errs() << "Failed to open file: " << path << "\n";
-                } else if (flock(handle, LOCK_EX) == -1) {
-                    close(handle);
+                    handle = INVALID_HANDLE_VALUE;
                     llvm::errs() << "Failed to lock file: " << path << "\n";
                 } else {
                     file.open(path, std::ios::in | std::ios::out);
                 }
             }
+        }
 
-            ~FileLock() {
-                if (handle != -1) {
-                    file.close();
-                    if (flock(handle, LOCK_UN) == -1) {
-                        llvm::errs() << "Failed to unlock file: " << path << "\n";
-                    }
-                    close(handle);
-                }
+        ~FileLock() {
+            if (handle != INVALID_HANDLE_VALUE) {
+                file.close();
+                OVERLAPPED overlapped = {0};
+                UnlockFileEx(handle, 0, MAXDWORD, MAXDWORD, &overlapped);
+                CloseHandle(handle);
             }
-
-        #endif
-
-        operator bool() const {
-            return static_cast<bool>(file);
         }
 
-        template <typename T>
-        FileLock& operator<<(const T& line) {
-            file << line << '\n';
-            return *this;
+    #else
+        int handle;
+
+        FileLock(const std::string& filepath) : path(filepath), handle(
+            open(path.c_str(), O_RDWR | O_CREAT, 0666)
+        ) {
+            if (handle == -1) {
+                llvm::errs() << "Failed to open file: " << path << "\n";
+            } else if (flock(handle, LOCK_EX) == -1) {
+                close(handle);
+                llvm::errs() << "Failed to lock file: " << path << "\n";
+            } else {
+                file.open(path, std::ios::in | std::ios::out);
+            }
         }
 
-        FileLock& operator>>(std::string& line) {
-            std::getline(file, line);
-            return *this;
+        ~FileLock() {
+            if (handle != -1) {
+                file.close();
+                if (flock(handle, LOCK_UN) == -1) {
+                    llvm::errs() << "Failed to unlock file: " << path << "\n";
+                }
+                close(handle);
+            }
         }
 
-        std::fstream* operator->() {
-            return &file;
-        }
+    #endif
 
-    };
-
-    std::string get_source_path(const clang::CompilerInstance& compiler) {
-        auto& src_mgr = compiler.getSourceManager();
-        auto main_file = src_mgr.getFileEntryRefForID(
-            src_mgr.getMainFileID()
-        );
-        return main_file ? main_file->getName().str() : "";
+    operator bool() const {
+        return static_cast<bool>(file);
     }
 
+    template <typename T>
+    FileLock& operator<<(const T& line) {
+        file << line << '\n';
+        return *this;
+    }
+
+    FileLock& operator>>(std::string& line) {
+        std::getline(file, line);
+        return *this;
+    }
+
+    std::fstream* operator->() {
+        return &file;
+    }
+
+};
+
+
+/* Get the source path of the translation unit being compiled. */
+std::string get_source_path(const clang::CompilerInstance& compiler) {
+    auto& src_mgr = compiler.getSourceManager();
+    auto main_file = src_mgr.getFileEntryRefForID(
+        src_mgr.getMainFileID()
+    );
+    return main_file ? main_file->getName().str() : "";
 }
 
 
@@ -370,7 +243,6 @@ class ExportConsumer : public clang::ASTConsumer {
     std::vector<Var> vars;
     std::vector<Namespace> namespaces;
 
-    /* Check if a declaration is marked with [[py::noexport]]. */
     bool noexport(const clang::NamedDecl* decl) {
         for (auto&& attr : decl->getAttrs()) {
             if (
@@ -397,9 +269,8 @@ class ExportConsumer : public clang::ASTConsumer {
         return "}\n";
     }
 
-    /* Write the final binding file to disk if it has changed. */
     void write(const std::string& body) {
-        impl::FileLock file(binding_path);
+        FileLock file(binding_path);
         if (!file) {
             clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
             unsigned diagnostics_id = diagnostics.getCustomDiagID(
@@ -421,9 +292,8 @@ class ExportConsumer : public clang::ASTConsumer {
         file << body;
     }
 
-    /* Update the AST cache to avoid re-parsing the same file. */
     void update_cache() {
-        impl::FileLock cache_file(cache_path);
+        FileLock cache_file(cache_path);
         if (!cache_file) {
             clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
             unsigned diagnostics_id = diagnostics.getCustomDiagID(
@@ -433,8 +303,18 @@ class ExportConsumer : public clang::ASTConsumer {
             diagnostics.Report(diagnostics_id) << cache_path;
             return;
         }
+        std::string source_path = get_source_path(compiler);
+        if (source_path.empty()) {
+            clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
+            unsigned diagnostics_id = diagnostics.getCustomDiagID(
+                clang::DiagnosticsEngine::Error,
+                "failed to get path for source of: "
+            );
+            diagnostics.Report(diagnostics_id) << module_path;
+            return;
+        }
         auto cache = json::parse(cache_file.file);
-        cache[impl::get_source_path(compiler)]["parsed"] = binding_path;
+        cache[source_path]["parsed"] = binding_path;
         cache_file->close();
         cache_file->open(cache_path, std::ios::out | std::ios::trunc);
         cache_file << cache.dump(4);
@@ -472,8 +352,6 @@ public:
         update_cache();
     }
 
-    /* Generate a binding for every top-level declaration marked with the `export`
-    keyword that is found during the initial parse, as the source is processed. */
     bool HandleTopLevelDecl(clang::DeclGroupRef decl_group) override {
         using llvm::dyn_cast;
         using clang::Decl;
@@ -548,14 +426,14 @@ public:
         for (const clang::Decl* decl : decl_group) {
             auto* func = llvm::dyn_cast<clang::FunctionDecl>(decl);
             if (func && func->isMain()) {
-                // ensure only the file that actually defines main() is considered
+                // ensure that imported main() functions are not considered
                 const clang::SourceManager& src_mgr = compiler.getSourceManager();
                 auto file_id = src_mgr.getFileID(func->getLocation());
                 if (file_id != src_mgr.getMainFileID()) {
                     continue;
                 }
 
-                std::string source_path = impl::get_source_path(compiler);
+                std::string source_path = get_source_path(compiler);
                 if (source_path.empty()) {
                     clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
                     unsigned diagnostics_id = diagnostics.getCustomDiagID(
@@ -567,7 +445,7 @@ public:
                 }
 
                 // open (or create) and lock the cache file within this context
-                impl::FileLock file(cache_path);
+                FileLock file(cache_path);
                 if (!file) {
                     clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
                     unsigned diagnostics_id = diagnostics.getCustomDiagID(
@@ -626,8 +504,6 @@ class ExportAction : public clang::PluginASTAction {
 
 protected:
 
-    /* Spawn an ExportConsumer to analyze the AST of an in-tree primary module
-    interface unit that has not yet been parsed. */
     std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
         clang::CompilerInstance& compiler,
         llvm::StringRef
@@ -635,7 +511,7 @@ protected:
         if (!run) {
             return std::make_unique<clang::ASTConsumer>();
         }
-        impl::FileLock cache_file(cache_path);
+        FileLock cache_file(cache_path);
         if (!cache_file) {
             clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
             unsigned diagnostics_id = diagnostics.getCustomDiagID(
@@ -647,7 +523,7 @@ protected:
         }
 
         // if the source file is not present in cache, then it is out-of-tree
-        std::string source_path = impl::get_source_path(compiler);
+        std::string source_path = get_source_path(compiler);
         if (source_path.empty()) {
             clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
             unsigned diagnostics_id = diagnostics.getCustomDiagID(
@@ -681,7 +557,6 @@ protected:
         );
     }
 
-    /* Parse the command-line arguments that are supplied by the build system. */
     bool ParseArgs(
         const clang::CompilerInstance& compiler,
         const std::vector<std::string>& args
@@ -751,7 +626,6 @@ protected:
         return true;
     }
 
-    /* Run the AST parser immediately before code generation. */
     PluginASTAction::ActionType getActionType() override {
         return AddBeforeMainAction;
     }
@@ -767,7 +641,6 @@ class MainAction : public clang::PluginASTAction {
 
 protected:
 
-    /* Spawn a MainConsumer to analyze the AST of a non-module translation unit. */
     std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
         clang::CompilerInstance& compiler,
         llvm::StringRef
@@ -778,7 +651,6 @@ protected:
         return std::make_unique<MainConsumer>(compiler, cache_path);
     }
 
-    /* Parse the command-line arguments that are supplied by the build system. */
     bool ParseArgs(
         const clang::CompilerInstance& compiler,
         const std::vector<std::string>& args
@@ -814,7 +686,6 @@ protected:
         return true;
     }
 
-    /* Run the AST parser immediately before code generation. */
     PluginASTAction::ActionType getActionType() override {
         return AddBeforeMainAction;
     }
