@@ -158,7 +158,6 @@ protected:
 };
 
 
-
 namespace impl {
 
     /* An RAII-based file handle that acts like a std:fstream, but also holds an
@@ -302,11 +301,78 @@ class ExportConsumer : public clang::ASTConsumer {
     std::string export_name;
     std::string binding_path;
     std::string cache_path;
-    std::string body;  // TODO: replace this with vectors of wrapper classes
+
+    struct Function {
+        std::string name;
+        std::string qualname;
+
+        Function(const clang::FunctionDecl* decl) :
+            name(decl->getNameAsString()), qualname(decl->getQualifiedNameAsString())
+        {}
+
+        // TODO: generate a lambda with python argument annotations to enable keyword
+        // arguments, etc.
+
+        std::string emit() const {
+            llvm::errs() << "exported function " << qualname << "\n";
+            return "    m.def(\"" + name + "\", \"\", " + qualname + ");\n";
+        }
+
+    };
+
+    struct Type {
+        std::string name;
+        std::string qualname;
+
+        Type(const clang::CXXRecordDecl* decl) :
+            name(decl->getNameAsString()), qualname(decl->getQualifiedNameAsString())
+        {}
+
+        std::string emit() const {
+            llvm::errs() << "exported type " << qualname << "\n";
+            return "";
+        }
+
+    };
+
+    struct Var {
+        std::string name;
+        std::string qualname;
+
+        Var(const clang::VarDecl* decl) :
+            name(decl->getNameAsString()), qualname(decl->getQualifiedNameAsString())
+        {}
+
+        std::string emit() const {
+            llvm::errs() << "exported variable " << qualname << "\n";
+            return "";
+        }
+
+    };
+
+    struct Namespace {
+        std::string name;
+        std::string qualname;
+
+        Namespace(const clang::NamespaceDecl* decl) :
+            name(decl->getNameAsString()), qualname(decl->getQualifiedNameAsString())
+        {}
+
+        std::string emit() const {
+            llvm::errs() << "exported namespace " << qualname << "\n";
+            return "";
+        }
+
+    };
+
+    std::vector<Function> functions;
+    std::vector<Type> types;
+    std::vector<Var> vars;
+    std::vector<Namespace> namespaces;
 
     /* Check if a declaration is marked with [[py::noexport]]. */
-    bool noexport(const clang::NamedDecl& decl) {
-        for (auto&& attr : decl.getAttrs()) {
+    bool noexport(const clang::NamedDecl* decl) {
+        for (auto&& attr : decl->getAttrs()) {
             if (
                 attr->getKind() == clang::attr::Annotate &&
                 static_cast<clang::AnnotateAttr*>(attr)->getAnnotation() == "noexport"
@@ -317,24 +383,30 @@ class ExportConsumer : public clang::ASTConsumer {
         return false;
     }
 
-    /* Emit a binding for an exported C++ function. */
-    void emit(const clang::FunctionDecl& func) {
-        std::string name = func.getNameAsString();
-        std::string qualname = func.getQualifiedNameAsString();  // includes namespaces
+    std::string header() {
+        std::string header;
+        header += "#include <bertrand/python.h>\n";
+        header += "import " + import_name + ";\n";
+        header += "\n";
+        header += "\n";
+        header += "BERTRAND_MODULE(" + export_name + ", m) {\n";
+        return header;
+    }
 
-        llvm::errs() << "EMITTING FUNCTION " << qualname << "\n";
-
-        // TODO: generate a lambda with python argument annotations to enable keyword
-        // arguments, etc.
-
-        body += "    m.def(\"" + name + "\", \"\", " + qualname + ");\n";
+    std::string footer() {
+        return "}\n";
     }
 
     /* Write the final binding file to disk if it has changed. */
-    void write() {
+    void write(const std::string& body) {
         impl::FileLock file(binding_path);
         if (!file) {
-            llvm::errs() << "failed to open file: " << binding_path << "\n";
+            clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
+            unsigned diagnostics_id = diagnostics.getCustomDiagID(
+                clang::DiagnosticsEngine::Error,
+                "failed to open file: %0"
+            );
+            diagnostics.Report(diagnostics_id) << binding_path;
             return;
         }
         std::stringstream buffer;
@@ -353,7 +425,12 @@ class ExportConsumer : public clang::ASTConsumer {
     void update_cache() {
         impl::FileLock cache_file(cache_path);
         if (!cache_file) {
-            llvm::errs() << "failed to open cache file: " << cache_path << "\n";
+            clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
+            unsigned diagnostics_id = diagnostics.getCustomDiagID(
+                clang::DiagnosticsEngine::Error,
+                "failed to open cache file: %0"
+            );
+            diagnostics.Report(diagnostics_id) << cache_path;
             return;
         }
         auto cache = json::parse(cache_file.file);
@@ -374,17 +451,24 @@ public:
         std::string cache_path
     ) : compiler(compiler), module_path(module_path), import_name(import_name),
         export_name(export_name), binding_path(binding_path), cache_path(cache_path)
-    {
-        body += "#include <bertrand/python.h>\n";
-        body += "import " + import_name + ";\n";
-        body += "\n";
-        body += "\n";
-        body += "BERTRAND_MODULE(" + export_name + ", m) {\n";
-    }
+    {}
 
     ~ExportConsumer() {
-        body += "}";
-        write();
+        std::string body = header();
+        for (const Namespace& name : namespaces) {
+            body += name.emit();
+        }
+        for (const Type& type : types) {
+            body += type.emit();
+        }
+        for (const Var& var : vars) {
+            body += var.emit();
+        }
+        for (const Function& func : functions) {
+            body += func.emit();
+        }
+        body += footer();
+        write(body);
         update_cache();
     }
 
@@ -404,39 +488,37 @@ public:
             if (const ExportDecl* decl = dyn_cast<ExportDecl>(_decl)) {
                 for (const Decl* subdecl : decl->decls()) {
                     if (const FunctionDecl* func = dyn_cast<FunctionDecl>(subdecl)) {
-                        if (noexport(*func)) {
-                            continue;
+                        if (!noexport(func)) {
+                            functions.emplace_back(func);
                         }
-                        emit(*func);
-                        llvm::errs() << "exported function " << func->getNameAsString() << "\n";
 
-                    } else if (const CXXRecordDecl* type = dyn_cast<CXXRecordDecl>(subdecl)) {
-                        if (noexport(*type)) {
-                            continue;
+                    } else if (
+                        const CXXRecordDecl* type = dyn_cast<CXXRecordDecl>(subdecl)
+                    ) {
+                        if (!noexport(type)) {
+                            types.emplace_back(type);
                         }
-                        // emit(*type);
-                        llvm::errs() << "exported type " << type->getNameAsString() << "\n";
 
-                    } else if (const VarDecl* var = dyn_cast<VarDecl>(subdecl)) {
-                        if (noexport(*var)) {
-                            continue;
+                    } else if (
+                        const VarDecl* var = dyn_cast<VarDecl>(subdecl)
+                    ) {
+                        if (!noexport(var)) {
+                            vars.emplace_back(var);
                         }
-                        // emit(*var);
-                        llvm::errs() << "exported variable " << var->getNameAsString() << "\n";
 
-                    } else if (const NamespaceDecl* name = dyn_cast<NamespaceDecl>(subdecl)) {
-                        if (noexport(*name)) {
-                            continue;
+                    } else if (
+                        const NamespaceDecl* name = dyn_cast<NamespaceDecl>(subdecl)
+                    ) {
+                        if (!noexport(name)) {
+                            namespaces.emplace_back(name);
                         }
-                        // emit(*name);
-                        llvm::errs() << "exported namespace " << name->getNameAsString() << "\n";
 
-                    // } else if (const UsingDecl* use = dyn_cast<UsingDecl>(subdecl)) {
-                    //     if (noexport(*use)) {
-                    //         continue;
+                    // } else if (
+                    //     const UsingDecl* use = dyn_cast<UsingDecl>(subdecl)
+                    //) {
+                    //     if (!noexport(use)) {
+                    //         usings.emplace_back(use);
                     //     }
-                    //     // emit(*use);
-                    //     llvm::errs() << "exported using " << name->getNameAsString() << "\n";
 
                     } else {
                         llvm::errs() << "unhandled export " << subdecl->getDeclKindName() << "\n";
@@ -475,14 +557,24 @@ public:
 
                 std::string source_path = impl::get_source_path(compiler);
                 if (source_path.empty()) {
-                    llvm::errs() << "failed to get path for executable\n";
+                    clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
+                    unsigned diagnostics_id = diagnostics.getCustomDiagID(
+                        clang::DiagnosticsEngine::Error,
+                        "failed to get path for executable"
+                    );
+                    diagnostics.Report(diagnostics_id);
                     return false;
                 }
 
                 // open (or create) and lock the cache file within this context
                 impl::FileLock file(cache_path);
                 if (!file) {
-                    llvm::errs() << "failed to open cache file: " << cache_path << "\n";
+                    clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
+                    unsigned diagnostics_id = diagnostics.getCustomDiagID(
+                        clang::DiagnosticsEngine::Error,
+                        "failed to open cache file: %0"
+                    );
+                    diagnostics.Report(diagnostics_id) << cache_path;
                     return false;
                 }
 
@@ -545,14 +637,24 @@ protected:
         }
         impl::FileLock cache_file(cache_path);
         if (!cache_file) {
-            llvm::errs() << "failed to open cache file: " << cache_path << "\n";
+            clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
+            unsigned diagnostics_id = diagnostics.getCustomDiagID(
+                clang::DiagnosticsEngine::Error,
+                "failed to open cache file: %0"
+            );
+            diagnostics.Report(diagnostics_id) << cache_path;
             return std::make_unique<clang::ASTConsumer>();
         }
 
         // if the source file is not present in cache, then it is out-of-tree
         std::string source_path = impl::get_source_path(compiler);
         if (source_path.empty()) {
-            llvm::errs() << "failed to get path for source of: " << module_path << "\n";
+            clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
+            unsigned diagnostics_id = diagnostics.getCustomDiagID(
+                clang::DiagnosticsEngine::Error,
+                "failed to get path for source of: "
+            );
+            diagnostics.Report(diagnostics_id) << module_path;
             return std::make_unique<clang::ASTConsumer>();
         }
         auto cache = json::parse(cache_file.file);
