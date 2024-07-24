@@ -2153,14 +2153,18 @@ class BuildSources(setuptools_build_ext):
             for name, bmi in prebuilt.items():
                 out += f"    -fmodule-file={name}={bmi.absolute()}\n"
             out += f"    -fplugin={env / 'lib' / 'bertrand-attrs.so'}\n"
-            out += f"    -fplugin-arg-main-cache={self._bertrand_ast_cache.absolute()}\n"
+            out += f"    -fplugin={env / 'lib' / 'bertrand-ast.so'}\n"
+            if not source.module:
+                cache_path = self._bertrand_ast_cache
+                out +=  "    -fplugin-arg-main-run\n"
+                out += f"    -fplugin-arg-main-cache={cache_path.absolute()}\n"
             if source.is_primary_module_interface:
                 cache_path = self._bertrand_ast_cache
                 binding_path = self._bertrand_binding_root / source.path
                 binding_path.parent.mkdir(parents=True, exist_ok=True)
                 imported_cpp_module = source.module
                 exported_python_module = source.module.split(".")[-1]
-                out += f"    -fplugin={env / 'lib' / 'bertrand-ast.so'}\n"
+                out +=  "    -fplugin-arg-export-run\n"
                 out += f"    -fplugin-arg-export-module={source.path.absolute()}\n"
                 out += f"    -fplugin-arg-export-import={imported_cpp_module}\n"
                 out += f"    -fplugin-arg-export-export={exported_python_module}\n"

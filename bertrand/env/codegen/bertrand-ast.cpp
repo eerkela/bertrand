@@ -283,7 +283,8 @@ namespace impl {
  * Overriding HandleTranslationUnit will parse the complete AST for an entire
  * translation unit after it has been constructed, and will typically use a 
  * RecursiveASTVisitor to do so.  This triggers an extra pass over the AST, so it's a
- * bit more expensive as a result.
+ * bit more expensive as a result.  It also requires the implementation of an extra
+ * RecursiveASTVisitor class, which is a bit more work.
  *
  * It is also possible to trigger the visitor on every top-level declaration as it is
  * parsed by overriding HandleTopLevelDecl.  This is more efficient and can avoid an
@@ -521,19 +522,27 @@ public:
  */
 
 
+/* Schedule the ExportConsumer to parse the AST of uncached primary module interface
+units. */
 class ExportAction : public clang::PluginASTAction {
     std::string module_path;
     std::string import_name;
     std::string export_name;
     std::string binding_path;
     std::string cache_path;
+    bool run;
 
 protected:
 
+    /* Spawn an ExportConsumer to analyze the AST of an in-tree primary module
+    interface unit that has not yet been parsed. */
     std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
         clang::CompilerInstance& compiler,
         llvm::StringRef
     ) override {
+        if (!run) {
+            return std::make_unique<clang::ASTConsumer>();
+        }
         impl::FileLock cache_file(cache_path);
         if (!cache_file) {
             llvm::errs() << "failed to open cache file: " << cache_path << "\n";
@@ -570,13 +579,17 @@ protected:
         );
     }
 
+    /* Parse the command-line arguments that are supplied by the build system. */
     bool ParseArgs(
         const clang::CompilerInstance& compiler,
         const std::vector<std::string>& args
     ) override {
         for (const std::string& arg : args) {
+            if (arg == "run") {
+                run = true;
+
             // path to primary module interface unit being examined
-            if (arg.starts_with("module=")) {
+            } else if (arg.starts_with("module=")) {
                 module_path = arg.substr(arg.find('=') + 1);
 
             // module name to import at C++ level
@@ -605,9 +618,38 @@ protected:
                 return false;
             }
         }
+
+        if (run && (
+            module_path.empty() || import_name.empty() || export_name.empty() ||
+            binding_path.empty() || cache_path.empty()
+        )) {
+            clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
+            unsigned diagnostics_id = diagnostics.getCustomDiagID(
+                clang::DiagnosticsEngine::Error,
+                "missing required argument '%0'"
+            );
+            if (module_path.empty()) {
+                diagnostics.Report(diagnostics_id) << "module";
+            }
+            if (import_name.empty()) {
+                diagnostics.Report(diagnostics_id) << "import";
+            }
+            if (export_name.empty()) {
+                diagnostics.Report(diagnostics_id) << "export";
+            }
+            if (binding_path.empty()) {
+                diagnostics.Report(diagnostics_id) << "binding";
+            }
+            if (cache_path.empty()) {
+                diagnostics.Report(diagnostics_id) << "cache";
+            }
+            return false;
+        }
+
         return true;
     }
 
+    /* Run the AST parser immediately before code generation. */
     PluginASTAction::ActionType getActionType() override {
         return AddBeforeMainAction;
     }
@@ -615,24 +657,35 @@ protected:
 };
 
 
+/* Schedule the MainConsumer to check for the presence of a main() function in a
+non-module translation unit. */
 class MainAction : public clang::PluginASTAction {
     std::string cache_path;
+    bool run;
 
 protected:
 
+    /* Spawn a MainConsumer to analyze the AST of a non-module translation unit. */
     std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
         clang::CompilerInstance& compiler,
         llvm::StringRef
     ) override {
+        if (!run) {
+            return std::make_unique<clang::ASTConsumer>();
+        }
         return std::make_unique<MainConsumer>(compiler, cache_path);
     }
 
+    /* Parse the command-line arguments that are supplied by the build system. */
     bool ParseArgs(
         const clang::CompilerInstance& compiler,
         const std::vector<std::string>& args
     ) override {
         for (const std::string& arg : args) {
-            if (arg.starts_with("cache=")) {
+            if (arg == "run") {
+                run = true;
+
+            } else if (arg.starts_with("cache=")) {
                 cache_path = arg.substr(arg.find('=') + 1);
 
             } else {
@@ -645,9 +698,21 @@ protected:
                 return false;
             }
         }
+
+        if (run && cache_path.empty()) {
+            clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
+            unsigned diagnostics_id = diagnostics.getCustomDiagID(
+                clang::DiagnosticsEngine::Error,
+                "missing required argument '%0'"
+            );
+            diagnostics.Report(diagnostics_id) << "cache";
+            return false;
+        }
+
         return true;
     }
 
+    /* Run the AST parser immediately before code generation. */
     PluginASTAction::ActionType getActionType() override {
         return AddBeforeMainAction;
     }
