@@ -3,6 +3,7 @@
 #include <sstream>
 #include <string>
 
+#include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -144,6 +145,46 @@ std::string get_source_path(const clang::CompilerInstance& compiler) {
 }
 
 
+/* Extract the literal text from a source range. */
+std::string get_source_text(
+    const clang::CompilerInstance& compiler,
+    const clang::SourceRange& range
+) {
+    if (!range.isValid()) {
+        return "";
+    }
+    const clang::SourceManager& src_mgr = compiler.getSourceManager();
+    clang::SourceLocation begin = range.getBegin();
+    clang::SourceLocation end = clang::Lexer::getLocForEndOfToken(
+        range.getEnd(),
+        0,
+        src_mgr,
+        compiler.getLangOpts()
+    );
+    return std::string(
+        src_mgr.getCharacterData(begin),
+        src_mgr.getCharacterData(end) - src_mgr.getCharacterData(begin)
+    );
+}
+
+
+/* Extract the docstring associated with a declaration. */
+std::string get_docstring(
+    const clang::CompilerInstance& compiler,
+    const clang::Decl* decl
+) {
+    clang::ASTContext& context = compiler.getASTContext();
+    const clang::RawComment* comment = context.getRawCommentForAnyRedecl(decl);
+    if (!comment) {
+        return "";
+    }
+    return comment->getFormattedText(
+        compiler.getSourceManager(),
+        compiler.getDiagnostics()
+    );
+}
+
+
 /////////////////////////
 ////    CONSUMERS    ////
 /////////////////////////
@@ -176,18 +217,65 @@ class ExportConsumer : public clang::ASTConsumer {
     std::string cache_path;
 
     struct Function {
+
+        struct Param {
+            std::string name;
+            std::string type;
+            std::string default_value;
+            bool has_default;
+
+            Param(clang::CompilerInstance& compiler, const clang::ParmVarDecl* decl) :
+                name(decl->getNameAsString()),
+                type(decl->getType().getAsString()),
+                has_default(decl->hasDefaultArg())
+            {
+                if (has_default) {
+                    default_value = get_source_text(
+                        compiler,
+                        decl->getDefaultArgRange()
+                    );
+                }
+            }
+
+        };
+
         std::string name;
         std::string qualname;
+        std::string docstring;
+        std::vector<Param> params;
+        std::string return_type;
+        bool is_variadic;
 
-        Function(const clang::FunctionDecl* decl) :
-            name(decl->getNameAsString()), qualname(decl->getQualifiedNameAsString())
-        {}
+        // TODO: handle forward declarations somehow
+
+        Function(clang::CompilerInstance& compiler, const clang::FunctionDecl* decl) :
+            name(decl->getNameAsString()),
+            qualname(decl->getQualifiedNameAsString()),
+            docstring(get_docstring(compiler, decl)),
+            return_type(decl->getReturnType().getAsString()),
+            is_variadic(decl->isVariadic())
+        {
+            for (const clang::ParmVarDecl* param : decl->parameters()) {
+                params.emplace_back(compiler, param);
+            }
+        }
 
         // TODO: generate a lambda with python argument annotations to enable keyword
-        // arguments, etc.
+        // arguments, default values, and variadic arguments.
 
         std::string emit() const {
             llvm::errs() << "exported function " << qualname << "\n";
+            for (auto&& param : params) {
+                llvm::errs() << "    param: " << param.type << " " << param.name;
+                if (param.has_default) {
+                    llvm::errs() << " = " << param.default_value << "\n";
+                } else {
+                    llvm::errs() << "\n";
+                }
+            }
+            llvm::errs() << "    return: " << return_type << "\n";
+            llvm::errs() << "    docstring: " << docstring << "\n";
+
             return "    m.def(\"" + name + "\", \"\", " + qualname + ");\n";
         }
 
@@ -197,7 +285,7 @@ class ExportConsumer : public clang::ASTConsumer {
         std::string name;
         std::string qualname;
 
-        Type(const clang::CXXRecordDecl* decl) :
+        Type(clang::CompilerInstance& compiler, const clang::CXXRecordDecl* decl) :
             name(decl->getNameAsString()), qualname(decl->getQualifiedNameAsString())
         {}
 
@@ -212,7 +300,7 @@ class ExportConsumer : public clang::ASTConsumer {
         std::string name;
         std::string qualname;
 
-        Var(const clang::VarDecl* decl) :
+        Var(clang::CompilerInstance& compiler, const clang::VarDecl* decl) :
             name(decl->getNameAsString()), qualname(decl->getQualifiedNameAsString())
         {}
 
@@ -227,7 +315,7 @@ class ExportConsumer : public clang::ASTConsumer {
         std::string name;
         std::string qualname;
 
-        Namespace(const clang::NamespaceDecl* decl) :
+        Namespace(clang::CompilerInstance& compiler, const clang::NamespaceDecl* decl) :
             name(decl->getNameAsString()), qualname(decl->getQualifiedNameAsString())
         {}
 
@@ -367,35 +455,35 @@ public:
                 for (const Decl* subdecl : decl->decls()) {
                     if (const FunctionDecl* func = dyn_cast<FunctionDecl>(subdecl)) {
                         if (!noexport(func)) {
-                            functions.emplace_back(func);
+                            functions.emplace_back(compiler, func);
                         }
 
                     } else if (
                         const CXXRecordDecl* type = dyn_cast<CXXRecordDecl>(subdecl)
                     ) {
                         if (!noexport(type)) {
-                            types.emplace_back(type);
+                            types.emplace_back(compiler, type);
                         }
 
                     } else if (
                         const VarDecl* var = dyn_cast<VarDecl>(subdecl)
                     ) {
                         if (!noexport(var)) {
-                            vars.emplace_back(var);
+                            vars.emplace_back(compiler, var);
                         }
 
                     } else if (
                         const NamespaceDecl* name = dyn_cast<NamespaceDecl>(subdecl)
                     ) {
                         if (!noexport(name)) {
-                            namespaces.emplace_back(name);
+                            namespaces.emplace_back(compiler, name);
                         }
 
                     // } else if (
                     //     const UsingDecl* use = dyn_cast<UsingDecl>(subdecl)
                     //) {
                     //     if (!noexport(use)) {
-                    //         usings.emplace_back(use);
+                    //         usings.emplace_back(compiler, use);
                     //     }
 
                     } else {
@@ -417,10 +505,9 @@ class MainConsumer : public clang::ASTConsumer {
 
 public:
 
-    MainConsumer(
-        clang::CompilerInstance& compiler,
-        std::string cache_path
-    ) : compiler(compiler), cache_path(cache_path) {}
+    MainConsumer(clang::CompilerInstance& compiler, std::string cache_path) :
+        compiler(compiler), cache_path(cache_path)
+    {}
 
     bool HandleTopLevelDecl(clang::DeclGroupRef decl_group) override {
         for (const clang::Decl* decl : decl_group) {
@@ -492,8 +579,6 @@ public:
  */
 
 
-/* Schedule the ExportConsumer to parse the AST of uncached primary module interface
-units. */
 class ExportAction : public clang::PluginASTAction {
     std::string module_path;
     std::string import_name;
@@ -633,8 +718,6 @@ protected:
 };
 
 
-/* Schedule the MainConsumer to check for the presence of a main() function in a
-non-module translation unit. */
 class MainAction : public clang::PluginASTAction {
     std::string cache_path;
     bool run;

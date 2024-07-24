@@ -14,6 +14,7 @@ export [[py::noexport]] void bar() {
 }
 
 
-export void baz(const std::string& name) {
+/* This is a docstring! */
+export void baz(const std::string& name = "World") {
     std::cout << "Hello, " << name << "!\n";
 }

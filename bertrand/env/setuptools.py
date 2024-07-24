@@ -2165,6 +2165,7 @@ class BuildSources(setuptools_build_ext):
                 imported_cpp_module = source.module
                 exported_python_module = source.module.split(".")[-1]
                 out +=  "    -fplugin-arg-export-run\n"
+                out +=  "    -fparse-all-comments\n"
                 out += f"    -fplugin-arg-export-module={source.path.absolute()}\n"
                 out += f"    -fplugin-arg-export-import={imported_cpp_module}\n"
                 out += f"    -fplugin-arg-export-export={exported_python_module}\n"
