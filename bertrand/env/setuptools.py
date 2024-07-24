@@ -1933,14 +1933,8 @@ class BuildSources(setuptools_build_ext):
                     name = edge["logical-name"]
                     source.requires[name] = self._import(source, name)
 
-    # TODO: I have to subtly change the way out-of-tree imports are handled in order to
-    # allow relative headers to be properly resolved.  This means the module directory
-    # includes a full source tree relative to setup.py, and the top-level .cppm file
-    # should be a symlink to the actual source file within that tree.
-    # -> Maybe this is not a problem, since the dotted module name will always match
-    # the directory structure?  the bertrand.example_module directory will always have
-    # a bertrand.example_module/bertrand/example_module.cppm file, and all other files
-    # will be dependencies of that file.
+    # TODO: importing bertrand.python from out-of-tree causes duplicate linker symbols
+    # for some reason.
 
     def _import(self, source: Source, logical_name: str) -> Source:
         # check for a cached result first.  This covers absolute imports that are
@@ -1961,10 +1955,22 @@ class BuildSources(setuptools_build_ext):
             # the primary module interface's dotted name always matches the directory
             # structure, so we can trace it to obtain the correct source file.
             primary = dest / Path(*logical_name.split("."))
-            if primary.with_suffix(".cppm").exists():
-                result = source.spawn(primary.with_suffix(".cppm"), logical_name)
-            elif primary.exists() and primary.is_dir():
-                result = source.spawn(primary / "__init__.cppm", logical_name)
+            primary_cppm = primary.with_suffix(".cppm")
+            primary_init = primary / "__init__.cppm"
+            if primary_cppm.exists():
+                result = source.spawn(primary_cppm, logical_name)
+            elif primary.exists() and primary.is_dir() and primary_init.exists():
+                result = source.spawn(primary_init, logical_name)
+            else:
+                FAIL(
+                    f"Could not locate primary module interface for out-of-tree import: "
+                    f"'{YELLOW}{logical_name}{WHITE}' in {CYAN}{source.path}{WHITE}\n"
+                    f"\n"
+                    f"Please ensure that the primary module interface is located at "
+                    f"one of the following paths:\n"
+                    f"    + {GREEN}{primary_cppm.absolute()}{WHITE}\n"
+                    f"    + {GREEN}{primary_init.absolute()}{WHITE}"
+                )
 
             # dependencies are attached to the resulting Source just like normal, under
             # keys that may or may not reflect the actual imports within the .cppm file
@@ -2147,7 +2153,6 @@ class BuildSources(setuptools_build_ext):
             for name, bmi in prebuilt.items():
                 out += f"    -fmodule-file={name}={bmi.absolute()}\n"
             out += f"    -fplugin={env / 'lib' / 'bertrand-attrs.so'}\n"
-            out += f"    -fplugin={env / 'lib' / 'bertrand-ast.so'}\n"
             out += f"    -fplugin-arg-main-cache={self._bertrand_ast_cache.absolute()}\n"
             if source.is_primary_module_interface:
                 cache_path = self._bertrand_ast_cache
@@ -2155,6 +2160,7 @@ class BuildSources(setuptools_build_ext):
                 binding_path.parent.mkdir(parents=True, exist_ok=True)
                 imported_cpp_module = source.module
                 exported_python_module = source.module.split(".")[-1]
+                out += f"    -fplugin={env / 'lib' / 'bertrand-ast.so'}\n"
                 out += f"    -fplugin-arg-export-module={source.path.absolute()}\n"
                 out += f"    -fplugin-arg-export-import={imported_cpp_module}\n"
                 out += f"    -fplugin-arg-export-export={exported_python_module}\n"

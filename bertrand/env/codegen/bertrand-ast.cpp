@@ -14,7 +14,7 @@
 #include "clang/Sema/Sema.h"
 #include "llvm/Support/raw_ostream.h"
 
-// file locking is not cross-platform
+// file locks are not cross-platform
 #ifdef _WIN32
     #include <Windows.h>
 #else
@@ -272,147 +272,6 @@ namespace impl {
 }
 
 
-////////////////////////
-////    VISITORS    ////
-////////////////////////
-
-
-/* RecursiveASTVisitors visit each node in the AST and are triggered by overriding
- * Visit{Foo}(Foo*) methods, where Foo is a type of node in the clang AST, given here:
- *
- * https://clang.llvm.org/doxygen/classclang_1_1Decl.html
- * https://clang.llvm.org/doxygen/classclang_1_1Stmt.html
- */
-
-
-class ExportVisitor : public clang::RecursiveASTVisitor<ExportVisitor> {
-    std::string path;
-    std::string body;
-
-    // TODO: I should have an overloadable emit() method which can take
-    // FunctionDecls, CXXRecordDecls, VarDecls, and NamespaceDecls, etc. and then write
-    // them to the binding file in a consistent fashion.
-
-    bool noexport(const clang::NamedDecl& decl) {
-        for (auto&& attr : decl.getAttrs()) {
-            if (
-                attr->getKind() == clang::attr::Annotate &&
-                static_cast<clang::AnnotateAttr*>(attr)->getAnnotation() == "noexport"
-            ) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /* Emit a top-level function declaration to the binding file. */
-    void emit(const clang::FunctionDecl& func) {
-        std::string name = func.getNameAsString();
-        std::string qualname = func.getQualifiedNameAsString();  // includes namespaces
-
-        // TODO: generate a lambda with python argument annotations to enable keyword
-        // arguments, etc.
-
-        body += "    m.def(\"" + name + "\", \"\", " + qualname + ");\n";
-    }
-
-public:
-
-    // TODO: ExportVisitor can receive an ASTContext in the constructor, which allows
-    // it to extract documentation comments and other information from the AST.
-
-    ExportVisitor(
-        const std::string& import_name,
-        const std::string& export_name,
-        const std::string& path
-    ) : path(path) {
-        body += "#include <bertrand/python.h>\n";
-        body += "import " + import_name + ";\n";
-        body += "\n";
-        body += "\n";
-        body += "BERTRAND_MODULE(" + export_name + ", m) {\n";
-    }
-
-    ~ExportVisitor() {
-        body += "}";
-
-        // write the binding file
-        impl::FileLock file(path);
-        if (file) {
-            std::stringstream buffer;
-            buffer << file->rdbuf();
-            std::string contents = buffer.str();
-
-            // only overwrite if the contents have changed
-            if (contents != body + "\n") {
-                file->close();
-                file->open(path, std::ios::out | std::ios::trunc);
-                file << body;
-            } else {
-                llvm::errs() << "no changes to file: " << path << "\n";
-            }
-        } else {
-            llvm::errs() << "failed to open file: " << path << "\n";
-        }
-    }
-
-    /* C++'s `export` keyword can be applied to many kinds of declarations, including:
-     *
-     *  - TypeDecl (CXXRecordDecl): in which a py::Class is instantiated and attached
-     *    to the module using pybind11.
-     *  - FunctionDecl: in which a py::Function is instantiated and attached to the
-     *    module binding.
-     *  - VarDecl: in which the variable is converted to a Python object and attached
-     *    to the module binding.
-     *        -> Note that modifying the variable in Python should probably also
-     *           modify it in C++, so this will require some kind of proxy or capsule.
-     *  - NamespaceDecl: in which the contents of *that namespace declaration* (i.e.
-     *    not the namespace as a whole) are exported.
-     */
-
-    bool VisitExportDecl(clang::ExportDecl* export_decl) {
-        using llvm::dyn_cast;
-
-        for (const auto* decl : export_decl->decls()) {
-            if (auto* func = dyn_cast<clang::FunctionDecl>(decl)) {
-                if (noexport(*func)) {
-                    continue;
-                }
-                emit(*func);
-                llvm::errs() << "exported function " << func->getNameAsString() << "\n";
-
-            } else if (auto* type = dyn_cast<clang::CXXRecordDecl>(decl)) {
-                if (noexport(*type)) {
-                    continue;
-                }
-                // emit(*type);
-                llvm::errs() << "exported type " << type->getNameAsString() << "\n";
-
-            } else if (auto* var = dyn_cast<clang::VarDecl>(decl)) {
-                if (noexport(*var)) {
-                    continue;
-                }
-                // emit(*var);
-                llvm::errs() << "exported variable " << var->getNameAsString() << "\n";
-
-            } else if (auto* name = dyn_cast<clang::NamespaceDecl>(decl)) {
-                if (noexport(*name)) {
-                    continue;
-                }
-                // emit(*name);
-                llvm::errs() << "exported namespace " << name->getNameAsString() << "\n";
-
-            } else {
-                llvm::errs() << "unhandled export " << decl->getDeclKindName() << "\n";
-            }
-        }
-
-        return true;
-    }
-
-};
-
-
 /////////////////////////
 ////    CONSUMERS    ////
 /////////////////////////
@@ -424,8 +283,7 @@ public:
  * Overriding HandleTranslationUnit will parse the complete AST for an entire
  * translation unit after it has been constructed, and will typically use a 
  * RecursiveASTVisitor to do so.  This triggers an extra pass over the AST, so it's a
- * bit more expensive as a result.  It does, however, grant access to the complete
- * AST.
+ * bit more expensive as a result.
  *
  * It is also possible to trigger the visitor on every top-level declaration as it is
  * parsed by overriding HandleTopLevelDecl.  This is more efficient and can avoid an
@@ -443,6 +301,66 @@ class ExportConsumer : public clang::ASTConsumer {
     std::string export_name;
     std::string binding_path;
     std::string cache_path;
+    std::string body;  // TODO: replace this with vectors of wrapper classes
+
+    /* Check if a declaration is marked with [[py::noexport]]. */
+    bool noexport(const clang::NamedDecl& decl) {
+        for (auto&& attr : decl.getAttrs()) {
+            if (
+                attr->getKind() == clang::attr::Annotate &&
+                static_cast<clang::AnnotateAttr*>(attr)->getAnnotation() == "noexport"
+            ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /* Emit a binding for an exported C++ function. */
+    void emit(const clang::FunctionDecl& func) {
+        std::string name = func.getNameAsString();
+        std::string qualname = func.getQualifiedNameAsString();  // includes namespaces
+
+        llvm::errs() << "EMITTING FUNCTION " << qualname << "\n";
+
+        // TODO: generate a lambda with python argument annotations to enable keyword
+        // arguments, etc.
+
+        body += "    m.def(\"" + name + "\", \"\", " + qualname + ");\n";
+    }
+
+    /* Write the final binding file to disk if it has changed. */
+    void write() {
+        impl::FileLock file(binding_path);
+        if (!file) {
+            llvm::errs() << "failed to open file: " << binding_path << "\n";
+            return;
+        }
+        std::stringstream buffer;
+        buffer << file->rdbuf();
+        std::string contents = buffer.str();
+        if ((body + "\n") == contents) {
+            llvm::errs() << "no changes to file: " << binding_path << "\n";
+            return;
+        }
+        file->close();
+        file->open(binding_path, std::ios::out | std::ios::trunc);
+        file << body;
+    }
+
+    /* Update the AST cache to avoid re-parsing the same file. */
+    void update_cache() {
+        impl::FileLock cache_file(cache_path);
+        if (!cache_file) {
+            llvm::errs() << "failed to open cache file: " << cache_path << "\n";
+            return;
+        }
+        auto cache = json::parse(cache_file.file);
+        cache[impl::get_source_path(compiler)]["parsed"] = binding_path;
+        cache_file->close();
+        cache_file->open(cache_path, std::ios::out | std::ios::trunc);
+        cache_file << cache.dump(4);
+    }
 
 public:
 
@@ -455,39 +373,78 @@ public:
         std::string cache_path
     ) : compiler(compiler), module_path(module_path), import_name(import_name),
         export_name(export_name), binding_path(binding_path), cache_path(cache_path)
-    {}
+    {
+        body += "#include <bertrand/python.h>\n";
+        body += "import " + import_name + ";\n";
+        body += "\n";
+        body += "\n";
+        body += "BERTRAND_MODULE(" + export_name + ", m) {\n";
+    }
 
-    void HandleTranslationUnit(clang::ASTContext& context) override {
-        std::string source_path = impl::get_source_path(compiler);
-        if (source_path.empty()) {
-            llvm::errs() << "failed to get path for source of: " << module_path << "\n";
-            return;
-        }
+    ~ExportConsumer() {
+        body += "}";
+        write();
+        update_cache();
+    }
 
-        if (source_path == module_path) {
-            impl::FileLock file(cache_path);
-            if (!file) {
-                llvm::errs() << "failed to open cache file: " << cache_path << "\n";
-                return;
-            }
-            auto cache = json::parse(file.file);
-            if (cache.contains(source_path)) {
-                std::string parsed = cache[source_path]["parsed"];
-                if (parsed.empty()) {
-                    ExportVisitor visitor(import_name, export_name, binding_path);
-                    visitor.TraverseDecl(context.getTranslationUnitDecl());
-                    cache[source_path]["parsed"] = binding_path;
-                    file->close();
-                    file->open(cache_path, std::ios::out | std::ios::trunc);
-                    file << cache.dump(4);
-                } else {
-                    llvm::errs() << "skipping already-exported module: "
-                                 << source_path << "\n";
+    /* Generate a binding for every top-level declaration marked with the `export`
+    keyword that is found during the initial parse, as the source is processed. */
+    bool HandleTopLevelDecl(clang::DeclGroupRef decl_group) override {
+        using llvm::dyn_cast;
+        using clang::Decl;
+        using clang::ExportDecl;
+        using clang::FunctionDecl;
+        using clang::CXXRecordDecl;
+        using clang::VarDecl;
+        using clang::NamespaceDecl;
+        using clang::UsingDecl;
+
+        for (const Decl* _decl : decl_group) {
+            if (const ExportDecl* decl = dyn_cast<ExportDecl>(_decl)) {
+                for (const Decl* subdecl : decl->decls()) {
+                    if (const FunctionDecl* func = dyn_cast<FunctionDecl>(subdecl)) {
+                        if (noexport(*func)) {
+                            continue;
+                        }
+                        emit(*func);
+                        llvm::errs() << "exported function " << func->getNameAsString() << "\n";
+
+                    } else if (const CXXRecordDecl* type = dyn_cast<CXXRecordDecl>(subdecl)) {
+                        if (noexport(*type)) {
+                            continue;
+                        }
+                        // emit(*type);
+                        llvm::errs() << "exported type " << type->getNameAsString() << "\n";
+
+                    } else if (const VarDecl* var = dyn_cast<VarDecl>(subdecl)) {
+                        if (noexport(*var)) {
+                            continue;
+                        }
+                        // emit(*var);
+                        llvm::errs() << "exported variable " << var->getNameAsString() << "\n";
+
+                    } else if (const NamespaceDecl* name = dyn_cast<NamespaceDecl>(subdecl)) {
+                        if (noexport(*name)) {
+                            continue;
+                        }
+                        // emit(*name);
+                        llvm::errs() << "exported namespace " << name->getNameAsString() << "\n";
+
+                    // } else if (const UsingDecl* use = dyn_cast<UsingDecl>(subdecl)) {
+                    //     if (noexport(*use)) {
+                    //         continue;
+                    //     }
+                    //     // emit(*use);
+                    //     llvm::errs() << "exported using " << name->getNameAsString() << "\n";
+
+                    } else {
+                        llvm::errs() << "unhandled export " << subdecl->getDeclKindName() << "\n";
+                    }
                 }
-            } else {
-                llvm::errs() << "skipping out-of-tree module: " << source_path << "\n";
             }
         }
+
+        return true;
     }
 
 };
@@ -577,6 +534,32 @@ protected:
         clang::CompilerInstance& compiler,
         llvm::StringRef
     ) override {
+        impl::FileLock cache_file(cache_path);
+        if (!cache_file) {
+            llvm::errs() << "failed to open cache file: " << cache_path << "\n";
+            return std::make_unique<clang::ASTConsumer>();
+        }
+
+        // if the source file is not present in cache, then it is out-of-tree
+        std::string source_path = impl::get_source_path(compiler);
+        if (source_path.empty()) {
+            llvm::errs() << "failed to get path for source of: " << module_path << "\n";
+            return std::make_unique<clang::ASTConsumer>();
+        }
+        auto cache = json::parse(cache_file.file);
+        if (!cache.contains(source_path)) {
+            llvm::errs() << "skipping out-of-tree module: " << source_path << "\n";
+            return std::make_unique<clang::ASTConsumer>();
+        }
+
+        // if the "parsed" path is cached, then the module has already been exported
+        std::string parsed = cache[source_path]["parsed"];
+        if (!parsed.empty()) {
+            llvm::errs() << "skipping already-exported module: " << source_path << "\n";
+            return std::make_unique<clang::ASTConsumer>();
+        }
+
+        // otherwise, parse the AST and write the binding file
         return std::make_unique<ExportConsumer>(
             compiler,
             module_path,
@@ -675,7 +658,7 @@ protected:
 }
 
 
-/* Register the plugin with the clang driver. */
+/* Register the plugins with the clang driver. */
 static clang::FrontendPluginRegistry::Add<ExportAction> export_action(
     "export",
     "emit a Python binding file for each primary module interface unit, and "
