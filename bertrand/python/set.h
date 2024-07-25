@@ -26,8 +26,6 @@ struct __issubclass__<T, Set<Key>>                          : Returns<bool> {
     static consteval bool operator()() {
         if constexpr (!impl::set_like<T>) {
             return false;
-        } else if constexpr (impl::pybind11_like<T>) {
-            return generic;
         } else if constexpr (impl::is_iterable<T>) {
             return check_key_type<impl::iter_type<T>>;
         } else {
@@ -60,10 +58,7 @@ struct __isinstance__<T, Set<Key>>                          : Returns<bool> {
                 );
             }
 
-        } else if constexpr (
-            std::derived_from<T, Set<Object>> ||
-            std::derived_from<T, pybind11::set>
-        ) {
+        } else if constexpr (std::derived_from<T, Set<Object>>) {
             if constexpr (generic) {
                 return obj.ptr() != nullptr;
             } else {
@@ -795,8 +790,6 @@ struct __issubclass__<T, FrozenSet<Key>>                    : Returns<bool> {
     static consteval bool operator()() {
         if constexpr (!impl::frozenset_like<T>) {
             return false;
-        } else if constexpr (impl::pybind11_like<T>) {
-            return generic;
         } else if constexpr (impl::is_iterable<T>) {
             return check_key_type<impl::iter_type<T>>;
         } else {
@@ -829,10 +822,7 @@ struct __isinstance__<T, FrozenSet<Key>>                    : Returns<bool> {
                 );
             }
 
-        } else if constexpr (
-            std::derived_from<T, FrozenSet<Object>> ||
-            std::derived_from<T, pybind11::frozenset>
-        ) {
+        } else if constexpr (std::derived_from<T, FrozenSet<Object>>) {
             if constexpr (generic) {
                 return obj.ptr() != nullptr;
             } else {

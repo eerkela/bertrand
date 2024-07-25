@@ -734,11 +734,7 @@ struct __explicit_init__<Str, T>                            : Returns<Str> {
         requires (impl::str_like<T> && sizeof...(Args) > 0)
     struct __explicit_init__<Str, T, Args...>               : Returns<Str> {
         static auto operator()(const T& format, const Args&... args) {
-            if constexpr (impl::pybind11_like<T>) {
-                return Str(format.template cast<std::string>(), args...);
-            } else {
-                return Str(static_cast<std::string>(format), args...);
-            }
+            return Str(static_cast<std::string>(format), args...);
         }
     };
 
@@ -747,11 +743,7 @@ struct __explicit_init__<Str, T>                            : Returns<Str> {
         requires (impl::str_like<T> && sizeof...(Args) > 0)
     struct __explicit_init__<Str, std::locale, T, Args...>  : Returns<Str> {
         static auto operator()(const std::locale& locale, const T& format, const Args&... args) {
-            if constexpr (impl::pybind11_like<T>) {
-                return Str(locale, format.template cast<std::string>(), args...);
-            } else {
-                return Str(locale, static_cast<std::string>(format), args...);
-            }
+            return Str(locale, static_cast<std::string>(format), args...);
         }
     };
 

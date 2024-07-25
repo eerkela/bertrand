@@ -260,12 +260,3 @@ export namespace std {
     using std::hash;
     using std::equal_to;
 }
-
-
-export namespace pybind11 {
-    namespace detail {
-        using pybind11::detail::type_caster;
-    }
-
-    using pybind11::type_id;
-}

@@ -502,9 +502,6 @@ struct __issubclass__<T, Dict<Key, Value>>                  : Returns<bool> {
         if constexpr (!impl::dict_like<T>) {
             return false;
 
-        } else if constexpr (impl::pybind11_like<T>) {
-            return generic_key && generic_value;
-
         } else if constexpr (std::derived_from<T, impl::DictTag>) {
             return (
                 check_key_type<typename T::key_type> &&
@@ -577,14 +574,6 @@ struct __isinstance__<T, Dict<Key, Value>>                  : Returns<bool> {
                 return obj.ptr() != nullptr && PyDict_Check(obj.ptr());
             } else {
                 return obj.ptr() != nullptr && PyDict_Check(obj.ptr()) &&
-                    check_dynamic<!generic_key, !generic_value>(obj.ptr());
-            }
-
-        } else if constexpr (std::derived_from<T, pybind11::dict>) {
-            if constexpr (generic_key && generic_value) {
-                return obj.ptr() != nullptr;
-            } else {
-                return obj.ptr() != nullptr &&
                     check_dynamic<!generic_key, !generic_value>(obj.ptr());
             }
 
@@ -712,30 +701,6 @@ public:
             throw;
         }
     }
-
-
-
-
-
-
-    /* Construct a dictionary using pybind11-style keyword arguments.  This is
-    technically superceeded by initializer lists, but it is provided for backwards
-    compatibility with Python and pybind11. */
-    template <typename... Args>
-        requires (
-            Function<decltype(kw_constructor)>::template invocable<Args...> &&
-            sizeof...(Args) > 0
-        )
-    explicit Dict(Args&&... args) : Dict(Function<decltype(kw_constructor)>::invoke_cpp(
-        {},
-        kw_constructor,
-        std::forward<Args>(args)...
-    )) {}
-
-
-
-
-
 
     /* Equivalent to Python `dict.update(items)`, but does not overwrite existing
     keys. */

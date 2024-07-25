@@ -12,6 +12,10 @@ namespace py {
 namespace impl {
 
 
+// TODO: rather than .value(), use a __declspec(property) to make it more consistent
+// with other proxies across the codebase, like Args
+
+
 /* A generic policy for getting, setting, or deleting an item at a particular
 index of a Python container. */
 template <typename Obj, typename Key>
@@ -128,10 +132,10 @@ struct ItemPolicy<Obj, Key> {
 };
 
 
-/* A subclass of Proxy that replaces the result of pybind11's array index (`[]`)
-operator.  This uses the __getitem__, __setitem__, and __delitem__ control structs
-to selectively enable/disable these operations for particular types, and to assign
-a corresponding return type to which the proxy can be converted. */
+/* Describes the result of the array index (`[]`) operator on a python object.  This
+uses the __getitem__, __setitem__, and __delitem__ control structs to selectively
+enable/disable these operations for particular types, and to assign a corresponding
+return type to which the proxy can be converted. */
 template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
 class Item : public ProxyTag {
 public:
@@ -269,7 +273,7 @@ public:
         return result;
     }
 
-    [[nodiscard]] bool is(const Handle& other) const {
+    [[nodiscard]] bool is(Handle other) const {
         return value().is(other);
     }
 

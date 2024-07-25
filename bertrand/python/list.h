@@ -28,8 +28,6 @@ struct __issubclass__<T, List<Value>>                       : Returns<bool> {
     static consteval bool operator()() {
         if constexpr (!impl::list_like<T>) {
             return false;
-        } else if constexpr (impl::pybind11_like<T>) {
-            return generic;
         } else if constexpr (impl::is_iterable<T>) {
             return check_value_type<impl::iter_type<T>>;
         } else {
@@ -62,10 +60,7 @@ struct __isinstance__<T, List<Value>>                       : Returns<bool> {
                 );
             }
 
-        } else if constexpr (
-            std::derived_from<T, List<Object>> ||
-            std::derived_from<T, pybind11::list>
-        ) {
+        } else if constexpr (std::derived_from<T, List<Object>>) {
             if constexpr (generic) {
                 return obj.ptr() != nullptr;
             } else {
@@ -638,17 +633,6 @@ struct __explicit_init__<List<Value>, Iter, Sentinel>       : Returns<List<Value
             throw;
         }
         return reinterpret_steal<List<Value>>(result);
-    }
-};
-
-
-/* Implicitly convert a py::List into a pybind11::list regardless of the templated
-value type. */
-template <std::derived_from<impl::ListTag> From, impl::list_like To>
-    requires (impl::pybind11_like<To> && !issubclass<To, From>())
-struct __cast__<From, To> : Returns<To> {
-    static auto operator()(const From& from) {
-        return reinterpret_borrow<To>(from.ptr());
     }
 };
 

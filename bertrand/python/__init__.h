@@ -630,6 +630,28 @@ py::Object filter(First&& first, Rest&&... rest) {
 }
 
 
+/* Equivalent to Python `iter(args...)`. */
+template <typename First = void, typename... Rest> [[deprecated]]
+py::Object iter(First&& first, Rest&&... rest) {
+    static_assert(
+        std::is_void_v<First>,
+        "Bertrand does not implement py::iter().  Use begin() and end() directly."
+    );
+    return {};
+}
+
+
+/* Equivalent to Python `iter(args...)`. */
+template <typename First = void, typename... Rest> [[deprecated]]
+py::Object reversed(First&& first, Rest&&... rest) {
+    static_assert(
+        std::is_void_v<First>,
+        "Bertrand does not implement py::reversed().  Use rbegin() and rend() directly."
+    );
+    return {};
+}
+
+
 /* Equivalent to Python `map(args...)`. */
 template <typename First = void, typename... Rest> [[deprecated]]
 py::Object map(First&& first, Rest&&... rest) {

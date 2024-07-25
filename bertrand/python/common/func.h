@@ -30,6 +30,8 @@ namespace py {
 // mechanism, and would store signatures in topographical order.  When the descriptor
 // is called, it would test each signature in order, and call the first one that
 // fully matches
+// -> pybind11's overloading mechanism can't be used anyways, since I need to decouple
+// from it entirely.
 
 // TODO: This should be a separate class, which would basically be an overload set
 // for py::Function instances, which would work at both the Python and C++ levels.
@@ -2170,25 +2172,6 @@ public:
         __explicit_init__<Function, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     )) {}
 
-
-
-
-    // TODO: update these to use __init__, __explicit_init__
-
-    // /* Convert an equivalent pybind11 type into a py::Function.  Attempts to unpack the
-    // argument's capsule if it represents a py::Function instance. */
-    // template <impl::pybind11_like T> requires (typecheck<T>())
-    // Function(T&& other) : Base(std::forward<T>(other)) {
-    //     contents = Capsule::from_python(m_ptr);
-    // }
-
-    // /* Construct a py::Function from a pybind11 accessor.  Attempts to unpack the
-    // argument's capsule if it represents a py::Function instance. */
-    // template <typename Policy>
-    // Function(const pybind11::detail::accessor<Policy>& accessor) : Base(accessor) {
-    //     contents = Capsule::from_python(m_ptr);
-    // }
-
     /* Construct a py::Function from a valid C++ function with the templated signature.
     Use CTAD to deduce the signature if not explicitly provided.  If the signature
     contains default value annotations, they must be specified here. */
@@ -2283,7 +2266,7 @@ public:
         );
         return []<size_t... Is>(
             std::index_sequence<Is...>,
-            const Handle& func,
+            Handle func,
             Source&&... args
         ) {
             using source = Signature<Source...>;

@@ -41,8 +41,6 @@ struct __issubclass__<T, Tuple<Value>>                      : Returns<bool> {
     static consteval bool operator()() {
         if constexpr (!impl::tuple_like<T>) {
             return false;
-        } else if constexpr (impl::pybind11_like<T>) {
-            return generic;
         } else if constexpr (impl::is_iterable<T>) {
             return check_value_type<impl::iter_type<T>>;
         } else if constexpr (stl_check<T>::match) {
@@ -77,10 +75,7 @@ struct __isinstance__<T, Tuple<Value>>                      : Returns<bool> {
                 );
             }
 
-        } else if constexpr (
-            std::derived_from<T, Tuple<Object>> ||
-            std::derived_from<T, pybind11::tuple>
-        ) {
+        } else if constexpr (std::derived_from<T, Tuple<Object>>) {
             if constexpr (generic) {
                 return obj.ptr() != nullptr;
             } else {
@@ -616,15 +611,6 @@ struct __explicit_init__<Tuple<Value>, Iter, Sentinel>      : Returns<Tuple<Valu
             Exception::from_python();
         }
         return reinterpret_steal<Tuple<Value>>(result);
-    }
-};
-
-
-template <std::derived_from<impl::TupleTag> From, impl::tuple_like To>
-    requires (impl::pybind11_like<To> && !issubclass<To, From>())
-struct __cast__<From, To> : Returns<To> {
-    static To operator()(const From& from) {
-        return reinterpret_borrow<To>(from.ptr());
     }
 };
 

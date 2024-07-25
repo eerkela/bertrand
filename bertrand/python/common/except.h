@@ -10,22 +10,6 @@
  * Inheritance hierarchy:
  *      https://docs.python.org/3/library/exceptions.html#exception-hierarchy
  *
- * NOTE: all of these exceptions implicitly derive from std::runtime_error via
- * pybind11::builtin_exception.  This is necessary to ensure that exceptions are
- * properly caught at the Python/C++ boundary, but would ideally be avoided in a
- * future release to avoid contaminating the C++ exception hierarchy.  The effect of
- * this is that all exceptions will be caught by a catch(const std::runtime_error&)
- * block, which can potentially mix Python errors with C++ errors.
- *
- * NOTE: pybind11 adds two special exception types:
- *      - pybind11::cast_error: thrown when a cast fails
- *      - pybind11::reference_cast_error: used internally to select between function
- *        overloads, etc.
- * These are reflected in the bertrand::py namespace as `CastError` and
- * `ReferenceCastError`, which both inherit from `TypeError`.  They are not catchable
- * from Python, and will be converted to generic `TypeError` exceptions when thrown
- * from C++.
- *
  * NOTE: these exceptions include Python-style tracebacks by default, even when used in
  * pure C++ code.  This gives much better diagnostics than the standard C++ exceptions,
  * but comes with a performance cost when exceptions are constructed and thrown.  This
@@ -58,7 +42,7 @@ namespace impl {
         static std::string parse_function_name(const std::string& name) {
             /* NOTE: functions and classes that accept static strings as template
              * arguments are decomposed into numeric character arrays in the symbol
-             * name, which are be reconstructed here.  Here's an example:
+             * name, which need to be reconstructed here.  Here's an example:
              *      File "/home/eerkela/data/bertrand/bertrand/python/common/item.h",
              *      line 268, in bertrand::py::impl::Attr<bertrand::py::Object,
              *      bertrand::StaticStr<7ul>{char [8]{(char)95, (char)95, (char)103,
@@ -67,7 +51,6 @@ namespace impl {
              * Our goal is to replace the `bertrand::StaticStr<7ul>{char [8]{...}}`
              * bit with the text it represents, in this case the string `"__get__"`.
              */
-
             size_t pos = name.find("bertrand::StaticStr<");
             if (pos == std::string::npos) {
                 return name;
@@ -555,6 +538,8 @@ namespace impl {
     // TODO: BERTRAND_EXCEPTION needs to be lifted up to bertrand/python.h so that it
     // can potentially be used in bindings.  Right now, it's only visible within the
     // module.
+    // -> Maybe when generating Python->C++ bindings, I can just write out the full
+    //    exception class without the need for this macro.
 
     #ifndef BERTRAND_NO_TRACEBACK
 
@@ -564,9 +549,9 @@ namespace impl {
                 "exception base class must derive from py::Exception"                   \
             );                                                                          \
                                                                                         \
-            class PYBIND11_EXPORT_EXCEPTION cls : public base {                         \
+            class cls : public base {                                                   \
                 inline static bool registered =                                         \
-                    py::impl::register_exception<cls>(pytype);                          \
+                    ::py::impl::register_exception<cls>(pytype);                        \
                                                                                         \
             public:                                                                     \
                 using base::base;                                                       \
@@ -604,24 +589,17 @@ namespace impl {
                 {}                                                                      \
                                                                                         \
                 virtual const char* what() const noexcept override {                    \
-                    if (what_string.empty()) {                                          \
-                        what_string += traceback.to_string();                           \
-                        what_string += "\n"#cls": ";                                    \
-                        what_string += message();                                       \
+                    if (what_cache.empty()) {                                           \
+                        what_cache = traceback.to_string() + "\n"#cls": " + message();  \
                     }                                                                   \
-                    return what_string.c_str();                                         \
+                    return what_cache.c_str();                                          \
                 }                                                                       \
                                                                                         \
-                virtual void set_error() const override {                               \
-                    traceback.restore(pytype, message());                               \
+                virtual void set_pyerr() const override {                               \
+                    traceback.restore(pytype, message().c_str());                       \
                 }                                                                       \
                                                                                         \
                 static void from_python(                                                \
-                    size_t skip = 0,                                                    \
-                    PyThreadState* thread = nullptr                                     \
-                ) = delete;                                                             \
-                                                                                        \
-                static void from_pybind11(                                              \
                     size_t skip = 0,                                                    \
                     PyThreadState* thread = nullptr                                     \
                 ) = delete;                                                             \
@@ -643,23 +621,17 @@ namespace impl {
                 using base::base;                                                       \
                                                                                         \
                 virtual const char* what() const noexcept override {                    \
-                    if (what_string.empty()) {                                          \
-                        what_string += #cls": ";                                        \
-                        what_string += message();                                       \
+                    if (what_cache.empty()) {                                           \
+                        what_cache = #cls": " + message();                              \
                     }                                                                   \
-                    return what_string.c_str();                                         \
+                    return what_cache.c_str();                                          \
                 }                                                                       \
                                                                                         \
-                virtual void set_error() const override {                               \
-                    PyErr_SetString(pytype, message());                                 \
+                virtual void set_pyerr() const override {                               \
+                    PyErr_SetString(pytype, message().c_str());                         \
                 }                                                                       \
                                                                                         \
                 static void from_python(                                                \
-                    size_t skip = 0,                                                    \
-                    PyThreadState* thread = nullptr                                     \
-                ) = delete;                                                             \
-                                                                                        \
-                static void from_pybind11(                                              \
                     size_t skip = 0,                                                    \
                     PyThreadState* thread = nullptr                                     \
                 ) = delete;                                                             \
@@ -672,16 +644,14 @@ namespace impl {
 
 /* Base exception class.  Appends a C++ stack trace that will be propagated up to
 Python for cross-language diagnostics. */
-class PYBIND11_EXPORT_EXCEPTION Exception :
-    public impl::BertrandTag,
-    public pybind11::builtin_exception
-{
-    using Base = pybind11::builtin_exception;
+class Exception : public std::exception, public impl::BertrandTag {
+    using Base = std::exception;
     inline static bool registered =
         impl::register_exception<Exception>(PyExc_Exception);
 
 protected:
-    mutable std::string what_string;
+    std::string what_msg;
+    mutable std::string what_cache;
 
     static std::string parse_value(PyObject* obj) {
         PyObject* string = PyObject_Str(obj);
@@ -714,14 +684,93 @@ protected:
 
 public:
 
-    #ifndef BERTRAND_NO_TRACEBACK
+    #ifdef BERTRAND_NO_TRACEBACK
+
+        explicit Exception(
+            const std::string& message = "",
+            size_t skip = 0,
+            PyThreadState* thread = nullptr
+        ) : what_msg(message)
+        {}
+
+        explicit Exception(
+            const std::string& message,
+            const cpptrace::stacktrace& trace,
+            PyThreadState* thread = nullptr
+        ) : what_msg(message)
+        {}
+
+        explicit Exception(
+            PyObject* type,
+            PyObject* value,
+            PyObject* traceback,
+            size_t skip = 0,
+            PyThreadState* thread = nullptr
+        ) : what_msg(value == nullptr ? std::string() : parse_value(value))
+        {
+            if (type == nullptr) {
+                throw std::logic_error(
+                    "could not convert Python exception into a C++ exception - "
+                    "exception type is not set."
+                );
+            }
+        }
+
+        explicit Exception(
+            PyObject* type,
+            PyObject* value,
+            PyObject* traceback,
+            const cpptrace::stacktrace& trace,
+            PyThreadState* thread = nullptr
+        ) : what_msg(value == nullptr ? std::string() : parse_value(value))
+        {
+            if (type == nullptr) {
+                throw std::logic_error(
+                    "could not convert Python exception into a C++ exception - "
+                    "exception type is not set."
+                );
+            }
+        }
+
+        Exception(const Exception& other) :
+            Base(other), what_msg(other.what_msg), what_cache(other.what_cache)
+        {}
+
+        Exception& operator=(const Exception& other) {
+            if (&other != this) {
+                Base::operator=(other);
+                what_msg = other.what_msg;
+                what_cache = other.what_cache;
+            }
+            return *this;
+        }
+
+        /* Generate the message that will be printed if this error is propagated to a C++
+        context without being explicitly caught.  If debug symbols are enabled, then this
+        will include a Python-style traceback covering both the Python and C++ frames that
+        were traversed to reach the error. */
+        [[nodiscard]] const char* what() const noexcept override {
+            if (what_cache.empty()) {
+                what_cache = "Exception: " + message();
+            }
+            return what_cache.c_str();
+        }
+
+        /* Convert this exception into an equivalent Python error, so that it can be
+        propagated to a Python context.  The resulting traceback reflects both the Python
+        and C++ frames that were traversed to reach the error.  */
+        virtual void set_pyerr() const {
+            PyErr_SetString(PyExc_Exception, message().c_str());
+        }
+
+    #else
         impl::StackTrace traceback;
 
         BERTRAND_NOINLINE explicit Exception(
             const std::string& message = "",
             size_t skip = 0,
             PyThreadState* thread = nullptr
-        ) : Base((Interpreter::init(), message)),
+        ) : what_msg((Interpreter::init(), message)),
             traceback(get_trace(skip), thread)
         {}
 
@@ -729,7 +778,7 @@ public:
             const std::string& message,
             const cpptrace::stacktrace& trace,
             PyThreadState* thread = nullptr
-        ) : Base((Interpreter::init(), message)),
+        ) : what_msg((Interpreter::init(), message)),
             traceback(trace, thread)
         {}
 
@@ -739,7 +788,7 @@ public:
             PyObject* traceback,
             size_t skip = 0,
             PyThreadState* thread = nullptr
-        ) : Base(value == nullptr ? std::string() : parse_value(value)),
+        ) : what_msg(value == nullptr ? std::string() : parse_value(value)),
             traceback(
                 reinterpret_cast<PyTracebackObject*>(traceback),
                 get_trace(skip),
@@ -760,7 +809,7 @@ public:
             PyObject* traceback,
             const cpptrace::stacktrace& trace,
             PyThreadState* thread = nullptr
-        ) : Base(value == nullptr ? std::string() : parse_value(value)),
+        ) : what_msg(value == nullptr ? std::string() : parse_value(value)),
             traceback(
                 reinterpret_cast<PyTracebackObject*>(traceback),
                 trace,
@@ -776,14 +825,15 @@ public:
         }
 
         Exception(const Exception& other) :
-            Base(other), what_string(other.what_string),
+            Base(other), what_msg(other.what_msg), what_cache(other.what_cache),
             traceback(other.traceback)
         {}
 
         Exception& operator=(const Exception& other) {
             if (&other != this) {
                 Base::operator=(other);
-                what_string = other.what_string;
+                what_msg = other.what_msg;
+                what_cache = other.what_cache;
                 traceback = other.traceback;
             }
             return *this;
@@ -794,110 +844,28 @@ public:
         will include a Python-style traceback covering both the Python and C++ frames that
         were traversed to reach the error. */
         [[nodiscard]] const char* what() const noexcept override {
-            if (what_string.empty()) {
-                what_string += traceback.to_string();
-                what_string += "\nException: ";
-                what_string += Base::what();
+            if (what_cache.empty()) {
+                what_cache = traceback.to_string() + "\nException: " + message();
             }
-            return what_string.c_str();
+            return what_cache.c_str();
         }
 
         /* Convert this exception into an equivalent Python error, so that it can be
         propagated to a Python context.  The resulting traceback reflects both the Python
         and C++ frames that were traversed to reach the error.  */
-        void set_error() const override {
-            traceback.restore(PyExc_Exception, Base::what());
-        }
-
-    #else
-
-        explicit Exception(
-            const std::string& message = "",
-            size_t skip = 0,
-            PyThreadState* thread = nullptr
-        ) : Base(message)
-        {}
-
-        explicit Exception(
-            const std::string& message,
-            const cpptrace::stacktrace& trace,
-            PyThreadState* thread = nullptr
-        ) : Base(message)
-        {}
-
-        explicit Exception(
-            PyObject* type,
-            PyObject* value,
-            PyObject* traceback,
-            size_t skip = 0,
-            PyThreadState* thread = nullptr
-        ) : Base(value == nullptr ? std::string() : parse_value(value))
-        {
-            if (type == nullptr) {
-                throw std::logic_error(
-                    "could not convert Python exception into a C++ exception - "
-                    "exception type is not set."
-                );
-            }
-        }
-
-        explicit Exception(
-            PyObject* type,
-            PyObject* value,
-            PyObject* traceback,
-            const cpptrace::stacktrace& trace,
-            PyThreadState* thread = nullptr
-        ) : Base(value == nullptr ? std::string() : parse_value(value))
-        {
-            if (type == nullptr) {
-                throw std::logic_error(
-                    "could not convert Python exception into a C++ exception - "
-                    "exception type is not set."
-                );
-            }
-        }
-
-        Exception(const Exception& other) :
-            Base(other), what_string(other.what_string)
-        {}
-
-        Exception& operator=(const Exception& other) {
-            if (&other != this) {
-                Base::operator=(other);
-                what_string = other.what_string;
-            }
-            return *this;
-        }
-
-        /* Generate the message that will be printed if this error is propagated to a C++
-        context without being explicitly caught.  If debug symbols are enabled, then this
-        will include a Python-style traceback covering both the Python and C++ frames that
-        were traversed to reach the error. */
-        [[nodiscard]] const char* what() const noexcept override {
-            if (what_string.empty()) {
-                what_string += "Exception: ";
-                what_string += message();
-            }
-            return what_string.c_str();
-        }
-
-        /* Convert this exception into an equivalent Python error, so that it can be
-        propagated to a Python context.  The resulting traceback reflects both the Python
-        and C++ frames that were traversed to reach the error.  */
-        void set_error() const override {
-            PyErr_SetString(PyExc_Exception, message());
+        virtual void set_pyerr() const {
+            traceback.restore(PyExc_Exception, message().c_str());
         }
 
     #endif
 
-    [[nodiscard]] const char* message() const noexcept {
-        return Base::what();
+    /* Get the base error message without a traceback. */
+    [[nodiscard]] const std::string& message() const noexcept {
+        return what_msg;
     }
 
     /* Retrieve an error from a Python context and re-throw it as a C++ error with a
-    matching type.  This effectively replaces `pybind11::error_already_set()` and
-    removes the special case that it represents during try/catch blocks.  Note that
-    this is a void function that always throws. */
+    matching type.  Note that this is a void function that always throws. */
     [[noreturn]] BERTRAND_NOINLINE static void from_python(
         size_t skip = 0,
         PyThreadState* thread = nullptr
@@ -906,75 +874,51 @@ public:
             thread = PyThreadState_Get();
         }
 
-        using pybind11::object;
-        using pybind11::reinterpret_borrow;
-        using pybind11::reinterpret_steal;
-
         // interacting with the Python error state is rather clumsy and was recently
         // changed in Python 3.12, so we need to handle both cases
         #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
-            object value = reinterpret_steal<object>(thread->current_exception);
-            if (value.ptr() == nullptr) {
+            PyObject* value = thread->current_exception;
+            if (value == nullptr) {
                 throw std::logic_error(
                     "could not convert Python exception into a C++ exception - "
                     "exception is not set."
                 );
             }
-            object type = reinterpret_borrow<object>(
-                reinterpret_cast<PyObject*>(Py_TYPE(value.ptr()))
-            );
-            object traceback = reinterpret_steal<object>(
-                PyException_GetTraceback(value.ptr())
-            );
+            PyObject* type = PyObject_Type(value);
+            PyObject* traceback = PyException_GetTraceback(value);
             thread->current_exception = nullptr;
         #else
-            object type = reinterpret_steal<object>(thread->curexc_type);
-            object value = reinterpret_steal<object>(thread->curexc_value);
-            object traceback = reinterpret_steal<object>(thread->curexc_traceback);
-            if (type.ptr() == nullptr) {
+            PyObject* type = thread->curexc_type;
+            PyObject* value = thread->curexc_value;
+            PyObject* traceback = thread->curexc_traceback;
+            if (type == nullptr) {
                 throw std::logic_error(
                     "could not convert Python exception into a C++ exception - "
                     "exception is not set."
                 );
-            } else if (traceback.ptr() == nullptr && value.ptr() != nullptr) {
-                traceback = reinterpret_steal<object>(
-                    PyException_GetTraceback(value.ptr())
-                );
+            } else if (traceback == nullptr && value != nullptr) {
+                traceback = PyException_GetTraceback(value);
             }
             thread->curexc_type = nullptr;
             thread->curexc_value = nullptr;
             thread->curexc_traceback = nullptr;
         #endif
 
-        // Re-throw the current exception as a registered bertrand exception type
-        auto it = impl::exception_map().find(type.ptr());
-        if (it != impl::exception_map().end()) {
-            it->second(
-                type.ptr(),
-                value.ptr(),
-                traceback.ptr(),
-                ++skip,
-                thread
-            );
+        try {
+            // Re-throw the current exception as a registered bertrand exception type
+            auto it = impl::exception_map().find(type);
+            if (it != impl::exception_map().end()) {
+                it->second(type, value, traceback, ++skip, thread);
+            }
+
+            throw Exception(type, value, traceback, ++skip, thread);
+        } catch (...) {
+            Py_XDECREF(type);
+            Py_XDECREF(value);
+            Py_XDECREF(traceback);
+            throw;
         }
-
-        throw Exception(
-            type.ptr(),
-            value.ptr(),
-            traceback.ptr(),
-            ++skip,
-            thread
-        );
     }
-
-    /* Retrieve an error from a pybind11 context and re-throw it as a C++ error with a
-    matching type.  This is used to standardize all exceptions to the existing Python
-    syntax, removing any special cases related to specific pybind11 error types.  Note
-    that this is a void function that always throws. */
-    [[noreturn]] BERTRAND_NOINLINE static void from_pybind11(
-        size_t skip = 0,
-        PyThreadState* thread = nullptr
-    );
 
     /* Convert an arbitrary C++ error into an equivalent Python exception, so that it
     can be propagate back to the Python interpreter. */
@@ -982,7 +926,7 @@ public:
         try {
             throw;
         } catch (const Exception& err) {
-            err.set_error();
+            err.set_pyerr();
         } catch (const std::exception& err) {
             PyErr_SetString(PyExc_Exception, err.what());
         } catch (...) {
@@ -1043,64 +987,6 @@ BERTRAND_EXCEPTION(ValueError, Exception, PyExc_ValueError)
         BERTRAND_EXCEPTION(UnicodeDecodeError, UnicodeError, PyExc_UnicodeDecodeError)
         BERTRAND_EXCEPTION(UnicodeEncodeError, UnicodeError, PyExc_UnicodeEncodeError)
         BERTRAND_EXCEPTION(UnicodeTranslateError, UnicodeError, PyExc_UnicodeTranslateError)
-
-
-[[noreturn]] BERTRAND_NOINLINE void Exception::from_pybind11(
-    size_t skip,
-    PyThreadState* thread
-) {
-    if (thread == nullptr) {
-        thread = PyThreadState_Get();
-    }
-    try {
-        throw;
-    } catch (const pybind11::error_already_set& err) {
-        PyObject* type = err.type().ptr();
-        PyObject* value = err.value().ptr();
-        pybind11::object traceback = err.trace();
-        if (traceback.ptr() == nullptr && value != nullptr) {
-            traceback = pybind11::reinterpret_steal<pybind11::object>(
-                PyException_GetTraceback(value)
-            );
-        }
-        auto it = impl::exception_map().find(type);
-        if (it != impl::exception_map().end()) {
-            it->second(
-                type,
-                value,
-                traceback.ptr(),
-                ++skip,
-                thread
-            );
-        } else {
-            throw Exception(type, value, traceback.ptr(), ++skip, thread);
-        }
-    } catch (const pybind11::cast_error& err) {
-        throw CastError(err.what(), ++skip, thread);
-    } catch (const pybind11::reference_cast_error& err) {
-        throw ReferenceCastError(err.what(), ++skip, thread);
-    } catch (const pybind11::stop_iteration& err) {
-        throw StopIteration(err.what(), ++skip, thread);
-    } catch (const pybind11::index_error& err) {
-        throw IndexError(err.what(), ++skip, thread);
-    } catch (const pybind11::key_error& err) {
-        throw KeyError(err.what(), ++skip, thread);
-    } catch (const pybind11::value_error& err) {
-        throw ValueError(err.what(), ++skip, thread);
-    } catch (const pybind11::type_error& err) {
-        throw TypeError(err.what(), ++skip, thread);
-    } catch (const pybind11::attribute_error& err) {
-        throw AttributeError(err.what(), ++skip, thread);
-    } catch (const pybind11::buffer_error& err) {
-        throw BufferError(err.what(), ++skip, thread);
-    } catch (const pybind11::import_error& err) {
-        throw ImportError(err.what(), ++skip, thread);
-    }
-
-    // This statement is unreachable.  It is only here to ensure the compiler correctly
-    // interprets the [[noreturn]] attribute at the call site.
-    throw;
-}
 
 
 }  // namespace py

@@ -35,31 +35,15 @@ template <typename R, typename C, typename... A>
 struct __as_object__<R(C::*)(A...) const volatile noexcept> : Returns<Function<R(A...)>> {};
 template <typename R, typename... A>
 struct __as_object__<std::function<R(A...)>>                : Returns<Function<R(A...)>> {};
-template <std::derived_from<pybind11::function> T>
-struct __as_object__<T>                                     : Returns<Function<>> {};
 template <>
 struct __as_object__<std::nullptr_t>                        : Returns<NoneType> {};
 template <>
 struct __as_object__<std::nullopt_t>                        : Returns<NoneType> {};
-template <std::derived_from<pybind11::none> T>
-struct __as_object__<T>                                     : Returns<NoneType> {};
-template <std::derived_from<pybind11::ellipsis> T>
-struct __as_object__<T>                                     : Returns<EllipsisType> {};
-template <std::derived_from<pybind11::slice> T>
-struct __as_object__<T>                                     : Returns<Slice> {};
-template <std::derived_from<pybind11::module_> T>
-struct __as_object__<T>                                     : Returns<Module> {};
 template <>
 struct __as_object__<bool>                                  : Returns<Bool> {};
-template <std::derived_from<pybind11::bool_> T>
-struct __as_object__<T>                                     : Returns<Bool> {};
 template <std::integral T> requires (!std::same_as<bool, T>)
 struct __as_object__<T>                                     : Returns<Int> {};
-template <std::derived_from<pybind11::int_> T>
-struct __as_object__<T>                                     : Returns<Int> {};
 template <std::floating_point T>
-struct __as_object__<T>                                     : Returns<Float> {};
-template <std::derived_from<pybind11::float_> T>
 struct __as_object__<T>                                     : Returns<Float> {};
 template <impl::complex_like T> requires (!std::derived_from<T, Object>)
 struct __as_object__<T>                                     : Returns<Complex> {};
@@ -69,18 +53,8 @@ template <>
 struct __as_object__<char*>                                 : Returns<Str> {};
 template <size_t N>
 struct __as_object__<char[N]>                               : Returns<Str> {};
-template <std::derived_from<std::string> T>
-struct __as_object__<T>                                     : Returns<Str> {};
-template <std::derived_from<std::string_view> T>
-struct __as_object__<T>                                     : Returns<Str> {};
-template <std::derived_from<pybind11::str> T>
-struct __as_object__<T>                                     : Returns<Str> {};
 template <>
 struct __as_object__<void*>                                 : Returns<Bytes> {};
-template <std::derived_from<pybind11::bytes> T>
-struct __as_object__<T>                                     : Returns<Bytes> {};
-template <std::derived_from<pybind11::bytearray> T>
-struct __as_object__<T>                                     : Returns<ByteArray> {};
 template <typename... Args>
 struct __as_object__<std::chrono::duration<Args...>>        : Returns<Timedelta> {};
 // TODO: std::time_t?
@@ -92,8 +66,6 @@ template <typename... Args>
 struct __as_object__<std::tuple<Args...>>                   : Returns<Tuple<Object>> {};  // TODO: should return Struct?
 template <typename T, size_t N>
 struct __as_object__<std::array<T, N>>                      : Returns<Tuple<impl::as_object_t<T>>> {};
-template <std::derived_from<pybind11::tuple> T>
-struct __as_object__<T>                                     : Returns<Tuple<Object>> {};
 template <typename T, typename... Args>
 struct __as_object__<std::vector<T, Args...>>               : Returns<List<impl::as_object_t<T>>> {};
 template <typename T, typename... Args>
@@ -102,24 +74,14 @@ template <typename T, typename... Args>
 struct __as_object__<std::list<T, Args...>>                 : Returns<List<impl::as_object_t<T>>> {};
 template <typename T, typename... Args>
 struct __as_object__<std::forward_list<T, Args...>>         : Returns<List<impl::as_object_t<T>>> {};
-template <std::derived_from<pybind11::list> T>
-struct __as_object__<T>                                     : Returns<List<Object>> {};
 template <typename T, typename... Args>
 struct __as_object__<std::unordered_set<T, Args...>>        : Returns<Set<impl::as_object_t<T>>> {};
 template <typename T, typename... Args>
 struct __as_object__<std::set<T, Args...>>                  : Returns<Set<impl::as_object_t<T>>> {};
-template <std::derived_from<pybind11::set> T>
-struct __as_object__<T>                                     : Returns<Set<Object>> {};
-template <std::derived_from<pybind11::frozenset> T>
-struct __as_object__<T>                                     : Returns<FrozenSet<Object>> {};
 template <typename K, typename V, typename... Args>
 struct __as_object__<std::unordered_map<K, V, Args...>>     : Returns<Dict<impl::as_object_t<K>, impl::as_object_t<V>>> {};
 template <typename K, typename V, typename... Args>
 struct __as_object__<std::map<K, V, Args...>>               : Returns<Dict<impl::as_object_t<K>, impl::as_object_t<V>>> {};
-template <std::derived_from<pybind11::dict> T>
-struct __as_object__<T>                                     : Returns<Dict<Object, Object>> {};
-template <std::derived_from<pybind11::type> T>
-struct __as_object__<T>                                     : Returns<Type> {};
 
 
 // TODO: list __isinstance__ and __issubclass__ for all types here.  Many (most) will

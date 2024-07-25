@@ -558,7 +558,7 @@ public:
     template <typename Func, typename... Defaults>
     Module& def(const Str& name, const Str& doc, Func&& body, Defaults&&... defaults);
 
-    /* Equivalent to pybind11::module_::def_submodule(). */
+    /* Attach a submodule to this module to represent nested namespaces, etc. */
     Module def_submodule(const Str& name, const Str& doc);
 
     void reload() {
@@ -606,7 +606,9 @@ template <typename Self> requires (__iter__<Self>::enable)
         "specialization of __iter__ for this types and ensure the Return type "
         "is a subclass of py::Object."
     );
-    if constexpr (impl::has_static_begin<__iter__<Self>, Self>) {
+    if constexpr (impl::proxy_like<Self>) {
+        return begin(self.value());
+    } else if constexpr (impl::has_static_begin<__iter__<Self>, Self>) {
         return __iter__<Self>{}.begin(self);
     } else {
         PyObject* iter = PyObject_GetIter(self.ptr());
@@ -629,7 +631,9 @@ template <typename Self> requires (__iter__<Self>::enable)
         "specialization of __iter__ for this types and ensure the Return type "
         "is a subclass of py::Object."
     );
-    if constexpr (impl::has_static_end<__iter__<Self>, Self>) {
+    if constexpr (impl::proxy_like<Self>) {
+        return end(self.value());
+    } else if constexpr (impl::has_static_end<__iter__<Self>, Self>) {
         return __iter__<Self>{}.end(self);
     } else {
         return impl::Iterator<impl::GenericIter<Return>>();
@@ -646,7 +650,9 @@ template <typename Self> requires (__reversed__<Self>::enable)
         "specialization of __reversed__ for this types and ensure the Return "
         "type is a subclass of py::Object."
     );
-    if constexpr (impl::has_static_rbegin<__reversed__<Self>, Self>) {
+    if constexpr (impl::proxy_like<Self>) {
+        return rbegin(self.value());
+    } else if constexpr (impl::has_static_rbegin<__reversed__<Self>, Self>) {
         return __reversed__<Self>{}.rbegin(self);
     } else {
         return impl::Iterator<impl::GenericIter<Return>>(
@@ -665,7 +671,9 @@ template <typename Self> requires (__reversed__<Self>::enable)
         "specialization of __reversed__ for this types and ensure the Return "
         "type is a subclass of py::Object."
     );
-    if constexpr (impl::has_static_rend<__reversed__<Self>, Self>) {
+    if constexpr (impl::proxy_like<Self>) {
+        return rend(self.value());
+    } else if constexpr (impl::has_static_rend<__reversed__<Self>, Self>) {
         return __reversed__<Self>{}.rend(self);
     } else {
         return impl::Iterator<impl::GenericIter<Return>>();
@@ -674,55 +682,6 @@ template <typename Self> requires (__reversed__<Self>::enable)
 
 
 }  // namespace py
-
-
-////////////////////////////
-////    TYPE CASTERS    ////
-////////////////////////////
-
-
-namespace pybind11::detail {
-
-
-template <std::derived_from<py::Object> T>
-struct type_caster<T> {
-    PYBIND11_TYPE_CASTER(T, const_name("Object"));
-
-    /* Convert Python object to a C++ py::Object. */
-    bool load(handle src, bool convert) {
-        if (!convert) {
-            return false;
-        }
-        value = py::reinterpret_borrow<py::Object>(src);
-        return true;
-    }
-
-    /* Convert a C++ Object into its wrapped object. */
-    static handle cast(const T& src, return_value_policy policy, handle parent) {
-        return Py_XNewRef(src.ptr());
-    }
-
-};
-
-
-template <py::impl::proxy_like T>
-struct type_caster<T> {
-    PYBIND11_TYPE_CASTER(T, const_name("Proxy"));
-
-    /* Convert Python object to a C++ accessor proxy. */
-    bool load(handle src, bool convert) {
-        return false;
-    }
-
-    /* Convert a C++ Proxy into its wrapped object. */
-    static handle cast(const T& src, return_value_policy policy, handle parent) {
-        return Py_XNewRef(src.value().ptr());
-    }
-
-};
-
-
-}  // namespace pybind11::detail
 
 
 #endif

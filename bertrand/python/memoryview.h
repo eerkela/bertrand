@@ -17,7 +17,7 @@ namespace py {
  * tolist()
  * toreadonly()
  * release()
- * cast(format[, shape])  // rename to cast_view to avoid confusion with pybind11 cast()
+ * cast(format[, shape])
  * obj
  * nbytes
  * readonly
