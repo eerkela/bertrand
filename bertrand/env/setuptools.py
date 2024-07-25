@@ -2294,10 +2294,6 @@ class BuildSources(setuptools_build_ext):
         """
         cmakelists = self._stage3_cmakelists()
         self._cmake_build(cmakelists)
-        shutil.copy2(
-            cmakelists.parent / "compile_commands.json",
-            Path.cwd() / "compile_commands.json"
-        )
 
     def _stage3_cmakelists(self) -> Path:
         """Emit a final CMakeLists.txt file that includes semantically-correct
@@ -2572,6 +2568,13 @@ class BuildSources(setuptools_build_ext):
                                 p.parent.mkdir(parents=True, exist_ok=True)
                                 shutil.copy2(header, p)
                                 cache.add(str(p))
+
+            compile_commands = Path.cwd() / "compile_commands.json"
+            shutil.copy2(
+                self.global_build_dir / "compile_commands.json",
+                compile_commands
+            )
+            cache.add(str(compile_commands))
 
         except FileExistsError as e:
             self._update_clean_cache(cache)
