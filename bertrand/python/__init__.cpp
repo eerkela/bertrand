@@ -1,7 +1,5 @@
 module;
-
 #include "__init__.h"
-
 export module bertrand.python;
 
 
@@ -264,6 +262,10 @@ export namespace std {
 }
 
 
-export namespace pybind11::detail {
-    using pybind11::detail::type_caster;
+export namespace pybind11 {
+    namespace detail {
+        using pybind11::detail::type_caster;
+    }
+
+    using pybind11::type_id;
 }
