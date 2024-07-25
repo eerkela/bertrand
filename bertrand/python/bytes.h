@@ -10,7 +10,6 @@
 #include "dict.h"
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -983,7 +982,6 @@ struct __imul__<L, R>                                       : Returns<ByteArray&
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

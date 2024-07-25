@@ -6,7 +6,6 @@
 #include "ops.h"
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -25,6 +24,9 @@ namespace impl {
         return TypeError(msg.str());
     }
 
+    // TODO: BERTRAND_INIT probably not needed - it will just be written out in full by
+    // the AST parser
+
     /* A convenience macro that defines all of the required constructors for a subclass
     of py::Object.  This allows implicit and explicit constructors to be defined out of
     line by specializing the py::__init__ and py::__explicit_init__ control structures.
@@ -34,48 +36,48 @@ namespace impl {
     backwards-compatible entry point for user-defined types, so they don't have to
     concern themselves with the intricacies of the control struct architecture. */
     #define BERTRAND_INIT(cls) \
-        cls(::bertrand::py::Handle h, borrowed_t t) : Base(h, t) {} \
-        cls(::bertrand::py::Handle h, stolen_t t) : Base(h, t) {} \
+        cls(::py::Handle h, borrowed_t t) : Base(h, t) {} \
+        cls(::py::Handle h, stolen_t t) : Base(h, t) {} \
         \
         template <typename... Args> \
             requires ( \
                 std::is_invocable_r_v< \
                     cls, \
-                    ::bertrand::py::__init__<cls, std::remove_cvref_t<Args>...>, \
+                    ::py::__init__<cls, std::remove_cvref_t<Args>...>, \
                     Args... \
                 > && \
-                ::bertrand::py::__init__<cls, std::remove_cvref_t<Args>...>::enable \
+                ::py::__init__<cls, std::remove_cvref_t<Args>...>::enable \
             ) \
         cls(Args&&... args) : Base( \
-            ::bertrand::py::__init__<cls, std::remove_cvref_t<Args>...>{}( \
+            ::py::__init__<cls, std::remove_cvref_t<Args>...>{}( \
                 std::forward<Args>(args)... \
             ) \
         ) {} \
         \
         template <typename... Args> \
             requires ( \
-                !::bertrand::py::__init__<cls, std::remove_cvref_t<Args>...>::enable && \
+                !::py::__init__<cls, std::remove_cvref_t<Args>...>::enable && \
                 std::is_invocable_r_v< \
                     cls, \
-                    ::bertrand::py::__explicit_init__<cls, std::remove_cvref_t<Args>...>, \
+                    ::py::__explicit_init__<cls, std::remove_cvref_t<Args>...>, \
                     Args... \
                 > && \
-                ::bertrand::py::__explicit_init__<cls, std::remove_cvref_t<Args>...>::enable \
+                ::py::__explicit_init__<cls, std::remove_cvref_t<Args>...>::enable \
             ) \
         explicit cls(Args&&... args) : Base( \
-            ::bertrand::py::__explicit_init__<cls, std::remove_cvref_t<Args>...>{}( \
+            ::py::__explicit_init__<cls, std::remove_cvref_t<Args>...>{}( \
                 std::forward<Args>(args)... \
             ) \
         ) {} \
         \
         template <typename... Args> \
             requires ( \
-                !::bertrand::py::__init__<cls, std::remove_cvref_t<Args>...>::enable && \
-                !::bertrand::py::__explicit_init__<cls, std::remove_cvref_t<Args>...>::enable && \
-                ::bertrand::py::impl::invocable<cls, "__init__", Args...> \
+                !::py::__init__<cls, std::remove_cvref_t<Args>...>::enable && \
+                !::py::__explicit_init__<cls, std::remove_cvref_t<Args>...>::enable && \
+                ::py::impl::invocable<cls, "__init__", Args...> \
             ) \
         explicit cls(Args&&... args) : Base( \
-            ::bertrand::py::__getattr__<cls, "__init__">::type::template set_return<cls>::invoke_py( \
+            ::py::__getattr__<cls, "__init__">::type::template set_return<cls>::invoke_py( \
                 type.ptr(), \
                 std::forward<Args>(args)... \
             ) \
@@ -607,7 +609,6 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

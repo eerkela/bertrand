@@ -7,7 +7,6 @@
 // TODO: support py::deque?
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -964,7 +963,6 @@ public:
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

@@ -12,7 +12,6 @@
 #endif
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -866,21 +865,20 @@ struct __imul__<L, R>                                       : Returns<Str&> {
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 namespace std {
 
     template <>
-    struct hash<bertrand::py::Str> {
-        size_t operator()(const bertrand::py::Str& str) const {
+    struct hash<py::Str> {
+        size_t operator()(const py::Str& str) const {
             // ASCII string special case (taken directly from CPython source)
             // see: cpython/objects/setobject.c  -> set_contains_key()
             Py_ssize_t result = _PyASCIIObject_CAST(str.ptr())->hash;
             if (result == -1) {
                 result = PyObject_Hash(str.ptr());  // fall back to PyObject_Hash()
                 if (result == -1 && PyErr_Occurred()) {
-                    bertrand::py::Exception::from_python();
+                    py::Exception::from_python();
                 }
             }
             return static_cast<size_t>(result);

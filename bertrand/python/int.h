@@ -8,7 +8,6 @@
 // if this occurs.
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -367,7 +366,6 @@ inline const Int Int::two = 2;
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

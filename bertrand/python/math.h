@@ -11,7 +11,6 @@
 // TODO: allow for complex/Decimal operands?
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -997,7 +996,6 @@ template <typename T, typename Mode> requires (impl::round_mode<T, Mode>)
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

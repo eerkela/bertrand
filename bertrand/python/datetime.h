@@ -15,7 +15,6 @@
 #include "type.h"
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -1833,7 +1832,6 @@ public:
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif  // BERTRAND_PYTHON_DATETIME_H

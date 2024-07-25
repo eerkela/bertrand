@@ -10,7 +10,6 @@
 #include "type.h"
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -1027,13 +1026,11 @@ struct __init__<Frame, File, Func, Line> : Returns<Frame> {
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
-namespace pybind11 {
-namespace detail {
+namespace pybind11::detail {
 
-template <bertrand::py::impl::is_callable_any T>
+template <py::impl::is_callable_any T>
 struct type_caster<T> {
     PYBIND11_TYPE_CASTER(T, _("callable"));
 
@@ -1044,13 +1041,12 @@ struct type_caster<T> {
 
     /* Convert a C++ callable into a Python object. */
     static handle cast(const T& src, return_value_policy policy, handle parent) {
-        return bertrand::py::Function(src).release();
+        return py::Function(src).release();
     }
 
 };
 
-}  // namespace detail
-}  // namespace pybind11
+}  // namespace pybind11::detail
 
 
 #endif

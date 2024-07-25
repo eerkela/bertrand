@@ -11,7 +11,6 @@
 #include "common/control.h"
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -675,7 +674,6 @@ template <typename Self> requires (__reversed__<Self>::enable)
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 ////////////////////////////
@@ -683,11 +681,10 @@ template <typename Self> requires (__reversed__<Self>::enable)
 ////////////////////////////
 
 
-namespace pybind11 {
-namespace detail {
+namespace pybind11::detail {
 
 
-template <std::derived_from<bertrand::py::Object> T>
+template <std::derived_from<py::Object> T>
 struct type_caster<T> {
     PYBIND11_TYPE_CASTER(T, const_name("Object"));
 
@@ -696,7 +693,7 @@ struct type_caster<T> {
         if (!convert) {
             return false;
         }
-        value = bertrand::py::reinterpret_borrow<bertrand::py::Object>(src);
+        value = py::reinterpret_borrow<py::Object>(src);
         return true;
     }
 
@@ -708,7 +705,7 @@ struct type_caster<T> {
 };
 
 
-template <bertrand::py::impl::proxy_like T>
+template <py::impl::proxy_like T>
 struct type_caster<T> {
     PYBIND11_TYPE_CASTER(T, const_name("Proxy"));
 
@@ -725,8 +722,7 @@ struct type_caster<T> {
 };
 
 
-}  // namespace detail
-}  // namespace pybind11
+}  // namespace pybind11::detail
 
 
 #endif

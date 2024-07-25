@@ -5,7 +5,6 @@
 #include "int.h"
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -192,7 +191,6 @@ struct __init__<Range>                                      : Returns<Range> {
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

@@ -6,7 +6,6 @@
 #include "str.h"
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -206,20 +205,18 @@ struct __cast__<From, std::complex<To>>                     : Returns<std::compl
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
-namespace pybind11 {
-namespace detail {
+namespace pybind11::detail {
 
 template <>
-struct type_caster<bertrand::py::Complex> {
-    PYBIND11_TYPE_CASTER(bertrand::py::Complex, _("Complex"));
+struct type_caster<py::Complex> {
+    PYBIND11_TYPE_CASTER(py::Complex, _("Complex"));
 
     /* Convert a Python object into a py::Complex value. */
     bool load(handle src, bool convert) {
         if (PyComplex_Check(src.ptr())) {
-            value = bertrand::py::reinterpret_borrow<bertrand::py::Complex>(src.ptr());
+            value = py::reinterpret_borrow<py::Complex>(src.ptr());
             return true;
         }
 
@@ -233,13 +230,13 @@ struct type_caster<bertrand::py::Complex> {
             return false;
         }
 
-        value = bertrand::py::Complex(complex.real, complex.imag);
+        value = py::Complex(complex.real, complex.imag);
         return true;
     }
 
     /* Convert a py::Complex value into a Python object. */
     static handle cast(
-        const bertrand::py::Complex& src,
+        const py::Complex& src,
         return_value_policy /* policy */,
         handle /* parent */
     ) {
@@ -283,7 +280,7 @@ pybind11 implementation.  This is a bit of a hack, but it works. */
             return_value_policy /* policy */,                                           \
             handle /* parent */                                                         \
         ) {                                                                             \
-            return bertrand::py::Complex(src).release();                                \
+            return ::py::Complex(src).release();                                        \
         }                                                                               \
                                                                                         \
     };                                                                                  \
@@ -294,8 +291,7 @@ COMPLEX_CASTER(long double);
 
 #undef COMPLEX_CASTER
 
-} // namespace detail
-} // namespace pybind11
+} // namespace pybind11::detail
 
 
 #endif

@@ -17,9 +17,10 @@
 
 
 // TODO: not sure if Arg.value() is being used correctly everywhere.
+// -> with lifetime extension refactor, it should be replaced with Arg.value direct
+// member access.
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -3053,7 +3054,6 @@ namespace impl {
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

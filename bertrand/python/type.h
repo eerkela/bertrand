@@ -7,7 +7,6 @@
 #include "dict.h"
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -475,7 +474,6 @@ struct __explicit_init__<Super, Base, Self>                  : Returns<Super> {
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

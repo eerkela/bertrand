@@ -16,22 +16,22 @@ import bertrand.python;
 py::Module object.  The contents are taken directly from PYBIND11_MODULE, except that
 we exchange their module type for our own. */
 #define BERTRAND_MODULE(name, variable) \
-    static ::pybind11::module_::module_def PYBIND11_CONCAT(pybind11_module_def_, name)            \
-        PYBIND11_MAYBE_UNUSED;                                                                    \
-    PYBIND11_MAYBE_UNUSED                                                                         \
-    static void PYBIND11_CONCAT(pybind11_init_, name)(::bertrand::py::Module&);                   \
-    PYBIND11_PLUGIN_IMPL(name) {                                                                  \
-        PYBIND11_CHECK_PYTHON_VERSION                                                             \
-        PYBIND11_ENSURE_INTERNALS_READY                                                           \
-        ::bertrand::py::Module m = ::pybind11::module_::create_extension_module(                  \
-            PYBIND11_TOSTRING(name), nullptr, &PYBIND11_CONCAT(pybind11_module_def_, name));      \
-        try {                                                                                     \
-            PYBIND11_CONCAT(pybind11_init_, name)(m);                                             \
-            return m.ptr();                                                                       \
-        }                                                                                         \
-        PYBIND11_CATCH_INIT_EXCEPTIONS                                                            \
-    }                                                                                             \
-    void PYBIND11_CONCAT(pybind11_init_, name)(::bertrand::py::Module& variable)
+    static ::pybind11::module_::module_def PYBIND11_CONCAT(pybind11_module_def_, name)  \
+        PYBIND11_MAYBE_UNUSED;                                                          \
+    PYBIND11_MAYBE_UNUSED                                                               \
+    static void PYBIND11_CONCAT(pybind11_init_, name)(::py::Module&);                   \
+    PYBIND11_PLUGIN_IMPL(name) {                                                        \
+        PYBIND11_CHECK_PYTHON_VERSION                                                   \
+        PYBIND11_ENSURE_INTERNALS_READY                                                 \
+        ::py::Module m = ::pybind11::module_::create_extension_module(                  \
+            PYBIND11_TOSTRING(name), nullptr, &PYBIND11_CONCAT(pybind11_module_def_, name));\
+        try {                                                                           \
+            PYBIND11_CONCAT(pybind11_init_, name)(m);                                   \
+            return m.ptr();                                                             \
+        }                                                                               \
+        PYBIND11_CATCH_INIT_EXCEPTIONS                                                  \
+    }                                                                                   \
+    void PYBIND11_CONCAT(pybind11_init_, name)(::py::Module& variable)
 
 
 #endif

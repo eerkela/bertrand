@@ -7,7 +7,6 @@
 // TODO: check to make sure control structs are properly enabled after CTAD refactor
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -1452,7 +1451,6 @@ struct __contains__<Self, Key>                              : Returns<bool> {
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

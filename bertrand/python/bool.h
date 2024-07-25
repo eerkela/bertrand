@@ -4,7 +4,6 @@
 #include "common.h"
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -225,7 +224,6 @@ inline const Bool False = reinterpret_borrow<Bool>(Py_False);
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

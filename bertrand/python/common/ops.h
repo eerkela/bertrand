@@ -5,7 +5,6 @@
 #include "except.h"
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -1867,27 +1866,26 @@ L& operator^=(L& lhs, const R& rhs) {
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 namespace std {
 
-    template <typename T> requires (bertrand::py::__hash__<T>::enable)
+    template <typename T> requires (py::__hash__<T>::enable)
     struct hash<T> {
         static_assert(
-            std::same_as<typename bertrand::py::__hash__<T>::type, size_t>,
+            std::same_as<typename py::__hash__<T>::type, size_t>,
             "std::hash<> must return size_t for compatibility with other C++ types.  "
             "Check your specialization of __hash__ for this type and ensure the "
             "Return type is set to size_t."
         );
 
         static size_t operator()(const T& obj) {
-            if constexpr (bertrand::py::impl::has_call_operator<bertrand::py::__hash__<T>>) {
-                return bertrand::py::__hash__<T>{}(obj);
+            if constexpr (py::impl::has_call_operator<py::__hash__<T>>) {
+                return py::__hash__<T>{}(obj);
             } else {
                 Py_ssize_t result = PyObject_Hash(obj.ptr());
                 if (result == -1 && PyErr_Occurred()) {
-                    bertrand::py::Exception::from_python();
+                    py::Exception::from_python();
                 }
                 return static_cast<size_t>(result);
             }
@@ -1902,9 +1900,9 @@ namespace std {
             }                                                                           \
         };                                                                              \
 
-    BERTRAND_STD_EQUAL_TO(bertrand::py::Handle)
-    BERTRAND_STD_EQUAL_TO(bertrand::py::WeakRef)
-    BERTRAND_STD_EQUAL_TO(bertrand::py::Capsule)
+    BERTRAND_STD_EQUAL_TO(py::Handle)
+    BERTRAND_STD_EQUAL_TO(py::WeakRef)
+    BERTRAND_STD_EQUAL_TO(py::Capsule)
 
 
     #undef BERTRAND_STD_EQUAL_TO

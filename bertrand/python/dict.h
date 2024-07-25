@@ -11,7 +11,6 @@
 // NOTE: ChainMap is complicated, but maybe possible to support as well.
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -1340,7 +1339,6 @@ template <typename Map>
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

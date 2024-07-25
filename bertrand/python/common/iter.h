@@ -9,7 +9,6 @@
 #include "item.h"
 
 
-namespace bertrand {
 namespace py {
 namespace impl {
 
@@ -845,7 +844,6 @@ public:
 
 }  // namespace impl
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

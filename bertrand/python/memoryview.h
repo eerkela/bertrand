@@ -4,7 +4,6 @@
 #include "common.h"
 
 
-namespace bertrand {
 namespace py {
 
 /* TODO: memoryview interface is the main way to access the buffer protocol.  They can
@@ -36,7 +35,6 @@ namespace py {
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif  // BERTRAND_PYTHON_MEMORYVIEW_H

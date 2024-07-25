@@ -14,7 +14,6 @@
 // implicit conversion.
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -897,7 +896,6 @@ struct __reversed__<Self>                                   : Returns<typename S
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

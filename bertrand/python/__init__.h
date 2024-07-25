@@ -126,7 +126,6 @@
  */
 
 
-namespace bertrand {
 namespace py {
 
 namespace literals {
@@ -1260,9 +1259,6 @@ inline void Function<Return(Target...)>::closure(std::optional<Tuple<Object>> cl
 
 //     return result;
 // }
-
-
-}  // namespace bertrand
 
 
 #undef PYBIND11_DETAILED_ERROR_MESSAGES

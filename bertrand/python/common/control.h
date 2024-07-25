@@ -8,7 +8,6 @@
 #include "func.h"
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -4571,7 +4570,6 @@ struct __ixor__<L, R>                                       : Returns<FrozenSet<
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

@@ -5,7 +5,6 @@
 #include "str.h"
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -191,7 +190,6 @@ inline const Float Float::one = 1.0;
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

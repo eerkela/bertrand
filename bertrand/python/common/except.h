@@ -41,7 +41,6 @@
 // PyUnicodeDecodeError_Create() for details.
 
 
-namespace bertrand {
 namespace py {
 
 
@@ -522,7 +521,7 @@ namespace impl {
 
     /* A registry that maps Python exception types to ExceptionCallbacks, allowing
     them to be be reflected in C++ try/catch semantics. */
-    auto& exception_map() {
+    inline auto& exception_map() {
         static std::unordered_map<PyObject*, ExceptionCallback> map;
         return map;
     }
@@ -553,17 +552,21 @@ namespace impl {
         return true;
     }
 
+    // TODO: BERTRAND_EXCEPTION needs to be lifted up to bertrand/python.h so that it
+    // can potentially be used in bindings.  Right now, it's only visible within the
+    // module.
+
     #ifndef BERTRAND_NO_TRACEBACK
 
         #define BERTRAND_EXCEPTION(cls, base, pytype)                                   \
             static_assert(                                                              \
-                std::derived_from<base, ::bertrand::py::Exception>,                     \
+                std::derived_from<base, ::py::Exception>,                               \
                 "exception base class must derive from py::Exception"                   \
             );                                                                          \
                                                                                         \
             class PYBIND11_EXPORT_EXCEPTION cls : public base {                         \
                 inline static bool registered =                                         \
-                    bertrand::py::impl::register_exception<cls>(pytype);                \
+                    py::impl::register_exception<cls>(pytype);                          \
                                                                                         \
             public:                                                                     \
                 using base::base;                                                       \
@@ -628,13 +631,13 @@ namespace impl {
 
         #define BERTRAND_EXCEPTION(cls, base, pytype)                                   \
             static_assert(                                                              \
-                std::derived_from<base, ::bertrand::py::Exception>,                     \
+                std::derived_from<base, ::py::Exception>,                               \
                 "exception base class must derive from py::Exception"                   \
             );                                                                          \
                                                                                         \
             class PYBIND11_EXPORT_EXCEPTION cls : public base {                         \
                 inline static bool registered =                                         \
-                    ::bertrand::py::impl::register_exception<cls>(pytype);              \
+                    ::py::impl::register_exception<cls>(pytype);                        \
                                                                                         \
             public:                                                                     \
                 using base::base;                                                       \
@@ -1101,7 +1104,6 @@ BERTRAND_EXCEPTION(ValueError, Exception, PyExc_ValueError)
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif

@@ -47,8 +47,9 @@
 #include <bertrand/static_str.h>
 
 
-namespace bertrand {
 namespace py {
+
+    using bertrand::StaticStr;
 
 
 namespace impl {
@@ -1150,7 +1151,6 @@ template <std::derived_from<Object> T>
 
 
 }  // namespace py
-}  // namespace bertrand
 
 
 #endif
