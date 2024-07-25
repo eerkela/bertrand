@@ -1,12 +1,53 @@
-#ifndef BERTRAND_PYTHON_MODULE_GUARD
-#error "Internal headers should not be included directly.  Import 'bertrand.python' instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_COMMON_DECLARATIONS_H
 #define BERTRAND_PYTHON_COMMON_DECLARATIONS_H
 
+#include <algorithm>
+#include <cstddef>
+#include <cstring>
+#include <chrono>
+#include <complex>
+#include <deque>
+#include <fstream>
+#include <initializer_list>
+#include <iterator>
+#include <limits>
+#include <list>
+#include <map>
+#include <optional>
+#include <ostream>
+#include <ranges>
+#include <set>
+#include <sstream>
+#include <stack>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
-export namespace bertrand {
+#include <Python.h>
+#include <internal/pycore_frame.h>  // required to assign to frame->f_lineno
+
+#include <cpptrace/cpptrace.hpp>
+
+#include <pybind11/pybind11.h>
+#include <pybind11/embed.h>
+#include <pybind11/eval.h>
+#include <pybind11/functional.h>
+#include <pybind11/iostream.h>
+#include <pybind11/numpy.h>
+#include <pybind11/pytypes.h>
+#include <pybind11/stl.h>
+#include <pybind11/stl_bind.h>
+
+#include <bertrand/common.h>
+#include <bertrand/static_str.h>
+
+
+namespace bertrand {
 namespace py {
 
 

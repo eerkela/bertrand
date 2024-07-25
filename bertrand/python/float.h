@@ -1,7 +1,3 @@
-#ifndef BERTRAND_PYTHON_MODULE_GUARD
-#error "Internal headers should not be included directly.  Import 'bertrand.python' instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_FLOAT_H
 #define BERTRAND_PYTHON_FLOAT_H
 
@@ -9,7 +5,7 @@
 #include "str.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -187,11 +183,11 @@ struct __cast__<From, To> : Returns<To> {
 };
 
 
-const Float Float::neg_one = -1.0;
-const Float Float::neg_half = -0.5;
-const Float Float::zero = 0.0;
-const Float Float::half = 0.5;
-const Float Float::one = 1.0;
+inline const Float Float::neg_one = -1.0;
+inline const Float Float::neg_half = -0.5;
+inline const Float Float::zero = 0.0;
+inline const Float Float::half = 0.5;
+inline const Float Float::one = 1.0;
 
 
 }  // namespace py

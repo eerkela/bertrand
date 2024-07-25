@@ -1,7 +1,3 @@
-#ifndef BERTRAND_PYTHON_MODULE_GUARD
-#error "Internal headers should not be included directly.  Import 'bertrand.python' instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_COMPLEX_H
 #define BERTRAND_PYTHON_COMPLEX_H
 
@@ -10,7 +6,7 @@
 #include "str.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -213,7 +209,7 @@ struct __cast__<From, std::complex<To>>                     : Returns<std::compl
 }  // namespace bertrand
 
 
-export namespace pybind11 {
+namespace pybind11 {
 namespace detail {
 
 template <>

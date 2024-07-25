@@ -1,7 +1,3 @@
-#ifndef BERTRAND_PYTHON_MODULE_GUARD
-#error "Internal headers should not be included directly.  Import 'bertrand.python' instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_MATH_H
 #define BERTRAND_PYTHON_MATH_H
 
@@ -15,7 +11,7 @@
 // TODO: allow for complex/Decimal operands?
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 

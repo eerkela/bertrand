@@ -1,7 +1,3 @@
-#ifndef BERTRAND_PYTHON_MODULE_GUARD
-#error "Internal headers should not be included directly.  Import 'bertrand.python' instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_STR_H
 #define BERTRAND_PYTHON_STR_H
 
@@ -16,7 +12,7 @@
 #endif
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -873,7 +869,7 @@ struct __imul__<L, R>                                       : Returns<Str&> {
 }  // namespace bertrand
 
 
-export namespace std {
+namespace std {
 
     template <>
     struct hash<bertrand::py::Str> {

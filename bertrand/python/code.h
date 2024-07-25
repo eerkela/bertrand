@@ -1,7 +1,3 @@
-#ifndef BERTRAND_PYTHON_MODULE_GUARD
-#error "Internal headers should not be included directly.  Import 'bertrand.python' instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_CODE_H
 #define BERTRAND_PYTHON_CODE_H
 
@@ -14,7 +10,7 @@
 #include "type.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -1034,7 +1030,7 @@ struct __init__<Frame, File, Func, Line> : Returns<Frame> {
 }  // namespace bertrand
 
 
-export namespace pybind11 {
+namespace pybind11 {
 namespace detail {
 
 template <bertrand::py::impl::is_callable_any T>

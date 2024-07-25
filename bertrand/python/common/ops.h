@@ -1,7 +1,3 @@
-#ifndef BERTRAND_PYTHON_MODULE_GUARD
-#error "Internal headers should not be included directly.  Import 'bertrand.python' instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_COMMON_OPS_H
 #define BERTRAND_PYTHON_COMMON_OPS_H
 
@@ -9,7 +5,7 @@
 #include "except.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -1874,7 +1870,7 @@ L& operator^=(L& lhs, const R& rhs) {
 }  // namespace bertrand
 
 
-export namespace std {
+namespace std {
 
     template <typename T> requires (bertrand::py::__hash__<T>::enable)
     struct hash<T> {

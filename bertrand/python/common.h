@@ -1,7 +1,3 @@
-#ifndef BERTRAND_PYTHON_MODULE_GUARD
-#error "Internal headers should not be included directly.  Import 'bertrand.python' instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_COMMON_H
 #define BERTRAND_PYTHON_COMMON_H
 
@@ -15,7 +11,7 @@
 #include "common/control.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -270,9 +266,9 @@ struct __init__<EllipsisType, T>                            : Returns<EllipsisTy
 };
 
 
-const NoneType None;
-const EllipsisType Ellipsis;
-const NotImplementedType NotImplemented;
+inline const NoneType None;
+inline const EllipsisType Ellipsis;
+inline const NotImplementedType NotImplemented;
 
 
 /////////////////////
@@ -687,7 +683,7 @@ template <typename Self> requires (__reversed__<Self>::enable)
 ////////////////////////////
 
 
-export namespace pybind11 {
+namespace pybind11 {
 namespace detail {
 
 

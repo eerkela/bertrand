@@ -1,7 +1,3 @@
-#ifndef BERTRAND_PYTHON_MODULE_GUARD
-#error "Internal headers should not be included directly.  Import 'bertrand.python' instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_DICT_H
 #define BERTRAND_PYTHON_DICT_H
 
@@ -15,7 +11,7 @@
 // NOTE: ChainMap is complicated, but maybe possible to support as well.
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 

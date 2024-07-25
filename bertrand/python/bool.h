@@ -1,14 +1,10 @@
-#ifndef BERTRAND_PYTHON_MODULE_GUARD
-#error "Internal headers should not be included directly.  Import 'bertrand.python' instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_BOOL_H
 #define BERTRAND_PYTHON_BOOL_H
 
 #include "common.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -224,8 +220,8 @@ struct __cast__<From, To>                                   : Returns<To> {
 };
 
 
-const Bool True = reinterpret_borrow<Bool>(Py_True);
-const Bool False = reinterpret_borrow<Bool>(Py_False);
+inline const Bool True = reinterpret_borrow<Bool>(Py_True);
+inline const Bool False = reinterpret_borrow<Bool>(Py_False);
 
 
 }  // namespace py

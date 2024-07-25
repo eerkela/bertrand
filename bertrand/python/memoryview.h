@@ -1,14 +1,10 @@
-#ifndef BERTRAND_PYTHON_MODULE_GUARD
-#error "Internal headers should not be included directly.  Import 'bertrand.python' instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_MEMORYVIEW_H
 #define BERTRAND_PYTHON_MEMORYVIEW_H
 
 #include "common.h"
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 /* TODO: memoryview interface is the main way to access the buffer protocol.  They can

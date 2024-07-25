@@ -1,7 +1,3 @@
-#ifndef BERTRAND_PYTHON_MODULE_GUARD
-#error "Internal headers should not be included directly.  Import 'bertrand.python' instead."
-#endif
-
 #ifndef BERTRAND_PYTHON_INT_H
 #define BERTRAND_PYTHON_INT_H
 
@@ -12,7 +8,7 @@
 // if this occurs.
 
 
-export namespace bertrand {
+namespace bertrand {
 namespace py {
 
 
@@ -363,11 +359,11 @@ struct __cast__<From, To>                                   : Returns<To> {
 // convertible from long long?
 
 
-const Int Int::neg_two = -2;
-const Int Int::neg_one = -1;
-const Int Int::zero = 0;
-const Int Int::one = 1;
-const Int Int::two = 2;
+inline const Int Int::neg_two = -2;
+inline const Int Int::neg_one = -1;
+inline const Int Int::zero = 0;
+inline const Int Int::one = 1;
+inline const Int Int::two = 2;
 
 
 }  // namespace py
