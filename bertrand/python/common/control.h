@@ -88,6 +88,12 @@ struct __as_object__<std::map<K, V, Args...>>               : Returns<Dict<impl:
 // be forward declarations.
 
 
+// TODO: none of the dunder methods need to be given here.  They'll be automatically
+// introspected whenever the AST parser writes a Python -> C++ type and kept up-to-date
+// that way.  I still need to populate these fields for the built-in types, however,
+// which will not be passed through the parser.
+
+
 template <impl::proxy_like Self, StaticStr Name>
 struct __getattr__<Self, Name> : __getattr__<impl::unwrap_proxy<Self>, Name> {};
 // template <std::derived_from<Object> Self, StaticStr Name> requires (Name == "__init__")

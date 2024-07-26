@@ -21,6 +21,10 @@
 // member access.
 
 
+// TODO: Every function has its own signature, which corresponds to a unique Python
+// type.
+
+
 namespace py {
 
 
@@ -121,7 +125,185 @@ namespace py {
 // py::Function, and extra arguments are handled by the dispatch mechanism.
 
 
+
+
+/* A compile-time argument annotation that represents a bound positional or keyword
+argument to a py::Function. */
+template <StaticStr Name, typename T>
+class Arg : public impl::ArgTag {
+
+    // TODO: Arg and its non-variadic subclasses have to use aggregate initialization to
+    // extend the lifetime of the temporary to match the lifetime of the Arg object.  This
+    // requires modifying Function to use aggregate initialization when invoking the inner
+    // function, so that the outside behavior is unaffected.
+    // -> Args can't use constructors, since those violate lifetime rules.
+
+    template <bool positional, bool keyword>
+    struct Optional : public impl::ArgTag {
+        using type = T;
+        static constexpr StaticStr name = Name;
+        static constexpr bool is_positional = positional;
+        static constexpr bool is_keyword = keyword;
+        static constexpr bool is_optional = true;
+        static constexpr bool is_variadic = false;
+
+        T value;
+    };
+
+    template <bool optional>
+    struct Positional : public impl::ArgTag {
+        using type = T;
+        using opt = Optional<true, false>;
+        static constexpr StaticStr name = Name;
+        static constexpr bool is_positional = true;
+        static constexpr bool is_keyword = false;
+        static constexpr bool is_optional = optional;
+        static constexpr bool is_variadic = false;
+
+        T value;
+    };
+
+    template <bool optional>
+    struct Keyword : public impl::ArgTag {
+        using type = T;
+        using opt = Optional<false, true>;
+        static constexpr StaticStr name = Name;
+        static constexpr bool is_positional = false;
+        static constexpr bool is_keyword = true;
+        static constexpr bool is_optional = optional;
+        static constexpr bool is_variadic = false;
+
+        T value;
+    };
+
+    struct Args : public impl::ArgTag {
+        using type = std::conditional_t<
+            std::is_rvalue_reference_v<T>,
+            std::remove_reference_t<T>,
+            std::conditional_t<
+                std::is_lvalue_reference_v<T>,
+                std::reference_wrapper<T>,
+                T
+            >
+        >;
+        static constexpr StaticStr name = Name;
+        static constexpr bool is_positional = true;
+        static constexpr bool is_keyword = false;
+        static constexpr bool is_optional = false;
+        static constexpr bool is_variadic = true;
+
+        std::vector<type> value;
+
+        Args() = default;
+        Args(const std::vector<type>& val) : value(val) {}
+        Args(std::vector<type>&& val) : value(std::move(val)) {}
+        template <std::convertible_to<T> V>
+        Args(const std::vector<V>& val) {
+            value.reserve(val.size());
+            for (const auto& item : val) {
+                value.push_back(item);
+            }
+        }
+        Args(const Args& other) : value(other.value) {}
+        Args(Args&& other) : value(std::move(other.value)) {}
+
+        [[nodiscard]] auto begin() const { return value.begin(); }
+        [[nodiscard]] auto cbegin() const { return value.cbegin(); }
+        [[nodiscard]] auto end() const { return value.end(); }
+        [[nodiscard]] auto cend() const { return value.cend(); }
+        [[nodiscard]] auto rbegin() const { return value.rbegin(); }
+        [[nodiscard]] auto crbegin() const { return value.crbegin(); }
+        [[nodiscard]] auto rend() const { return value.rend(); }
+        [[nodiscard]] auto crend() const { return value.crend(); }
+        [[nodiscard]] constexpr auto size() const { return value.size(); }
+        [[nodiscard]] constexpr auto empty() const { return value.empty(); }
+        [[nodiscard]] constexpr auto data() const { return value.data(); }
+        [[nodiscard]] constexpr decltype(auto) front() const { return value.front(); }
+        [[nodiscard]] constexpr decltype(auto) back() const { return value.back(); }
+        [[nodiscard]] constexpr decltype(auto) operator[](size_t index) const {
+            return value.at(index);
+        }
+    };
+
+    struct Kwargs : public impl::ArgTag {
+        using type = std::conditional_t<
+            std::is_rvalue_reference_v<T>,
+            std::remove_reference_t<T>,
+            std::conditional_t<
+                std::is_lvalue_reference_v<T>,
+                std::reference_wrapper<T>,
+                T
+            >
+        >;
+        static constexpr StaticStr name = Name;
+        static constexpr bool is_positional = false;
+        static constexpr bool is_keyword = true;
+        static constexpr bool is_optional = false;
+        static constexpr bool is_variadic = true;
+
+        std::unordered_map<std::string, T> value;
+
+        Kwargs() = default;
+        Kwargs(const std::unordered_map<std::string, type>& val) : value(val) {}
+        Kwargs(std::unordered_map<std::string, type>&& val) : value(std::move(val)) {}
+        template <std::convertible_to<T> V>
+        Kwargs(const std::unordered_map<std::string, V>& val) {
+            value.reserve(val.size());
+            for (const auto& [k, v] : val) {
+                value.emplace(k, v);
+            }
+        }
+        Kwargs(const Kwargs& other) : value(other.value) {}
+        Kwargs(Kwargs&& other) : value(std::move(other.value)) {}
+
+        [[nodiscard]] auto begin() const { return value.begin(); }
+        [[nodiscard]] auto cbegin() const { return value.cbegin(); }
+        [[nodiscard]] auto end() const { return value.end(); }
+        [[nodiscard]] auto cend() const { return value.cend(); }
+        [[nodiscard]] constexpr auto size() const { return value.size(); }
+        [[nodiscard]] constexpr bool empty() const { return value.empty(); }
+        [[nodiscard]] constexpr bool contains(const std::string& key) const {
+            return value.contains(key);
+        }
+        [[nodiscard]] constexpr auto count(const std::string& key) const {
+            return value.count(key);
+        }
+        [[nodiscard]] decltype(auto) find(const std::string& key) const {
+            return value.find(key);
+        }
+        [[nodiscard]] decltype(auto) operator[](const std::string& key) const {
+            return value.at(key);
+        }
+    };
+
+public:
+    static_assert(Name != "", "Argument name cannot be an empty string.");
+
+    using type = T;
+    using pos = Positional<false>;
+    using kw = Keyword<false>;
+    using opt = Optional<true, true>;
+    using args = Args;
+    using kwargs = Kwargs;
+    static constexpr StaticStr name = Name;
+    static constexpr bool is_positional = true;
+    static constexpr bool is_keyword = true;
+    static constexpr bool is_optional = false;
+    static constexpr bool is_variadic = false;
+
+    T value;
+};
+
+
 namespace impl {
+
+    template <StaticStr name>
+    struct UnboundArg {
+        template <typename T>
+        constexpr auto operator=(T&& value) const {
+            return Arg<name, T>{std::forward<T>(value)};
+        }
+    };
 
     /* Introspect the proper signature for a py::Function instance from a generic
     function pointer, reference, or object, such as a lambda. */
@@ -158,6 +340,16 @@ namespace impl {
     };
 
 }
+
+
+/* A compile-time factory for binding keyword arguments with Python syntax.  A
+constexpr instance of this class can be used to provide even more Pythonic syntax:
+
+    constexpr auto x = py::arg<"x">;
+    my_func(x = 42);
+*/
+template <StaticStr name>
+constexpr impl::UnboundArg<name> arg {};
 
 
 /* A universal function wrapper that can represent either a Python function exposed to
@@ -300,7 +492,10 @@ with it special restrictions, including the following:
         function is called.  Since it is impossible to know the size of the container
         at compile time, this is the only way to enforce this constraint.
 */
-template <typename F = Object(Arg<"args", Object>::args, Arg<"kwargs", Object>::kwargs)>
+template <typename F = Object(
+    Arg<"args", const Object&>::args,
+    Arg<"kwargs", const Object&>::kwargs
+)>
 class Function : public Function<typename impl::GetSignature<F>::type> {};
 
 
@@ -313,16 +508,16 @@ protected:
 
     /* Index into a parameter pack using template recursion. */
     template <size_t I>
-    static void get_arg() {
+    static void unpack_arg() {
         static_assert(false, "index out of range for parameter pack");
     }
 
     template <size_t I, typename T, typename... Ts>
-    static decltype(auto) get_arg(T&& curr, Ts&&... next) {
+    static decltype(auto) unpack_arg(T&& curr, Ts&&... next) {
         if constexpr (I == 0) {
             return std::forward<T>(curr);
         } else {
-            return get_arg<I - 1>(std::forward<Ts>(next)...);
+            return unpack_arg<I - 1>(std::forward<Ts>(next)...);
         }
     }
 
@@ -570,7 +765,29 @@ protected:
     using target = Signature<Target...>;
     static_assert(target::valid);
 
-    class DefaultValues {
+public:
+
+    /* The total number of arguments that the function accepts, not including variadic
+    positional or keyword arguments. */
+    static constexpr size_t size = target::size - target::has_args - target::has_kwargs;
+
+    /* The number of positional-only arguments that the function accepts, not including
+    variadic positional arguments. */
+    static constexpr size_t pos_size = target::pos_count;
+
+    /* The number of keyword-only arguments that the function accepts, not including
+    variadic keyword arguments. */
+    static constexpr size_t kw_size = target::kw_only_count;
+
+    /* Indicates whether the function accepts variadic positional arguments. */
+    static constexpr bool has_args = target::has_args;
+
+    /* Indicates whether the function accepts variadic keyword arguments. */
+    static constexpr bool has_kwargs = target::has_kwargs;
+
+    /* An interface to a std::tuple that contains owning references to default values
+    for all of the optional arguments in the target signature. */
+    class Defaults {
 
         template <size_t I>
         struct Value  {
@@ -582,25 +799,19 @@ protected:
         };
 
         template <size_t I, typename Tuple, typename... Ts>
-        struct CollectDefaults { using type = Tuple; };
+        struct TupleType { using type = Tuple; };
         template <size_t I, typename... Defaults, typename T, typename... Ts>
-        struct CollectDefaults<I, std::tuple<Defaults...>, T, Ts...> {
+        struct TupleType<I, std::tuple<Defaults...>, T, Ts...> {
             template <typename U>
-            struct Wrap {
-                using type = CollectDefaults<
-                    I + 1, std::tuple<Defaults...>, Ts...
-                >::type;
+            struct ToValue {
+                using type = TupleType<I + 1, std::tuple<Defaults...>, Ts...>::type;
             };
             template <typename U> requires (Inspect<U>::opt)
-            struct Wrap<U> {
-                using type = CollectDefaults<
-                    I + 1, std::tuple<Defaults..., Value<I>>, Ts...
-                >::type;
+            struct ToValue<U> {
+                using type = TupleType<I + 1, std::tuple<Defaults..., Value<I>>, Ts...>::type;
             };
-            using type = Wrap<T>::type;
+            using type = ToValue<T>::type;
         };
-
-        using tuple = CollectDefaults<0, std::tuple<>, Target...>::type;
 
         template <size_t I, typename... Ts>
         struct find_helper { static constexpr size_t value = 0; };
@@ -609,38 +820,76 @@ protected:
             (I == T::index) ? 0 : 1 + find_helper<I, std::tuple<Ts...>>::value;
         };
 
-        /* Statically analyzes the arguments that are supplied to the function's
-        constructor, so that they fully satisfy the default value annotations. */
+    public:
+
+        /* A std::tuple type where each element is a Value<I> wrapper around all the
+        arguments marked as ::opt in the target signature. */
+        using tuple = TupleType<0, std::tuple<>, Target...>::type;
+
+        /* The total number of (optional) arguments that the function accepts, not
+        including variadic positional or keyword arguments. */
+        static constexpr size_t size = std::tuple_size<tuple>::value;
+
+        /* The number of (optional) positional-only arguments that the function
+        accepts, not including variadic positional arguments. */
+        static constexpr size_t pos_size = target::pos_opt_count;
+
+        /* The number of (optional) keyword-only arguments that the function accepts,
+        not including variadic keyword arguments. */
+        static constexpr size_t kw_size = target::kw_only_opt_count;
+
+        /* Given an index into the target signature, find the corresponding index in
+        the `type` tuple if that index corresponds to a default value.  Otherwise,
+        return the size of the defaults tuple. */
+        template <size_t I>
+        static constexpr size_t find = find_helper<I, tuple>::value;
+
+        /* Find the index of the named argument, or `size` if the argument is not
+        present. */
+        template <StaticStr name>
+        static constexpr size_t index = find<target::template index<name>>;
+
+        /* Check if the named argument is present in the defaults tuple. */
+        template <StaticStr name>
+        static constexpr bool contains = index<name> != size;
+
+    private:
+
+        tuple values;
+
         template <typename... Source>
-        struct Parse {
+        struct Constructor {
             using source = Signature<Source...>;
 
             /* Recursively check whether the default values fully satisfy the target
-            signature. */
+            signature.  `I` refers to the index in the defaults tuple, while `J` refers
+            to the index of the source signature given to the Function constructor. */
             template <size_t I, size_t J>
             static constexpr bool enable_recursive = true;
-            template <size_t I, size_t J> requires (I < target::opt_count && J < source::size)
+            template <size_t I, size_t J> requires (I < size && J < source::size)
             static constexpr bool enable_recursive<I, J> = [] {
-                using D = std::tuple_element<I, tuple>::type;
-                using V = source::template type<J>;
-                if constexpr (Inspect<V>::pos) {
-                    if constexpr (
-                        !std::convertible_to<typename Inspect<V>::type, typename D::type>
-                    ) {
+                using Value = std::tuple_element<I, tuple>::type;
+                using Arg = source::template type<J>;
+                if constexpr (Inspect<Arg>::pos) {
+                    if constexpr (!std::convertible_to<
+                        typename Inspect<Arg>::type,
+                        typename Value::type
+                    >) {
                         return false;
                     }
-                } else if constexpr (Inspect<V>::kw) {
+                } else if constexpr (Inspect<Arg>::kw) {
                     if constexpr (
-                        !target::template contains<Inspect<V>::name> ||
-                        !source::template contains<D::name>
+                        !target::template contains<Inspect<Arg>::name> ||
+                        !source::template contains<Value::name>
                     ) {
                         return false;
                     } else {
-                        constexpr size_t idx = target::template index<Inspect<V>::name>;
-                        using D2 = std::tuple_element<find_helper<idx>::value, tuple>::type;
-                        if constexpr (
-                            !std::convertible_to<typename Inspect<V>::type, typename D2::type>
-                        ) {
+                        constexpr size_t idx = index<Inspect<Arg>::name>;
+                        using Match = std::tuple_element<idx, tuple>::type;
+                        if constexpr (!std::convertible_to<
+                            typename Inspect<Arg>::type,
+                            typename Match::type
+                        >) {
                             return false;
                         }
                     }
@@ -652,59 +901,77 @@ protected:
 
             /* Constructor is only enabled if the default values are fully satisfied. */
             static constexpr bool enable =
-                source::valid && target::opt_count == source::size && enable_recursive<0, 0>;
+                source::valid && source::size == size  && enable_recursive<0, 0>;
 
             template <size_t I>
             static constexpr decltype(auto) build_recursive(Source&&... values) {
                 if constexpr (I < source::kw_index) {
-                    return get_arg<I>(std::forward<Source>(values)...);
+                    return unpack_arg<I>(std::forward<Source>(values)...);
                 } else {
-                    using D = std::tuple_element<I, tuple>::type;
-                    return get_arg<source::template index<D::name>>(
+                    using Value = std::tuple_element<I, tuple>::type;
+                    return unpack_arg<source::template index<Value::name>>(
                         std::forward<Source>(values)...
                     ).value();
                 }
             }
 
-            /* Build the default values tuple from the provided arguments, reordering them
-            as needed to account for keywords. */
+            /* Invoke the constructor to build the default values tuple from the
+            provided arguments, reordering them as needed to account for keywords. */
             template <size_t... Is>
-            static constexpr auto build(std::index_sequence<Is...>, Source&&... values) {
-                return tuple(build_recursive<Is>(std::forward<Source>(values)...)...);
+            static constexpr tuple operator()(
+                std::index_sequence<Is...>,
+                Source&&... values
+            ) {
+                return {build_recursive<Is>(std::forward<Source>(values)...)...};
             }
 
         };
 
-        tuple values;
-
     public:
 
-        template <typename... Source> requires (Parse<Source...>::enable)
-        DefaultValues(Source&&... source) : values(Parse<Source...>::build(
-            std::make_index_sequence<sizeof...(Source)>{},
+        /* Indicates whether the source arguments fully satisfy the default values in
+        the target signature. */
+        template <typename... Source>
+        static constexpr bool enable = Constructor<Source...>::enable;
+
+        template <typename... Source> requires (enable<Source...>)
+        Defaults(Source&&... source) : values(Constructor<Source...>{}(
+            std::index_sequence_for<Source...>{},
             std::forward<Source>(source)...
         )) {}
 
-        DefaultValues(const DefaultValues& other) : values(other.values) {}
-        DefaultValues(DefaultValues&& other) : values(std::move(other.values)) {}
-
-        /* Constrain the function's constructor to enforce `::opt` annotations in
-        the target signature. */
-        template <typename... Source>
-        static constexpr bool enable = Parse<Source...>::enable;
-
-        /* Get the type of the default value associated with the target argument at
-        index I. */
-        template <size_t I>
-        static constexpr size_t find = find_helper<I, tuple>::value;
+        Defaults(const Defaults& other) = default;
+        Defaults(Defaults&& other) = default;
 
         /* Get the default value associated with the target argument at index I. */
         template <size_t I>
-        const auto get() const {
+        auto& get() {
             return std::get<find<I>>(values).value;
         };
 
+        /* Get the default value associated with the target argument at index I. */
+        template <size_t I>
+        const auto& get() const {
+            return std::get<find<I>>(values).value;
+        };
+
+        /* Get the default value associated with the named target argument. */
+        template <StaticStr name>
+        auto& get() {
+            return std::get<index<name>>(values).value;
+        };
+
+        /* Get the default value associated with the named target argument. */
+        template <StaticStr name>
+        const auto& get() const {
+            return std::get<index<name>>(values).value;
+        };
+
     };
+
+    Defaults defaults;  // TODO: encapsulate this in a CppFunction helper class
+
+protected:
 
     template <typename... Source>
     class Arguments {
@@ -888,7 +1155,7 @@ protected:
             if constexpr (!target::template contains<Inspect<Arg>::name>) {
                 map.emplace(
                     Inspect<Arg>::name,
-                    get_arg<source::kw_index + I>(std::forward<Source>(args)...)
+                    unpack_arg<source::kw_index + I>(std::forward<Source>(args)...)
                 );
             }
         }
@@ -932,11 +1199,11 @@ protected:
 
         NO_UNPACK
         static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             Source&&... args
         ) {
             if constexpr (I < source::kw_index) {
-                return get_arg<I>(std::forward<Source>(args)...);
+                return unpack_arg<I>(std::forward<Source>(args)...);
             } else {
                 return defaults.template get<I>();
             }
@@ -944,14 +1211,14 @@ protected:
 
         NO_UNPACK requires (Inspect<T<I>>::kw && !Inspect<T<I>>::kw_only)
         static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             Source&&... args
         ) {
             if constexpr (I < source::kw_index) {
-                return get_arg<I>(std::forward<Source>(args)...);
+                return unpack_arg<I>(std::forward<Source>(args)...);
             } else if constexpr (source::template contains<Inspect<T<I>>::name>) {
                 constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
-                return get_arg<idx>(std::forward<Source>(args)...);
+                return unpack_arg<idx>(std::forward<Source>(args)...);
             } else {
                 return defaults.template get<I>();
             }
@@ -959,12 +1226,12 @@ protected:
 
         NO_UNPACK requires (Inspect<T<I>>::kw_only)
         static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             Source&&... args
         ) {
             if constexpr (source::template contains<Inspect<T<I>>::name>) {
                 constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
-                return get_arg<idx>(std::forward<Source>(args)...);
+                return unpack_arg<idx>(std::forward<Source>(args)...);
             } else {
                 return defaults.template get<I>();
             }
@@ -972,7 +1239,7 @@ protected:
 
         NO_UNPACK requires (Inspect<T<I>>::args)
         static constexpr auto cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             Source&&... args
         ) {
             using Pack = std::vector<typename Inspect<T<I>>::type>;
@@ -985,7 +1252,7 @@ protected:
                     Pack& vec,
                     Source&&... args
                 ) {
-                    (vec.push_back(get_arg<I + Js>(std::forward<Source>(args)...)), ...);
+                    (vec.push_back(unpack_arg<I + Js>(std::forward<Source>(args)...)), ...);
                 }(
                     std::make_index_sequence<diff>{},
                     vec,
@@ -997,7 +1264,7 @@ protected:
 
         NO_UNPACK requires (Inspect<T<I>>::kwargs)
         static constexpr auto cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             Source&&... args
         ) {
             using Pack = std::unordered_map<std::string, typename Inspect<T<I>>::type>;
@@ -1018,14 +1285,14 @@ protected:
 
         ARGS_UNPACK
         static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             size_t size,
             Iter& iter,
             const End& end,
             Source&&... args
         ) {
             if constexpr (I < source::kw_index) {
-                return get_arg<I>(std::forward<Source>(args)...);
+                return unpack_arg<I>(std::forward<Source>(args)...);
             } else {
                 if (iter == end) {
                     if constexpr (Inspect<T<I>>::opt) {
@@ -1045,17 +1312,17 @@ protected:
 
         ARGS_UNPACK requires (Inspect<T<I>>::kw && !Inspect<T<I>>::kw_only)
         static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             size_t size,
             Iter& iter,
             const End& end,
             Source&&... args
         ) {
             if constexpr (I < source::kw_index) {
-                return get_arg<I>(std::forward<Source>(args)...);
+                return unpack_arg<I>(std::forward<Source>(args)...);
             } else if constexpr (source::template contains<Inspect<T<I>>::name>) {
                 constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
-                return get_arg<idx>(std::forward<Source>(args)...);
+                return unpack_arg<idx>(std::forward<Source>(args)...);
             } else {
                 if (iter == end) {
                     if constexpr (Inspect<T<I>>::opt) {
@@ -1075,7 +1342,7 @@ protected:
 
         ARGS_UNPACK requires (Inspect<T<I>>::kw_only)
         static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             size_t size,
             Iter& iter,
             const End& end,
@@ -1086,7 +1353,7 @@ protected:
 
         ARGS_UNPACK requires (Inspect<T<I>>::args)
         static constexpr auto cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             size_t size,
             Iter& iter,
             const End& end,
@@ -1102,7 +1369,7 @@ protected:
                     Pack& vec,
                     Source&&... args
                 ) {
-                    (vec.push_back(get_arg<I + Js>(std::forward<Source>(args)...)), ...);
+                    (vec.push_back(unpack_arg<I + Js>(std::forward<Source>(args)...)), ...);
                 }(
                     std::make_index_sequence<diff>{},
                     vec,
@@ -1115,7 +1382,7 @@ protected:
 
         ARGS_UNPACK requires (Inspect<T<I>>::kwargs)
         static constexpr auto cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             size_t size,
             Iter& iter,
             const End& end,
@@ -1126,7 +1393,7 @@ protected:
 
         KWARGS_UNPACK
         static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             const Mapping& map,
             Source&&... args
         ) {
@@ -1135,7 +1402,7 @@ protected:
 
         KWARGS_UNPACK requires (Inspect<T<I>>::kw && !Inspect<T<I>>::kw_only)
         static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             const Mapping& map,
             Source&&... args
         ) {
@@ -1147,7 +1414,7 @@ protected:
                         "' at index " + std::to_string(I)
                     );
                 }
-                return get_arg<I>(std::forward<Source>(args)...);
+                return unpack_arg<I>(std::forward<Source>(args)...);
             } else if constexpr (source::template contains<Inspect<T<I>>::name>) {
                 if (val != map.end()) {
                     throw TypeError(
@@ -1156,7 +1423,7 @@ protected:
                     );
                 }
                 constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
-                return get_arg<idx>(std::forward<Source>(args)...);
+                return unpack_arg<idx>(std::forward<Source>(args)...);
             } else {
                 if (val != map.end()) {
                     return *val;
@@ -1176,7 +1443,7 @@ protected:
 
         KWARGS_UNPACK requires (Inspect<T<I>>::kw_only)
         static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             const Mapping& map,
             Source&&... args
         ) {
@@ -1189,7 +1456,7 @@ protected:
                     );
                 }
                 constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
-                return get_arg<idx>(std::forward<Source>(args)...);
+                return unpack_arg<idx>(std::forward<Source>(args)...);
             } else {
                 if (val != map.end()) {
                     return *val;
@@ -1209,7 +1476,7 @@ protected:
 
         KWARGS_UNPACK requires (Inspect<T<I>>::args)
         static constexpr auto cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             const Mapping& map,
             Source&&... args
         ) {
@@ -1218,7 +1485,7 @@ protected:
 
         KWARGS_UNPACK requires (Inspect<T<I>>::kwargs)
         static constexpr auto cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             const Mapping& map,
             Source&&... args
         ) {
@@ -1246,7 +1513,7 @@ protected:
 
         ARGS_KWARGS_UNPACK
         static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             size_t size,
             Iter& iter,
             const End& end,
@@ -1264,7 +1531,7 @@ protected:
 
         ARGS_KWARGS_UNPACK requires (Inspect<T<I>>::kw && !Inspect<T<I>>::kw_only)
         static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             size_t size,
             Iter& iter,
             const End& end,
@@ -1279,7 +1546,7 @@ protected:
                         "' at index " + std::to_string(I)
                     );
                 }
-                return get_arg<I>(std::forward<Source>(args)...);
+                return unpack_arg<I>(std::forward<Source>(args)...);
             } else if constexpr (source::template contains<Inspect<T<I>>::name>) {
                 if (val != map.end()) {
                     throw TypeError(
@@ -1288,7 +1555,7 @@ protected:
                     );
                 }
                 constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
-                return get_arg<idx>(std::forward<Source>(args)...);
+                return unpack_arg<idx>(std::forward<Source>(args)...);
             } else {
                 if (iter != end) {
                     return *(iter++);
@@ -1310,7 +1577,7 @@ protected:
 
         ARGS_KWARGS_UNPACK requires (Inspect<T<I>>::kw_only)
         static constexpr std::decay_t<typename Inspect<T<I>>::type> cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             size_t size,
             Iter& iter,
             const End& end,
@@ -1326,7 +1593,7 @@ protected:
 
         ARGS_KWARGS_UNPACK requires (Inspect<T<I>>::args)
         static constexpr auto cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             size_t size,
             Iter& iter,
             const End& end,
@@ -1344,7 +1611,7 @@ protected:
 
         ARGS_KWARGS_UNPACK requires (Inspect<T<I>>::kwargs)
         static constexpr auto cpp(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             size_t size,
             Iter& iter,
             const End& end,
@@ -1396,7 +1663,7 @@ protected:
 
         template <size_t I>
         static std::decay_t<typename Inspect<T<I>>::type> from_python(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             PyObject* const* array,
             size_t nargs,
             PyObject* kwnames,
@@ -1417,7 +1684,7 @@ protected:
 
         template <size_t I> requires (Inspect<T<I>>::kw)
         static std::decay_t<typename Inspect<T<I>>::type> from_python(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             PyObject* const* array,
             size_t nargs,
             PyObject* kwnames,
@@ -1449,7 +1716,7 @@ protected:
 
         template <size_t I> requires (Inspect<T<I>>::kw_only)
         static std::decay_t<typename Inspect<T<I>>::type> from_python(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             PyObject* const* array,
             size_t nargs,
             PyObject* kwnames,
@@ -1479,7 +1746,7 @@ protected:
 
         template <size_t I> requires (Inspect<T<I>>::args)
         static auto from_python(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             PyObject* const* array,
             size_t nargs,
             PyObject* kwnames,
@@ -1494,7 +1761,7 @@ protected:
 
         template <size_t I> requires (Inspect<T<I>>::kwargs)
         static auto from_python(
-            const DefaultValues& defaults,
+            const Defaults& defaults,
             PyObject* const* array,
             size_t nargs,
             PyObject* kwnames,
@@ -1529,9 +1796,9 @@ protected:
         template <size_t J>
         static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             try {
-                array[J + 1] = as_object(
-                    get_arg<J>(std::forward<Source>(args)...)
-                ).release().ptr();
+                array[J + 1] = release(as_object(
+                    unpack_arg<J>(std::forward<Source>(args)...)
+                ));
             } catch (...) {
                 for (size_t i = 1; i <= J; ++i) {
                     Py_XDECREF(array[i]);
@@ -1547,9 +1814,9 @@ protected:
                     J - source::kw_index,
                     Py_NewRef(impl::TemplateString<Inspect<S<J>>::name>::ptr)
                 );
-                array[J + 1] = as_object(
-                    get_arg<J>(std::forward<Source>(args)...)
-                ).release().ptr();
+                array[J + 1] = release(as_object(
+                    unpack_arg<J>(std::forward<Source>(args)...)
+                ));
             } catch (...) {
                 for (size_t i = 1; i <= J; ++i) {
                     Py_XDECREF(array[i]);
@@ -1561,9 +1828,9 @@ protected:
         static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             size_t curr = J + 1;
             try {
-                const auto& var_args = get_arg<J>(std::forward<Source>(args)...);
+                const auto& var_args = unpack_arg<J>(std::forward<Source>(args)...);
                 for (const auto& value : var_args) {
-                    array[curr] = as_object(value).release().ptr();
+                    array[curr] = release(as_object(value));
                     ++curr;
                 }
             } catch (...) {
@@ -1577,7 +1844,7 @@ protected:
         static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             size_t curr = J + 1;
             try {
-                const auto& var_kwargs = get_arg<J>(std::forward<Source>(args)...);
+                const auto& var_kwargs = unpack_arg<J>(std::forward<Source>(args)...);
                 for (const auto& [key, value] : var_kwargs) {
                     PyObject* name = PyUnicode_FromStringAndSize(
                         key.data(),
@@ -1587,7 +1854,7 @@ protected:
                         Exception::from_python();
                     }
                     PyTuple_SET_ITEM(kwnames, curr - source::kw_index, name);
-                    array[curr] = as_object(value).release().ptr();
+                    array[curr] = release(as_object(value));
                     ++curr;
                 }
             } catch (...) {
@@ -1637,6 +1904,344 @@ protected:
             throw TypeError(message);
         }
     }
+
+    /* A unique Python type to represent functions with this signature in Python.  The
+    actual C++ function and default values are defined on this type and then accessed
+    through the py::Function wrapper via type casting, which requires no further
+    indirection besides a single isinstance() check. */
+    class PyFunction {
+
+        static std::string demangle(const char* name) {
+            #if defined(__GNUC__) || defined(__clang__)
+                int status = 0;
+                std::unique_ptr<char, void(*)(void*)> res {
+                    abi::__cxa_demangle(
+                        name,
+                        nullptr,
+                        nullptr,
+                        &status
+                    ),
+                    std::free
+                };
+                return (status == 0) ? res.get() : name;
+            #elif defined(_MSC_VER)
+                char undecorated_name[1024];
+                if (UnDecorateSymbolName(
+                    name,
+                    undecorated_name,
+                    sizeof(undecorated_name),
+                    UNDNAME_COMPLETE
+                )) {
+                    return std::string(undecorated_name);
+                } else {
+                    return name;
+                }
+            #else
+                return name; // fallback: no demangling
+            #endif
+        }
+
+        static const std::string& type_docstring() {
+            static const std::string string =
+                "Python wrapper for a C++ function of type " +
+                demangle(typeid(Function).name());
+            return string;
+        }
+
+    public:
+        PyObject_HEAD
+        std::string name;
+        std::string docstring;
+        std::function<Return(Target...)> func;
+        Defaults defaults;
+        vectorcallfunc vectorcall;
+
+        static PyObject* create(
+            std::string&& name,
+            std::string&& docstring,
+            std::function<Return(Target...)>&& func,
+            Defaults&& defaults
+        ) {
+            PyFunction* self = reinterpret_cast<PyFunction*>(
+                type.tp_new(&type, nullptr, nullptr)
+            );
+            if (self == nullptr) {
+                return nullptr;
+            }
+            try {
+                self->name = std::move(name);
+                self->docstring = std::move(docstring);
+                self->func = std::move(func);
+                self->defaults = std::move(defaults);
+                self->vectorcall = &Call<call_policy>::operator();
+                return reinterpret_cast<PyObject*>(self);
+            } catch (...) {
+                Py_DECREF(self);
+                throw;
+            }
+        }
+
+        static void destroy(PyFunction* self) {
+            self->~PyFunctionType();
+            type.tp_free(reinterpret_cast<PyObject*>(self));
+        }
+
+        static constexpr impl::CallPolicy call_policy = [] {
+            if constexpr (target::size == 0) {
+                return impl::CallPolicy::no_args;
+            } else if constexpr (
+                target::size == 1 && Inspect<typename target::template type<0>>::pos
+            ) {
+                return impl::CallPolicy::one_arg;
+            } else if constexpr (!target::has_kw && !target::has_kwargs) {
+                return impl::CallPolicy::positional;
+            } else {
+                return impl::CallPolicy::keyword;
+            }
+        }();
+
+        template <impl::CallPolicy policy, typename Dummy = void>
+        struct Call;
+
+        template <typename Dummy>
+        struct Call<impl::CallPolicy::no_args, Dummy> {
+            static constexpr int flags = METH_NOARGS;
+            static PyObject* operator()(PyFunction* self, PyObject* /* unused */) {
+                try {
+                    if constexpr (std::is_void_v<Return>) {
+                        self->func();
+                        Py_RETURN_NONE;
+                    } else {
+                        return release(as_object(self->func()));
+                    }
+                } catch (...) {
+                    Exception::to_python();
+                    return nullptr;
+                }
+            }
+        };
+
+        template <typename Dummy>
+        struct Call<impl::CallPolicy::one_arg, Dummy> {
+            static constexpr int flags = METH_O;
+            static PyObject* operator()(PyFunction* self, PyObject* obj) {
+                try {
+                    if constexpr (std::is_void_v<Return>) {
+                        if (obj == nullptr) {
+                            if constexpr (target::has_opt) {
+                                self->func(self->defaults.template get<0>());
+                            } else {
+                                throw TypeError("missing required argument");
+                            }
+                        } else {
+                            self->func(reinterpret_borrow<Object>(obj));
+                        }
+                        Py_RETURN_NONE;
+                    } else {
+                        if (obj == nullptr) {
+                            if constexpr (target::has_opt) {
+                                return release(as_object(self->func(
+                                    self->defaults.template get<0>()
+                                )));
+                            } else {
+                                throw TypeError("missing required argument");
+                            }
+                        }
+                        return release(as_object(self->func(
+                            reinterpret_borrow<Object>(obj)
+                        )));
+                    }
+                } catch (...) {
+                    Exception::to_python();
+                    return nullptr;
+                }
+            }
+        };
+
+        template <typename Dummy>
+        struct Call<impl::CallPolicy::positional, Dummy> {
+            static constexpr int flags = METH_FASTCALL;
+            static PyObject* operator()(
+                PyFunction* self,
+                PyObject* const* args,
+                Py_ssize_t nargs
+            ) {
+                try {
+                    return []<size_t... Is>(
+                        std::index_sequence<Is...>,
+                        PyFunction* self,
+                        PyObject* const* args,
+                        Py_ssize_t nargs
+                    ) {
+                        Py_ssize_t true_nargs = PyVectorcall_NARGS(nargs);
+                        if constexpr (!target::has_args) {
+                            if (true_nargs > static_cast<Py_ssize_t>(target::size)) {
+                                throw TypeError(
+                                    "expected at most " + std::to_string(target::size) +
+                                    " positional arguments, but received " +
+                                    std::to_string(true_nargs)
+                                );    
+                            }
+                        }
+                        if constexpr (std::is_void_v<Return>) {
+                            self->func(
+                                Arguments<Target...>::template from_python<Is>(
+                                    self->defaults,
+                                    args,
+                                    true_nargs,
+                                    nullptr,
+                                    0
+                                )...
+                            );
+                            Py_RETURN_NONE;
+                        } else {
+                            return release(as_object(
+                                self->func(
+                                    Arguments<Target...>::template from_python<Is>(
+                                        self->defaults,
+                                        args,
+                                        true_nargs,
+                                        nullptr,
+                                        0
+                                    )...
+                                )
+                            ));
+                        }
+                    }(
+                        std::make_index_sequence<target::size>{},
+                        self,
+                        args,
+                        nargs
+                    );
+                } catch (...) {
+                    Exception::to_python();
+                    return nullptr;
+                }
+            }
+        };
+
+        template <typename Dummy>
+        struct Call<impl::CallPolicy::keyword, Dummy> {
+            static constexpr int flags = METH_FASTCALL | METH_KEYWORDS;
+            static PyObject* operator()(
+                PyFunction* self,
+                PyObject* const* args,
+                Py_ssize_t nargs,
+                PyObject* kwnames
+            ) {
+                try {
+                    return []<size_t... Is>(
+                        std::index_sequence<Is...>,
+                        PyFunction* self,
+                        PyObject* const* args,
+                        Py_ssize_t nargs,
+                        PyObject* kwnames
+                    ) {
+                        size_t true_nargs = PyVectorcall_NARGS(nargs);
+                        if constexpr (!target::has_args) {
+                            if (true_nargs > target::size) {
+                                throw TypeError(
+                                    "expected at most " + std::to_string(target::size) +
+                                    " positional arguments, but received " +
+                                    std::to_string(true_nargs)
+                                );
+                            }
+                        }
+                        size_t kwcount = 0;
+                        if (kwnames != nullptr) {
+                            kwcount = PyTuple_GET_SIZE(kwnames);
+                            if constexpr (!target::has_kwargs) {
+                                for (size_t i = 0; i < kwcount; ++i) {
+                                    Py_ssize_t length;
+                                    const char* name = PyUnicode_AsUTF8AndSize(
+                                        PyTuple_GET_ITEM(kwnames, i),
+                                        &length
+                                    );
+                                    if (name == nullptr) {
+                                        Exception::from_python();
+                                    } else if (!target::has_keyword(name)) {
+                                        throw TypeError(
+                                            "unexpected keyword argument '" +
+                                            std::string(name, length) + "'"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        if constexpr (std::is_void_v<Return>) {
+                            self->func(
+                                Arguments<Target...>::template from_python<Is>(
+                                    self->defaults,
+                                    args,
+                                    true_nargs,
+                                    kwnames,
+                                    kwcount
+                                )...
+                            );
+                            Py_RETURN_NONE;
+                        } else {
+                            return release(as_object(
+                                self->func(
+                                    Arguments<Target...>::template from_python<Is>(
+                                        self->defaults,
+                                        args,
+                                        true_nargs,
+                                        kwnames,
+                                        kwcount
+                                    )...
+                                )
+                            ));
+                        }
+                    }(
+                        std::make_index_sequence<target::size>{},
+                        self,
+                        args,
+                        nargs,
+                        kwnames
+                    );
+                } catch (...) {
+                    Exception::to_python();
+                    return nullptr;
+                }
+            }
+        };
+
+        static PyObject* repr(PyFunction* self) {
+            static const std::string demangled = demangle(typeid(Function).name());
+            std::stringstream stream;
+            stream << "<" << demangled << " at " << self << ">";
+            std::string s = stream.str();
+            PyObject* string = PyUnicode_FromStringAndSize(s.c_str(), s.size());
+            if (string == nullptr) {
+                return nullptr;
+            }
+            return string;
+        }
+
+        inline static PyTypeObject type = {
+            .ob_base = PyVarObject_HEAD_INIT(nullptr, 0)
+            .tp_name = typeid(Function).name(),
+            .tp_basicsize = sizeof(PyFunction),
+            .tp_itemsize = 0,
+            .tp_dealloc = (destructor) &destroy,
+            .tp_repr = (reprfunc) &repr,
+            .tp_call = (ternaryfunc) PyVectorcall_Call,
+            .tp_str = (reprfunc) &repr,
+            .tp_flags =
+                Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
+                Py_TPFLAGS_METHOD_DESCRIPTOR | Py_TPFLAGS_HAVE_VECTORCALL,
+            .tp_doc = PyDoc_STR(type_docstring().c_str()),
+            .tp_methods = nullptr,  // TODO
+            .tp_getset = nullptr,  // TODO
+            .tp_alloc = (allocfunc) PyType_GenericAlloc,
+            .tp_new = PyType_GenericNew,
+            .tp_free = (freefunc) PyObject_Del,
+            .tp_vectorcall_offset = offsetof(PyFunction, vectorcall),
+        };
+
+    };
+
+
 
     /* A heap-allocated data structure that allows a C++ function to be efficiently
     passed between Python and C++ without losing any of its original properties.  A
@@ -1699,7 +2304,7 @@ protected:
         std::string name;
         std::string docstring;
         std::function<Return(Target...)> func;
-        DefaultValues defaults;
+        Defaults defaults;
         PyMethodDef method_def;
 
         /* Construct a Capsule around a C++ function with the given name and default
@@ -1708,7 +2313,7 @@ protected:
             std::string&& func_name,
             std::string&& func_doc,
             std::function<Return(Target...)>&& func,
-            DefaultValues&& defaults
+            Defaults&& defaults
         ) : name(std::move(func_name)),
             docstring(std::move(func_doc)),
             func(std::move(func)),
@@ -1833,7 +2438,7 @@ protected:
                         get(capsule)->func();
                         Py_RETURN_NONE;
                     } else {
-                        return as_object(get(capsule)->func()).release().ptr();
+                        return release(as_object(get(capsule)->func()));
                     }
                 } catch (...) {
                     Exception::to_python();
@@ -1864,16 +2469,16 @@ protected:
                     } else {
                         if (obj == nullptr) {
                             if constexpr (target::has_opt) {
-                                return as_object(contents->func(
+                                return release(as_object(contents->func(
                                     contents->defaults.template get<0>()
-                                )).release().ptr();
+                                )));
                             } else {
                                 throw TypeError("missing required argument");
                             }
                         }
-                        return as_object(contents->func(
+                        return release(as_object(contents->func(
                             reinterpret_borrow<Object>(obj)
-                        )).release().ptr();
+                        )));
                     }
                 } catch (...) {
                     Exception::to_python();
@@ -1922,7 +2527,7 @@ protected:
                             );
                             Py_RETURN_NONE;
                         } else {
-                            return as_object(
+                            return release(as_object(
                                 contents->func(
                                     Arguments<Target...>::template from_python<Is>(
                                         contents->defaults,
@@ -1932,7 +2537,7 @@ protected:
                                         0
                                     )...
                                 )
-                            ).release().ptr();
+                            ));
                         }
                     }(
                         std::make_index_sequence<target::size>{},
@@ -2010,7 +2615,7 @@ protected:
                             );
                             Py_RETURN_NONE;
                         } else {
-                            return as_object(
+                            return release(as_object(
                                 contents->func(
                                     Arguments<Target...>::template from_python<Is>(
                                         contents->defaults,
@@ -2020,7 +2625,7 @@ protected:
                                         kwcount
                                     )...
                                 )
-                            ).release().ptr();
+                            ));
                         }
                     }(
                         std::make_index_sequence<target::size>{},
@@ -2053,7 +2658,6 @@ public:
     using ReturnType = Return;
     using ArgTypes = std::tuple<typename Inspect<Target>::type...>;
     using Annotations = std::tuple<Target...>;
-    using Defaults = DefaultValues;
 
     /* Instantiate a new function type with the same arguments but a different return
     type. */
@@ -2070,73 +2674,6 @@ public:
     template <typename... Source>
     static constexpr bool invocable = Arguments<Source...>::enable;
 
-    /* The total number of arguments that the function accepts, not including variadic
-    positional or keyword arguments. */
-    static constexpr size_t argcount =
-        target::size - target::has_args - target::has_kwargs;
-
-    /* The total number of optional arguments that the function accepts, not including
-    variadic positional or keyword arguments. */
-    static constexpr size_t opt_argcount = target::opt_count;
-
-    /* The number of positional-only arguments that the function accepts, not including
-    variadic positional arguments. */
-    static constexpr size_t posonly_argcount = target::pos_count;
-
-    /* The number of optional positional-only arguments that the function accepts, not
-    including variadic positional arguments. */
-    static constexpr size_t posonly_opt_argcount = target::pos_opt_count;
-
-    /* The number of keyword-only arguments that the function accepts, not including
-    variadic keyword arguments. */
-    static constexpr size_t kwonly_argcount = target::kw_only_count;
-
-    /* The number of optional keyword-only arguments that the function accepts, not
-    including variadic keyword arguments. */
-    static constexpr size_t kwonly_opt_argcount = target::kw_only_opt_count;
-
-    /* Indicates whether the function accepts variadic positional arguments. */
-    static constexpr bool has_args = target::has_args;
-
-    /* Indicates whether the function accepts variadic keyword arguments. */
-    static constexpr bool has_kwargs = target::has_kwargs;
-
-    /* Get the default value at index I of the target signature. */
-    template <size_t I> requires (target::template is_opt<I>)
-    auto& default_value() {
-        if (contents == nullptr) {
-            throw TypeError();  // TODO: search for the default value in the Python object?
-        }
-        return contents->defaults.template get<I>();
-    }
-
-    /* Get the default value at index I of the target signature. */
-    template <size_t I> requires (target::template is_opt<I>)
-    const auto& default_value() const {
-        if (contents == nullptr) {
-            throw TypeError();  // TODO: search for the default value in the Python object?
-        }
-        return contents->defaults.template get<I>();
-    }
-
-    /* Get the default value for the named argument. */
-    template <StaticStr name> requires (target::template is_opt_kw<name>)
-    auto& default_value() {
-        if (contents == nullptr) {
-            throw TypeError();  // TODO: search for the default value in the Python object?
-        }
-        return contents->defaults.template get<target::template index<name>>();
-    }
-
-    /* Get the default value for the named argument. */
-    template <StaticStr name> requires (target::template is_opt_kw<name>)
-    const auto& default_value() const {
-        if (contents == nullptr) {
-            throw TypeError();  // TODO: search for the default value in the Python object?
-        }
-        return contents->defaults.template get<target::template index<name>>();
-    }
-
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
@@ -2148,8 +2685,8 @@ public:
 
     /* Reinterpret_borrow/reinterpret_steal constructors.  Attempts to unpack a
     shared_ptr to the function's capsule, if it has one. */
-    Function(Handle h, borrowed_t t) : Base(h, t), contents(Capsule::from_python(h.ptr())) {}
-    Function(Handle h, stolen_t t) : Base(h, t), contents(Capsule::from_python(h.ptr())) {}
+    Function(Handle h, borrowed_t t) : Base(h, t), contents(Capsule::from_python(ptr(h))) {}
+    Function(Handle h, stolen_t t) : Base(h, t), contents(Capsule::from_python(ptr(h))) {}
 
     template <typename... Args>
         requires (
@@ -2274,24 +2811,24 @@ public:
 
             // if there are no arguments, we can use an optimized protocol
             if constexpr (source::size == 0) {
-                result = PyObject_CallNoArgs(func.ptr());
+                result = PyObject_CallNoArgs(ptr(func));
 
             } else if constexpr (!source::has_args && !source::has_kwargs) {
                 // if there is only one argument, we can use an optimized protocol
                 if constexpr (source::size == 1) {
                     if constexpr (source::has_kw) {
                         result = PyObject_CallOneArg(
-                            func.ptr(),
-                            as_object(
-                                get_arg<0>(std::forward<Source>(args)...).value()
-                            ).ptr()
+                            ptr(func),
+                            ptr(as_object(
+                                unpack_arg<0>(std::forward<Source>(args)...).value()
+                            ))
                         );
                     } else {
                         result = PyObject_CallOneArg(
-                            func.ptr(),
-                            as_object(
-                                get_arg<0>(std::forward<Source>(args)...)
-                            ).ptr()
+                            ptr(func),
+                            ptr(as_object(
+                                unpack_arg<0>(std::forward<Source>(args)...)
+                            ))
                         );
                     }
 
@@ -2316,7 +2853,7 @@ public:
                     );
                     Py_ssize_t npos = source::size - source::kw_count;
                     result = PyObject_Vectorcall(
-                        func.ptr(),
+                        ptr(func),
                         array + 1,
                         npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         kwnames
@@ -2328,7 +2865,7 @@ public:
 
             // otherwise, we have to heap-allocate the array with a variable size
             } else if constexpr (source::has_args && !source::has_kwargs) {
-                auto var_args = get_arg<source::args_index>(std::forward<Source>(args)...);
+                auto var_args = unpack_arg<source::args_index>(std::forward<Source>(args)...);
                 size_t nargs = source::size - 1 + var_args.size();
                 PyObject** array = new PyObject*[nargs + 1];
                 array[0] = nullptr;
@@ -2348,7 +2885,7 @@ public:
                 );
                 Py_ssize_t npos = source::size - 1 - source::kw_count + var_args.size();
                 result = PyObject_Vectorcall(
-                    func.ptr(),
+                    ptr(func),
                     array + 1,
                     npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                     nullptr
@@ -2359,7 +2896,7 @@ public:
                 delete[] array;
 
             } else if constexpr (!source::has_args && source::has_kwargs) {
-                auto var_kwargs = get_arg<source::kwargs_index>(std::forward<Source>(args)...);
+                auto var_kwargs = unpack_arg<source::kwargs_index>(std::forward<Source>(args)...);
                 size_t nargs = source::size - 1 + var_kwargs.size();
                 PyObject** array = new PyObject*[nargs + 1];
                 array[0] = nullptr;
@@ -2374,7 +2911,7 @@ public:
                 );
                 Py_ssize_t npos = source::size - 1 - source::kw_count;
                 result = PyObject_Vectorcall(
-                    func.ptr(),
+                    ptr(func),
                     array + 1,
                     npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                     kwnames
@@ -2385,8 +2922,8 @@ public:
                 delete[] array;
 
             } else {
-                auto var_args = get_arg<source::args_index>(std::forward<Source>(args)...);
-                auto var_kwargs = get_arg<source::kwargs_index>(std::forward<Source>(args)...);
+                auto var_args = unpack_arg<source::args_index>(std::forward<Source>(args)...);
+                auto var_kwargs = unpack_arg<source::kwargs_index>(std::forward<Source>(args)...);
                 size_t nargs = source::size - 2 + var_args.size() + var_kwargs.size();
                 PyObject** array = new PyObject*[nargs + 1];
                 array[0] = nullptr;
@@ -2401,7 +2938,7 @@ public:
                 );
                 size_t npos = source::size - 2 - source::kw_count + var_args.size();
                 result = PyObject_Vectorcall(
-                    func.ptr(),
+                    ptr(func),
                     array + 1,
                     npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                     kwnames
@@ -2457,7 +2994,7 @@ public:
                 }
 
             } else if constexpr (source::has_args && !source::has_kwargs) {
-                auto var_args = get_arg<source::args_index>(std::forward<Source>(args)...);
+                auto var_args = unpack_arg<source::args_index>(std::forward<Source>(args)...);
                 auto iter = var_args.begin();
                 auto end = var_args.end();
                 if constexpr (std::is_void_v<Return>) {
@@ -2490,7 +3027,7 @@ public:
                 }
 
             } else if constexpr (!source::has_args && source::has_kwargs) {
-                auto var_kwargs = get_arg<source::kwargs_index>(std::forward<Source>(args)...);
+                auto var_kwargs = unpack_arg<source::kwargs_index>(std::forward<Source>(args)...);
                 if constexpr (!target::has_kwargs) {
                     validate_kwargs(
                         std::make_index_sequence<target::size>{},
@@ -2516,14 +3053,14 @@ public:
                 }
 
             } else {
-                auto var_kwargs = get_arg<source::kwargs_index>(std::forward<Source>(args)...);
+                auto var_kwargs = unpack_arg<source::kwargs_index>(std::forward<Source>(args)...);
                 if constexpr (!target::has_kwargs) {
                     validate_kwargs(
                         std::make_index_sequence<target::size>{},
                         var_kwargs
                     );
                 }
-                auto var_args = get_arg<source::args_index>(std::forward<Source>(args)...);
+                auto var_args = unpack_arg<source::args_index>(std::forward<Source>(args)...);
                 auto iter = var_args.begin();
                 auto end = var_args.end();
                 if constexpr (std::is_void_v<Return>) {
@@ -2794,7 +3331,7 @@ public:
     //         }
 
     //         // push changes
-    //         if (PyFunction_SetAnnotations(self(), result.ptr())) {
+    //         if (PyFunction_SetAnnotations(self(), ptr(result))) {
     //             Exception::from_python();
     //         }
     //     }
@@ -2874,11 +3411,11 @@ public:
     // /* Attach a descriptor with the same name as this function to the type, which
     // forwards to this function when accessed. */
     // void attach(Type& type, Descr policy = Descr::METHOD) {
-    //     PyObject* descriptor = PyDescr_NewMethod(type.ptr(), contents->method_def);
+    //     PyObject* descriptor = PyDescr_NewMethod(ptr(type), contents->method_def);
     //     if (descriptor == nullptr) {
     //         Exception::from_python();
     //     }
-    //     int rc = PyObject_SetAttrString(type.ptr(), contents->name.data(), descriptor);
+    //     int rc = PyObject_SetAttrString(ptr(type), contents->name.data(), descriptor);
     //     Py_DECREF(descriptor);
     //     if (rc) {
     //         Exception::from_python();
@@ -2960,12 +3497,12 @@ struct __isinstance__<T, Function<R(A...)>>                  : Returns<bool> {
         if (impl::cpp_like<T>) {
             return issubclass<T, Function<R(A...)>>();
         } else if constexpr (issubclass<T, Function<R(A...)>>()) {
-            return obj.ptr() != nullptr;
+            return ptr(obj) != nullptr;
         } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && (
-                PyFunction_Check(obj.ptr()) ||
-                PyMethod_Check(obj.ptr()) ||
-                PyCFunction_Check(obj.ptr())
+            return ptr(obj) != nullptr && (
+                PyFunction_Check(ptr(obj)) ||
+                PyMethod_Check(ptr(obj)) ||
+                PyCFunction_Check(ptr(obj))
             );
         } else {
             return false;
@@ -2993,9 +3530,9 @@ namespace impl {
     inline decltype(auto) call_method(Self&& self, Args&&... args) {
         using Func = __getattr__<std::decay_t<Self>, name>::type;
         auto meth = reinterpret_steal<Object>(
-            PyObject_GetAttr(self.ptr(), TemplateString<name>::ptr)
+            PyObject_GetAttr(ptr(self), TemplateString<name>::ptr)
         );
-        if (meth.ptr() == nullptr) {
+        if (ptr(meth) == nullptr) {
             Exception::from_python();
         }
         try {
@@ -3015,9 +3552,9 @@ namespace impl {
     inline decltype(auto) call_static(Args&&... args) {
         using Func = __getattr__<std::decay_t<Self>, name>::type;
         auto meth = reinterpret_steal<Object>(
-            PyObject_GetAttr(Self::type.ptr(), TemplateString<name>::ptr)
+            PyObject_GetAttr(ptr(Self::type), TemplateString<name>::ptr)
         );
-        if (meth.ptr() == nullptr) {
+        if (ptr(meth) == nullptr) {
             Exception::from_python();
         }
         try {

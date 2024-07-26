@@ -29,7 +29,7 @@ struct ItemPolicy {
     ItemPolicy(ItemPolicy&& other) : obj(other.obj), key(std::move(other.key)) {}
 
     PyObject* get() const {
-        PyObject* result = PyObject_GetItem(obj.ptr(), key.ptr());
+        PyObject* result = PyObject_GetItem(ptr(obj), ptr(key));
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -37,14 +37,14 @@ struct ItemPolicy {
     }
 
     void set(PyObject* value) {
-        int result = PyObject_SetItem(obj.ptr(), key.ptr(), value);
+        int result = PyObject_SetItem(ptr(obj), ptr(key), value);
         if (result < 0) {
             Exception::from_python();
         }
     }
 
     void del() {
-        int result = PyObject_DelItem(obj.ptr(), key.ptr());
+        int result = PyObject_DelItem(ptr(obj), ptr(key));
         if (result < 0) {
             Exception::from_python();
         }
@@ -65,12 +65,12 @@ struct ItemPolicy<Obj, Key> {
     ItemPolicy(ItemPolicy&& other) : obj(other.obj), key(other.key) {}
 
     PyObject* get() const {
-        Py_ssize_t size = PyTuple_GET_SIZE(obj.ptr());
+        Py_ssize_t size = PyTuple_GET_SIZE(ptr(obj));
         Py_ssize_t norm = key + size * (key < 0);
         if (norm < 0 || norm >= size) {
             throw IndexError("tuple index out of range");
         }
-        PyObject* result = PyTuple_GET_ITEM(obj.ptr(), norm);
+        PyObject* result = PyTuple_GET_ITEM(ptr(obj), norm);
         if (result == nullptr) {
             throw ValueError(
                 "item at index " + std::to_string(key) +
@@ -95,7 +95,7 @@ struct ItemPolicy<Obj, Key> {
     ItemPolicy(ItemPolicy&& other) : obj(other.obj), key(other.key) {}
 
     Py_ssize_t normalize(Py_ssize_t index) const {
-        Py_ssize_t size = PyList_GET_SIZE(obj.ptr());
+        Py_ssize_t size = PyList_GET_SIZE(ptr(obj));
         Py_ssize_t result = index + size * (index < 0);
         if (result < 0 || result >= size) {
             throw IndexError("list index out of range");
@@ -104,7 +104,7 @@ struct ItemPolicy<Obj, Key> {
     }
 
     PyObject* get() const {
-        PyObject* result = PyList_GET_ITEM(obj.ptr(), normalize(key));
+        PyObject* result = PyList_GET_ITEM(ptr(obj), normalize(key));
         if (result == nullptr) {
             throw ValueError(
                 "item at index " + std::to_string(key) +
@@ -116,14 +116,14 @@ struct ItemPolicy<Obj, Key> {
 
     void set(PyObject* value) {
         Py_ssize_t normalized = normalize(key);
-        PyObject* previous = PyList_GET_ITEM(obj.ptr(), normalized);
-        PyList_SET_ITEM(obj.ptr(), normalized, Py_NewRef(value));
+        PyObject* previous = PyList_GET_ITEM(ptr(obj), normalized);
+        PyList_SET_ITEM(ptr(obj), normalized, Py_NewRef(value));
         Py_XDECREF(previous);
     }
 
     void del() {
         PyObject* index_obj = PyLong_FromSsize_t(normalize(key));
-        if (PyObject_DelItem(obj.ptr(), index_obj) < 0) {
+        if (PyObject_DelItem(ptr(obj), index_obj) < 0) {
             Exception::from_python();
         }
         Py_DECREF(index_obj);
@@ -210,7 +210,7 @@ public:
         } else {
             new (buffer) type(std::forward<T>(value));
             initialized = true;
-            policy.set(reinterpret_cast<type&>(buffer).ptr());
+            policy.set(ptr(reinterpret_cast<type&>(buffer)));
         }
         return *this;
     }
@@ -263,7 +263,7 @@ public:
     };
 
     [[nodiscard]] PyObject* ptr() const {
-        return value().ptr();
+        return ptr(value());
     }
 
     [[nodiscard]] Handle release() {

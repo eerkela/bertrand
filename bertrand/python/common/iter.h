@@ -290,7 +290,7 @@ public:
 
     /* Wrap a raw Python iterator. */
     GenericIter(Object&& iterator) : iter(std::move(iterator)) {
-        curr = PyIter_Next(iter.ptr());
+        curr = PyIter_Next(ptr(iter));
         if (curr == nullptr && PyErr_Occurred()) {
             Exception::from_python();
         }
@@ -345,7 +345,7 @@ public:
     /* Advance the iterator. */
     inline void advance() {
         PyObject* temp = curr;
-        curr = PyIter_Next(iter.ptr());
+        curr = PyIter_Next(ptr(iter));
         Py_XDECREF(temp);
         if (curr == nullptr && PyErr_Occurred()) {
             Exception::from_python();
@@ -386,10 +386,10 @@ public:
 
     /* Construct an iterator from a tuple and a starting index. */
     TupleIter(const Object& tuple, Py_ssize_t index) :
-        tuple(tuple), index(index), size(PyTuple_GET_SIZE(tuple.ptr()))
+        tuple(tuple), index(index), size(PyTuple_GET_SIZE(ptr(tuple)))
     {
         if (index >= 0 && index < size) {
-            curr = PyTuple_GET_ITEM(tuple.ptr(), index);
+            curr = PyTuple_GET_ITEM(ptr(tuple), index);
         } else {
             curr = nullptr;
         }
@@ -443,7 +443,7 @@ public:
     inline void advance(Py_ssize_t n = 1) {
         index += n;
         if (index >= 0 && index < size) {
-            curr = PyTuple_GET_ITEM(tuple.ptr(), index);
+            curr = PyTuple_GET_ITEM(ptr(tuple), index);
         } else {
             curr = nullptr;
         }
@@ -458,7 +458,7 @@ public:
     inline void retreat(Py_ssize_t n = 1) {
         index -= n;
         if (index >= 0 && index < size) {
-            curr = PyTuple_GET_ITEM(tuple.ptr(), index);
+            curr = PyTuple_GET_ITEM(ptr(tuple), index);
         } else {
             curr = nullptr;
         }
@@ -498,10 +498,10 @@ public:
 
     /* Construct an iterator from a list and a starting index. */
     ListIter(const Object& list, Py_ssize_t index) :
-        list(list), index(index), size(PyList_GET_SIZE(list.ptr()))
+        list(list), index(index), size(PyList_GET_SIZE(ptr(list)))
     {
         if (index >= 0 && index < size) {
-            curr = PyList_GET_ITEM(list.ptr(), index);
+            curr = PyList_GET_ITEM(ptr(list), index);
         } else {
             curr = nullptr;
         }
@@ -555,7 +555,7 @@ public:
     inline void advance(Py_ssize_t n = 1) {
         index += n;
         if (index >= 0 && index < size) {
-            curr = PyList_GET_ITEM(list.ptr(), index);
+            curr = PyList_GET_ITEM(ptr(list), index);
         } else {
             curr = nullptr;
         }
@@ -570,7 +570,7 @@ public:
     inline void retreat(Py_ssize_t n = 1) {
         index -= n;
         if (index >= 0 && index < size) {
-            curr = PyList_GET_ITEM(list.ptr(), index);
+            curr = PyList_GET_ITEM(ptr(list), index);
         } else {
             curr = nullptr;
         }
@@ -605,7 +605,7 @@ public:
 
     /* Construct an iterator from a dictionary. */
     KeyIter(const Object& dict) : dict(dict) {
-        if (!PyDict_Next(dict.ptr(), &pos, &curr, nullptr)) {
+        if (!PyDict_Next(ptr(dict), &pos, &curr, nullptr)) {
             curr = nullptr;
         }
     }
@@ -653,7 +653,7 @@ public:
 
     /* Advance the iterator. */
     inline void advance() {
-        if (!PyDict_Next(dict.ptr(), &pos, &curr, nullptr)) {
+        if (!PyDict_Next(ptr(dict), &pos, &curr, nullptr)) {
             curr = nullptr;
         }
     }
@@ -687,7 +687,7 @@ public:
 
     /* Construct an iterator from a dictionary. */
     ValueIter(const Object& dict) : dict(dict) {
-        if (!PyDict_Next(dict.ptr(), &pos, nullptr, &curr)) {
+        if (!PyDict_Next(ptr(dict), &pos, nullptr, &curr)) {
             curr = nullptr;
         }
     }
@@ -735,7 +735,7 @@ public:
 
     /* Advance the iterator. */
     inline void advance() {
-        if (!PyDict_Next(dict.ptr(), &pos, nullptr, &curr)) {
+        if (!PyDict_Next(ptr(dict), &pos, nullptr, &curr)) {
             curr = nullptr;
         }
     }
@@ -771,7 +771,7 @@ public:
 
     /* Construct an iterator from a dictionary. */
     ItemIter(const Object& dict) : dict(dict) {
-        if (!PyDict_Next(dict.ptr(), &pos, &key, &value)) {
+        if (!PyDict_Next(ptr(dict), &pos, &key, &value)) {
             key = nullptr;
             value = nullptr;
         }
@@ -824,7 +824,7 @@ public:
 
     /* Advance the iterator. */
     inline void advance() {
-        if (!PyDict_Next(dict.ptr(), &pos, &key, &value)) {
+        if (!PyDict_Next(ptr(dict), &pos, &key, &value)) {
             key = nullptr;
             value = nullptr;
         }

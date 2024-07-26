@@ -26,12 +26,13 @@ namespace impl {
 }
 
 
+/* A non-owning reference to a raw Python object. */
 class Handle : public impl::BertrandTag {
 protected:
     PyObject* m_ptr;
 
-    friend PyObject* ptr(Handle handle);
-    friend PyObject* release(Handle handle);
+    friend inline PyObject* ptr(Handle handle);
+    friend inline PyObject* release(Handle handle);
 
 public:
 
@@ -151,9 +152,7 @@ public:
 };
 
 
-/* A dynamically-typed Python object that allows implicit and explicit conversions to
-to arbitrary types as well as type-safe attribute access and operator overloads.  This
-is the base class for all Bertrand-enabled Python objects. */
+/* An owning reference to a dynamically-typed Python object. */
 class Object : public Handle {
 protected:
     struct borrowed_t {};

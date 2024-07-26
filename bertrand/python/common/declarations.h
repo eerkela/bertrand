@@ -90,11 +90,12 @@ class Function;
 // class ClassMethod;  // TODO: template on function type
 // class StaticMethod;  // TODO: template on function type
 // class Property;  // NOTE: no need to template because getters/setters/deleters have consistent signatures
+template <StaticStr Name>
+class Module;
 class NoneType;
 class NotImplementedType;
 class EllipsisType;
 class Slice;
-class Module;
 class Bool;
 class Int;
 class Float;
@@ -133,6 +134,7 @@ class Datetime;
 
 
 namespace impl {
+    struct ModuleTag : public BertrandTag { static const Type type; };
     struct FunctionTag : public BertrandTag { static const Type type; };
     struct TupleTag : public BertrandTag { static const Type type; };
     struct ListTag : public BertrandTag{ static const Type type; };
@@ -539,7 +541,7 @@ namespace impl {
     template <typename T>
     concept module_like =
         __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, Module>;
+        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, ModuleTag>;
 
     template <typename T>
     concept bool_like =
@@ -800,209 +802,13 @@ namespace impl {
 }
 
 
-// TODO: Arg and its non-variadic subclasses have to use aggregate initialization to
-// extend the lifetime of the temporary to match the lifetime of the Arg object.  This
-// requires modifying Function to use aggregate initialization when invoking the inner
-// function, so that the outside behavior is unaffected.
-// -> Args can't use constructors, since those violate lifetime rules.
+/* Retrieve the pointer backing a Python object. */
+[[nodiscard]] inline PyObject* ptr(Handle obj);
 
 
-/* A compile-time argument annotation that represents a bound positional or keyword
-argument to a py::Function. */
-template <StaticStr Name, typename T>
-class Arg : public impl::ArgTag {
-
-    template <bool positional, bool keyword>
-    struct Optional : public impl::ArgTag {
-        using type = T;
-        static constexpr StaticStr name = Name;
-        static constexpr bool is_positional = positional;
-        static constexpr bool is_keyword = keyword;
-        static constexpr bool is_optional = true;
-        static constexpr bool is_variadic = false;
-
-        T value;
-    };
-
-    template <bool optional>
-    struct Positional : public impl::ArgTag {
-        using type = T;
-        using opt = Optional<true, false>;
-        static constexpr StaticStr name = Name;
-        static constexpr bool is_positional = true;
-        static constexpr bool is_keyword = false;
-        static constexpr bool is_optional = optional;
-        static constexpr bool is_variadic = false;
-
-        T value;
-    };
-
-    template <bool optional>
-    struct Keyword : public impl::ArgTag {
-        using type = T;
-        using opt = Optional<false, true>;
-        static constexpr StaticStr name = Name;
-        static constexpr bool is_positional = false;
-        static constexpr bool is_keyword = true;
-        static constexpr bool is_optional = optional;
-        static constexpr bool is_variadic = false;
-
-        T value;
-    };
-
-    struct Args : public impl::ArgTag {
-        using type = std::conditional_t<
-            std::is_rvalue_reference_v<T>,
-            std::remove_reference_t<T>,
-            std::conditional_t<
-                std::is_lvalue_reference_v<T>,
-                std::reference_wrapper<T>,
-                T
-            >
-        >;
-        static constexpr StaticStr name = Name;
-        static constexpr bool is_positional = true;
-        static constexpr bool is_keyword = false;
-        static constexpr bool is_optional = false;
-        static constexpr bool is_variadic = true;
-
-        std::vector<type> value;
-
-        Args() = default;
-        Args(const std::vector<type>& val) : value(val) {}
-        Args(std::vector<type>&& val) : value(std::move(val)) {}
-        template <std::convertible_to<T> V>
-        Args(const std::vector<V>& val) {
-            value.reserve(val.size());
-            for (const auto& item : val) {
-                value.push_back(item);
-            }
-        }
-        Args(const Args& other) : value(other.value) {}
-        Args(Args&& other) : value(std::move(other.value)) {}
-
-        [[nodiscard]] auto begin() const { return value.begin(); }
-        [[nodiscard]] auto cbegin() const { return value.cbegin(); }
-        [[nodiscard]] auto end() const { return value.end(); }
-        [[nodiscard]] auto cend() const { return value.cend(); }
-        [[nodiscard]] auto rbegin() const { return value.rbegin(); }
-        [[nodiscard]] auto crbegin() const { return value.crbegin(); }
-        [[nodiscard]] auto rend() const { return value.rend(); }
-        [[nodiscard]] auto crend() const { return value.crend(); }
-        [[nodiscard]] constexpr auto size() const { return value.size(); }
-        [[nodiscard]] constexpr auto empty() const { return value.empty(); }
-        [[nodiscard]] constexpr auto data() const { return value.data(); }
-        [[nodiscard]] constexpr decltype(auto) front() const { return value.front(); }
-        [[nodiscard]] constexpr decltype(auto) back() const { return value.back(); }
-        [[nodiscard]] constexpr decltype(auto) operator[](size_t index) const {
-            return value.at(index);
-        }
-    };
-
-    struct Kwargs : public impl::ArgTag {
-        using type = std::conditional_t<
-            std::is_rvalue_reference_v<T>,
-            std::remove_reference_t<T>,
-            std::conditional_t<
-                std::is_lvalue_reference_v<T>,
-                std::reference_wrapper<T>,
-                T
-            >
-        >;
-        static constexpr StaticStr name = Name;
-        static constexpr bool is_positional = false;
-        static constexpr bool is_keyword = true;
-        static constexpr bool is_optional = false;
-        static constexpr bool is_variadic = true;
-
-        std::unordered_map<std::string, T> value;
-
-        Kwargs() = default;
-        Kwargs(const std::unordered_map<std::string, type>& val) : value(val) {}
-        Kwargs(std::unordered_map<std::string, type>&& val) : value(std::move(val)) {}
-        template <std::convertible_to<T> V>
-        Kwargs(const std::unordered_map<std::string, V>& val) {
-            value.reserve(val.size());
-            for (const auto& [k, v] : val) {
-                value.emplace(k, v);
-            }
-        }
-        Kwargs(const Kwargs& other) : value(other.value) {}
-        Kwargs(Kwargs&& other) : value(std::move(other.value)) {}
-
-        [[nodiscard]] auto begin() const { return value.begin(); }
-        [[nodiscard]] auto cbegin() const { return value.cbegin(); }
-        [[nodiscard]] auto end() const { return value.end(); }
-        [[nodiscard]] auto cend() const { return value.cend(); }
-        [[nodiscard]] constexpr auto size() const { return value.size(); }
-        [[nodiscard]] constexpr bool empty() const { return value.empty(); }
-        [[nodiscard]] constexpr bool contains(const std::string& key) const {
-            return value.contains(key);
-        }
-        [[nodiscard]] constexpr auto count(const std::string& key) const {
-            return value.count(key);
-        }
-        [[nodiscard]] decltype(auto) find(const std::string& key) const {
-            return value.find(key);
-        }
-        [[nodiscard]] decltype(auto) operator[](const std::string& key) const {
-            return value.at(key);
-        }
-    };
-
-public:
-    static_assert(Name != "", "Argument name cannot be an empty string.");
-
-    using type = T;
-    using pos = Positional<false>;
-    using kw = Keyword<false>;
-    using opt = Optional<true, true>;
-    using args = Args;
-    using kwargs = Kwargs;
-    static constexpr StaticStr name = Name;
-    static constexpr bool is_positional = true;
-    static constexpr bool is_keyword = true;
-    static constexpr bool is_optional = false;
-    static constexpr bool is_variadic = false;
-
-    T value;
-};
-
-
-namespace impl {
-
-    template <StaticStr name>
-    struct UnboundArg {
-        template <typename T>
-        constexpr auto operator=(T&& value) const {
-            return Arg<name, T>{std::forward<T>(value)};
-        }
-    };
-
-}
-
-
-/* A compile-time factory for binding keyword arguments with Python syntax.  A
-constexpr instance of this class can be used to provide even more Pythonic syntax:
-
-    constexpr auto x = py::arg<"x">;
-    my_func(x = 42);
-*/
-template <StaticStr name>
-constexpr impl::UnboundArg<name> arg {};
-
-
-/////////////////////////
-////    FUNCTIONS    ////
-/////////////////////////
-
-
-/* Get the underlying pointer from a Python object. */
-[[nodiscard]] PyObject* ptr(Handle obj);
-
-
-/* Cause a Python object to release ownership over its underlying pointer. */
-[[nodiscard]] PyObject* release(Handle obj);
+/* Cause a Python object to relinquish ownership over its backing pointer, and then
+return the raw pointer. */
+[[nodiscard]] inline PyObject* release(Handle obj);
 
 
 /* Borrow a reference to a raw Python handle. */
