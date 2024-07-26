@@ -6,15 +6,6 @@
 #include "ops.h"
 #include "object.h"
 
-#if defined(__GNUC__) || defined(__clang__)
-#include <cxxabi.h>
-#include <cstdlib>
-#elif defined(_MSC_VER)
-#include <windows.h>
-#include <dbghelp.h>
-#pragma comment(lib, "dbghelp.lib")
-#endif
-
 
 // TODO: not sure if Arg.value() is being used correctly everywhere.
 // -> with lifetime extension refactor, it should be replaced with Arg.value direct
@@ -332,13 +323,6 @@ namespace impl {
     template <impl::has_call_operator T>
     struct GetSignature<T> { using type = GetSignature<decltype(&T::operator())>::type; };
 
-    enum class CallPolicy {
-        no_args,
-        one_arg,
-        positional,
-        keyword
-    };
-
 }
 
 
@@ -506,7 +490,6 @@ class Function<Return(Target...)> : public Object, public impl::FunctionTag {
 
 protected:
 
-    /* Index into a parameter pack using template recursion. */
     template <size_t I>
     static void unpack_arg() {
         static_assert(false, "index out of range for parameter pack");
@@ -779,11 +762,23 @@ public:
     variadic keyword arguments. */
     static constexpr size_t kw_size = target::kw_only_count;
 
+    /* Indicates whether an argument with the given name is present. */
+    template <StaticStr name>
+    static constexpr bool has_arg =
+        target::template contains<name> &&
+        target::template index<name> < target::kw_only_index;
+
+    /* indicates whether a keyword argument with the given name is present. */
+    template <StaticStr name>
+    static constexpr bool has_kwarg =
+        target::template contains<name> &&
+        target::template index<name> >= target::kw_index;
+
     /* Indicates whether the function accepts variadic positional arguments. */
-    static constexpr bool has_args = target::has_args;
+    static constexpr bool has_var_args = target::has_args;
 
     /* Indicates whether the function accepts variadic keyword arguments. */
-    static constexpr bool has_kwargs = target::has_kwargs;
+    static constexpr bool has_var_kwargs = target::has_kwargs;
 
     /* An interface to a std::tuple that contains owning references to default values
     for all of the optional arguments in the target signature. */
@@ -968,8 +963,6 @@ public:
         };
 
     };
-
-    Defaults defaults;  // TODO: encapsulate this in a CppFunction helper class
 
 protected:
 
@@ -1911,41 +1904,21 @@ protected:
     indirection besides a single isinstance() check. */
     class PyFunction {
 
-        static std::string demangle(const char* name) {
-            #if defined(__GNUC__) || defined(__clang__)
-                int status = 0;
-                std::unique_ptr<char, void(*)(void*)> res {
-                    abi::__cxa_demangle(
-                        name,
-                        nullptr,
-                        nullptr,
-                        &status
-                    ),
-                    std::free
-                };
-                return (status == 0) ? res.get() : name;
-            #elif defined(_MSC_VER)
-                char undecorated_name[1024];
-                if (UnDecorateSymbolName(
-                    name,
-                    undecorated_name,
-                    sizeof(undecorated_name),
-                    UNDNAME_COMPLETE
-                )) {
-                    return std::string(undecorated_name);
-                } else {
-                    return name;
-                }
-            #else
-                return name; // fallback: no demangling
-            #endif
-        }
-
         static const std::string& type_docstring() {
             static const std::string string =
                 "Python wrapper for a C++ function of type " +
-                demangle(typeid(Function).name());
+                impl::demangle(typeid(Function).name());
             return string;
+        }
+
+        static void ready() {
+            static bool initialized = false;
+            if (!initialized) {
+                if (PyType_Ready(&type) < 0) {
+                    Exception::from_python();
+                }
+                initialized = true;
+            }
         }
 
     public:
@@ -1962,6 +1935,7 @@ protected:
             std::function<Return(Target...)>&& func,
             Defaults&& defaults
         ) {
+            ready();
             PyFunction* self = reinterpret_cast<PyFunction*>(
                 type.tp_new(&type, nullptr, nullptr)
             );
@@ -1973,7 +1947,7 @@ protected:
                 self->docstring = std::move(docstring);
                 self->func = std::move(func);
                 self->defaults = std::move(defaults);
-                self->vectorcall = &Call<call_policy>::operator();
+                self->vectorcall = (vectorcallfunc) &call;
                 return reinterpret_cast<PyObject*>(self);
             } catch (...) {
                 Py_DECREF(self);
@@ -1986,228 +1960,88 @@ protected:
             type.tp_free(reinterpret_cast<PyObject*>(self));
         }
 
-        static constexpr impl::CallPolicy call_policy = [] {
-            if constexpr (target::size == 0) {
-                return impl::CallPolicy::no_args;
-            } else if constexpr (
-                target::size == 1 && Inspect<typename target::template type<0>>::pos
-            ) {
-                return impl::CallPolicy::one_arg;
-            } else if constexpr (!target::has_kw && !target::has_kwargs) {
-                return impl::CallPolicy::positional;
-            } else {
-                return impl::CallPolicy::keyword;
-            }
-        }();
-
-        template <impl::CallPolicy policy, typename Dummy = void>
-        struct Call;
-
-        template <typename Dummy>
-        struct Call<impl::CallPolicy::no_args, Dummy> {
-            static constexpr int flags = METH_NOARGS;
-            static PyObject* operator()(PyFunction* self, PyObject* /* unused */) {
-                try {
-                    if constexpr (std::is_void_v<Return>) {
-                        self->func();
-                        Py_RETURN_NONE;
-                    } else {
-                        return release(as_object(self->func()));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            }
-        };
-
-        template <typename Dummy>
-        struct Call<impl::CallPolicy::one_arg, Dummy> {
-            static constexpr int flags = METH_O;
-            static PyObject* operator()(PyFunction* self, PyObject* obj) {
-                try {
-                    if constexpr (std::is_void_v<Return>) {
-                        if (obj == nullptr) {
-                            if constexpr (target::has_opt) {
-                                self->func(self->defaults.template get<0>());
-                            } else {
-                                throw TypeError("missing required argument");
-                            }
-                        } else {
-                            self->func(reinterpret_borrow<Object>(obj));
-                        }
-                        Py_RETURN_NONE;
-                    } else {
-                        if (obj == nullptr) {
-                            if constexpr (target::has_opt) {
-                                return release(as_object(self->func(
-                                    self->defaults.template get<0>()
-                                )));
-                            } else {
-                                throw TypeError("missing required argument");
-                            }
-                        }
-                        return release(as_object(self->func(
-                            reinterpret_borrow<Object>(obj)
-                        )));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            }
-        };
-
-        template <typename Dummy>
-        struct Call<impl::CallPolicy::positional, Dummy> {
-            static constexpr int flags = METH_FASTCALL;
-            static PyObject* operator()(
-                PyFunction* self,
-                PyObject* const* args,
-                Py_ssize_t nargs
-            ) {
-                try {
-                    return []<size_t... Is>(
-                        std::index_sequence<Is...>,
-                        PyFunction* self,
-                        PyObject* const* args,
-                        Py_ssize_t nargs
-                    ) {
-                        Py_ssize_t true_nargs = PyVectorcall_NARGS(nargs);
-                        if constexpr (!target::has_args) {
-                            if (true_nargs > static_cast<Py_ssize_t>(target::size)) {
-                                throw TypeError(
-                                    "expected at most " + std::to_string(target::size) +
-                                    " positional arguments, but received " +
-                                    std::to_string(true_nargs)
-                                );    
-                            }
-                        }
-                        if constexpr (std::is_void_v<Return>) {
-                            self->func(
-                                Arguments<Target...>::template from_python<Is>(
-                                    self->defaults,
-                                    args,
-                                    true_nargs,
-                                    nullptr,
-                                    0
-                                )...
+        static PyObject* call(
+            PyFunction* self,
+            PyObject* const* args,
+            Py_ssize_t nargs,
+            PyObject* kwnames
+        ) {
+            try {
+                return []<size_t... Is>(
+                    std::index_sequence<Is...>,
+                    PyFunction* self,
+                    PyObject* const* args,
+                    Py_ssize_t nargs,
+                    PyObject* kwnames
+                ) {
+                    size_t true_nargs = PyVectorcall_NARGS(nargs);
+                    if constexpr (!target::has_args) {
+                        if (true_nargs > target::size) {
+                            throw TypeError(
+                                "expected at most " + std::to_string(target::size) +
+                                " positional arguments, but received " +
+                                std::to_string(true_nargs)
                             );
-                            Py_RETURN_NONE;
-                        } else {
-                            return release(as_object(
-                                self->func(
-                                    Arguments<Target...>::template from_python<Is>(
-                                        self->defaults,
-                                        args,
-                                        true_nargs,
-                                        nullptr,
-                                        0
-                                    )...
-                                )
-                            ));
                         }
-                    }(
-                        std::make_index_sequence<target::size>{},
-                        self,
-                        args,
-                        nargs
-                    );
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            }
-        };
-
-        template <typename Dummy>
-        struct Call<impl::CallPolicy::keyword, Dummy> {
-            static constexpr int flags = METH_FASTCALL | METH_KEYWORDS;
-            static PyObject* operator()(
-                PyFunction* self,
-                PyObject* const* args,
-                Py_ssize_t nargs,
-                PyObject* kwnames
-            ) {
-                try {
-                    return []<size_t... Is>(
-                        std::index_sequence<Is...>,
-                        PyFunction* self,
-                        PyObject* const* args,
-                        Py_ssize_t nargs,
-                        PyObject* kwnames
-                    ) {
-                        size_t true_nargs = PyVectorcall_NARGS(nargs);
-                        if constexpr (!target::has_args) {
-                            if (true_nargs > target::size) {
+                    }
+                    size_t kwcount = kwnames ? PyTuple_GET_SIZE(kwnames) : 0;
+                    if constexpr (!target::has_kwargs) {
+                        for (size_t i = 0; i < kwcount; ++i) {
+                            Py_ssize_t length;
+                            const char* name = PyUnicode_AsUTF8AndSize(
+                                PyTuple_GET_ITEM(kwnames, i),
+                                &length
+                            );
+                            if (name == nullptr) {
+                                Exception::from_python();
+                            } else if (!target::has_keyword(name)) {
                                 throw TypeError(
-                                    "expected at most " + std::to_string(target::size) +
-                                    " positional arguments, but received " +
-                                    std::to_string(true_nargs)
+                                    "unexpected keyword argument '" +
+                                    std::string(name, length) + "'"
                                 );
                             }
                         }
-                        size_t kwcount = 0;
-                        if (kwnames != nullptr) {
-                            kwcount = PyTuple_GET_SIZE(kwnames);
-                            if constexpr (!target::has_kwargs) {
-                                for (size_t i = 0; i < kwcount; ++i) {
-                                    Py_ssize_t length;
-                                    const char* name = PyUnicode_AsUTF8AndSize(
-                                        PyTuple_GET_ITEM(kwnames, i),
-                                        &length
-                                    );
-                                    if (name == nullptr) {
-                                        Exception::from_python();
-                                    } else if (!target::has_keyword(name)) {
-                                        throw TypeError(
-                                            "unexpected keyword argument '" +
-                                            std::string(name, length) + "'"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        if constexpr (std::is_void_v<Return>) {
+                    }
+                    if constexpr (std::is_void_v<Return>) {
+                        self->func(
+                            {Arguments<Target...>::template from_python<Is>(
+                                self->defaults,
+                                args,
+                                true_nargs,
+                                kwnames,
+                                kwcount
+                            )}...
+                        );
+                        Py_RETURN_NONE;
+                    } else {
+                        return release(as_object(
                             self->func(
-                                Arguments<Target...>::template from_python<Is>(
+                                {Arguments<Target...>::template from_python<Is>(
                                     self->defaults,
                                     args,
                                     true_nargs,
                                     kwnames,
                                     kwcount
-                                )...
-                            );
-                            Py_RETURN_NONE;
-                        } else {
-                            return release(as_object(
-                                self->func(
-                                    Arguments<Target...>::template from_python<Is>(
-                                        self->defaults,
-                                        args,
-                                        true_nargs,
-                                        kwnames,
-                                        kwcount
-                                    )...
-                                )
-                            ));
-                        }
-                    }(
-                        std::make_index_sequence<target::size>{},
-                        self,
-                        args,
-                        nargs,
-                        kwnames
-                    );
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
+                                )}...
+                            )
+                        ));
+                    }
+                }(
+                    std::make_index_sequence<target::size>{},
+                    self,
+                    args,
+                    nargs,
+                    kwnames
+                );
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
             }
-        };
+        }
 
         static PyObject* repr(PyFunction* self) {
-            static const std::string demangled = demangle(typeid(Function).name());
+            static const std::string demangled =
+                impl::demangle(typeid(Function).name());
             std::stringstream stream;
             stream << "<" << demangled << " at " << self << ">";
             std::string s = stream.str();
@@ -2233,426 +2067,12 @@ protected:
             .tp_doc = PyDoc_STR(type_docstring().c_str()),
             .tp_methods = nullptr,  // TODO
             .tp_getset = nullptr,  // TODO
-            .tp_alloc = (allocfunc) PyType_GenericAlloc,
-            .tp_new = PyType_GenericNew,
-            .tp_free = (freefunc) PyObject_Del,
             .tp_vectorcall_offset = offsetof(PyFunction, vectorcall),
         };
 
     };
 
-
-
-    /* A heap-allocated data structure that allows a C++ function to be efficiently
-    passed between Python and C++ without losing any of its original properties.  A
-    shared reference to this object is stored in both the `py::Function` instance and a
-    special `PyCapsule` that is passed up to the PyCFunction wrapper.  It will be kept
-    alive as long as either of these references are in scope, and allows additional
-    references to be passed along whenever a `py::Function` is copied or moved,
-    mirroring the reference count of the underlying PyObject*.
-
-    The PyCapsule is annotated with the mangled function type, which includes the
-    signature of the underlying C++ function.  By matching against this identifier,
-    Bertrand can determine whether an arbitrary Python function is:
-        1.  Backed by a py::Function object, in which case it will extract the
-            underlying PyCapsule, and
-        2.  Whether the receiving function exactly matches the signature of the
-            original py::Function.
-
-    If both of these conditions are met, Bertrand will unpack the C++ Capsule and take
-    a new reference to it, extending its lifetime.  This avoids creating an additional
-    wrapper around the Python function, and allows the function to be passed
-    arbitrarily across the language boundary without introducing any overhead.
-
-    If condition (1) is met but (2) is not, then a TypeError is raised that contains
-    the mismatched signatures, which are demangled for clarity. */
-    class Capsule {
-
-        static std::string demangle(const char* name) {
-            #if defined(__GNUC__) || defined(__clang__)
-                int status = 0;
-                std::unique_ptr<char, void(*)(void*)> res {
-                    abi::__cxa_demangle(
-                        name,
-                        nullptr,
-                        nullptr,
-                        &status
-                    ),
-                    std::free
-                };
-                return (status == 0) ? res.get() : name;
-            #elif defined(_MSC_VER)
-                char undecorated_name[1024];
-                if (UnDecorateSymbolName(
-                    name,
-                    undecorated_name,
-                    sizeof(undecorated_name),
-                    UNDNAME_COMPLETE
-                )) {
-                    return std::string(undecorated_name);
-                } else {
-                    return name;
-                }
-            #else
-                return name; // fallback: no demangling
-            #endif
-        }
-
-    public:
-        static constexpr StaticStr capsule_name = "bertrand";
-        static const char* capsule_id;
-        std::string name;
-        std::string docstring;
-        std::function<Return(Target...)> func;
-        Defaults defaults;
-        PyMethodDef method_def;
-
-        /* Construct a Capsule around a C++ function with the given name and default
-        values. */
-        Capsule(
-            std::string&& func_name,
-            std::string&& func_doc,
-            std::function<Return(Target...)>&& func,
-            Defaults&& defaults
-        ) : name(std::move(func_name)),
-            docstring(std::move(func_doc)),
-            func(std::move(func)),
-            defaults(std::move(defaults)),
-            method_def(
-                name.c_str(),
-                (PyCFunction) &Wrap<call_policy>::python,
-                Wrap<call_policy>::flags,
-                docstring.c_str()
-            )
-        {}
-
-        /* This proxy is what's actually stored in the PyCapsule, so that it uses the
-        same shared_ptr to the C++ Capsule at the Python level. */
-        struct Reference {
-            std::shared_ptr<Capsule> ptr;
-        };
-
-        /* Extract the Capsule from a Bertrand-enabled Python function or create a new
-        one to represent a Python function at the C++ level. */
-        static std::shared_ptr<Capsule> from_python(PyObject* func) {
-            if (PyCFunction_Check(func)) {
-                PyObject* self = PyCFunction_GET_SELF(func);
-                if (PyCapsule_IsValid(self, capsule_name)) {
-                    const char* id = (const char*)PyCapsule_GetContext(self);
-                    if (id == nullptr) {
-                        Exception::from_python();
-                    } else if (std::strcmp(id, capsule_id) == 0) {
-                        auto result = reinterpret_cast<Reference*>(
-                            PyCapsule_GetPointer(self, capsule_name)
-                        );
-                        return result->ptr;  // shared_ptr copy
-
-                    } else {
-                        std::string message = "Incompatible function signatures:";
-                        message += "\n    Expected: " + demangle(capsule_id);
-                        message += "\n    Received: " + demangle(id);
-                        throw TypeError(message);
-                    }
-                }
-            }
-
-            return nullptr;
-        }
-
-        /* PyCapsule deleter that releases the shared_ptr reference held by the Python
-        function when it is garbage collected. */
-        static void deleter(PyObject* capsule) {
-            auto contents = reinterpret_cast<Reference*>(
-                PyCapsule_GetPointer(capsule, capsule_name)
-            );
-            delete contents;
-        }
-
-        /* Get the C++ Capsule from the PyCapsule object that's passed as the `self`
-        argument to the PyCFunction wrapper. */
-        static Capsule* get(PyObject* capsule) {
-            auto result = reinterpret_cast<Reference*>(
-                PyCapsule_GetPointer(capsule, capsule_name)
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return result->ptr.get();
-        }
-
-        /* Build a PyCFunction wrapper around the C++ function object.  Uses a
-        PyCapsule to properly manage memory and ferry the C++ function into Python. */
-        static PyObject* to_python(std::shared_ptr<Capsule> contents) {
-            Reference* ref = new Reference{contents};
-            PyObject* py_capsule = PyCapsule_New(
-                ref,
-                capsule_name,
-                &deleter
-            );
-            if (py_capsule == nullptr) {
-                delete ref;
-                Exception::from_python();
-            }
-
-            if (PyCapsule_SetContext(py_capsule, (void*)capsule_id)) {
-                Py_DECREF(py_capsule);
-                Exception::from_python();
-            }
-
-            PyObject* result = PyCFunction_New(&contents->method_def, py_capsule);
-            Py_DECREF(py_capsule);  // PyCFunction now owns the only reference
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return result;
-        }
-
-        // TODO: try to lift a bunch of behavior out of this class to shorten error
-        // messages.
-
-        /* Choose an optimized Python call protocol based on the target signature. */
-        static constexpr impl::CallPolicy call_policy = [] {
-            if constexpr (target::size == 0) {
-                return impl::CallPolicy::no_args;
-            } else if constexpr (
-                target::size == 1 && Inspect<typename target::template type<0>>::pos
-            ) {
-                return impl::CallPolicy::one_arg;
-            } else if constexpr (!target::has_kw && !target::has_kwargs) {
-                return impl::CallPolicy::positional;
-            } else {
-                return impl::CallPolicy::keyword;
-            }
-        }();
-
-        template <impl::CallPolicy policy, typename Dummy = void>
-        struct Wrap;
-
-        template <typename Dummy>
-        struct Wrap<impl::CallPolicy::no_args, Dummy> {
-            static constexpr int flags = METH_NOARGS;
-
-            static PyObject* python(PyObject* capsule, PyObject* /* unused */) {
-                try {
-                    if constexpr (std::is_void_v<Return>) {
-                        get(capsule)->func();
-                        Py_RETURN_NONE;
-                    } else {
-                        return release(as_object(get(capsule)->func()));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            }
-
-        };
-
-        template <typename Dummy>
-        struct Wrap<impl::CallPolicy::one_arg, Dummy> {
-            static constexpr int flags = METH_O;
-
-            static PyObject* python(PyObject* capsule, PyObject* obj) {
-                try {
-                    Capsule* contents = get(capsule);
-                    if constexpr (std::is_void_v<Return>) {
-                        if (obj == nullptr) {
-                            if constexpr (target::has_opt) {
-                                contents->func(contents->defaults.template get<0>());
-                            } else {
-                                throw TypeError("missing required argument");
-                            }
-                        } else {
-                            contents->func(reinterpret_borrow<Object>(obj));
-                        }
-                        Py_RETURN_NONE;
-                    } else {
-                        if (obj == nullptr) {
-                            if constexpr (target::has_opt) {
-                                return release(as_object(contents->func(
-                                    contents->defaults.template get<0>()
-                                )));
-                            } else {
-                                throw TypeError("missing required argument");
-                            }
-                        }
-                        return release(as_object(contents->func(
-                            reinterpret_borrow<Object>(obj)
-                        )));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            }
-
-        };
-
-        template <typename Dummy>
-        struct Wrap<impl::CallPolicy::positional, Dummy> {
-            static constexpr int flags = METH_FASTCALL;
-
-            static PyObject* python(
-                PyObject* capsule,
-                PyObject* const* args,
-                Py_ssize_t nargs
-            ) {
-                try {
-                    return []<size_t... Is>(
-                        std::index_sequence<Is...>,
-                        PyObject* capsule,
-                        PyObject* const* args,
-                        Py_ssize_t nargs
-                    ) {
-                        Py_ssize_t true_nargs = PyVectorcall_NARGS(nargs);
-                        if constexpr (!target::has_args) {
-                            if (true_nargs > static_cast<Py_ssize_t>(target::size)) {
-                                throw TypeError(
-                                    "expected at most " + std::to_string(target::size) +
-                                    " positional arguments, but received " +
-                                    std::to_string(true_nargs)
-                                );    
-                            }
-                        }
-                        Capsule* contents = get(capsule);
-                        if constexpr (std::is_void_v<Return>) {
-                            contents->func(
-                                Arguments<Target...>::template from_python<Is>(
-                                    contents->defaults,
-                                    args,
-                                    true_nargs,
-                                    nullptr,
-                                    0
-                                )...
-                            );
-                            Py_RETURN_NONE;
-                        } else {
-                            return release(as_object(
-                                contents->func(
-                                    Arguments<Target...>::template from_python<Is>(
-                                        contents->defaults,
-                                        args,
-                                        true_nargs,
-                                        nullptr,
-                                        0
-                                    )...
-                                )
-                            ));
-                        }
-                    }(
-                        std::make_index_sequence<target::size>{},
-                        capsule,
-                        args,
-                        nargs
-                    );
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            }
-
-        };
-
-        template <typename Dummy>
-        struct Wrap<impl::CallPolicy::keyword, Dummy> {
-            static constexpr int flags = METH_FASTCALL | METH_KEYWORDS;
-
-            static PyObject* python(
-                PyObject* capsule,
-                PyObject* const* args,
-                Py_ssize_t nargs,
-                PyObject* kwnames
-            ) {
-                try {
-                    return []<size_t... Is>(
-                        std::index_sequence<Is...>,
-                        PyObject* capsule,
-                        PyObject* const* args,
-                        Py_ssize_t nargs,
-                        PyObject* kwnames
-                    ) {
-                        size_t true_nargs = PyVectorcall_NARGS(nargs);
-                        if constexpr (!target::has_args) {
-                            if (true_nargs > target::size) {
-                                throw TypeError(
-                                    "expected at most " + std::to_string(target::size) +
-                                    " positional arguments, but received " +
-                                    std::to_string(true_nargs)
-                                );
-                            }
-                        }
-                        size_t kwcount = 0;
-                        if (kwnames != nullptr) {
-                            kwcount = PyTuple_GET_SIZE(kwnames);
-                            if constexpr (!target::has_kwargs) {
-                                for (size_t i = 0; i < kwcount; ++i) {
-                                    Py_ssize_t length;
-                                    const char* name = PyUnicode_AsUTF8AndSize(
-                                        PyTuple_GET_ITEM(kwnames, i),
-                                        &length
-                                    );
-                                    if (name == nullptr) {
-                                        Exception::from_python();
-                                    } else if (!target::has_keyword(name)) {
-                                        throw TypeError(
-                                            "unexpected keyword argument '" +
-                                            std::string(name, length) + "'"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        Capsule* contents = get(capsule);
-                        if constexpr (std::is_void_v<Return>) {
-                            contents->func(
-                                Arguments<Target...>::template from_python<Is>(
-                                    contents->defaults,
-                                    args,
-                                    true_nargs,
-                                    kwnames,
-                                    kwcount
-                                )...
-                            );
-                            Py_RETURN_NONE;
-                        } else {
-                            return release(as_object(
-                                contents->func(
-                                    Arguments<Target...>::template from_python<Is>(
-                                        contents->defaults,
-                                        args,
-                                        true_nargs,
-                                        kwnames,
-                                        kwcount
-                                    )...
-                                )
-                            ));
-                        }
-                    }(
-                        std::make_index_sequence<target::size>{},
-                        capsule,
-                        args,
-                        nargs,
-                        kwnames
-                    );
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            }
-
-        };
-
-    };
-
-    std::shared_ptr<Capsule> contents;
-
-    PyObject* unwrap_method() const {
-        PyObject* result = this->ptr();
-        if (PyMethod_Check(result)) {
-            result = PyMethod_GET_FUNCTION(result);
-        }
-        return result;
-    }
+    // TODO: PyType_IsSubtype can be faster than PyObject_IsInstance for type checks
 
 public:
     using ReturnType = Return;
@@ -2678,15 +2098,14 @@ public:
     ////    CONSTRUCTORS    ////
     ////////////////////////////
 
-    /* Copy/move constructors.  Passes a shared_ptr reference to the capsule in tandem
-    with the PyObject* pointer. */
-    Function(const Function& other) : Base(other), contents(other.contents) {}
-    Function(Function&& other) : Base(std::move(other)), contents(std::move(other.contents)) {}
-
-    /* Reinterpret_borrow/reinterpret_steal constructors.  Attempts to unpack a
-    shared_ptr to the function's capsule, if it has one. */
-    Function(Handle h, borrowed_t t) : Base(h, t), contents(Capsule::from_python(ptr(h))) {}
-    Function(Handle h, stolen_t t) : Base(h, t), contents(Capsule::from_python(ptr(h))) {}
+    // TODO: constructor should fail if the function type is a subclass of my root
+    // function type, but not a subclass of this specific function type.  This
+    // indicates a type mismatch in the function signature, which is a violation of
+    // static type safety.  I can then print a helpful error message with the demangled
+    // function types which can show their differences.
+    // -> This does not occur for raw Python functions, which are always considered to
+    // be compatible.  Perhaps in the future, I can analyze the type hints to determine
+    // compatibility.
 
     template <typename... Args>
         requires (
@@ -2719,16 +2138,13 @@ public:
             Defaults::template enable<Values...>
         )
     Function(Func&& func, Values&&... defaults) :
-        Base(nullptr, stolen_t{}),
-        contents(new Capsule{
+        Base(PyFunction::create(
             "",
             "",
             std::function(std::forward<Func>(func)),
             Defaults(std::forward<Values>(defaults)...)
-        })
-    {
-        m_ptr = Capsule::to_python(contents);
-    }
+        ), stolen_t{})
+    {}
 
     /* Construct a py::Function from a valid C++ function with the templated signature.
     Use CTAD to deduce the signature if not explicitly provided.  If the signature
@@ -2740,16 +2156,13 @@ public:
             Defaults::template enable<Values...>
         )
     Function(std::string name, Func&& func, Values&&... defaults) :
-        Base(nullptr, stolen_t{}),
-        contents(new Capsule{
+        Base(PyFunction::create(
             std::move(name),
             "",
             std::function(std::forward<Func>(func)),
             Defaults(std::forward<Values>(defaults)...)
-        })
-    {
-        m_ptr = Capsule::to_python(contents);
-    }
+        ), stolen_t{})
+    {}
 
     /* Construct a py::Function from a valid C++ function with the templated signature.
     Use CTAD to deduce the signature if not explicitly provided.  If the signature
@@ -2761,33 +2174,20 @@ public:
             Defaults::template enable<Values...>
         )
     Function(std::string name, std::string doc, Func&& func, Values&&... defaults) :
-        Base(nullptr, stolen_t{}),
-        contents(new Capsule{
+        Base(PyFunction::create(
             std::move(name),
             std::move(doc),
             std::function(std::forward<Func>(func)),
             Defaults(std::forward<Values>(defaults)...)
-        })
-    {
-        m_ptr = Capsule::to_python(contents);
-    }
-
-    ~Function() noexcept {
-        // NOTE: if the function is stored with static duration, then the PyCapsule's
-        // deleter will not be called during interpreter shutdown, which leaves a
-        // permanent reference to the C++ Capsule.  In this case, we need to manually
-        // release the reference so that we avoid memory leaks.
-        if (!Py_IsInitialized() && PyCFunction_Check(m_ptr)) {
-            PyObject* self = PyCFunction_GET_SELF(m_ptr);
-            if (PyCapsule_IsValid(self, Capsule::capsule_name)) {
-                Capsule::deleter(self);
-            }
-        }
-    }
+        ), stolen_t{})
+    {}
 
     /////////////////////////////
     ////    C++ INTERFACE    ////
     /////////////////////////////
+
+    // TODO: do type checks on the python function to see if it can be replaced with a
+    // C++ call by unpacking a matching PyFunction.
 
     /* Call an external Python function that matches the target signature using
     Python-style arguments.  The optional `R` template parameter specifies a specific
@@ -2978,19 +2378,15 @@ public:
             using source = Signature<Source...>;
             if constexpr (!source::has_args && !source::has_kwargs) {
                 if constexpr (std::is_void_v<Return>) {
-                    func(
-                        Arguments<Source...>::template cpp<Is>(
-                            defaults,
-                            std::forward<Source>(args)...
-                        )...
-                    );
+                    func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        std::forward<Source>(args)...
+                    )}...);
                 } else {
-                    return func(
-                        Arguments<Source...>::template cpp<Is>(
-                            defaults,
-                            std::forward<Source>(args)...
-                        )...
-                    );
+                    return func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        std::forward<Source>(args)...
+                    )}...);
                 }
 
             } else if constexpr (source::has_args && !source::has_kwargs) {
@@ -2998,28 +2394,24 @@ public:
                 auto iter = var_args.begin();
                 auto end = var_args.end();
                 if constexpr (std::is_void_v<Return>) {
-                    func(
-                        Arguments<Source...>::template cpp<Is>(
-                            defaults,
-                            var_args.size(),
-                            iter,
-                            end,
-                            std::forward<Source>(args)...
-                        )...
-                    );
+                    func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        var_args.size(),
+                        iter,
+                        end,
+                        std::forward<Source>(args)...
+                    )}...);
                     if constexpr (!target::has_args) {
                         validate_args(iter, end);
                     }
                 } else {
-                    decltype(auto) result = func(
-                        Arguments<Source...>::template cpp<Is>(
-                            defaults,
-                            var_args.size(),
-                            iter,
-                            end,
-                            std::forward<Source>(args)...
-                        )...
-                    );
+                    decltype(auto) result = func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        var_args.size(),
+                        iter,
+                        end,
+                        std::forward<Source>(args)...
+                    )}...);
                     if constexpr (!target::has_args) {
                         validate_args(iter, end);
                     }
@@ -3035,21 +2427,17 @@ public:
                     );
                 }
                 if constexpr (std::is_void_v<Return>) {
-                    func(
-                        Arguments<Source...>::template cpp<Is>(
-                            defaults,
-                            var_kwargs,
-                            std::forward<Source>(args)...
-                        )...
-                    );
+                    func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        var_kwargs,
+                        std::forward<Source>(args)...
+                    )}...);
                 } else {
-                    return func(
-                        Arguments<Source...>::template cpp<Is>(
-                            defaults,
-                            var_kwargs,
-                            std::forward<Source>(args)...
-                        )...
-                    );
+                    return func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        var_kwargs,
+                        std::forward<Source>(args)...
+                    )}...);
                 }
 
             } else {
@@ -3064,30 +2452,26 @@ public:
                 auto iter = var_args.begin();
                 auto end = var_args.end();
                 if constexpr (std::is_void_v<Return>) {
-                    func(
-                        Arguments<Source...>::template cpp<Is>(
-                            defaults,
-                            var_args.size(),
-                            iter,
-                            end,
-                            var_kwargs,
-                            std::forward<Source>(args)...
-                        )...
-                    );
+                    func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        var_args.size(),
+                        iter,
+                        end,
+                        var_kwargs,
+                        std::forward<Source>(args)...
+                    )}...);
                     if constexpr (!target::has_args) {
                         validate_args(iter, end);
                     }
                 } else {
-                    decltype(auto) result = func(
-                        Arguments<Source...>::template cpp<Is>(
-                            defaults,
-                            var_args.size(),
-                            iter,
-                            end,
-                            var_kwargs,
-                            std::forward<Source>(args)...
-                        )...
-                    );
+                    decltype(auto) result = func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        var_args.size(),
+                        iter,
+                        end,
+                        var_kwargs,
+                        std::forward<Source>(args)...
+                    )}...);
                     if constexpr (!target::has_args) {
                         validate_args(iter, end);
                     }
@@ -3102,28 +2486,31 @@ public:
         );
     }
 
-    /* Call the function with the given arguments. */
+    /* Call the function with the given arguments.  If the wrapped function is of the
+    coupled Python type, then this will be translated into a raw C++ call, bypassing
+    Python entirely. */
     template <typename... Source> requires (invocable<Source...>)
     Return operator()(Source&&... args) const {
-        if (contents == nullptr) {
-            if constexpr (std::is_void_v<Return>) {
-                invoke_py(this->ptr(), std::forward<Source>(args)...);
-            } else {
-                return invoke_py(this->ptr(), std::forward<Source>(args)...);
-            }
-        } else {
+        if (PyType_IsSubtype(Py_TYPE(m_ptr), &PyFunction::type)) {
+            PyFunction* func = reinterpret_cast<PyFunction*>(m_ptr);
             if constexpr (std::is_void_v<Return>) {
                 invoke_cpp(
-                    contents->defaults,
-                    contents->func,
+                    func->defaults,
+                    func->func,
                     std::forward<Source>(args)...
                 );
             } else {
                 return invoke_cpp(
-                    contents->defaults,
-                    contents->func,
+                    func->defaults,
+                    func->func,
                     std::forward<Source>(args)...
                 );
+            }
+        } else {
+            if constexpr (std::is_void_v<Return>) {
+                invoke_py(m_ptr, std::forward<Source>(args)...);
+            } else {
+                return invoke_py(m_ptr, std::forward<Source>(args)...);
             }
         }
     }
@@ -3471,10 +2858,6 @@ template <impl::is_callable_any F, typename... D> requires (!impl::python_like<F
 Function(std::string, std::string, F, D...) -> Function<
     typename impl::GetSignature<std::decay_t<F>>::type
 >;
-
-
-template <typename R, typename... T>
-inline const char* Function<R(T...)>::Capsule::capsule_id = typeid(Function).name();
 
 
 // TODO: if default specialization is given, type checks should be fully generic, right?

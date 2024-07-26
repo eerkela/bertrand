@@ -38,6 +38,15 @@
 #include <bertrand/common.h>
 #include <bertrand/static_str.h>
 
+#if defined(__GNUC__) || defined(__clang__)
+    #include <cxxabi.h>
+    #include <cstdlib>
+#elif defined(_MSC_VER)
+    #include <windows.h>
+    #include <dbghelp.h>
+    #pragma comment(lib, "dbghelp.lib")
+#endif
+
 
 namespace py {
 using bertrand::StaticStr;
@@ -47,6 +56,37 @@ namespace impl {
     struct BertrandTag {};
     struct ArgTag : public BertrandTag {};
     struct ProxyTag : public BertrandTag {};
+
+    static std::string demangle(const char* name) {
+        #if defined(__GNUC__) || defined(__clang__)
+            int status = 0;
+            std::unique_ptr<char, void(*)(void*)> res {
+                abi::__cxa_demangle(
+                    name,
+                    nullptr,
+                    nullptr,
+                    &status
+                ),
+                std::free
+            };
+            return (status == 0) ? res.get() : name;
+        #elif defined(_MSC_VER)
+            char undecorated_name[1024];
+            if (UnDecorateSymbolName(
+                name,
+                undecorated_name,
+                sizeof(undecorated_name),
+                UNDNAME_COMPLETE
+            )) {
+                return std::string(undecorated_name);
+            } else {
+                return name;
+            }
+        #else
+            return name; // fallback: no demangling
+        #endif
+    }
+
 }
 
 
