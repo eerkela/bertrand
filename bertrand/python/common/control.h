@@ -11,8 +11,7 @@
 namespace py {
 
 
-template <std::derived_from<Object> T>
-struct __as_object__<T>                                     : Returns<T> {};
+
 template <typename R, typename... A>
 struct __as_object__<R(A...)>                               : Returns<Function<R(A...)>> {};
 template <typename R, typename... A>

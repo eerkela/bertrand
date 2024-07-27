@@ -3,10 +3,8 @@
 
 #include "declarations.h"
 #include "except.h"
-#include "ops.h"
 #include "object.h"
-#include "func.h"
-#include "item.h"
+#include "ops.h"
 
 
 namespace py {

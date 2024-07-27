@@ -170,8 +170,11 @@ protected:
 
 public:
 
-    /* Default constructor.  Initializes to None. */
-    Object() : Handle((Interpreter::init(), Py_NewRef(Py_None))) {}
+    /* Copy constructor.  Borrows a reference to an existing object. */
+    Object(const Object& other) : Handle(Py_XNewRef(py::ptr(other))) {}
+
+    /* Move constructor.  Steals a reference to a temporary object. */
+    Object(Object&& other) : Handle(py::release(other)) {}
 
     /* reinterpret_borrow() constructor.  Borrows a reference to a raw Python handle. */
     Object(Handle h, borrowed_t) : Handle(Py_XNewRef(py::ptr(h))) {}
@@ -179,13 +182,8 @@ public:
     /* reinterpret_steal() constructor.  Steals a reference to a raw Python handle. */
     Object(Handle h, stolen_t) : Handle(py::ptr(h)) {}
 
-    /* Copy constructor.  Borrows a reference to an existing object. */
-    Object(const Object& other) : Handle(Py_XNewRef(py::ptr(other))) {}
-
-    /* Move constructor.  Steals a reference to a temporary object. */
-    Object(Object&& other) : Handle(py::release(other)) {}
-
-    /* Universal implicit constructor.  Implemented via the __init__ control struct. */
+    /* Universal implicit constructor.  Implemented with C++ syntax via the __init__
+    control struct. */
     template <typename... Args>
         requires (
             std::is_invocable_r_v<
@@ -194,12 +192,13 @@ public:
                 Args...
             >
         )
-    Object(Args&&... args) : Object(
+    Object(Args&&... args) : Handle((
+        Interpreter::init(),
         __init__<Object, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ) {}
+    )) {}
 
-    /* Universal explicit constructor.  Implemented via the __explicit_init__ control
-    struct. */
+    /* Universal explicit constructor.  Implemented with C++ syntax via the
+    __explicit_init__ control struct. */
     template <typename... Args>
         requires (
             !__init__<Object, std::remove_cvref_t<Args>...>::enable &&
@@ -209,11 +208,22 @@ public:
                 Args...
             >
         )
-    explicit Object(Args&&... args) : Object(
+    explicit Object(Args&&... args) : Handle((
+        Interpreter::init(),
         __explicit_init__<Object, std::remove_cvref_t<Args>...>{}(
             std::forward<Args>(args)...
         )
-    ) {}
+    )) {}
+
+    /* Delegating constructor using __getattr__<Object, "__init__"> and
+    __getattr__<Object, "__new__">. */
+    template <typename... Args>
+        requires (
+            !__init__<Object, std::remove_cvref_t<Args>...>::enable &&
+            !__explicit_init__<Object, std::remove_cvref_t<Args>...>::enable &&
+            impl::pytype_is_constructible_with<Object, Args...>
+        )
+    explicit Object(Args&&... args);
 
     /* Destructor.  Allows any object to be stored with static duration. */
     ~Object() noexcept {
@@ -224,7 +234,7 @@ public:
 
     /* Copy assignment operator. */
     Object& operator=(const Object& other) {
-        print("object copy assignment");  // TODO: remove print statement
+        print("object copy assignment");  // TODO: remove debugging print statement
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = Py_XNewRef(other.m_ptr);
@@ -235,7 +245,7 @@ public:
 
     /* Move assignment operator. */
     Object& operator=(Object&& other) {
-        print("object move assignment");  // TODO: remove print statement
+        print("object move assignment");  // TODO: remove debugging print statement
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = other.m_ptr;
@@ -299,11 +309,19 @@ struct __isinstance__<T, Object>                            : Returns<bool> {
 };
 
 
-/* Convert any C++ value into a py::Object by invoking as_object(). */
+/* Default initialize py::Object to None. */
+template <>
+struct __init__<Object> {
+    static auto operator()() {
+        return reinterpret_steal<Object>(Py_NewRef(Py_None));
+    }
+};
+
+
+/* Implicitly convert any C++ value into a py::Object by invoking as_object(). */
 template <impl::cpp_like T> requires (__as_object__<T>::enable)
 struct __init__<Object, T>                                  : Returns<Object> {
     static auto operator()(const T& value) {
-        Interpreter::init();  // ensure the interpreter is initialized
         return reinterpret_steal<Object>(release(as_object(value)));
     }
 };
@@ -575,49 +593,26 @@ struct __explicit_init__<Type<typename __as_object__<T>::type>, T> {
 };
 
 
-/* The dynamic py::Type<py::Object> can be invoked to create a new dynamic type by
-calling the `type` metaclass. */
-template <
-    std::convertible_to<py::Str> Name,
-    std::convertible_to<py::Tuple<py::Type<py::Object>>> Bases,
-    std::convertible_to<py::Dict<py::Str, py::Object>> Dict
->
-struct __explicit_init__<Type<Object>, Name, Bases, Dict> {
-    static auto operator()(
-        const py::Str& name,
-        const py::Tuple<py::Type<py::Object>>& bases,
-        const py::Dict<py::Str, py::Object>& dict
-    );
-};
+/// NOTE: additional metaclass constructors for py::Type are defined later in common.h
 
 
-/* Specialized py::Types can be invoked to create new dynamic types by calling the
-templated type's metaclass.  Note that this restricts the type to single inheritance. */
-template <
-    typename T,
-    std::convertible_to<py::Str> Name,
-    std::convertible_to<py::Dict<Str, Object>> Dict
->
-    requires (
-        __as_object__<T>::enable &&
-        __init__<Type<typename __as_object__<T>::type>>::enable
-    )
-struct __explicit_init__<Type<T>, Name, Dict> {
-    static auto operator()(
-        const Str& name,
-        const py::Dict<Str, Object>& dict
-    );
+/* Calling a py::Type produces an instance of the templated type by invoking the
+Python-level __init__/__new__ methods. */
+template <typename T, typename... Args>
+    requires (impl::pytype_is_constructible_with<T, Args...>)
+struct __call__<Type<T>, Args...>                           : Returns<T> {
+    static auto operator()(const Type<T>& self, Args&&... args);
 };
 
 
 /* NOTE: subclasses should always provide a default constructor for their corresponding
-`py::Type` specialization.  This should always just borrow a reference to some existing
+`py::Type` specialization.  This should just borrow a reference to some existing
 PyTypeObject* instance, which might be a custom type defined through the CPython API.
 */
 
 
 template <>
-struct __init__<Type<Object>> {
+struct __init__<Type<Object>>                               : Returns<Type<Object>> {
     static auto operator()() {
         return reinterpret_borrow<Type<Object>>(reinterpret_cast<PyObject*>(
             &PyBaseObject_Type
@@ -627,13 +622,24 @@ struct __init__<Type<Object>> {
 
 
 template <>
-struct __init__<Type<Type<Object>>> {
+struct __init__<Type<Type<Object>>>                         : Returns<Type<Type<Object>>> {
     static auto operator()() {
         return reinterpret_borrow<Type<Type<Object>>>(reinterpret_cast<PyObject*>(
             &PyType_Type
         ));
     }
 };
+
+
+template <typename... Args>
+    requires (
+        !__init__<Object, std::remove_cvref_t<Args>...>::enable &&
+        !__explicit_init__<Object, std::remove_cvref_t<Args>...>::enable &&
+        impl::pytype_is_constructible_with<Object, Args...>
+    )
+Object::Object(Args&&... args) : Handle((Interpreter::init(), Type<Object>()(
+    std::forward<Args>(args)...
+))) {}
 
 
 }  // namespace py

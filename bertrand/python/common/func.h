@@ -152,6 +152,28 @@ class Arg : public impl::ArgTag {
         T value;
     };
 
+    // TODO: Args should store the arguments as a tuple, and Kwargs should store them
+    // as a dictionary.  This allows me to pass them along to CPython endpoints that
+    // expect them in this format without incurring any additional overhead.
+    // -> This restricts py::Arg into only storing Python objects.  That might not
+    // be an issue in practice, as I anticipate only Python functions being called
+    // with keyword args.  Standardizing on this case might not be a problem, and
+    // it avoids the need to correctly handle reference semantics, although those would
+    // be nice as well.
+
+    // TODO: maybe there's a way to support both cases.  Like an extension of Args
+    // py::Arg<"args", py::Int>::args::python.  Without the ::python extension, the
+    // args will be stored as a std::vector for maximum performance, and with it,
+    // they'll be stored as a tuple.
+
+    // Or I just say fuck it and only allow Arg to be used with Python types.  Reference
+    // semantics can be preserved for position/kw arguments, but C++ types will not be
+    // allowed.  That's probably easier to understand anyways.  I can also allow the
+    // -> operator to be used to bypass the proxy, and can mark these arguments as
+    // official proxies.  This will mean all the operators should work identically,
+    // and will automatically unwrap the argument annotation just as if it were an
+    // Item proxy or similar.
+
     struct Args : public impl::ArgTag {
         using type = std::conditional_t<
             std::is_rvalue_reference_v<T>,

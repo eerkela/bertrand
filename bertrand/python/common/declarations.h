@@ -153,21 +153,30 @@ class Handle;
 class Object;
 template <typename>
 class Type;
+template <StaticStr Name, typename T>
+class Arg;
 template <typename>
 class Function;
-// class ClassMethod;  // TODO: template on function type
-// class StaticMethod;  // TODO: template on function type
-// class Property;  // NOTE: no need to template because getters/setters/deleters have consistent signatures
 template <StaticStr Name>
 class Module;
 class NoneType;
 class NotImplementedType;
 class EllipsisType;
 class Slice;
+class Code;
+class Frame;
 class Bool;
 class Int;
 class Float;
 class Complex;
+class Str;
+class Bytes;
+class ByteArray;
+class Date;
+class Time;
+class Datetime;
+class Timedelta;
+class Timezone;
 class Range;
 template <typename Val = Object>
 class List;
@@ -187,17 +196,6 @@ template <typename Map>
 class ItemView;
 template <typename Map>
 class MappingProxy;
-class Str;
-class Bytes;
-class ByteArray;
-class Super;
-class Code;
-class Frame;
-class Timedelta;
-class Timezone;
-class Date;
-class Time;
-class Datetime;
 
 
 /* Base class for enabled control structures.  Encodes the return type as a template
@@ -326,6 +324,9 @@ struct __xor__                                              : Disable {};
 template <typename L, typename R>
 struct __ixor__                                             : Disable {};
 
+template <std::derived_from<Object> T>
+struct __as_object__<T>                                     : Returns<T> {};
+
 
 namespace impl {
 
@@ -367,6 +368,24 @@ namespace impl {
 
     template <typename T, typename Key>
     using lookup_type = decltype(std::declval<T>()[std::declval<Key>()]);
+
+    template <typename T>
+    constexpr bool is_generic_helper = false;
+    template <template <typename...> typename T, typename... Ts>
+    constexpr bool is_generic_helper<T<Ts...>> = true;
+
+    template <typename T>
+    concept is_generic = is_generic_helper<T>;
+
+    template <typename T, StaticStr Name, typename... Args>
+    concept attr_is_callable_with =
+        __getattr__<T, Name>::enable &&
+        __getattr__<T, Name>::type::template invocable<Args...>;
+
+    template <typename T, typename... Args>
+    concept pytype_is_constructible_with =
+        attr_is_callable_with<T, "__init__", Args...> ||
+        attr_is_callable_with<T, "__new__", Args...>;
 
     template <typename From, typename To>
     concept has_conversion_operator = requires(From&& from) {

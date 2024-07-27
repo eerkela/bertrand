@@ -1100,12 +1100,12 @@ inline void setattr(const Handle& obj, const Str& name, const Object& value) {
 
 template <
     std::convertible_to<py::Str> Name,
-    std::convertible_to<py::Tuple<py::Type_<py::Object>>> Bases,
+    std::convertible_to<py::Tuple<py::Type<py::Object>>> Bases,
     std::convertible_to<py::Dict<py::Str, py::Object>> Dict
 >
-auto __explicit_init__<Type_<Object>, Name, Bases, Dict>::operator()(
+auto __explicit_init__<Type<Object>, Name, Bases, Dict>::operator()(
     const py::Str& name,
-    const py::Tuple<py::Type_<py::Object>>& bases,
+    const py::Tuple<py::Type<py::Object>>& bases,
     const py::Dict<py::Str, py::Object>& dict
 ) {
     PyObject* result = PyObject_CallFunctionObjArgs(
@@ -1118,7 +1118,7 @@ auto __explicit_init__<Type_<Object>, Name, Bases, Dict>::operator()(
     if (result == nullptr) {
         Exception::from_python();
     }
-    return reinterpret_steal<Type_<T>>(result);
+    return reinterpret_steal<Type<T>>(result);
 }
 
 
@@ -1129,13 +1129,13 @@ template <
 >
     requires (
         __as_object__<T>::enable &&
-        __init__<Type_<typename __as_object__<T>::type>>::enable
+        __init__<Type<typename __as_object__<T>::type>>::enable
     )
-auto __explicit_init__<Type_<T>, Name, Dict>::operator()(
+auto __explicit_init__<Type<T>, Name, Dict>::operator()(
     const Str& name,
     const py::Dict<Str, Object>& dict
 ) {
-    Type_<T> self;
+    Type<T> self;
     PyTypeObject* metaclass = Py_TYPE(ptr(self));
     PyObject* result = PyObject_CallFunctionObjArgs(
         reinterpret_cast<PyObject*>(metaclass),
@@ -1147,7 +1147,7 @@ auto __explicit_init__<Type_<T>, Name, Dict>::operator()(
     if (result == nullptr) {
         Exception::from_python();
     }
-    return reinterpret_steal<Type_<T>>(result);
+    return reinterpret_steal<Type<T>>(result);
 }
 
 

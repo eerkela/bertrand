@@ -588,15 +588,6 @@ Module import() {
 ////////////////////////////////////
 
 
-template <typename Self> requires (__getitem__<Self, Slice>::enable)
-auto Object::operator[](
-    this const Self& self,
-    const std::initializer_list<impl::SliceInitializer>& slice
-) {
-    return impl::Item<Self, Slice>(self, Slice(slice));
-}
-
-
 template <typename Self> requires (__iter__<Self>::enable)
 [[nodiscard]] auto begin(const Self& self) {
     using Return = typename __iter__<Self>::type;
@@ -678,6 +669,110 @@ template <typename Self> requires (__reversed__<Self>::enable)
     } else {
         return impl::Iterator<impl::GenericIter<Return>>();
     }
+}
+
+
+template <typename Self> requires (__getitem__<Self, Slice>::enable)
+auto Object::operator[](
+    this const Self& self,
+    const std::initializer_list<impl::SliceInitializer>& slice
+) {
+    return impl::Item<Self, Slice>(self, Slice(slice));
+}
+
+
+/* Invoke a type's metaclass to dynamically create a new Python type.  This 2-argument
+form allows the base type to be specified as the template argument, and restricts the
+type to single inheritance. */
+template <typename T, typename... Args>
+    requires (
+        Function<Type<T>(
+            py::Arg<"name", const Str&>,
+            py::Arg<"dict", const Dict<Str, Object>&>)
+        >::template invocable<Args...>
+    )
+struct __explicit_init__<Type<T>, Args...> {
+    static auto operator()(Args&&... args) {
+        auto helper = [](
+            py::Arg<"name", const Str&> name,
+            py::Arg<"dict", const Dict<Str, Object>&> dict
+        ) {
+            Type<T> self;
+            return Function<Type<T>(
+                py::Arg<"name", const Str&>,
+                py::Arg<"bases", const Tuple<Type<T>>&>,
+                py::Arg<"dict", const Dict<Str, Object>&>)
+            >::template invoke_py<Type<T>>(
+                reinterpret_cast<PyObject*>(Py_TYPE(ptr(self))),
+                name,
+                Tuple<Type<T>>{self},
+                dict
+            );
+        };
+        return Function<decltype(helper)>::template invoke_cpp(
+            std::forward<Args>(args)...
+        );
+    }
+};
+
+
+/* Invoke the `type` metaclass to dynamically create a new Python type.  This
+3-argument form is only available for the root py::Type<> class, and allows a tuple of
+bases to be passed to enable multiple inheritance. */
+template <typename... Args>
+    requires (
+        Function<Type<Object>(
+            py::Arg<"name", const Str&>,
+            py::Arg<"bases", const Tuple<Type<Object>>&>,
+            py::Arg<"dict", const Dict<Str, Object>&>)
+        >::template invocable<Args...>
+    )
+struct __explicit_init__<Type<Object>, Args...> {
+    static auto operator()(Args&&... args) {
+        return Function<Type<Object>(
+            py::Arg<"name", const Str&>,
+            py::Arg<"bases", const Tuple<Type<Object>>&>,
+            py::Arg<"dict", const Dict<Str, Object>&>)
+        >::template invoke_py<Type<Object>>(
+            reinterpret_cast<PyObject*>(PyType_Type),
+            std::forward<Args>(args)...
+        );
+    }
+};
+
+
+template <typename T, typename... Args>
+    requires (impl::pytype_is_constructible_with<T, Args...>)
+auto __call__<Type<T>, Args...>::operator()(const Type<T>& self, Args&&... args) {
+    static_assert(
+        impl::attr_is_callable_with<T, "__init__", Args...> ||
+        impl::attr_is_callable_with<T, "__new__", Args...>,
+        "Type must have either an __init__ or __new__ method that is callable "
+        "with the given arguments."
+    );
+
+    PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(ptr(self));
+
+    auto collect = [&cls](
+        py::Arg<"args", py::Object>::args args,
+        py::Arg<"kwargs", py::Object>::kwargs kwargs
+    ) {
+        PyObject* result = cls->tp_new(cls, ptr(args), ptr(kwargs));
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        cls->tp_init(result, ptr(args), ptr(kwargs));
+        if (PyErr_Occurred()) {
+            Py_DECREF(result);
+            Exception::from_python();
+        }
+        return reinterpret_steal<T>(result);
+    };
+
+    return py::Function<decltype(collect)>::invoke_cpp(
+        collect,
+        std::forward<Args>(args)...
+    );
 }
 
 

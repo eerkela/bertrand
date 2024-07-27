@@ -5,7 +5,6 @@
 #include "except.h"
 #include "object.h"
 #include "ops.h"
-#include "control.h"
 
 
 namespace py {
@@ -14,6 +13,14 @@ namespace impl {
 
 // TODO: rather than .value(), use a __declspec(property) to make it more consistent
 // with other proxies across the codebase, like Args
+
+
+// TODO: reimplement the parent Proxy type and inherit from it for both the Item and
+// Arg proxies.  In fact, the Arg proxy might be defined here.
+
+
+// TODO: this and iter.h are included immediately after object.h and before func.h,
+// module.h
 
 
 /* A generic policy for getting, setting, or deleting an item at a particular

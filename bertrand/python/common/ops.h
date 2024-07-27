@@ -121,6 +121,13 @@ template <typename Derived, typename Base>
 
 
 /* Equivalent to Python `hasattr(obj, name)` with a static attribute name. */
+template <typename T, StaticStr name> requires (__as_object__<T>::enable)
+[[nodiscard]] consteval bool hasattr() {
+    return __getattr__<T, name>::enable;
+}
+
+
+/* Equivalent to Python `hasattr(obj, name)` with a static attribute name. */
 template <StaticStr name, typename T>
 [[nodiscard]] consteval bool hasattr(const T& obj) {
     if constexpr (impl::proxy_like<T>) {
