@@ -1098,6 +1098,59 @@ inline void setattr(const Handle& obj, const Str& name, const Object& value) {
 ////////////////////////////////////
 
 
+template <
+    std::convertible_to<py::Str> Name,
+    std::convertible_to<py::Tuple<py::Type_<py::Object>>> Bases,
+    std::convertible_to<py::Dict<py::Str, py::Object>> Dict
+>
+auto __explicit_init__<Type_<Object>, Name, Bases, Dict>::operator()(
+    const py::Str& name,
+    const py::Tuple<py::Type_<py::Object>>& bases,
+    const py::Dict<py::Str, py::Object>& dict
+) {
+    PyObject* result = PyObject_CallFunctionObjArgs(
+        reinterpret_cast<PyObject*>(&PyType_Type),
+        ptr(name),
+        ptr(bases),
+        ptr(dict),
+        nullptr
+    );
+    if (result == nullptr) {
+        Exception::from_python();
+    }
+    return reinterpret_steal<Type_<T>>(result);
+}
+
+
+template <
+    typename T,
+    std::convertible_to<py::Str> Name,
+    std::convertible_to<py::Dict<Str, Object>> Dict
+>
+    requires (
+        __as_object__<T>::enable &&
+        __init__<Type_<typename __as_object__<T>::type>>::enable
+    )
+auto __explicit_init__<Type_<T>, Name, Dict>::operator()(
+    const Str& name,
+    const py::Dict<Str, Object>& dict
+) {
+    Type_<T> self;
+    PyTypeObject* metaclass = Py_TYPE(ptr(self));
+    PyObject* result = PyObject_CallFunctionObjArgs(
+        reinterpret_cast<PyObject*>(metaclass),
+        ptr(name),
+        ptr(py::Tuple{self}),
+        ptr(dict),
+        nullptr
+    );
+    if (result == nullptr) {
+        Exception::from_python();
+    }
+    return reinterpret_steal<Type_<T>>(result);
+}
+
+
 template <typename Func, typename... Defaults>
 Module& Module::def(const Str& name, const Str& doc, Func&& body, Defaults&&... defaults) {
     Function f(
@@ -1132,6 +1185,35 @@ inline Module Module::def_submodule(const Str& name, const Str& doc = "") {
         return result;
     } catch (...) {
         Exception::from_pybind11();
+    }
+}
+
+
+inline PyObject* impl::PyFunctionBase::__class_getitem__(PyObject* cls, PyObject* spec) {
+    if (PyTuple_Check(spec)) {
+        Py_INCREF(spec);
+    } else {
+        PyObject* tuple = PyTuple_Pack(1, spec);
+        if (tuple == nullptr) {
+            return nullptr;
+        }
+        spec = tuple;
+    }
+    try {
+        py::Tuple tuple = reinterpret_steal<py::Tuple<Object>>(spec);
+        auto it = instances.find(tuple);
+        if (it == instances.end()) {
+            // TODO: reconstruct the full __class_getitem__ call
+            throw py::TypeError(
+                "class template has not been instantiated: " +
+                repr(spec)
+            );
+        }
+        return Py_NewRef(ptr(it->second));
+
+    } catch(...) {
+        py::Exception::to_python();
+        return nullptr;
     }
 }
 

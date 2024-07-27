@@ -56,6 +56,18 @@ namespace impl {
     struct BertrandTag {};
     struct ArgTag : public BertrandTag {};
     struct ProxyTag : public BertrandTag {};
+    struct TypeTag : public BertrandTag {};
+    struct ModuleTag : public BertrandTag {};
+    struct FunctionTag : public BertrandTag {};
+    struct TupleTag : public BertrandTag {};
+    struct ListTag : public BertrandTag{};
+    struct SetTag : public BertrandTag {};
+    struct FrozenSetTag : public BertrandTag {};
+    struct KeyTag : public BertrandTag {};
+    struct ValueTag : public BertrandTag {};
+    struct ItemTag : public BertrandTag {};
+    struct DictTag : public BertrandTag {};
+    struct MappingProxyTag : public BertrandTag {};
 
     static std::string demangle(const char* name) {
         #if defined(__GNUC__) || defined(__clang__)
@@ -85,6 +97,20 @@ namespace impl {
         #else
             return name; // fallback: no demangling
         #endif
+    }
+
+    template <size_t I>
+    static void unpack_arg() {
+        static_assert(false, "index out of range for parameter pack");
+    }
+
+    template <size_t I, typename T, typename... Ts>
+    static decltype(auto) unpack_arg(T&& curr, Ts&&... next) {
+        if constexpr (I == 0) {
+            return std::forward<T>(curr);
+        } else {
+            return unpack_arg<I - 1>(std::forward<Ts>(next)...);
+        }
     }
 
 }
@@ -126,6 +152,8 @@ private:
 class Handle;
 class Object;
 template <typename>
+class Type;
+template <typename>
 class Function;
 // class ClassMethod;  // TODO: template on function type
 // class StaticMethod;  // TODO: template on function type
@@ -162,7 +190,6 @@ class MappingProxy;
 class Str;
 class Bytes;
 class ByteArray;
-class Type;
 class Super;
 class Code;
 class Frame;
@@ -171,21 +198,6 @@ class Timezone;
 class Date;
 class Time;
 class Datetime;
-
-
-namespace impl {
-    struct ModuleTag : public BertrandTag { static const Type type; };
-    struct FunctionTag : public BertrandTag { static const Type type; };
-    struct TupleTag : public BertrandTag { static const Type type; };
-    struct ListTag : public BertrandTag{ static const Type type; };
-    struct SetTag : public BertrandTag { static const Type type; };
-    struct FrozenSetTag : public BertrandTag { static const Type type; };
-    struct KeyTag : public BertrandTag { static const Type type; };
-    struct ValueTag : public BertrandTag { static const Type type; };
-    struct ItemTag : public BertrandTag { static const Type type; };
-    struct DictTag : public BertrandTag { static const Type type; };
-    struct MappingProxyTag : public BertrandTag { static const Type type; };
-}
 
 
 /* Base class for enabled control structures.  Encodes the return type as a template
@@ -693,7 +705,7 @@ namespace impl {
     template <typename T>
     concept type_like =
         __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, Type>;
+        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, TypeTag>;
 
     /* NOTE: some binary operators (such as lexicographic comparisons) accept generic
      * containers, which may be combined with containers of different types.  In these

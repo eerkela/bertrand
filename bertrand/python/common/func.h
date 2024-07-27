@@ -7,15 +7,6 @@
 #include "object.h"
 
 
-// TODO: not sure if Arg.value() is being used correctly everywhere.
-// -> with lifetime extension refactor, it should be replaced with Arg.value direct
-// member access.
-
-
-// TODO: Every function has its own signature, which corresponds to a unique Python
-// type.
-
-
 namespace py {
 
 
@@ -122,12 +113,6 @@ namespace py {
 argument to a py::Function. */
 template <StaticStr Name, typename T>
 class Arg : public impl::ArgTag {
-
-    // TODO: Arg and its non-variadic subclasses have to use aggregate initialization to
-    // extend the lifetime of the temporary to match the lifetime of the Arg object.  This
-    // requires modifying Function to use aggregate initialization when invoking the inner
-    // function, so that the outside behavior is unaffected.
-    // -> Args can't use constructors, since those violate lifetime rules.
 
     template <bool positional, bool keyword>
     struct Optional : public impl::ArgTag {
@@ -323,6 +308,122 @@ namespace impl {
     template <impl::has_call_operator T>
     struct GetSignature<T> { using type = GetSignature<decltype(&T::operator())>::type; };
 
+
+    /// TODO: The approach explored by PyFunctionBase could be a contender for
+    /// automated template bindings, especially if I decouple all the Python __ready__
+    /// calls to the point where they can be added to the module init function every
+    /// time an exported template is instantiated anywhere in the code.  That would
+    /// directly allow the use of C++ templates in Python.
+
+    /* A base Python type that is subclassed by all `py::Function` specializations in
+    order to model various template signatures at the Python level.  This corresponds
+    to the publicly-visible `bertrand.Function` type. */
+    struct PyFunctionBase {
+        PyObject_HEAD
+        vectorcallfunc vectorcall;
+        std::string name;
+        std::string docstring;
+
+        static std::unordered_map<py::Tuple<py::Object>, py::Type<py::Object>> instances;
+        static PyObject* __class_getitem__(PyObject* cls, PyObject* spec);
+
+        static void __dealloc__(PyFunctionBase* self) {
+            self->name.~basic_string();
+            self->docstring.~basic_string();
+            type.tp_free(reinterpret_cast<PyObject*>(self));
+        }
+
+        static PyObject* __repr__(PyFunctionBase* self) {
+            std::string s =  "<py::Function [template]>";
+            PyObject* string = PyUnicode_FromStringAndSize(s.c_str(), s.size());
+            if (string == nullptr) {
+                return nullptr;
+            }
+            return string;
+        }
+
+        // TODO: getset accessors for type annotations, default values, etc.  These
+        // should be implemented as closely as possible to the Python data model.
+
+        static PyTypeObject type;
+
+        inline static PyMethodDef methods[] = {
+            {
+                    "__class_getitem__",
+                    (PyCFunction) &__class_getitem__,
+                    METH_O,
+R"doc(Navigate the C++ template hierarchy from Python.
+
+Parameters
+----------
+*args : Any
+    The template signature to resolve.
+
+Returns
+-------
+type
+    The unique Python type that corresponds to the given template signature.
+
+Raises
+------
+TypeError
+    If the template signature does not correspond to an existing instantiation at the
+    C++ level.
+
+Notes
+-----
+This method is essentially equivalent to a dictionary search against a table that is
+determined at compile time.  Since Python cannot directly instantiate C++ templates
+itself, this is the closest approximation that can be achieved.)doc"
+                },
+            {nullptr, nullptr, 0, nullptr}
+        };
+
+    };
+
+    inline PyTypeObject PyFunctionBase::type = {
+        .ob_base = PyVarObject_HEAD_INIT(nullptr, 0)
+        .tp_name = "bertrand.Function",
+        .tp_basicsize = sizeof(PyFunctionBase),
+        .tp_dealloc = (destructor) &PyFunctionBase::__dealloc__,
+        .tp_repr = (reprfunc) &PyFunctionBase::__repr__,
+        .tp_call = (ternaryfunc) &PyVectorcall_Call,
+        .tp_str = (reprfunc) &PyFunctionBase::__repr__,
+        .tp_flags =
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_IMMUTABLETYPE |
+            Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_METHOD_DESCRIPTOR |
+            Py_TPFLAGS_HAVE_VECTORCALL,
+        .tp_doc =
+R"doc(A Python wrapper around a templated C++ `std::function`.
+
+Notes
+-----
+This type is not directly instantiable from Python.  Instead, it serves as an entry
+point to the template hierarchy, which can be navigated by subscripting the type
+just like the `Callable` type hint.
+
+Examples
+--------
+>>> from bertrand import Function
+>>> Function[None, [int, str]]
+py::Function<void(const py::Int&, const py::Str&)>
+>>> Function[int, ["x": int, "y": int]]
+py::Function<py::Int(py::Arg<"x", const py::Int&>, py::Arg<"y", const py::Int&>)>
+
+As long as these types have been instantiated somewhere at the C++ level, then these
+accessors will resolve to a unique Python type that wraps that instantiation.  If no
+instantiation could be found, then a `TypeError` will be raised.
+
+Because each of these types is unique, they can be used with Python's `isinstance()`
+and `issubclass()` functions to check against the exact template signature.  A global
+check against this root type will determine whether the function is implemented in C++
+(True) or Python (False).)doc",
+        .tp_methods = PyFunctionBase::methods,
+        .tp_getset = nullptr, // TODO
+        .tp_vectorcall_offset = offsetof(PyFunctionBase, vectorcall),
+
+    };
+
 }
 
 
@@ -396,7 +497,7 @@ wrapper around it) with `py::Arg` tags.  For instance:
 Note that the annotations themselves are implicitly convertible to the underlying
 argument types, so they should be acceptable as inputs to most functions without any
 additional syntax.  If necessary, they can be explicitly dereferenced through the `*`
-and `->` operators, or by accessing their `.value()` method directly, which comprises
+and `->` operators, or by accessing their `.value` member directly, which comprises
 their entire interface.  Also note that for each argument marked as `::optional`, we
 must provide a default value within the function's constructor, which will be
 substituted whenever we call the function without specifying that argument.
@@ -489,20 +590,6 @@ class Function<Return(Target...)> : public Object, public impl::FunctionTag {
     using Self = Function;
 
 protected:
-
-    template <size_t I>
-    static void unpack_arg() {
-        static_assert(false, "index out of range for parameter pack");
-    }
-
-    template <size_t I, typename T, typename... Ts>
-    static decltype(auto) unpack_arg(T&& curr, Ts&&... next) {
-        if constexpr (I == 0) {
-            return std::forward<T>(curr);
-        } else {
-            return unpack_arg<I - 1>(std::forward<Ts>(next)...);
-        }
-    }
 
     template <typename T>
     struct Inspect {
@@ -652,6 +739,14 @@ protected:
         static constexpr size_t kwargs_index = kwargs_index_helper<Args...>;
         static constexpr bool has_kwargs = kwargs_index != size;
 
+        /* Check whether the argument at index I is marked as optional. */
+        template <size_t I> requires (I < size)
+        static constexpr bool is_opt = Inspect<type<I>>::opt;
+
+        /* Check whether the named argument is marked as optional. */
+        template <StaticStr name> requires (index<name> < size)
+        static constexpr bool is_opt_kw = Inspect<type<index<name>>>::opt;
+
     private:
 
         template <size_t I, typename... Ts>
@@ -735,13 +830,47 @@ protected:
             return ((std::strcmp(Inspect<Args>::name, name) == 0) || ...);
         }
 
-        /* Check whether the argument at index I is marked as optional. */
-        template <size_t I> requires (I < size)
-        static constexpr bool is_opt = Inspect<type<I>>::opt;
+        template <typename Iter, std::sentinel_for<Iter> End>
+        static void assert_var_args_are_consumed(Iter& iter, const End& end) {
+            if (iter != end) {
+                std::string message =
+                    "too many arguments in positional parameter pack: ['" + repr(*iter);
+                while (++iter != end) {
+                    message += "', '";
+                    message += repr(*iter);
+                }
+                message += "']";
+                throw TypeError(message);
+            }
+        }
 
-        /* Check whether the named argument is marked as optional. */
-        template <StaticStr name> requires (index<name> < size)
-        static constexpr bool is_opt_kw = Inspect<type<index<name>>>::opt;
+        template <typename source, size_t... Is, typename Kwargs>
+        static void assert_var_kwargs_are_recognized(
+            std::index_sequence<Is...>,
+            const Kwargs& kwargs
+        ) {
+            std::vector<std::string> extra;
+            for (const auto& [key, value] : kwargs) {
+                bool is_empty = key == "";
+                bool match = (
+                    (key == Inspect<typename target::template type<Is>>::name) || ...
+                );
+                if (is_empty || !match) {
+                    extra.push_back(key);
+                }
+            }
+            if (!extra.empty()) {
+                auto iter = extra.begin();
+                auto end = extra.end();
+                std::string message = "unexpected keyword arguments: ['" + repr(*iter);
+                while (++iter != end) {
+                    message += "', '";
+                    message += repr(*iter);
+                }
+                message += "']";
+                throw TypeError(message);
+            }
+        }
 
     };
 
@@ -901,12 +1030,12 @@ public:
             template <size_t I>
             static constexpr decltype(auto) build_recursive(Source&&... values) {
                 if constexpr (I < source::kw_index) {
-                    return unpack_arg<I>(std::forward<Source>(values)...);
+                    return impl::unpack_arg<I>(std::forward<Source>(values)...);
                 } else {
                     using Value = std::tuple_element<I, tuple>::type;
-                    return unpack_arg<source::template index<Value::name>>(
+                    return impl::unpack_arg<source::template index<Value::name>>(
                         std::forward<Source>(values)...
-                    ).value();
+                    ).value;
                 }
             }
 
@@ -1148,7 +1277,7 @@ protected:
             if constexpr (!target::template contains<Inspect<Arg>::name>) {
                 map.emplace(
                     Inspect<Arg>::name,
-                    unpack_arg<source::kw_index + I>(std::forward<Source>(args)...)
+                    impl::unpack_arg<source::kw_index + I>(std::forward<Source>(args)...)
                 );
             }
         }
@@ -1196,7 +1325,7 @@ protected:
             Source&&... args
         ) {
             if constexpr (I < source::kw_index) {
-                return unpack_arg<I>(std::forward<Source>(args)...);
+                return impl::unpack_arg<I>(std::forward<Source>(args)...);
             } else {
                 return defaults.template get<I>();
             }
@@ -1208,10 +1337,10 @@ protected:
             Source&&... args
         ) {
             if constexpr (I < source::kw_index) {
-                return unpack_arg<I>(std::forward<Source>(args)...);
+                return impl::unpack_arg<I>(std::forward<Source>(args)...);
             } else if constexpr (source::template contains<Inspect<T<I>>::name>) {
                 constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
-                return unpack_arg<idx>(std::forward<Source>(args)...);
+                return impl::unpack_arg<idx>(std::forward<Source>(args)...);
             } else {
                 return defaults.template get<I>();
             }
@@ -1224,7 +1353,7 @@ protected:
         ) {
             if constexpr (source::template contains<Inspect<T<I>>::name>) {
                 constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
-                return unpack_arg<idx>(std::forward<Source>(args)...);
+                return impl::unpack_arg<idx>(std::forward<Source>(args)...);
             } else {
                 return defaults.template get<I>();
             }
@@ -1245,7 +1374,7 @@ protected:
                     Pack& vec,
                     Source&&... args
                 ) {
-                    (vec.push_back(unpack_arg<I + Js>(std::forward<Source>(args)...)), ...);
+                    (vec.push_back(impl::unpack_arg<I + Js>(std::forward<Source>(args)...)), ...);
                 }(
                     std::make_index_sequence<diff>{},
                     vec,
@@ -1285,7 +1414,7 @@ protected:
             Source&&... args
         ) {
             if constexpr (I < source::kw_index) {
-                return unpack_arg<I>(std::forward<Source>(args)...);
+                return impl::unpack_arg<I>(std::forward<Source>(args)...);
             } else {
                 if (iter == end) {
                     if constexpr (Inspect<T<I>>::opt) {
@@ -1312,10 +1441,10 @@ protected:
             Source&&... args
         ) {
             if constexpr (I < source::kw_index) {
-                return unpack_arg<I>(std::forward<Source>(args)...);
+                return impl::unpack_arg<I>(std::forward<Source>(args)...);
             } else if constexpr (source::template contains<Inspect<T<I>>::name>) {
                 constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
-                return unpack_arg<idx>(std::forward<Source>(args)...);
+                return impl::unpack_arg<idx>(std::forward<Source>(args)...);
             } else {
                 if (iter == end) {
                     if constexpr (Inspect<T<I>>::opt) {
@@ -1362,7 +1491,9 @@ protected:
                     Pack& vec,
                     Source&&... args
                 ) {
-                    (vec.push_back(unpack_arg<I + Js>(std::forward<Source>(args)...)), ...);
+                    (vec.push_back(
+                        impl::unpack_arg<I + Js>(std::forward<Source>(args)...)
+                    ), ...);
                 }(
                     std::make_index_sequence<diff>{},
                     vec,
@@ -1407,7 +1538,7 @@ protected:
                         "' at index " + std::to_string(I)
                     );
                 }
-                return unpack_arg<I>(std::forward<Source>(args)...);
+                return impl::unpack_arg<I>(std::forward<Source>(args)...);
             } else if constexpr (source::template contains<Inspect<T<I>>::name>) {
                 if (val != map.end()) {
                     throw TypeError(
@@ -1416,7 +1547,7 @@ protected:
                     );
                 }
                 constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
-                return unpack_arg<idx>(std::forward<Source>(args)...);
+                return impl::unpack_arg<idx>(std::forward<Source>(args)...);
             } else {
                 if (val != map.end()) {
                     return *val;
@@ -1449,7 +1580,7 @@ protected:
                     );
                 }
                 constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
-                return unpack_arg<idx>(std::forward<Source>(args)...);
+                return impl::unpack_arg<idx>(std::forward<Source>(args)...);
             } else {
                 if (val != map.end()) {
                     return *val;
@@ -1539,7 +1670,7 @@ protected:
                         "' at index " + std::to_string(I)
                     );
                 }
-                return unpack_arg<I>(std::forward<Source>(args)...);
+                return impl::unpack_arg<I>(std::forward<Source>(args)...);
             } else if constexpr (source::template contains<Inspect<T<I>>::name>) {
                 if (val != map.end()) {
                     throw TypeError(
@@ -1548,7 +1679,7 @@ protected:
                     );
                 }
                 constexpr size_t idx = source::template index<Inspect<T<I>>::name>;
-                return unpack_arg<idx>(std::forward<Source>(args)...);
+                return impl::unpack_arg<idx>(std::forward<Source>(args)...);
             } else {
                 if (iter != end) {
                     return *(iter++);
@@ -1790,7 +1921,7 @@ protected:
         static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             try {
                 array[J + 1] = release(as_object(
-                    unpack_arg<J>(std::forward<Source>(args)...)
+                    impl::unpack_arg<J>(std::forward<Source>(args)...)
                 ));
             } catch (...) {
                 for (size_t i = 1; i <= J; ++i) {
@@ -1808,7 +1939,7 @@ protected:
                     Py_NewRef(impl::TemplateString<Inspect<S<J>>::name>::ptr)
                 );
                 array[J + 1] = release(as_object(
-                    unpack_arg<J>(std::forward<Source>(args)...)
+                    impl::unpack_arg<J>(std::forward<Source>(args)...)
                 ));
             } catch (...) {
                 for (size_t i = 1; i <= J; ++i) {
@@ -1821,7 +1952,7 @@ protected:
         static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             size_t curr = J + 1;
             try {
-                const auto& var_args = unpack_arg<J>(std::forward<Source>(args)...);
+                const auto& var_args = impl::unpack_arg<J>(std::forward<Source>(args)...);
                 for (const auto& value : var_args) {
                     array[curr] = release(as_object(value));
                     ++curr;
@@ -1837,7 +1968,7 @@ protected:
         static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
             size_t curr = J + 1;
             try {
-                const auto& var_kwargs = unpack_arg<J>(std::forward<Source>(args)...);
+                const auto& var_kwargs = impl::unpack_arg<J>(std::forward<Source>(args)...);
                 for (const auto& [key, value] : var_kwargs) {
                     PyObject* name = PyUnicode_FromStringAndSize(
                         key.data(),
@@ -1859,49 +1990,7 @@ protected:
 
     };
 
-    template <typename Iter, std::sentinel_for<Iter> End>
-    static void validate_args(Iter& iter, const End& end) {
-        if (iter != end) {
-            std::string message =
-                "too many arguments in positional parameter pack: ['" + repr(*iter);
-            while (++iter != end) {
-                message += "', '";
-                message += repr(*iter);
-            }
-            message += "']";
-            throw TypeError(message);
-        }
-    }
-
-    template <typename source, size_t... Is, typename Kwargs>
-    static void validate_kwargs(std::index_sequence<Is...>, const Kwargs& kwargs) {
-        std::vector<std::string> extra;
-        for (const auto& [key, value] : kwargs) {
-            bool is_empty = key == "";
-            bool match = (
-                (key == Inspect<typename target::template type<Is>>::name) || ...
-            );
-            if (is_empty || !match) {
-                extra.push_back(key);
-            }
-        }
-        if (!extra.empty()) {
-            auto iter = extra.begin();
-            auto end = extra.end();
-            std::string message = "unexpected keyword arguments: ['" + repr(*iter);
-            while (++iter != end) {
-                message += "', '";
-                message += repr(*iter);
-            }
-            message += "']";
-            throw TypeError(message);
-        }
-    }
-
-    /* A unique Python type to represent functions with this signature in Python.  The
-    actual C++ function and default values are defined on this type and then accessed
-    through the py::Function wrapper via type casting, which requires no further
-    indirection besides a single isinstance() check. */
+    /* A unique Python type to represent functions with this signature in Python. */
     class PyFunction {
 
         static const std::string& type_docstring() {
@@ -1911,43 +2000,57 @@ protected:
             return string;
         }
 
-        static void ready() {
+    public:
+        impl::PyFunctionBase base;
+        std::function<Return(Target...)> func;
+        Defaults defaults;
+
+        // TODO: I need to manually call __ready__ for each binding in the module
+        // initialization function rather than __create__ so that I can properly
+        // instantiate types for use in Python.  In the AST parser, this equates to
+        // searching the AST for all instantiations of an exported template, and
+        // emitting a __ready__() call for each one so that they are accessible from
+        // Python.  This is better than readying the type the first time it is
+        // constructed, since some templates may be instantiated without being
+        // constructed.
+
+        // TODO: also, the py::Type class should be moved into common/ and absorb
+        // some of this responsibility.  For instance, it can offer a wrapper around
+        // the __ready__() call that allows it to be called as part of the final
+        // initialization, without exposing the PyTypeObject* directly to the user.
+
+        static void __ready__() {
             static bool initialized = false;
             if (!initialized) {
+                type.tp_base = &impl::PyFunctionBase::type;
                 if (PyType_Ready(&type) < 0) {
                     Exception::from_python();
                 }
+
+                // TODO: ideally, this:
+                // py::Tuple<py::Object> key{py::Type<Return>(), py::Type<Target>()...};
+                // impl::PyFunctionBase::instances[key] = py::Type<Function>();
+
                 initialized = true;
             }
         }
 
-    public:
-        PyObject_HEAD
-        std::string name;
-        std::string docstring;
-        std::function<Return(Target...)> func;
-        Defaults defaults;
-        vectorcallfunc vectorcall;
-
-        static PyObject* create(
+        static PyObject* __create__(
             std::string&& name,
             std::string&& docstring,
             std::function<Return(Target...)>&& func,
             Defaults&& defaults
         ) {
-            ready();
-            PyFunction* self = reinterpret_cast<PyFunction*>(
-                type.tp_new(&type, nullptr, nullptr)
-            );
+            PyFunction* self = PyObject_New(PyFunction, &type);
             if (self == nullptr) {
                 return nullptr;
             }
             try {
-                self->name = std::move(name);
-                self->docstring = std::move(docstring);
-                self->func = std::move(func);
-                self->defaults = std::move(defaults);
-                self->vectorcall = (vectorcallfunc) &call;
+                self->base.vectorcall = (vectorcallfunc) &__call__;
+                new (&self->base.name) std::string(std::move(name));
+                new (&self->base.docstring) std::string(std::move(docstring));
+                new (&self->func) std::function(std::move(func));
+                new (&self->defaults) Defaults(std::move(defaults));
                 return reinterpret_cast<PyObject*>(self);
             } catch (...) {
                 Py_DECREF(self);
@@ -1955,12 +2058,13 @@ protected:
             }
         }
 
-        static void destroy(PyFunction* self) {
-            self->~PyFunctionType();
+        static void __dealloc__(PyFunction* self) {
+            self->func.~function<Return(Target...)>();
+            self->defaults.~Defaults();
             type.tp_free(reinterpret_cast<PyObject*>(self));
         }
 
-        static PyObject* call(
+        static PyObject* __call__(
             PyFunction* self,
             PyObject* const* args,
             Py_ssize_t nargs,
@@ -1976,9 +2080,10 @@ protected:
                 ) {
                     size_t true_nargs = PyVectorcall_NARGS(nargs);
                     if constexpr (!target::has_args) {
-                        if (true_nargs > target::size) {
+                        constexpr size_t expected = target::size - target::kw_only_count;
+                        if (true_nargs > expected) {
                             throw TypeError(
-                                "expected at most " + std::to_string(target::size) +
+                                "expected at most " + std::to_string(expected) +
                                 " positional arguments, but received " +
                                 std::to_string(true_nargs)
                             );
@@ -2039,7 +2144,19 @@ protected:
             }
         }
 
-        static PyObject* repr(PyFunction* self) {
+        // TODO: this returns a repr for an instance of this type, but what about the
+        // type itself?  The only way to account for that is to use a metaclass, which
+        // I'd like to support anyways at some point.
+        // -> This probably necessitates the use of a heap type instead of a static
+        // type.  This also raises the minimum Python version to 3.12
+        // -> Ideally, this would always print out the demangled template signature.
+        // For now, it prints out the mangled type name, which is okay.
+        // -> In the end, I should probably implement a generic bertrand.metaclass
+        // type that is inherited by all types which are created by the binding library.
+        // This can be used to implement the __repr__ method for the type itself, in
+        // such a way that it always demangles the corresponding C++ type name.
+
+        static PyObject* __repr__(PyFunction* self) {
             static const std::string demangled =
                 impl::demangle(typeid(Function).name());
             std::stringstream stream;
@@ -2056,23 +2173,19 @@ protected:
             .ob_base = PyVarObject_HEAD_INIT(nullptr, 0)
             .tp_name = typeid(Function).name(),
             .tp_basicsize = sizeof(PyFunction),
-            .tp_itemsize = 0,
-            .tp_dealloc = (destructor) &destroy,
-            .tp_repr = (reprfunc) &repr,
-            .tp_call = (ternaryfunc) PyVectorcall_Call,
-            .tp_str = (reprfunc) &repr,
+            .tp_dealloc = (destructor) &__dealloc__,
+            .tp_repr = (reprfunc) &__repr__,
+            .tp_str = (reprfunc) &__repr__,
             .tp_flags =
                 Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE |
-                Py_TPFLAGS_METHOD_DESCRIPTOR | Py_TPFLAGS_HAVE_VECTORCALL,
+                Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_METHOD_DESCRIPTOR |
+                Py_TPFLAGS_HAVE_VECTORCALL,
             .tp_doc = PyDoc_STR(type_docstring().c_str()),
             .tp_methods = nullptr,  // TODO
             .tp_getset = nullptr,  // TODO
-            .tp_vectorcall_offset = offsetof(PyFunction, vectorcall),
         };
 
     };
-
-    // TODO: PyType_IsSubtype can be faster than PyObject_IsInstance for type checks
 
 public:
     using ReturnType = Return;
@@ -2097,6 +2210,9 @@ public:
     ////////////////////////////
     ////    CONSTRUCTORS    ////
     ////////////////////////////
+
+    // TODO: isinstance(), issubclass() should work via PyType_IsSubtype() since I
+    // control the type object itself.
 
     // TODO: constructor should fail if the function type is a subclass of my root
     // function type, but not a subclass of this specific function type.  This
@@ -2128,6 +2244,8 @@ public:
         __explicit_init__<Function, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
     )) {}
 
+    // TODO: these can now be replaced with __init__ specializations?
+
     /* Construct a py::Function from a valid C++ function with the templated signature.
     Use CTAD to deduce the signature if not explicitly provided.  If the signature
     contains default value annotations, they must be specified here. */
@@ -2138,7 +2256,7 @@ public:
             Defaults::template enable<Values...>
         )
     Function(Func&& func, Values&&... defaults) :
-        Base(PyFunction::create(
+        Base(PyFunction::__create__(
             "",
             "",
             std::function(std::forward<Func>(func)),
@@ -2156,7 +2274,7 @@ public:
             Defaults::template enable<Values...>
         )
     Function(std::string name, Func&& func, Values&&... defaults) :
-        Base(PyFunction::create(
+        Base(PyFunction::__create__(
             std::move(name),
             "",
             std::function(std::forward<Func>(func)),
@@ -2174,7 +2292,7 @@ public:
             Defaults::template enable<Values...>
         )
     Function(std::string name, std::string doc, Func&& func, Values&&... defaults) :
-        Base(PyFunction::create(
+        Base(PyFunction::__create__(
             std::move(name),
             std::move(doc),
             std::function(std::forward<Func>(func)),
@@ -2186,21 +2304,182 @@ public:
     ////    C++ INTERFACE    ////
     /////////////////////////////
 
-    // TODO: do type checks on the python function to see if it can be replaced with a
-    // C++ call by unpacking a matching PyFunction.
+    /* Call an external C++ function that matches the target signature using the
+    given defaults and Python-style arguments. */
+    template <typename Func, typename... Source>
+        requires (std::is_invocable_r_v<Return, Func, Target...> && invocable<Source...>)
+    static Return invoke_cpp(const Defaults& defaults, Func&& func, Source&&... args) {
+        return []<size_t... Is>(
+            std::index_sequence<Is...>,
+            const Defaults& defaults,
+            Func&& func,
+            Source&&... args
+        ) {
+            using source = Signature<Source...>;
 
-    /* Call an external Python function that matches the target signature using
-    Python-style arguments.  The optional `R` template parameter specifies a specific
-    Python type to interpret the result of the CPython call.  It will always be
-    implicitly converted to the function's final return type.  Setting it equal to the
-    return type will avoid any extra overhead from dynamic type checks/implicit
-    conversions. */
+            // NOTE: we MUST use aggregate initialization of argument proxies in order
+            // to extend the lifetime of temporaries for the duration of the function
+            // call.  This is the only guaranteed way of avoiding UB in this context.
+
+            // if there are no parameter packs, then we simply reorder the arguments
+            // and call the function directly
+            if constexpr (!source::has_args && !source::has_kwargs) {
+                if constexpr (std::is_void_v<Return>) {
+                    func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        std::forward<Source>(args)...
+                    )}...);
+                } else {
+                    return func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        std::forward<Source>(args)...
+                    )}...);
+                }
+
+            // variadic positional arguments are passed as an iterator range, which
+            // must be exhausted after the function call completes
+            } else if constexpr (source::has_args && !source::has_kwargs) {
+                auto var_args = impl::unpack_arg<source::args_index>(
+                    std::forward<Source>(args)...
+                );
+                auto iter = var_args.begin();
+                auto end = var_args.end();
+                if constexpr (std::is_void_v<Return>) {
+                    func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        var_args.size(),
+                        iter,
+                        end,
+                        std::forward<Source>(args)...
+                    )}...);
+                    if constexpr (!target::has_args) {
+                        target::assert_var_args_are_consumed(iter, end);
+                    }
+                } else {
+                    decltype(auto) result = func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        var_args.size(),
+                        iter,
+                        end,
+                        std::forward<Source>(args)...
+                    )}...);
+                    if constexpr (!target::has_args) {
+                        target::assert_var_args_are_consumed(iter, end);
+                    }
+                    return result;
+                }
+
+            // variadic keyword arguments are passed as a dictionary, which must be
+            // validated up front to ensure all keys are recognized
+            } else if constexpr (!source::has_args && source::has_kwargs) {
+                auto var_kwargs = impl::unpack_arg<source::kwargs_index>(
+                    std::forward<Source>(args)...
+                );
+                if constexpr (!target::has_kwargs) {
+                    target::assert_var_kwargs_are_recognized(
+                        std::make_index_sequence<target::size>{},
+                        var_kwargs
+                    );
+                }
+                if constexpr (std::is_void_v<Return>) {
+                    func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        var_kwargs,
+                        std::forward<Source>(args)...
+                    )}...);
+                } else {
+                    return func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        var_kwargs,
+                        std::forward<Source>(args)...
+                    )}...);
+                }
+
+            // interpose the two if there are both positional and keyword argument packs
+            } else {
+                auto var_kwargs = impl::unpack_arg<source::kwargs_index>(
+                    std::forward<Source>(args)...
+                );
+                if constexpr (!target::has_kwargs) {
+                    target::assert_var_kwargs_are_recognized(
+                        std::make_index_sequence<target::size>{},
+                        var_kwargs
+                    );
+                }
+                auto var_args = impl::unpack_arg<source::args_index>(
+                    std::forward<Source>(args)...
+                );
+                auto iter = var_args.begin();
+                auto end = var_args.end();
+                if constexpr (std::is_void_v<Return>) {
+                    func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        var_args.size(),
+                        iter,
+                        end,
+                        var_kwargs,
+                        std::forward<Source>(args)...
+                    )}...);
+                    if constexpr (!target::has_args) {
+                        target::assert_var_args_are_consumed(iter, end);
+                    }
+                } else {
+                    decltype(auto) result = func({Arguments<Source...>::template cpp<Is>(
+                        defaults,
+                        var_args.size(),
+                        iter,
+                        end,
+                        var_kwargs,
+                        std::forward<Source>(args)...
+                    )}...);
+                    if constexpr (!target::has_args) {
+                        target::assert_var_args_are_consumed(iter, end);
+                    }
+                    return result;
+                }
+            }
+        }(
+            std::make_index_sequence<target::size>{},
+            defaults,
+            std::forward<Func>(func),
+            std::forward<Source>(args)...
+        );
+    }
+
+    /* Call an external Python function using Python-style arguments.  The optional
+    `R` template parameter specifies an interim return type, which is used to interpret
+    the result of the raw CPython call.  The interim result will then be implicitly
+    converted to the function's final return type.  The default value is `Object`,
+    which incurs an additional dynamic type check on conversion.  If the exact return
+    type is known in advance, then setting `R` equal to that type will avoid any extra
+    checks or conversions at the expense of safety if that type is incorrect.  */
     template <typename R = Object, typename... Source> requires (invocable<Source...>)
     static Return invoke_py(Handle func, Source&&... args) {
         static_assert(
             std::derived_from<R, Object>,
             "Interim return type must be a subclass of Object"
         );
+
+        // bypass the Python interpreter if the function is an instance of the coupled
+        // function type, which guarantees that the template signatures exactly match
+        if (PyType_IsSubtype(Py_TYPE(ptr(func)), &PyFunction::type)) {
+            PyFunction* func = reinterpret_cast<PyFunction*>(ptr(func));
+            if constexpr (std::is_void_v<Return>) {
+                invoke_cpp(
+                    func->defaults,
+                    func->func,
+                    std::forward<Source>(args)...
+                );
+            } else {
+                return invoke_cpp(
+                    func->defaults,
+                    func->func,
+                    std::forward<Source>(args)...
+                );
+            }
+        }
+
+        // fall back to an optimized Python call
         return []<size_t... Is>(
             std::index_sequence<Is...>,
             Handle func,
@@ -2209,34 +2488,37 @@ public:
             using source = Signature<Source...>;
             PyObject* result;
 
-            // if there are no arguments, we can use an optimized protocol
+            // if there are no arguments, we can use the no-args protocol
             if constexpr (source::size == 0) {
                 result = PyObject_CallNoArgs(ptr(func));
 
+            // if there are no variadic arguments, we can stack allocate the argument
+            // array with a fixed size
             } else if constexpr (!source::has_args && !source::has_kwargs) {
-                // if there is only one argument, we can use an optimized protocol
+                // if there is only one argument, we can use the one-arg protocol
                 if constexpr (source::size == 1) {
                     if constexpr (source::has_kw) {
                         result = PyObject_CallOneArg(
                             ptr(func),
                             ptr(as_object(
-                                unpack_arg<0>(std::forward<Source>(args)...).value()
+                                impl::unpack_arg<0>(std::forward<Source>(args)...).value
                             ))
                         );
                     } else {
                         result = PyObject_CallOneArg(
                             ptr(func),
                             ptr(as_object(
-                                unpack_arg<0>(std::forward<Source>(args)...)
+                                impl::unpack_arg<0>(std::forward<Source>(args)...)
                             ))
                         );
                     }
 
-                // if there are no *args, **kwargs, we can stack allocate the argument
-                // array with a fixed size
+                // if there is more than one argument, we construct a vectorcall
+                // argument array
                 } else {
+                    // PY_VECTORCALL_ARGUMENTS_OFFSET requires an extra element
                     PyObject* array[source::size + 1];
-                    array[0] = nullptr;
+                    array[0] = nullptr;  // first element is reserved for 'self'
                     PyObject* kwnames;
                     if constexpr (source::has_kw) {
                         kwnames = PyTuple_New(source::kw_count);
@@ -2246,7 +2528,7 @@ public:
                     (
                         Arguments<Source...>::template to_python<Is>(
                             kwnames,
-                            array,  // TODO: 1-indexed
+                            array,  // 1-indexed
                             std::forward<Source>(args)...
                         ),
                         ...
@@ -2254,18 +2536,19 @@ public:
                     Py_ssize_t npos = source::size - source::kw_count;
                     result = PyObject_Vectorcall(
                         ptr(func),
-                        array + 1,
+                        array + 1,  // skip the first element
                         npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         kwnames
                     );
                     for (size_t i = 1; i <= source::size; ++i) {
-                        Py_XDECREF(array[i]);
+                        Py_XDECREF(array[i]);  // release all argument references
                     }
                 }
 
             // otherwise, we have to heap-allocate the array with a variable size
             } else if constexpr (source::has_args && !source::has_kwargs) {
-                auto var_args = unpack_arg<source::args_index>(std::forward<Source>(args)...);
+                auto var_args =
+                    impl::unpack_arg<source::args_index>(std::forward<Source>(args)...);
                 size_t nargs = source::size - 1 + var_args.size();
                 PyObject** array = new PyObject*[nargs + 1];
                 array[0] = nullptr;
@@ -2295,8 +2578,11 @@ public:
                 }
                 delete[] array;
 
+            // The following specializations handle the cross product of
+            // positional/keyword parameter packs which differ only in initialization
             } else if constexpr (!source::has_args && source::has_kwargs) {
-                auto var_kwargs = unpack_arg<source::kwargs_index>(std::forward<Source>(args)...);
+                auto var_kwargs =
+                    impl::unpack_arg<source::kwargs_index>(std::forward<Source>(args)...);
                 size_t nargs = source::size - 1 + var_kwargs.size();
                 PyObject** array = new PyObject*[nargs + 1];
                 array[0] = nullptr;
@@ -2322,8 +2608,10 @@ public:
                 delete[] array;
 
             } else {
-                auto var_args = unpack_arg<source::args_index>(std::forward<Source>(args)...);
-                auto var_kwargs = unpack_arg<source::kwargs_index>(std::forward<Source>(args)...);
+                auto var_args =
+                    impl::unpack_arg<source::args_index>(std::forward<Source>(args)...);
+                auto var_kwargs =
+                    impl::unpack_arg<source::kwargs_index>(std::forward<Source>(args)...);
                 size_t nargs = source::size - 2 + var_args.size() + var_kwargs.size();
                 PyObject** array = new PyObject*[nargs + 1];
                 array[0] = nullptr;
@@ -2349,9 +2637,12 @@ public:
                 delete[] array;
             }
 
+            // A null return value indicates an error
             if (result == nullptr) {
                 Exception::from_python();
             }
+
+            // Python void functions return a reference to None, which we must release
             if constexpr (std::is_void_v<Return>) {
                 Py_DECREF(result);
             } else {
@@ -2364,154 +2655,15 @@ public:
         );
     }
 
-    /* Call an external C++ function that matches the target signature using the
-    given defaults and Python-style arguments. */
-    template <typename Func, typename... Source>
-        requires (std::is_invocable_r_v<Return, Func, Target...> && invocable<Source...>)
-    static Return invoke_cpp(const Defaults& defaults, Func&& func, Source&&... args) {
-        return []<size_t... Is>(
-            std::index_sequence<Is...>,
-            const Defaults& defaults,
-            Func&& func,
-            Source&&... args
-        ) {
-            using source = Signature<Source...>;
-            if constexpr (!source::has_args && !source::has_kwargs) {
-                if constexpr (std::is_void_v<Return>) {
-                    func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        std::forward<Source>(args)...
-                    )}...);
-                } else {
-                    return func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        std::forward<Source>(args)...
-                    )}...);
-                }
-
-            } else if constexpr (source::has_args && !source::has_kwargs) {
-                auto var_args = unpack_arg<source::args_index>(std::forward<Source>(args)...);
-                auto iter = var_args.begin();
-                auto end = var_args.end();
-                if constexpr (std::is_void_v<Return>) {
-                    func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_args.size(),
-                        iter,
-                        end,
-                        std::forward<Source>(args)...
-                    )}...);
-                    if constexpr (!target::has_args) {
-                        validate_args(iter, end);
-                    }
-                } else {
-                    decltype(auto) result = func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_args.size(),
-                        iter,
-                        end,
-                        std::forward<Source>(args)...
-                    )}...);
-                    if constexpr (!target::has_args) {
-                        validate_args(iter, end);
-                    }
-                    return result;
-                }
-
-            } else if constexpr (!source::has_args && source::has_kwargs) {
-                auto var_kwargs = unpack_arg<source::kwargs_index>(std::forward<Source>(args)...);
-                if constexpr (!target::has_kwargs) {
-                    validate_kwargs(
-                        std::make_index_sequence<target::size>{},
-                        var_kwargs
-                    );
-                }
-                if constexpr (std::is_void_v<Return>) {
-                    func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_kwargs,
-                        std::forward<Source>(args)...
-                    )}...);
-                } else {
-                    return func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_kwargs,
-                        std::forward<Source>(args)...
-                    )}...);
-                }
-
-            } else {
-                auto var_kwargs = unpack_arg<source::kwargs_index>(std::forward<Source>(args)...);
-                if constexpr (!target::has_kwargs) {
-                    validate_kwargs(
-                        std::make_index_sequence<target::size>{},
-                        var_kwargs
-                    );
-                }
-                auto var_args = unpack_arg<source::args_index>(std::forward<Source>(args)...);
-                auto iter = var_args.begin();
-                auto end = var_args.end();
-                if constexpr (std::is_void_v<Return>) {
-                    func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_args.size(),
-                        iter,
-                        end,
-                        var_kwargs,
-                        std::forward<Source>(args)...
-                    )}...);
-                    if constexpr (!target::has_args) {
-                        validate_args(iter, end);
-                    }
-                } else {
-                    decltype(auto) result = func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_args.size(),
-                        iter,
-                        end,
-                        var_kwargs,
-                        std::forward<Source>(args)...
-                    )}...);
-                    if constexpr (!target::has_args) {
-                        validate_args(iter, end);
-                    }
-                    return result;
-                }
-            }
-        }(
-            std::make_index_sequence<target::size>{},
-            defaults,
-            std::forward<Func>(func),
-            std::forward<Source>(args)...
-        );
-    }
-
     /* Call the function with the given arguments.  If the wrapped function is of the
     coupled Python type, then this will be translated into a raw C++ call, bypassing
     Python entirely. */
     template <typename... Source> requires (invocable<Source...>)
     Return operator()(Source&&... args) const {
-        if (PyType_IsSubtype(Py_TYPE(m_ptr), &PyFunction::type)) {
-            PyFunction* func = reinterpret_cast<PyFunction*>(m_ptr);
-            if constexpr (std::is_void_v<Return>) {
-                invoke_cpp(
-                    func->defaults,
-                    func->func,
-                    std::forward<Source>(args)...
-                );
-            } else {
-                return invoke_cpp(
-                    func->defaults,
-                    func->func,
-                    std::forward<Source>(args)...
-                );
-            }
+        if constexpr (std::is_void_v<Return>) {
+            invoke_py(m_ptr, std::forward<Source>(args)...);
         } else {
-            if constexpr (std::is_void_v<Return>) {
-                invoke_py(m_ptr, std::forward<Source>(args)...);
-            } else {
-                return invoke_py(m_ptr, std::forward<Source>(args)...);
-            }
+            return invoke_py(m_ptr, std::forward<Source>(args)...);
         }
     }
 
@@ -2861,7 +3013,7 @@ Function(std::string, std::string, F, D...) -> Function<
 
 
 // TODO: if default specialization is given, type checks should be fully generic, right?
-// issubclass<T, Function>() should check impl::is_callable_any<T>;
+// issubclass<T, Function<>>() should check impl::is_callable_any<T>;
 
 template <typename T, typename R, typename... A>
 struct __issubclass__<T, Function<R(A...)>>                 : Returns<bool> {
@@ -2893,6 +3045,37 @@ struct __isinstance__<T, Function<R(A...)>>                  : Returns<bool> {
     }
 };
 
+
+/* Construct a py::Function from a valid C++ function with the templated signature.
+Use CTAD to deduce the signature if not explicitly provided.  If the signature
+contains default value annotations, they must be specified here. */
+template <typename Return, typename... Target, typename Func, typename... Values>
+    requires (
+        !impl::python_like<Func> &&
+        std::is_invocable_r_v<Return, Func, Target...> &&
+        Function<Return(Target...)>::Defaults::template enable<Values...>
+    )
+struct __init__<Function<Return(Target...)>, Func, Values...> {
+    using type = Function<Return(Target...)>;
+    static type operator()(Func&& func, Values&&... defaults) {
+        // PyObject* result = py::Type<type>::__python__::__create__(  // TODO: eventually this should work
+        //     "",
+        //     "",
+        //     std::function(std::forward<Func>(func)),
+        //     typename type::Defaults(std::forward<Values>(defaults)...)
+        // );
+        PyObject* result = type::PyFunction::__create__(
+            "",
+            "",
+            std::function(std::forward<Func>(func)),
+            typename type::Defaults(std::forward<Values>(defaults)...)
+        );
+        if (result == nullptr) {
+            throw Exception{};
+        }
+        return reinterpret_steal<type>(result);
+    }
+};
 
 
 namespace impl {

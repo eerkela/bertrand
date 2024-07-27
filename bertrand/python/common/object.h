@@ -9,21 +9,9 @@
 namespace py {
 
 
-namespace impl {
-
-    /* Standardized error message for type narrowing via the generic Object wrapper. */
-    template <typename Derived>
-    TypeError noconvert(PyObject* obj) {
-        std::ostringstream msg;
-        msg << "cannot convert python object from type '"
-            << Py_TYPE(obj)->tp_name
-            << "' to type '"
-            << reinterpret_cast<PyTypeObject*>(ptr(Derived::type))->tp_name
-            << "'";
-        return TypeError(msg.str());
-    }
-
-}
+//////////////////////
+////    HANDLE    ////
+//////////////////////
 
 
 /* A non-owning reference to a raw Python object. */
@@ -152,6 +140,23 @@ public:
 };
 
 
+[[nodiscard]] inline PyObject* ptr(Handle obj) {
+    return obj.m_ptr;
+}
+
+
+[[nodiscard]] inline PyObject* release(Handle obj) {
+    PyObject* temp = obj.m_ptr;
+    obj.m_ptr = nullptr;
+    return temp;
+}
+
+
+//////////////////////
+////    OBJECT    ////
+//////////////////////
+
+
 /* An owning reference to a dynamically-typed Python object. */
 class Object : public Handle {
 protected:
@@ -164,7 +169,6 @@ protected:
     friend T reinterpret_steal(Handle);
 
 public:
-    static const Type type;
 
     /* Default constructor.  Initializes to None. */
     Object() : Handle((Interpreter::init(), Py_NewRef(Py_None))) {}
@@ -244,18 +248,6 @@ public:
 };
 
 
-[[nodiscard]] inline PyObject* ptr(Handle obj) {
-    return obj.m_ptr;
-}
-
-
-[[nodiscard]] inline PyObject* release(Handle obj) {
-    PyObject* temp = obj.m_ptr;
-    obj.m_ptr = nullptr;
-    return temp;
-}
-
-
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_borrow(Handle obj) {
     return T(obj, Object::borrowed_t{});
@@ -325,14 +317,20 @@ struct __cast__<From, To>                                   : Returns<To> {
         if (isinstance<To>(from)) {
             return reinterpret_borrow<To>(ptr(from));
         } else {
-            throw impl::noconvert<To>(ptr(from));
+            throw TypeError(
+                "cannot convert Python object from type '" + repr(Type<From>()) +
+                 "' to type '" + repr(Type<To>()) + "'"
+            );
         }
     }
     static auto operator()(From&& from) {
         if (isinstance<To>(from)) {
             return reinterpret_steal<To>(release(from));
         } else {
-            throw impl::noconvert<To>(ptr(from));
+            throw TypeError(
+                "cannot convert Python object from type '" + repr(Type<From>()) +
+                 "' to type '" + repr(Type<To>()) + "'"
+            );
         }
     }
 };
@@ -432,6 +430,208 @@ template <std::derived_from<Object> From, typename To>
 struct __explicit_cast__<From, To>                          : Returns<To> {
     static auto operator()(const From& from) {
         return static_cast<To>(static_cast<typename __as_object__<To>::type>(from));
+    }
+};
+
+
+////////////////////
+////    TYPE    ////
+////////////////////
+
+
+/* A reference to a Python type object.  Every subclass of `py::Object` has a
+corresponding specialization, which is used to replicate the python `type` statement in
+C++.  Specializations can use this opportunity to statically type the object's fields
+and/or define a custom CPython type to back the `py::Object` subclass itself. */
+template <typename T = Object>
+class Type : public Object, public impl::TypeTag {
+    static_assert(
+        std::derived_from<T, Object>,
+        "Type can only be specialized for a subclass of py::Object.  Use "
+        "`__as_object__` to redirect C++ types to their corresponding `py::Object` "
+        "class."
+    );
+
+    using Base = Object;
+    using Self = Type;
+
+public:
+
+    Type(Handle h, borrowed_t t) : Base(h, t) {}
+    Type(Handle h, stolen_t t) : Base(h, t) {}
+
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<Type, __init__<Type, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Type, std::remove_cvref_t<Args>...>::enable
+        )
+    Type(Args&&... args) : Base((
+        Interpreter::init(),
+        __init__<Type, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    )) {}
+
+    template <typename... Args>
+        requires (
+            !__init__<Type, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Type, __explicit_init__<Type, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Type, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Type(Args&&... args) : Base((
+        Interpreter::init(),
+        __explicit_init__<Type, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    )) {}
+
+};
+
+
+/* Allow py::Type<> to be templated on C++ types by redirecting to the equivalent
+Python type. */
+template <typename T> requires (!std::derived_from<T, Object> && __as_object__<T>::enable)
+class Type<T> : public Type<typename __as_object__<T>::type> {};
+
+
+/* Explicitly call py::Type(obj) to deduce the Python type of an arbitrary object. */
+template <typename T> requires (__as_object__<T>::enable)
+explicit Type(const T&) -> Type<typename __as_object__<T>::type>;
+
+
+/* `isinstance()` is already implemented for all `py::Type` subclasses.  It first does
+a compile time check to see whether the argument is Python-compatible and inherits from
+the templated type, and then follows up with a Python-level `isinstance()` check only
+if necessary. */
+template <typename T, typename Cls>
+struct __isinstance__<T, Type<Cls>>                      : Returns<bool> {
+    static consteval bool operator()(const T& obj) {
+        return __as_object__<T>::enable &&
+            std::derived_from<typename __as_object__<T>::type, Cls>;
+    }
+    static constexpr bool operator()(const T& obj, const Type<Cls>& cls) {
+        if constexpr (operator()()) {
+            int result = PyObject_IsInstance(
+                ptr(as_object(obj)),
+                ptr(cls)
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return false;
+        }
+    }
+};
+
+
+/* `issubclass()` is already implemented for all `py::Type` subclasses.  It first does
+a compile time check to see whether the argument is Python-compatible and inherits from
+the templated type, and then follows up with a Python-level `isinstance()` check only
+if necessary */
+template <typename T, typename Cls>
+struct __issubclass__<T, Type<Cls>>                        : Returns<bool> {
+    static consteval bool operator()() {
+        return __as_object__<T>::enable &&
+            std::derived_from<typename __as_object__<T>::type, Cls>;
+    }
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (operator()() && impl::type_like<T>) {
+            int result = PyObject_IsSubclass(
+                ptr(as_object(obj)),
+                ptr(Type<Cls>())
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+        } else {
+            return false;
+        }
+    }
+    static constexpr bool operator()(const T& obj, const Type<Cls>& cls) {
+        if constexpr (operator()()) {
+            int result = PyObject_IsSubclass(
+                ptr(as_object(obj)),
+                ptr(cls)
+            );
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return false;
+        }
+    }
+};
+
+
+/* Implement the CTAD guide by default-initializing the corresponding py::Type. */
+template <typename T>
+    requires (
+        __as_object__<T>::enable &&
+        __init__<Type<typename __as_object__<T>::type>>::enable
+    )
+struct __explicit_init__<Type<typename __as_object__<T>::type>, T> {
+    static auto operator()(const T& obj) {
+        return Type<typename __as_object__<T>::type>();
+    }
+};
+
+
+/* The dynamic py::Type<py::Object> can be invoked to create a new dynamic type by
+calling the `type` metaclass. */
+template <
+    std::convertible_to<py::Str> Name,
+    std::convertible_to<py::Tuple<py::Type<py::Object>>> Bases,
+    std::convertible_to<py::Dict<py::Str, py::Object>> Dict
+>
+struct __explicit_init__<Type<Object>, Name, Bases, Dict> {
+    static auto operator()(
+        const py::Str& name,
+        const py::Tuple<py::Type<py::Object>>& bases,
+        const py::Dict<py::Str, py::Object>& dict
+    );
+};
+
+
+/* Specialized py::Types can be invoked to create new dynamic types by calling the
+templated type's metaclass.  Note that this restricts the type to single inheritance. */
+template <
+    typename T,
+    std::convertible_to<py::Str> Name,
+    std::convertible_to<py::Dict<Str, Object>> Dict
+>
+    requires (
+        __as_object__<T>::enable &&
+        __init__<Type<typename __as_object__<T>::type>>::enable
+    )
+struct __explicit_init__<Type<T>, Name, Dict> {
+    static auto operator()(
+        const Str& name,
+        const py::Dict<Str, Object>& dict
+    );
+};
+
+
+/* NOTE: subclasses should always provide a default constructor for their corresponding
+`py::Type` specialization.  This should always just borrow a reference to some existing
+PyTypeObject* instance, which might be a custom type defined through the CPython API.
+*/
+
+
+template <>
+struct __init__<Type<Object>> {
+    static auto operator()() {
+        return reinterpret_borrow<Type<Object>>(reinterpret_cast<PyObject*>(
+            &PyBaseObject_Type
+        ));
+    }
+};
+
+
+template <>
+struct __init__<Type<Type<Object>>> {
+    static auto operator()() {
+        return reinterpret_borrow<Type<Type<Object>>>(reinterpret_cast<PyObject*>(
+            &PyType_Type
+        ));
     }
 };
 

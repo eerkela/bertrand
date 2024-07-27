@@ -9,6 +9,11 @@
 namespace py {
 
 
+namespace impl {
+    static PyObject* one = (Interpreter::init(), PyLong_FromLong(1));
+}
+
+
 /* Convert an arbitrary C++ value to an equivalent Python object if it isn't one
 already. */
 template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
@@ -35,122 +40,81 @@ template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
 
 
 /* Equivalent to Python `isinstance(obj, base)`. */
-template <typename Derived, typename Base> requires (
-    std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, const Derived&, const Base&>
-)
+template <typename Derived, typename Base>
+    requires (std::is_invocable_r_v<
+        bool,
+        __isinstance__<Derived, Base>,
+        const Derived&,
+        const Base&
+    >)
 [[nodiscard]] constexpr bool isinstance(const Derived& obj, const Base& base) {
-    return __isinstance__<Derived, Base>{}(obj, base);
+    if constexpr (impl::proxy_like<Derived>) {
+        return isinstance(obj.value(), base);
+    } else if constexpr (impl::proxy_like<Base>) {
+        return isinstance(obj, base.value());
+    } else {
+        return __isinstance__<Derived, Base>{}(obj, base);
+    }
 }
 
 
 /* Equivalent to Python `isinstance(obj, base)`, except that base is given as a
 template parameter for which __isinstance__ has been specialized. */
-template <typename Base, typename Derived> requires (
-    std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, const Derived&>
-)
+template <typename Base, typename Derived>
+    requires (std::is_invocable_r_v<
+        bool,
+        __isinstance__<Derived, Base>,
+        const Derived&
+    >)
 [[nodiscard]] constexpr bool isinstance(const Derived& obj) {
-    // if constexpr (impl::cpp_like<Derived>) {
-    //     return issubclass<Derived, Base>();
-
-    // } else if constexpr (issubclass<Derived, Base>()) {
-    //     return ptr(obj) != nullptr;
-
-    // } else if constexpr (impl::has_call_operator<__isinstance__<Derived, Base>>) {
-    //     return __isinstance__<Derived, Base>{}(obj);
-
-    // } else if (impl::is_object_exact<Derived>) {
-    //     if (ptr(obj) == nullptr) {
-    //         return false;
-    //     }
-    //     // int result = PyObject_IsInstance(ptr(obj), ptr(Base::type));
-    //     int result = PyObject_IsInstance(ptr(obj), ptr(py::Type::of<Base>()));
-    //     if (result == -1) {
-    //         Exception::from_python();
-    //     }
-    //     return result;
-
-    // } else {
-    //     return false;
-    // }
-
-    return __isinstance__<Derived, Base>{}(obj);
+    if constexpr (impl::proxy_like<Derived>) {
+        return isinstance<Base>(obj.value());
+    } else {
+        return __isinstance__<Derived, Base>{}(obj);
+    }
 }
 
 
-/* py::Type<T> specifically refers to the Python type of the templated C++ wrapper, so:
- *
- * py::Type<Int>() == PyLong_Type
- * py::Type<Float>() == PyFloat_Type
- * py::Type<Str>() == PyUnicode_Type
- * etc.
- *
- * To represent a generic type, use py::Type<Object>() or py::Type<>().  If that is
- * called with a python object `py::Type(obj)`, then it will detect the object's
- * type at runtime.  If the object is statically typed, then a CTAD constructor will
- * resolve to the right type at compile time, which would just borrow a reference to
- * the right type.
- *
- * In order to get the type of a type (i.e. its metaclass), then you would just pass
- * Type<Type<T>>().
- *
- * TODO: this still runs into conflicts with copy/move constructors, so that would need
- * to be decided.  On the plus side, I would potentially be able to work this into the
- * automated bindings such that py::Type<T> is specialized for every C++ class that is
- * generated.  That way, py::Type<T> would always have the same interface as T itself,
- * and would translate correctly to python type(obj) semantics.
- *
- * Creating a new type at runtime would be possible through
- * py::Type<Object>(name, bases, dict).  This is not available from any other
- * specialization.
- *
- * That would allow you to do something like this: py::Type<py::List>().append, which
- * would be identical to the class-level list.append in Python.
- *
- * -> This is probably too complicated.  What if the templated type represented the
- * bases of the type?  That would potentially be a lot simpler, and you could list as
- * many as you wanted to reflect multiple inheritance.
- *
- * py::Type<Object> (the default) would represent a new subclass of object (i.e. a
- * `class MyClass(Object):` statement in Python).  Creating a dynamic type is then as
- * simple as specifying a supertype and the inheriting class's namespace.
- *
- *  py::Type<py::List<py::Int>> MyList(
- *      "MyList",
- *      {
- *          {"append", [](const py::Int& value) {
- *              // do some stuff
- *              py::List<py::Int>::append(value);
- *          }}
- *      }
- *  );
- */
-
-
-
 /* Equivalent to Python `issubclass(obj, base)`. */
-template <typename Derived, typename Base> requires (
-    std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, const Derived&, const Base&>
-)
+template <typename Derived, typename Base>
+    requires (std::is_invocable_r_v<
+        bool,
+        __issubclass__<Derived, Base>,
+        const Derived&,
+        const Base&
+    >)
 [[nodiscard]] bool issubclass(const Derived& obj, const Base& base) {
-    return __issubclass__<Derived, Base>{}(obj, base);
+    if constexpr (impl::proxy_like<Derived>) {
+        return issubclass(obj.value(), base);
+    } else if constexpr (impl::proxy_like<Base>) {
+        return issubclass(obj, base.value());
+    } else {
+        return __issubclass__<Derived, Base>{}(obj, base);
+    }
 }
 
 
 /* Equivalent to Python `issubclass(obj, base)`, except that the base is given as a
 template parameter, marking the check as `constexpr`. */
-template <typename Base, typename Derived> requires (
-    std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, const Derived&>
-)
+template <typename Base, typename Derived>
+    requires (std::is_invocable_r_v<
+        bool,
+        __issubclass__<Derived, Base>,
+        const Derived&
+    >)
 [[nodiscard]] constexpr bool issubclass(const Derived& obj) {
-    return __issubclass__<Derived, Base>{}(obj);
+    if constexpr (impl::proxy_like<Derived>) {
+        return issubclass<Base>(obj.value());
+    } else {
+        return __issubclass__<Derived, Base>{}(obj);
+    }
 }
 
 
 /* Equivalent to Python `issubclass(obj, base)`, except that both arguments are given
 as template parameters, marking the check as `consteval`. */
-template <typename Derived, typename Base> requires (
-    std::is_invocable_r_v<bool, __issubclass__<Derived, Base>>
-)
+template <typename Derived, typename Base>
+    requires (std::is_invocable_r_v<bool, __issubclass__<Derived, Base>>)
 [[nodiscard]] consteval bool issubclass() {
     return __issubclass__<Derived, Base>{}();
 }
@@ -159,14 +123,20 @@ template <typename Derived, typename Base> requires (
 /* Equivalent to Python `hasattr(obj, name)` with a static attribute name. */
 template <StaticStr name, typename T>
 [[nodiscard]] consteval bool hasattr(const T& obj) {
-    return __getattr__<T, name>::enable;
+    if constexpr (impl::proxy_like<T>) {
+        return hasattr<name>(obj.value());
+    } else {
+        return __getattr__<T, name>::enable;
+    }
 }
 
 
 /* Equivalent to Python `getattr(obj, name)` with a static attribute name. */
 template <StaticStr name, typename T> requires (__getattr__<T, name>::enable)
 [[nodiscard]] auto getattr(const T& obj) -> __getattr__<T, name>::type {
-    if constexpr (impl::has_call_operator<__getattr__<T, name>>) {
+    if constexpr (impl::proxy_like<T>) {
+        return getattr<name>(obj.value());
+    } else if constexpr (impl::has_call_operator<__getattr__<T, name>>) {
         return __getattr__<T, name>{}(obj);
     } else {
         PyObject* result = PyObject_GetAttr(ptr(obj), impl::TemplateString<name>::ptr);
@@ -185,7 +155,9 @@ template <StaticStr name, typename T> requires (__getattr__<T, name>::enable)
     const T& obj,
     const typename __getattr__<T, name>::type& default_value
 ) -> __getattr__<T, name>::type {
-    if constexpr (impl::has_call_operator<__getattr__<T, name>>) {
+    if constexpr (impl::proxy_like<T>) {
+        return getattr<name>(obj.value(), default_value);
+    } else if constexpr (impl::has_call_operator<__getattr__<T, name>>) {
         return __getattr__<T, name>{}(obj, default_value);
     } else {
         PyObject* result = PyObject_GetAttr(ptr(obj), impl::TemplateString<name>::ptr);
@@ -201,7 +173,9 @@ template <StaticStr name, typename T> requires (__getattr__<T, name>::enable)
 /* Equivalent to Python `setattr(obj, name, value)` with a static attribute name. */
 template <StaticStr name, typename T, typename V> requires (__setattr__<T, name, V>::enable)
 void setattr(const T& obj, const V& value) {
-    if constexpr (impl::has_call_operator<__setattr__<T, name, V>>) {
+    if constexpr (impl::proxy_like<T>) {
+        setattr<name>(obj.value(), value);
+    } else if constexpr (impl::has_call_operator<__setattr__<T, name, V>>) {
         __setattr__<T, name, V>{}(obj, value);
     } else {
         if (PyObject_SetAttr(
@@ -218,7 +192,9 @@ void setattr(const T& obj, const V& value) {
 /* Equivalent to Python `delattr(obj, name)` with a static attribute name. */
 template <StaticStr name, typename T> requires (__delattr__<T, name>::enable)
 void delattr(const T& obj) {
-    if constexpr (impl::has_call_operator<__delattr__<T, name>>) {
+    if constexpr (impl::proxy_like<T>) {
+        delattr<name>(obj.value());
+    } else if constexpr (impl::has_call_operator<__delattr__<T, name>>) {
         __delattr__<T, name>{}(obj);
     } else {
         if (PyObject_DelAttr(ptr(obj), impl::TemplateString<name>::ptr) < 0) {
@@ -260,7 +236,10 @@ represent C++ types using std::to_string or the stream insertion operator (<<). 
 else fails, falls back to typeid(obj).name(). */
 template <typename T>
 [[nodiscard]] std::string repr(const T& obj) {
-    if constexpr (impl::has_stream_insertion<T>) {
+    if constexpr (impl::proxy_like<T>) {
+        return repr(obj.value());
+
+    } else if constexpr (impl::has_stream_insertion<T>) {
         std::ostringstream stream;
         stream << obj;
         return stream.str();
@@ -309,7 +288,9 @@ template <typename T> requires (__len__<T>::enable)
         "containers.  Check your specialization of __len__ for these types "
         "and ensure the Return type is set to size_t."
     );
-    if constexpr (impl::has_call_operator<__len__<T>>) {
+    if constexpr (impl::proxy_like<T>) {
+        return len(obj.value());
+    } else if constexpr (impl::has_call_operator<__len__<T>>) {
         return __len__<T>{}(obj);
     } else {
         Py_ssize_t size = PyObject_Length(ptr(as_object(obj)));
@@ -540,142 +521,139 @@ template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
 // }
 
 
-namespace impl {
-
-    PyObject* one = (Interpreter::init(), PyLong_FromLong(1));
-
-    template <typename L, typename R> requires (__floordiv__<L, R>::enable)
-    auto floordiv(const L& lhs, const R& rhs) {
-        using Return = typename __floordiv__<L, R>::type;
-        static_assert(
-            std::derived_from<Return, Object>,
-            "Floor division operator must return a py::Object subclass.  Check your "
-            "specialization of __floordiv__ for these types and ensure the Return "
-            "type is derived from py::Object."
+template <typename L, typename R> requires (__floordiv__<L, R>::enable)
+auto floordiv(const L& lhs, const R& rhs) {
+    using Return = typename __floordiv__<L, R>::type;
+    static_assert(
+        std::derived_from<Return, Object>,
+        "Floor division operator must return a py::Object subclass.  Check your "
+        "specialization of __floordiv__ for these types and ensure the Return "
+        "type is derived from py::Object."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        return floordiv(lhs.value(), rhs);
+    } else if constexpr (impl::proxy_like<R>) {
+        return floordiv(lhs, rhs.value());
+    } else if constexpr (impl::has_call_operator<__floordiv__<L, R>>) {
+        return __floordiv__<L, R>{}(lhs, rhs);
+    } else {
+        PyObject* result = PyNumber_FloorDivide(
+            ptr(as_object(lhs)),
+            ptr(as_object(rhs))
         );
-        if constexpr (impl::proxy_like<L>) {
-            return floordiv(lhs.value(), rhs);
-        } else if constexpr (impl::proxy_like<R>) {
-            return floordiv(lhs, rhs.value());
-        } else if constexpr (impl::has_call_operator<__floordiv__<L, R>>) {
-            return __floordiv__<L, R>{}(lhs, rhs);
-        } else {
-            PyObject* result = PyNumber_FloorDivide(
-                ptr(as_object(lhs)),
-                ptr(as_object(rhs))
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Return>(result);
+        if (result == nullptr) {
+            Exception::from_python();
         }
+        return reinterpret_steal<Return>(result);
     }
-
-    template <std::derived_from<Object> L, typename R> requires (__ifloordiv__<L, R>::enable)
-    L& ifloordiv(L& lhs, const R& rhs) {
-        using Return = typename __ifloordiv__<L, R>::type;
-        static_assert(
-            std::same_as<Return, L&>,
-            "In-place floor division operator must return a mutable reference to the "
-            "left operand.  Check your specialization of __ifloordiv__ for these "
-            "types and ensure the Return type is set to the left operand."
-        );
-        if constexpr (impl::proxy_like<L>) {
-            ifloordiv(lhs.value(), rhs);
-        } else if constexpr (impl::proxy_like<R>) {
-            ifloordiv(lhs, rhs.value());
-        } else if constexpr (impl::has_call_operator<__ifloordiv__<L, R>>) {
-            __ifloordiv__<L, R>{}(lhs, rhs);
-        } else {
-            PyObject* result = PyNumber_InPlaceFloorDivide(
-                ptr(lhs),
-                ptr(as_object(rhs))
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(lhs)) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<Return>(result);
-            }
-        }
-        return lhs;
-    }
-
-    /* Represents a keyword parameter pack obtained by double-dereferencing a Python
-    object. */
-    template <std::derived_from<Object> T> requires (mapping_like<T>)
-    struct KwargPack {
-        using key_type = T::key_type;
-        using mapped_type = T::mapped_type;
-
-        T value;
-
-    private:
-
-        static constexpr bool can_iterate =
-            impl::yields_pairs_with<T, key_type, mapped_type> ||
-            impl::has_items<T> ||
-            (impl::has_keys<T> && impl::has_values<T>) ||
-            (impl::yields<T, key_type> && impl::lookup_yields<T, key_type, mapped_type>) ||
-            (impl::has_keys<T> && impl::lookup_yields<T, key_type, mapped_type>);
-
-
-        auto transform() const {
-            if constexpr (impl::yields_pairs_with<T, key_type, mapped_type>) {
-                return value;
-
-            } else if constexpr (impl::has_items<T>) {
-                return value.items();
-
-            } else if constexpr (impl::has_keys<T> && impl::has_values<T>) {
-                return std::ranges::views::zip(value.keys(), value.values());
-
-            } else if constexpr (
-                impl::yields<T, key_type> && impl::lookup_yields<T, key_type, mapped_type>
-            ) {
-                return std::ranges::views::transform(value, [&](const key_type& key) {
-                    return std::make_pair(key, value[key]);
-                });
-
-            } else {
-                return std::ranges::views::transform(value.keys(), [&](const key_type& key) {
-                    return std::make_pair(key, value[key]);
-                });
-            }
-        }
-
-    public:
-
-        template <typename U = T> requires (can_iterate)
-        auto begin() const { return std::ranges::begin(transform()); }
-        template <typename U = T> requires (can_iterate)
-        auto cbegin() const { return begin(); }
-        template <typename U = T> requires (can_iterate)
-        auto end() const { return std::ranges::end(transform()); }
-        template <typename U = T> requires (can_iterate)
-        auto cend() const { return end(); }
-
-    };
-
-    /* Represents a positional parameter pack obtained by dereferencing a Python
-    object. */
-    template <std::derived_from<Object> T> requires (is_iterable<T>)
-    struct ArgPack {
-        T value;
-
-        auto begin() const { return std::ranges::begin(value); }
-        auto cbegin() const { return begin(); }
-        auto end() const { return std::ranges::end(value); }
-        auto cend() const { return end(); }
-
-        template <typename U = T> requires (mapping_like<U>)
-        auto operator*() const {
-            return KwargPack<U>{value};
-        }        
-    };
-
 }
+
+
+template <std::derived_from<Object> L, typename R> requires (__ifloordiv__<L, R>::enable)
+L& ifloordiv(L& lhs, const R& rhs) {
+    using Return = typename __ifloordiv__<L, R>::type;
+    static_assert(
+        std::same_as<Return, L&>,
+        "In-place floor division operator must return a mutable reference to the "
+        "left operand.  Check your specialization of __ifloordiv__ for these "
+        "types and ensure the Return type is set to the left operand."
+    );
+    if constexpr (impl::proxy_like<L>) {
+        ifloordiv(lhs.value(), rhs);
+    } else if constexpr (impl::proxy_like<R>) {
+        ifloordiv(lhs, rhs.value());
+    } else if constexpr (impl::has_call_operator<__ifloordiv__<L, R>>) {
+        __ifloordiv__<L, R>{}(lhs, rhs);
+    } else {
+        PyObject* result = PyNumber_InPlaceFloorDivide(
+            ptr(lhs),
+            ptr(as_object(rhs))
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(lhs)) {
+            Py_DECREF(result);
+        } else {
+            lhs = reinterpret_steal<Return>(result);
+        }
+    }
+    return lhs;
+}
+
+
+/* Represents a keyword parameter pack obtained by double-dereferencing a Python
+object. */
+template <std::derived_from<Object> T> requires (impl::mapping_like<T>)
+struct KwargPack {
+    using key_type = T::key_type;
+    using mapped_type = T::mapped_type;
+
+    T value;
+
+private:
+
+    static constexpr bool can_iterate =
+        impl::yields_pairs_with<T, key_type, mapped_type> ||
+        impl::has_items<T> ||
+        (impl::has_keys<T> && impl::has_values<T>) ||
+        (impl::yields<T, key_type> && impl::lookup_yields<T, key_type, mapped_type>) ||
+        (impl::has_keys<T> && impl::lookup_yields<T, key_type, mapped_type>);
+
+
+    auto transform() const {
+        if constexpr (impl::yields_pairs_with<T, key_type, mapped_type>) {
+            return value;
+
+        } else if constexpr (impl::has_items<T>) {
+            return value.items();
+
+        } else if constexpr (impl::has_keys<T> && impl::has_values<T>) {
+            return std::ranges::views::zip(value.keys(), value.values());
+
+        } else if constexpr (
+            impl::yields<T, key_type> && impl::lookup_yields<T, key_type, mapped_type>
+        ) {
+            return std::ranges::views::transform(value, [&](const key_type& key) {
+                return std::make_pair(key, value[key]);
+            });
+
+        } else {
+            return std::ranges::views::transform(value.keys(), [&](const key_type& key) {
+                return std::make_pair(key, value[key]);
+            });
+        }
+    }
+
+public:
+
+    template <typename U = T> requires (can_iterate)
+    auto begin() const { return std::ranges::begin(transform()); }
+    template <typename U = T> requires (can_iterate)
+    auto cbegin() const { return begin(); }
+    template <typename U = T> requires (can_iterate)
+    auto end() const { return std::ranges::end(transform()); }
+    template <typename U = T> requires (can_iterate)
+    auto cend() const { return end(); }
+
+};
+
+
+/* Represents a positional parameter pack obtained by dereferencing a Python
+object. */
+template <std::derived_from<Object> T> requires (impl::is_iterable<T>)
+struct ArgPack {
+    T value;
+
+    auto begin() const { return std::ranges::begin(value); }
+    auto cbegin() const { return begin(); }
+    auto end() const { return std::ranges::end(value); }
+    auto cend() const { return end(); }
+
+    template <typename U = T> requires (impl::mapping_like<U>)
+    auto operator*() const {
+        return KwargPack<U>{value};
+    }        
+};
 
 
 template <std::derived_from<Object> Self> requires (__iter__<Self>::enable)
@@ -683,7 +661,7 @@ template <std::derived_from<Object> Self> requires (__iter__<Self>::enable)
     if constexpr (impl::proxy_like<Self>) {
         return *self.value();
     } else {
-        return impl::ArgPack<Self>{self};
+        return ArgPack<Self>{self};
     }
 }
 
@@ -1891,9 +1869,10 @@ namespace std {
             "Check your specialization of __hash__ for this type and ensure the "
             "Return type is set to size_t."
         );
-
-        static size_t operator()(const T& obj) {
-            if constexpr (py::impl::has_call_operator<py::__hash__<T>>) {
+        static constexpr size_t operator()(const T& obj) {
+            if constexpr (py::impl::proxy_like<T>) {
+                return hash<py::impl::unwrap_proxy<T>>{}(obj.value());
+            } else if constexpr (py::impl::has_call_operator<py::__hash__<T>>) {
                 return py::__hash__<T>{}(obj);
             } else {
                 Py_ssize_t result = PyObject_Hash(py::ptr(obj));
