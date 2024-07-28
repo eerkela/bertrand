@@ -382,11 +382,6 @@ namespace impl {
         __getattr__<T, Name>::enable &&
         __getattr__<T, Name>::type::template invocable<Args...>;
 
-    template <typename T, typename... Args>
-    concept pytype_is_constructible_with =
-        attr_is_callable_with<T, "__init__", Args...> ||
-        attr_is_callable_with<T, "__new__", Args...>;
-
     template <typename From, typename To>
     concept has_conversion_operator = requires(From&& from) {
         from.operator To();

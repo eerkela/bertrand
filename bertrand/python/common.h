@@ -681,6 +681,50 @@ auto Object::operator[](
 }
 
 
+/* Fall back to the python-level __init__/__new__ constructors if no other constructor
+is available. */
+template <std::derived_from<Object> Self, typename... Args>
+    requires (
+        !__init__<Self, Args...>::enable &&
+        !__explicit_init__<Self, Args...>::enable &&
+        impl::attr_is_callable_with<Self, "__init__", Args...> ||
+        impl::attr_is_callable_with<Self, "__new__", Args...>
+    )
+struct __explicit_init__<Type<Self>, Args...>                  : Returns<Self> {
+    static auto operator()(const Type<Self>& self, Args&&... args) {
+        static_assert(
+            impl::attr_is_callable_with<Self, "__init__", Args...> ||
+            impl::attr_is_callable_with<Self, "__new__", Args...>,
+            "Type must have either an __init__ or __new__ method that is callable "
+            "with the given arguments."
+        );
+
+        PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(ptr(self));
+
+        auto collect = [&cls](
+            Arg<"args", Object>::args args,
+            Arg<"kwargs", Object>::kwargs kwargs
+        ) {
+            PyObject* result = cls->tp_new(cls, ptr(args), ptr(kwargs));
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            cls->tp_init(result, ptr(args), ptr(kwargs));
+            if (PyErr_Occurred()) {
+                Py_DECREF(result);
+                Exception::from_python();
+            }
+            return reinterpret_steal<Self>(result);
+        };
+
+        return Function<decltype(collect)>::invoke_cpp(
+            collect,
+            std::forward<Args>(args)...
+        );
+    }
+};
+
+
 /* Invoke a type's metaclass to dynamically create a new Python type.  This 2-argument
 form allows the base type to be specified as the template argument, and restricts the
 type to single inheritance. */
@@ -739,41 +783,6 @@ struct __explicit_init__<Type<Object>, Args...> {
         );
     }
 };
-
-
-template <typename T, typename... Args>
-    requires (impl::pytype_is_constructible_with<T, Args...>)
-auto __call__<Type<T>, Args...>::operator()(const Type<T>& self, Args&&... args) {
-    static_assert(
-        impl::attr_is_callable_with<T, "__init__", Args...> ||
-        impl::attr_is_callable_with<T, "__new__", Args...>,
-        "Type must have either an __init__ or __new__ method that is callable "
-        "with the given arguments."
-    );
-
-    PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(ptr(self));
-
-    auto collect = [&cls](
-        py::Arg<"args", py::Object>::args args,
-        py::Arg<"kwargs", py::Object>::kwargs kwargs
-    ) {
-        PyObject* result = cls->tp_new(cls, ptr(args), ptr(kwargs));
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        cls->tp_init(result, ptr(args), ptr(kwargs));
-        if (PyErr_Occurred()) {
-            Py_DECREF(result);
-            Exception::from_python();
-        }
-        return reinterpret_steal<T>(result);
-    };
-
-    return py::Function<decltype(collect)>::invoke_cpp(
-        collect,
-        std::forward<Args>(args)...
-    );
-}
 
 
 }  // namespace py

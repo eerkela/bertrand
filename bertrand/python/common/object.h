@@ -215,16 +215,6 @@ public:
         )
     )) {}
 
-    /* Delegating constructor using __getattr__<Object, "__init__"> and
-    __getattr__<Object, "__new__">. */
-    template <typename... Args>
-        requires (
-            !__init__<Object, std::remove_cvref_t<Args>...>::enable &&
-            !__explicit_init__<Object, std::remove_cvref_t<Args>...>::enable &&
-            impl::pytype_is_constructible_with<Object, Args...>
-        )
-    explicit Object(Args&&... args);
-
     /* Destructor.  Allows any object to be stored with static duration. */
     ~Object() noexcept {
         if (Py_IsInitialized()) {
@@ -307,6 +297,9 @@ struct __isinstance__<T, Object>                            : Returns<bool> {
         return result;
     }
 };
+
+
+/// NOTE: additional delegating constructors for py::Object are defined later in common.h
 
 
 /* Default initialize py::Object to None. */
@@ -580,6 +573,9 @@ struct __issubclass__<T, Type<Cls>>                        : Returns<bool> {
 };
 
 
+/// NOTE: additional metaclass constructors for py::Type are defined later in common.h
+
+
 /* Implement the CTAD guide by default-initializing the corresponding py::Type. */
 template <typename T>
     requires (
@@ -593,15 +589,12 @@ struct __explicit_init__<Type<typename __as_object__<T>::type>, T> {
 };
 
 
-/// NOTE: additional metaclass constructors for py::Type are defined later in common.h
-
-
-/* Calling a py::Type produces an instance of the templated type by invoking the
-Python-level __init__/__new__ methods. */
-template <typename T, typename... Args>
-    requires (impl::pytype_is_constructible_with<T, Args...>)
+/* Calling a py::Type is the same as invoking the templated type's constructor. */
+template <typename T, typename... Args> requires (std::constructible_from<T, Args...>)
 struct __call__<Type<T>, Args...>                           : Returns<T> {
-    static auto operator()(const Type<T>& self, Args&&... args);
+    static auto operator()(const Type<T>& self, Args&&... args) {
+        return T(std::forward<Args>(args)...);
+    }
 };
 
 
@@ -629,17 +622,6 @@ struct __init__<Type<Type<Object>>>                         : Returns<Type<Type<
         ));
     }
 };
-
-
-template <typename... Args>
-    requires (
-        !__init__<Object, std::remove_cvref_t<Args>...>::enable &&
-        !__explicit_init__<Object, std::remove_cvref_t<Args>...>::enable &&
-        impl::pytype_is_constructible_with<Object, Args...>
-    )
-Object::Object(Args&&... args) : Handle((Interpreter::init(), Type<Object>()(
-    std::forward<Args>(args)...
-))) {}
 
 
 }  // namespace py

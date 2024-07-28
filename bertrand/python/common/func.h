@@ -3158,6 +3158,61 @@ namespace impl {
 }
 
 
+/////////////////////////
+////    OVERLOADS    ////
+/////////////////////////
+
+
+/* An Python-compatible overload set that dispatches to a collection of functions using
+an efficient trie-based data structure. */
+class Overload : public Object {
+    using Base = Object;
+
+public:
+
+    Overload(Handle h, borrowed_t) : Base(h, borrowed_t{}) {}
+    Overload(Handle h, stolen_t) : Base(h, stolen_t{}) {}
+
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<
+                Overload,
+                __init__<Overload, std::remove_cvref_t<Args>...>,
+                Args...
+            >
+        )
+    Overload(Args&&... args) : Base((
+        Interpreter::init(),
+        __init__<Overload, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    )) {}
+
+    template <typename... Args>
+        requires (
+            !__init__<Overload, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<
+                Overload,
+                __explicit_init__<Overload, std::remove_cvref_t<Args>...>,
+                Args...
+            >
+        )
+    explicit Overload(Args&&... args) : Base((
+        Interpreter::init(),
+        __explicit_init__<Overload, std::remove_cvref_t<Args>...>{}(
+            std::forward<Args>(args)...
+        )
+    )) {}
+
+};
+
+
+template <>
+class Type<Overload> : public Object {
+
+
+};
+
+
+
 }  // namespace py
 
 
