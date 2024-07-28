@@ -1098,59 +1098,6 @@ inline void setattr(const Handle& obj, const Str& name, const Object& value) {
 ////////////////////////////////////
 
 
-template <
-    std::convertible_to<py::Str> Name,
-    std::convertible_to<py::Tuple<py::Type<py::Object>>> Bases,
-    std::convertible_to<py::Dict<py::Str, py::Object>> Dict
->
-auto __explicit_init__<Type<Object>, Name, Bases, Dict>::operator()(
-    const py::Str& name,
-    const py::Tuple<py::Type<py::Object>>& bases,
-    const py::Dict<py::Str, py::Object>& dict
-) {
-    PyObject* result = PyObject_CallFunctionObjArgs(
-        reinterpret_cast<PyObject*>(&PyType_Type),
-        ptr(name),
-        ptr(bases),
-        ptr(dict),
-        nullptr
-    );
-    if (result == nullptr) {
-        Exception::from_python();
-    }
-    return reinterpret_steal<Type<T>>(result);
-}
-
-
-template <
-    typename T,
-    std::convertible_to<py::Str> Name,
-    std::convertible_to<py::Dict<Str, Object>> Dict
->
-    requires (
-        __as_object__<T>::enable &&
-        __init__<Type<typename __as_object__<T>::type>>::enable
-    )
-auto __explicit_init__<Type<T>, Name, Dict>::operator()(
-    const Str& name,
-    const py::Dict<Str, Object>& dict
-) {
-    Type<T> self;
-    PyTypeObject* metaclass = Py_TYPE(ptr(self));
-    PyObject* result = PyObject_CallFunctionObjArgs(
-        reinterpret_cast<PyObject*>(metaclass),
-        ptr(name),
-        ptr(py::Tuple{self}),
-        ptr(dict),
-        nullptr
-    );
-    if (result == nullptr) {
-        Exception::from_python();
-    }
-    return reinterpret_steal<Type<T>>(result);
-}
-
-
 template <typename Func, typename... Defaults>
 Module& Module::def(const Str& name, const Str& doc, Func&& body, Defaults&&... defaults) {
     Function f(
@@ -1189,30 +1136,34 @@ inline Module Module::def_submodule(const Str& name, const Str& doc = "") {
 }
 
 
-inline PyObject* impl::PyFunctionBase::__class_getitem__(PyObject* cls, PyObject* spec) {
-    if (PyTuple_Check(spec)) {
-        Py_INCREF(spec);
+template <typename Derived, impl::is_generic CppType>
+inline PyObject* impl::Binding<Derived, CppType>::__class_getitem__(
+    Derived* self,
+    PyObject* key
+) {
+    if (PyTuple_Check(key)) {
+        Py_INCREF(key);
     } else {
-        PyObject* tuple = PyTuple_Pack(1, spec);
+        PyObject* tuple = PyTuple_Pack(1, key);
         if (tuple == nullptr) {
             return nullptr;
         }
-        spec = tuple;
+        key = tuple;
     }
     try {
-        py::Tuple tuple = reinterpret_steal<py::Tuple<Object>>(spec);
-        auto it = instances.find(tuple);
-        if (it == instances.end()) {
+        py::Tuple tuple = reinterpret_steal<py::Tuple<Object>>(key);
+        auto it = template_instantiations.find(tuple);
+        if (it == template_instantiations.end()) {
             // TODO: reconstruct the full __class_getitem__ call
             throw py::TypeError(
                 "class template has not been instantiated: " +
-                repr(spec)
+                repr(key)
             );
         }
         return Py_NewRef(ptr(it->second));
 
-    } catch(...) {
-        py::Exception::to_python();
+    } catch (...) {
+        Exception::to_python();
         return nullptr;
     }
 }

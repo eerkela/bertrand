@@ -299,9 +299,6 @@ struct __isinstance__<T, Object>                            : Returns<bool> {
 };
 
 
-/// NOTE: additional delegating constructors for py::Object are defined later in common.h
-
-
 /* Default initialize py::Object to None. */
 template <>
 struct __init__<Object> {
@@ -318,6 +315,9 @@ struct __init__<Object, T>                                  : Returns<Object> {
         return reinterpret_steal<Object>(release(as_object(value)));
     }
 };
+
+
+/// NOTE: additional delegating constructors for py::Object are defined in common.h
 
 
 /* Implicitly convert a py::Object (or any of its subclasses) into one of its
@@ -453,7 +453,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 /* A reference to a Python type object.  Every subclass of `py::Object` has a
 corresponding specialization, which is used to replicate the python `type` statement in
 C++.  Specializations can use this opportunity to statically type the object's fields
-and/or define a custom CPython type to back the `py::Object` subclass itself. */
+and correctly model static attributes/methods in C++. */
 template <typename T = Object>
 class Type : public Object, public impl::TypeTag {
     static_assert(
@@ -464,7 +464,6 @@ class Type : public Object, public impl::TypeTag {
     );
 
     using Base = Object;
-    using Self = Type;
 
 public:
 
@@ -573,9 +572,6 @@ struct __issubclass__<T, Type<Cls>>                        : Returns<bool> {
 };
 
 
-/// NOTE: additional metaclass constructors for py::Type are defined later in common.h
-
-
 /* Implement the CTAD guide by default-initializing the corresponding py::Type. */
 template <typename T>
     requires (
@@ -587,6 +583,9 @@ struct __explicit_init__<Type<typename __as_object__<T>::type>, T> {
         return Type<typename __as_object__<T>::type>();
     }
 };
+
+
+/// NOTE: additional metaclass constructors for py::Type are defined in common.h
 
 
 /* Calling a py::Type is the same as invoking the templated type's constructor. */
@@ -622,6 +621,212 @@ struct __init__<Type<Type<Object>>>                         : Returns<Type<Type<
         ));
     }
 };
+
+
+namespace impl {
+
+    // TODO: The extension bits should probably be moved to a separate file, since
+    // they're kind of disjointed from the rest of this file.
+
+
+    // TODO: in order to properly model class templates, I need some kind of proxy
+    // type that can be used to represent the template itself.  All of the template
+    // instantiations will inherit from this type, and will be stored in a map that
+    // can be navigated using __class_getitem__.  The public type will not be able to
+    // be instantiated directly unless all template parameters have default values,
+    // which can be determined through the AST parser.
+    // -> It's probably a good idea to separate type into its own header, type.h.
+
+
+    // Perhaps the public-facing proxy is just an argument to `__ready__`?  Or
+    // better yet, an overload?
+
+    // Here's how the AST parser basically works:
+    // 1. In the initial parse, write out all the types and control structures
+    //    that must be emitted into the py::namespace to accurately model the C++ code.
+    //    This can be done by directly appending to the file string.
+    // 2. Once we reach the end of the file, we emit the module initialization function,
+    //    using all the knowledge we gained from the parse.
+    // 3. OverloadSets are instantiated for each function, __ready__() is called for
+    //    each type (and references either a module or a Type<> proxy).  Submodules
+    //    are also initialized for each namespace that does not conform to the dotted
+    //    name, and will be recursively extended.
+    // 4. The global overload sets, types, and submodules are then all inserted into the
+    //    module object.  Global variables are attached as descriptors to the module's
+    //    type object, and the final module is returned to the caller.
+    // 5. Note that overload sets should also be inserted into the types they belong
+    //    to, instead of standard methods.  This probably necessitates a move toward
+    //    pure heap types, which can be mutated after construction.  This might
+    //    complicate things slightly, but it will make the code much closer to Python
+    //    and enable more dynamic behavior.
+
+    /* Implements common logic for the impl::Binding<> CRTP base class. */
+    template <typename Wrapper, typename PyType, typename CppType>
+    struct BindingBase {
+        PyObject_HEAD
+        CppType m_cpp;
+
+        static void __dealloc__(PyType* self) {
+            self->m_cpp.~CppType();
+            PyType::type.tp_free(self);
+        }
+
+        static PyObject* __repr__(PyType* self) {
+            try {
+                std::string str = repr(self->m_cpp);
+                PyObject* result = PyUnicode_FromStringAndSize(
+                    str.c_str(),
+                    str.size()
+                );
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                return result;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        // TODO: ideally, this binding would reflect all of the operators from ops.h
+        // in Python.  Actually, it's basically the exact inverse.  This cannot call
+        // those functions since that would cause an infinite recursion.  Instead, it
+        // needs to convert those calls into pure C++ by calling the corresponding
+        // operator on the C++ object.  This is a bit complicated, to say the least.
+        // Perhaps these should be left to the AST parser.
+        // -> They can be implemented here for now, but they really should only be
+        // public if they are defined in the C++ class, which can only be determined
+        // by the AST parser.
+
+        /// NOTE: Object is implicitly convertible to any C++ type, so it will trigger
+        /// C++ level operators if they are defined and sufficiently generic.
+
+        // TODO: the only way to do this properly is via the AST parser.  I'm going to
+        // have to try and figure out how many possible overloads there are for each
+        // operator, and generate an overload set for each one.  This is going to be
+        // very difficult to do, but it's the only way to get this to work.
+        // -> This gets extra tricky when you consider templates, because operators are
+        // frequently templated, and the AST parser will have to figure out how to
+        // generate the correct overload set for each one.
+        // -> There will have to be a pretty robust way, given a TemplateDecl, to
+        // figure out a list of all the unique instantiations of that template across
+        // the codebase.  I would then generate an overload set containing each one and
+        // expose that to Python.
+
+        // TODO: turns out there's a `FunctionTemplateDecl::specializations()` method
+        // that should allow me to iterate over the specializations.  I can then add
+        // them to the overload set and expose them to Python as if they were
+        // traditional function overloads.
+
+        // TODO: something similar happens with Module and readying class templates.
+        // Basically, in my first pass over the AST, I should note any class or
+        // function templates, and then once we've finished parsing the module, I can
+        // iterate over all of their specializations and generate the appropriate
+        // overload() and __ready__() calls.
+
+        // TODO: in general, see if we can't model all C++ functions as overload sets.
+        // This would allow smooth overloading behavior from both languages, and would
+        // facilitate handling of templates, etc.  Plus it would just be a killer
+        // feature to be able to call @func.overload on any C++ function.  In fact,
+        // overload sets are probably going to be a killer feature in general.
+
+        static PyObject* __add__(PyObject* lhs, PyObject* rhs) {
+            int unwrap_lhs = PyObject_IsInstance(
+                lhs,
+                reinterpret_cast<PyObject*>(PyType::type)
+            );
+            if (unwrap_lhs == -1) {
+                return nullptr;
+            }
+            int unwrap_rhs = PyObject_IsInstance(
+                rhs,
+                reinterpret_cast<PyObject*>(PyType::type)
+            );
+            if (unwrap_rhs == -1) {
+                return nullptr;
+            }
+            try {
+                if (unwrap_lhs && unwrap_rhs) {
+                    CppType& l = reinterpret_cast<PyType*>(lhs)->m_cpp;
+                    CppType& r = reinterpret_cast<PyType*>(rhs)->m_cpp;
+                    return release(as_object(l + r));
+                } else if (unwrap_lhs) {
+                    CppType& l = reinterpret_cast<PyType*>(lhs)->m_cpp;
+                    Object r = reinterpret_borrow<Object>(rhs);
+                    return release(as_object(l + r));
+                } else if (unwrap_rhs) {
+                    Object l = reinterpret_borrow<Object>(lhs);
+                    CppType& r = reinterpret_cast<PyType*>(rhs)->m_cpp;
+                    return release(as_object(l + r));
+                } else {
+                    Object l = reinterpret_borrow<Object>(lhs);
+                    Object r = reinterpret_borrow<Object>(rhs);
+                    throw TypeError(
+                        "unsupported operand types for +: '" +
+                        repr(Type(l)) + "' and '" + repr(Type(r)) + "'"
+                    );
+                }
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+    };
+
+    /* A CRTP base class for Python bindings around existing C++ classes.  This
+    auto-generates as much of the Python interface as possible by inspecting the
+    exported C++ type. */
+    template <typename Wrapper, typename PyType, typename CppType>
+    struct Binding : BindingBase<Wrapper, PyType, CppType> {
+
+        static void __ready__() {
+            static bool initialized = false;
+            if (initialized) {
+                PyType::type.tp_base = &PyType::type;
+                if (PyType_Ready(&PyType::type) < 0) {
+                    Exception::from_python();
+                }
+                initialized = true;
+            }
+        }
+
+        inline static PyTypeObject* type = {
+
+        };
+
+    };
+
+    /* A CRTP base class for Python bindings around existing C++ classes.  If the C++
+    class is a template accepting only other types, then this specialization will be
+    chosen, which enables the C++ template hierarchy to be navigated from Python. */
+    template <typename Wrapper, typename PyType, impl::is_generic CppType>
+    struct Binding<Wrapper, PyType, CppType> {
+        static std::unordered_map<Tuple<Object>, PyTypeObject*> template_instantiations;
+        static PyObject* __class_getitem__(PyType* self, PyObject* key);
+
+        static void __ready__() {
+            static bool initialized = false;
+            if (initialized) {
+                PyType::type.tp_base = &PyType::type;
+                if (PyType_Ready(&PyType::type) < 0) {
+                    Exception::from_python();
+                }
+                // TODO: this class is going to have to use a fold expression over all
+                // of the template parameters and consult __as_object__ for each one.
+                // py::Tuple<py::Object> key{py::Type<Return>(), py::Type<Target>()...};
+                // template_instantiations[key] = py::Type<Wrapper>();
+                initialized = true;
+            }
+        }
+
+        inline static PyTypeObject* type = {
+
+        };
+
+    };
+
+}
 
 
 }  // namespace py

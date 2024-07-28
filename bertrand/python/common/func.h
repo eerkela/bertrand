@@ -10,103 +10,32 @@
 namespace py {
 
 
-// TODO: descriptors might also allow for multiple dispatch if I manage it correctly.
-// -> The descriptor would store an internal map of types to Python/C++ functions, and
-// could be appended to from either side.  This would replace pybind11's overloading
-// mechanism, and would store signatures in topographical order.  When the descriptor
-// is called, it would test each signature in order, and call the first one that
-// fully matches
-// -> pybind11's overloading mechanism can't be used anyways, since I need to decouple
-// from it entirely.
+/* NOTE: implementation plan:
 
-// TODO: This should be a separate class, which would basically be an overload set
-// for py::Function instances, which would work at both the Python and C++ levels.
-// Then, the descriptors would just store one of these natively, which would allow
-// me to attach new implementations to the same descriptor via function overloading.
-// I can also expose this to Python as a separate type, which would enable C++-style
-// overloading in Python as well, possibly using annotations to specify the types.
-// -> That's hard in current Python, but will be possible in a unified manner in
-// Python 3.13, which allows deferred computation of type annotations.
-
-// TODO: this would have to use type erasure to store the functions, which could make
-// things somewhat challenging.  I wouldn't be able to template on the function
-// signatures, and would have to store them as dynamic objects, and then use
-// topological sorting to find the best match.  This is a lot of work, but would be
-// an awesome feature to port back to Python, and would allow me to work in other
-// features from DynamicFunc at the same time.  The composite would also have an
-// attach() method, and would essentially implement the composite pattern.
-
-// TODO: the best way to do this would be to allow both patterns to coexist, and have
-// attach() work with both.  If You attach a py::Function to an object, it will
-// avoid any overloading and call the function as fast as possible.  If you attach
-// a py::OverloadSet, it will search the overloads topographically and call the best
-// match.  This probably yields a set of descriptor classes like so:
-
-// py::Method<py::Function<...>> -> calls the function directly
-// py::Method<py::OverloadSet> -> calls the best match from the overload set
-// py::ClassMethod<py::Function<...>>
-// py::ClassMethod<py::OverloadSet>
-// py::StaticMethod<py::Function<...>>
-// py::StaticMethod<py::OverloadSet>
-// py::Property<Return>  -> has a fixed signature for all 3 methods, which cannot be overloaded
-
-// Then, in Python:
-
-// @bertrand.function
-// def foo(a, b):  # base implementation
-//      raise NotImplementedError()
-
-// Would create a py::OverloadSet object, which could be overloaded and attached like
-// any other function.  Eventually, it would even be able to infer overloads from
-// annotations:
-
-// @foo.overload
-// def foo(a: int, b: int) -> int:
-//      return a + b
-
-// For simplicity and backwards compatiblity, the appropriate types could also be
-// specified in the overload decorator itself:
-
-// @foo.overload(a = int, b = int)
-// def foo(a, b):
-//      return a + b
-
-// This is more achievable in the short term, and correctly handling annotations
-// will come later, once Python 3.13 is released and I figure out how to resolve
-// annotations dynamically.
+- Any C++ function can be modeled as a py::Function, which has a matching template
+  signature.  Upon construction, this creates a Python wrapper around the function that
+  exposes it to the Python interpreter.  Each signature has a unique type, which allows
+  for fast signature checks and optimization opportunities at the C++ level.
+- The functions themselves are never exposed directly.  They are always nested in an
+  OverloadSet, which is a Python object that contains a trie of all the available
+  overloads.  The OverloadSet looks just like a normal function, and can be called as
+  one.  If it only stores a single function, this will short-circuit to a direct call.
+  Otherwise, it will analyze the argument list to navigate the trie and find a matching
+  overload.  If no overload is found, it will raise a TypeError.
+- The OverloadSet must be constructed with a name, but no other parameters.  All
+  overloads are registered via the overload() method, which provides a standard entry
+  point.
+- The OverloadSet should also have an attach() method, which will attach it as a
+  descriptor to a module or class.  This will allow it to be called as a method, and
+  could serve as the basis for a UFCS system.
+- The docstring will be synthesized from the current overloads, and could be
+  implemented as a getset descriptor to ensure it always stays up to date.
+- The overload set will also implement __getitem__ just like class templates with
+  __class_getitem__.  This means the exact same subscript syntax can be used for both,
+  which exactly matches C++'s <> syntax.
 
 
-// -> Use a Trie to store the overloads, and then search it using a depth-first search
-// to backtrack.  Each node in the trie will store a list of types from most to least
-// specific, as determined by either a typecheck<> or issubclass() call (Maybe these can
-// be unified as check_type<>?).  Each node will need the following:
-
-// 1.   An ordered map of types to the next node in the trie, which is sorted in
-//      topological order.
-// 2.   An optional default value for this argument.  If we've hit the end of the
-//      argument list and the current node does not have a terminal function, then
-//      we search the above map from left to right and recur for each type that has
-//      a default value.
-// 3.   An unordered map of keywords to the next node in the trie, which is used when
-//      positional arguments have been exhausted.  If no keyword is found, children
-//      will be tried sequentially according to their default values before
-//      backtracking.
-// 4.   A terminal function to call if this is the last argument, which represents the
-//      end of a search.
-
-// The functions that are inserted into an overload set cannot have *args, **kwargs
-// packs, and if no match can be found, the default implementation will be called,
-// which can have an arbitrary signature and will most likely raise an error.
-
-// -> Alternatively, the decorated function is analyzed just like every other one, and
-// if it uses generic types, then it will serve as a catch-all fallback.  It (and only
-// it) is allowed to have *args, **kwargs, and will be called if no other match is found.
-
-// Maybe this makes DynamicFunc obsolete, since the primary use of that was to
-// facilitate @dispatch?  Maybe the ability to modify defaults is built into
-// py::Function, and extra arguments are handled by the dispatch mechanism.
-
-
+*/
 
 
 /* A compile-time argument annotation that represents a bound positional or keyword
@@ -329,13 +258,6 @@ namespace impl {
     struct GetSignature<R(C::*)(A...) const volatile noexcept> { using type = R(A...); };
     template <impl::has_call_operator T>
     struct GetSignature<T> { using type = GetSignature<decltype(&T::operator())>::type; };
-
-
-    /// TODO: The approach explored by PyFunctionBase could be a contender for
-    /// automated template bindings, especially if I decouple all the Python __ready__
-    /// calls to the point where they can be added to the module init function every
-    /// time an exported template is instantiated anywhere in the code.  That would
-    /// directly allow the use of C++ templates in Python.
 
     /* A base Python type that is subclassed by all `py::Function` specializations in
     order to model various template signatures at the Python level.  This corresponds
@@ -3167,6 +3089,55 @@ namespace impl {
 an efficient trie-based data structure. */
 class Overload : public Object {
     using Base = Object;
+    friend class Type<Overload>;
+
+    /* Argument maps are topologically sorted such that parent classes are always
+    checked after subclasses. */
+    struct Compare {
+        bool operator()(PyObject* lhs, PyObject* rhs) const {
+            int result = PyObject_IsSubclass(lhs, rhs);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;
+        }
+    };
+
+    /* Each node in the trie has 2 maps and a terminal function if this is the last
+    argument in the list.  The first map is a topological map of positional arguments
+    to the next node in the trie.  The second is a map of keyword names to another
+    topological map with the same behavior. */
+    struct Node {
+        std::map<PyObject*, Node*, Compare> positional;
+        std::unordered_map<std::string, std::map<PyObject*, Node*, Compare>> keyword;
+        PyObject* func = nullptr;
+    };
+
+    /* The Python representation of an Overload object. */
+    struct PyOverload {
+        PyObject_HEAD
+        Node root;  // describes the zeroth arg (return type) of the overload set
+        std::unordered_set<PyObject*> funcs;  // all functions in the overload set
+
+        static PyObject* overload(PyObject* self, PyObject* func) {
+            PyErr_SetString(PyExc_NotImplementedError, nullptr);
+        }
+
+        inline static PyMethodDef methods[] = {
+            {
+                "overload",
+                overload,
+                METH_O,
+                nullptr
+            },
+            {nullptr}
+        };
+
+        inline static PyTypeObject* type = {
+
+        };
+
+    };
 
 public:
 
@@ -3202,15 +3173,70 @@ public:
         )
     )) {}
 
+    /* Add an overload from C++. */
+    template <typename Return, typename... Target>
+    void overload(const Function<Return(Target...)>& func) {
+
+    }
+
 };
 
 
 template <>
 class Type<Overload> : public Object {
+    using Base = Object;
 
+public:
+    using __python__ = Overload::PyOverload;
+
+    Type(Handle h, borrowed_t) : Base(h, borrowed_t{}) {}
+    Type(Handle h, stolen_t) : Base(h, stolen_t{}) {}
+
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<
+                Type,
+                __init__<Type, std::remove_cvref_t<Args>...>,
+                Args...
+            >
+        )
+    Type(Args&&... args) : Base((
+        Interpreter::init(),
+        __init__<Type, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    )) {}
+
+    template <typename... Args>
+        requires (
+            !__init__<Type, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<
+                Type,
+                __explicit_init__<Type, std::remove_cvref_t<Args>...>,
+                Args...
+            >
+        )
+    explicit Type(Args&&... args) : Base((
+        Interpreter::init(),
+        __explicit_init__<Type, std::remove_cvref_t<Args>...>{}(
+            std::forward<Args>(args)...
+        )
+    )) {}
+
+    template <typename Return, typename... Target>
+    static void overload(Overload& self, const Function<Return(Target...)>& func) {
+        self.overload(func);
+    }
 
 };
 
+
+template <>
+struct __init__<Type<Overload>>                             : Returns<Type<Overload>> {
+    static Type<Overload> operator()() {
+        return reinterpret_borrow<Type<Overload>>(
+            reinterpret_cast<PyObject*>(Type<Overload>::__python__::type)
+        );
+    }
+};
 
 
 }  // namespace py
