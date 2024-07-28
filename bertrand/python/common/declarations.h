@@ -32,6 +32,7 @@
 #include <Python.h>
 #include <frameobject.h>
 #include <internal/pycore_frame.h>  // required to assign to frame->f_lineno
+#include <internal/pycore_moduleobject.h>  // required to create module subclasses
 
 #include <cpptrace/cpptrace.hpp>
 
