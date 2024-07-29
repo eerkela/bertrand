@@ -383,6 +383,11 @@ namespace impl {
     template <typename T>
     concept is_generic = is_generic_helper<T>;
 
+    template <typename T>
+    concept is_extension = requires(T&& t) {
+        { T::__python__::__type__ } -> std::convertible_to<PyTypeObject*>;
+    };
+
     template <typename T, StaticStr Name, typename... Args>
     concept attr_is_callable_with =
         __getattr__<T, Name>::enable &&
@@ -881,6 +886,18 @@ namespace impl {
 /* Cause a Python object to relinquish ownership over its backing pointer, and then
 return the raw pointer. */
 [[nodiscard]] inline PyObject* release(Handle obj);
+
+
+/* Retrieve an internal C++ object from a `py::Object` wrapper.  Note that this only
+works if the wrapper was declared using the `__python__` CRTP helper. */
+template <std::derived_from<Object> T> requires (impl::is_extension<T>)
+[[nodiscard]] inline auto& unwrap(T& obj);
+
+
+/* Retrieve an internal C++ object from a `py::Object` wrapper.  Note that this only
+works if the wrapper was declared using the `__python__` CRTP helper. */
+template <std::derived_from<Object> T> requires (impl::is_extension<T>)
+[[nodiscard]] inline const auto& unwrap(const T& obj);
 
 
 /* Borrow a reference to a raw Python handle. */
