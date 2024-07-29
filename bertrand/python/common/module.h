@@ -20,30 +20,59 @@ namespace impl {
         PyModuleObject base;
 
         /* Initialize the module and assign its type. */
-        static PyModule* __ready__() {
-            PyObject* mod = PyModule_Create(&module_def);
-            if (mod == nullptr) {
+        static Module<Name> __ready__(const Str& doc) {
+            PyObject* _mod = PyModule_Create(&module_def);
+            if (_mod == nullptr) {
+                Exception::from_python();
+            }
+            Module<Name> mod = reinterpret_steal<Module<Name>>(_mod);
+            PyObject* _type = PyType_FromSpec(&type_spec);
+            if (_type == nullptr) {
                 return nullptr;
             }
-
-            PyObject* type = PyType_FromSpec(&type_spec);
-            if (type == nullptr) {
-                Py_DECREF(mod);
-                return nullptr;
-            }
-
-            if (PyObject_SetAttr(
-                mod,
-                impl::TemplateString<"__class__">::ptr,
-                type
-            )) {
-                Py_DECREF(mod);
-                Py_DECREF(type);
-                return nullptr;
-            }
-            Py_DECREF(type);
-            return reinterpret_cast<PyModule*>(mod);
+            Type<Module<Name>> type = reinterpret_steal<Type<Module<Name>>>(_type);
+            setattr<"__class__">(mod, type);
+            setattr<"__doc__">(mod, doc);
+            return mod;
         }
+
+        template <StaticStr SubName>
+        static auto __submodule__(Module<Name>& parent, const Str& doc) {
+            auto mod = Module<Name + "." + SubName>::__ready__(doc);
+
+            // add the submodule to the interpreter's import list
+            PyObject* _mod_ptr = PyImport_AddModuleObject(
+                impl::TemplateString<Name + "." + SubName>::ptr
+            );
+            if (_mod_ptr == nullptr) {
+                Exception::from_python();
+            }
+            Py_DECREF(_mod_ptr);
+
+            // set the submodule as an attribute of the parent module
+            if (PyObject_SetAttr(
+                ptr(parent),
+                impl::TemplateString<SubName>::ptr,
+                ptr(mod)
+            )) {
+                Exception::from_python();
+            }
+            return mod;
+        }
+
+        // TODO: perhaps add a __var__ method for adding a global variable to the
+        // module scope.  It could take separate overloads for const vs mutable
+        // references, and generate a setter for the second case, and only a setter
+        // for the first.
+
+        // TODO: I might be able to do something similar with functions, in which
+        // case I would automatically generate an overload set for each function as
+        // it is added, or append to it as needed.  Alternatively, I can use the same
+        // attach() method that I'm exposing to the public.
+
+        // TODO: maybe also a __type__ method, which would add a type directly to the
+        // module if it is not generic, or generate a front-facing abstract type if it
+        // is.  That should pretty much automate the process of handling generic types.
 
         inline static PyModuleDef module_def = {
             .m_base = PyModuleDef_HEAD_INIT,

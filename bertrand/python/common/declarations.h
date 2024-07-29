@@ -29,16 +29,7 @@
 #include <utility>
 #include <vector>
 
-#include <Python.h>
-#include <frameobject.h>
-#include <internal/pycore_frame.h>  // required to assign to frame->f_lineno
-#include <internal/pycore_moduleobject.h>  // required to create module subclasses
-
-#include <cpptrace/cpptrace.hpp>
-
-#include <bertrand/common.h>
-#include <bertrand/static_str.h>
-
+// required for demangling
 #if defined(__GNUC__) || defined(__clang__)
     #include <cxxabi.h>
     #include <cstdlib>
@@ -47,6 +38,20 @@
     #include <dbghelp.h>
     #pragma comment(lib, "dbghelp.lib")
 #endif
+
+#define Py_BUILD_CORE
+
+#include <Python.h>
+#include <frameobject.h>
+#include <internal/pycore_frame.h>  // required to assign to frame->f_lineno
+#include <internal/pycore_moduleobject.h>  // required to create module subclasses
+
+#undef Py_BUILD_CORE
+
+#include <cpptrace/cpptrace.hpp>
+
+#include <bertrand/common.h>
+#include <bertrand/static_str.h>
 
 
 namespace py {
