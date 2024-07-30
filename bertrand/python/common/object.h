@@ -172,8 +172,8 @@ namespace impl {
         static void __ready__() {
             static bool initialized = false;
             if (!initialized) {
-                type.tp_base = &PyType_Type;
-                if (PyType_Ready(&type) < 0) {
+                __type__.tp_base = &PyType_Type;
+                if (PyType_Ready(&__type__) < 0) {
                     Exception::from_python();
                 }
                 initialized = true;
@@ -184,7 +184,7 @@ namespace impl {
         static void __dealloc__(BertrandMeta* self) {
             Py_XDECREF(self->demangled);
             Py_XDECREF(self->template_instantiations);
-            type.tp_free(reinterpret_cast<PyObject*>(self));
+            __type__.tp_free(reinterpret_cast<PyObject*>(self));
         }
 
         /* Calling repr() on a C++ class normally yields a mangled name.  This
@@ -196,14 +196,14 @@ namespace impl {
         /* Subscripting the metaclass allows navigation of the C++ template
         hierarchy. */
         static PyObject* __getitem__(BertrandMeta* self, PyObject* key) {
-            const char* demangled = PyUnicode_AsUTF8(self->demangled);
-            if (demangled == nullptr) {
-                return nullptr;
-            }
             if (self->template_instantiations == nullptr) {
+                const char* demangled = PyUnicode_AsUTF8(self->demangled);
+                if (demangled == nullptr) {
+                    return nullptr;
+                }
                 PyErr_Format(
                     PyExc_TypeError,
-                    "class '%s' has no template parameters",
+                    "class '%s' has no template instantiations",
                     demangled
                 );
                 return nullptr;
@@ -222,6 +222,11 @@ namespace impl {
             try {
                 PyObject* value = PyDict_GetItem(self->template_instantiations, key);
                 if (value == nullptr) {
+                    const char* demangled = PyUnicode_AsUTF8(self->demangled);
+                    if (demangled == nullptr) {
+                        Py_DECREF(key);
+                        return nullptr;
+                    }
                     std::string message = "class template has not been instantiated: ";
                     message += demangled;
                     PyObject* py_repr = PyObject_Repr(key);
@@ -259,19 +264,125 @@ namespace impl {
         /* The length of the type yields the number of template instantiations it is
         tracking. */
         static Py_ssize_t __len__(BertrandMeta* self) {
+            return self->template_instantiations ?
+                PyDict_Size(self->template_instantiations) : 0;
+        }
+
+        /* Iterate over the type to yield the individual template instantiations, in
+        the order in which they were defined. */
+        static PyObject* __iter__(BertrandMeta* self) {
             if (self->template_instantiations == nullptr) {
                 const char* demangled = PyUnicode_AsUTF8(self->demangled);
                 if (demangled == nullptr) {
-                    return -1;
+                    return nullptr;
                 }
                 PyErr_Format(
                     PyExc_TypeError,
-                    "class '%s' has no template parameters",
+                    "class '%s' has no template instantiations",
                     demangled
                 );
+                return nullptr;
+            }
+            return PyObject_GetIter(self->template_instantiations);
+        }
+
+        /* Create an instance of the metaclass to serve as a public interface for a
+        class template hierarchy.  The proxy class is not usable on its own, except to
+        provide access to its instantiations, a single entry point for documentation,
+        and type checks against its instantiations. */
+        template <std::derived_from<impl::ModuleTag> Mod>
+        static BertrandMeta* stub(
+            Mod& parent,
+            const std::string& name,
+            const std::string& doc,
+            const std::vector<PyTypeObject*>& bases
+        ) {
+            // check if the type already exists in the module
+            PyObject* existing = PyObject_GetAttrString(ptr(parent), name.c_str());
+            if (existing != nullptr) {
+                if (
+                    !PyType_Check(existing) ||
+                    !PyType_IsSubtype(
+                        reinterpret_cast<PyTypeObject*>(existing),
+                        &__type__
+                    ) ||
+                    !reinterpret_cast<BertrandMeta*>(existing)->template_instantiations
+                ) {
+                    std::string existing_repr = repr(Handle(existing));
+                    Py_DECREF(existing);
+                    throw TypeError(
+                        "name conflict: cannot create a template stub named '" +
+                        name + "', which is already set to " + existing_repr
+                    );
+                }
+                return reinterpret_cast<BertrandMeta*>(Py_NewRef(existing));
+            } else {
+                PyErr_Clear();
+            }
+
+            // otherwise, initialize it from scratch
+            static std::string _name = name;
+            static std::string _doc = doc;
+            static PyType_Slot slots[] = {
+                {Py_tp_doc, (void*) _doc.c_str()},
+                {0, nullptr}
+            };
+            static PyType_Spec spec = {
+                .name = _name.c_str(),
+                .basicsize = sizeof(BertrandMeta),
+                .itemsize = 0,
+                .flags =
+                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE |
+                    Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_IMMUTABLETYPE,
+                .slots = slots
+            };
+
+            PyObject* _bases = PyTuple_New(bases.size());
+            if (_bases == nullptr) {
+                Exception::from_python();
+            }
+            for (size_t i = 0; i < bases.size(); i++) {
+                PyTuple_SET_ITEM(_bases, i, Py_NewRef(bases[i]));
+            } 
+
+            BertrandMeta* cls = reinterpret_cast<impl::BertrandMeta*>(
+                PyType_FromMetaclass(
+                    &impl::BertrandMeta::__type__,
+                    ptr(parent),
+                    &spec,
+                    _bases
+                )
+            );
+            Py_DECREF(_bases);
+            if (cls == nullptr) {
+                Exception::from_python();
+            }
+            if (cls->demangle()) {
+                Py_DECREF(cls);
+                Exception::from_python();
+            }
+            cls->template_instantiations = PyDict_New();
+            if (cls->template_instantiations == nullptr) {
+                Py_DECREF(cls->demangled);
+                Py_DECREF(cls);
+                Exception::from_python();
+            }
+            return cls;
+        };
+
+        /* Populate the demangled name.  This method should only be called once when
+        initializing a new type.  It's not safe to call it multiple times. */
+        int demangle() {
+            std::string demangled =
+                "<class '" + impl::demangle(this->base.tp_name) + "'>";
+            this->demangled = PyUnicode_FromStringAndSize(
+                demangled.c_str(),
+                demangled.size()
+            );
+            if (this->demangled == nullptr) {
                 return -1;
             }
-            return PyDict_Size(self->template_instantiations);
+            return 0;
         }
 
         inline static PyMappingMethods mapping = {
@@ -279,19 +390,19 @@ namespace impl {
             .mp_subscript = (binaryfunc) &__getitem__,
         };
 
-        static PyTypeObject type;
+        static PyTypeObject __type__;
 
     };
 
-    inline PyTypeObject BertrandMeta::type = {
+    inline PyTypeObject BertrandMeta::__type__ = {
         .ob_base = PyVarObject_HEAD_INIT(nullptr, 0)
         .tp_name = "bertrand.Meta",
         .tp_basicsize = sizeof(BertrandMeta),
         .tp_itemsize = 0,
-        .tp_dealloc = (destructor) &BertrandMeta::__dealloc__,
-        .tp_repr = (reprfunc) &BertrandMeta::__repr__,
+        .tp_dealloc = (destructor) BertrandMeta::__dealloc__,
+        .tp_repr = (reprfunc) BertrandMeta::__repr__,
         .tp_as_mapping = &BertrandMeta::mapping,
-        .tp_str = (reprfunc) &BertrandMeta::__repr__,
+        .tp_str = (reprfunc) BertrandMeta::__repr__,
         .tp_flags =
             Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_IMMUTABLETYPE |
             Py_TPFLAGS_DISALLOW_INSTANTIATION,
@@ -304,6 +415,7 @@ This metaclass identifies all the types that originate from C++.  It is used to
 automatically demangle the type name in contexts where that is desirable, and to
 implement certain common behaviors that are shared across all Bertrand types, like
 template subscripting via `__getitem__`.)doc",
+        .tp_iter = (getiterfunc) BertrandMeta::__iter__,
     };
 
 }
@@ -365,10 +477,7 @@ protected:
 
         /* Implements py::wrap() for immutable references. */
         static Wrapper _wrap(const CppType& cpp) {
-            PyObject* self = __type__->base.tp_alloc(
-                reinterpret_cast<PyTypeObject*>(__type__),
-                0
-            );
+            PyObject* self = __type__->tp_alloc(__type__, 0);
             if (self == nullptr) {
                 Exception::from_python();
             }
@@ -378,10 +487,7 @@ protected:
 
         /* Implements py::wrap() for mutable references. */
         static Wrapper _wrap(CppType& cpp) {
-            PyObject* self = __type__->base.tp_alloc(
-                reinterpret_cast<PyTypeObject*>(__type__),
-                0
-            );
+            PyObject* self = __type__->tp_alloc(__type__, 0);
             if (self == nullptr) {
                 Exception::from_python();
             }
@@ -445,6 +551,7 @@ protected:
 
             // TODO: continue on with the rest of the slots
 
+            type_slots.push_back({0, nullptr});
             static std::string name = impl::demangle(typeid(CppType).name());
             static PyType_Spec spec = {
                 .name = name.c_str(),
@@ -494,7 +601,7 @@ protected:
         };
 
     public:
-        inline static impl::BertrandMeta* __type__ = nullptr;
+        inline static PyTypeObject* __type__ = nullptr;
 
         PyObject_HEAD
         Variant m_cpp;
@@ -556,12 +663,8 @@ protected:
          */
 
         // TODO: I'll have to implement a Python wrapper around a C++ iterator, which
-        // would share some of the concerns about mutability.  It will probably need
-        // some of the same infrastructure as mutable variables, which are equivalent
-        // to this type, but holds a reference to an object rather than an object
-        // itself.
-        // -> Maybe all of these classes allocate space for the object, but can also
-        // be used to store a reference to such.
+        // would probably need to use the non-owning reference types in order to
+        // accurately reflect mutability and avoid unnecessary allocation overhead.
 
         /* tp_repr demangles the exact C++ type name and includes memory address
         similar to Python. */
@@ -595,7 +698,7 @@ protected:
                 PyErr_Format(
                     PyExc_TypeError,
                     "unhashable type: '%s'",
-                    impl::demangle(CRTP::__type__.base.tp_name).c_str()
+                    impl::demangle(CRTP::__type__->tp_name).c_str()
                 );
                 return -1;
             } else {
@@ -623,7 +726,7 @@ protected:
         /* tp_dealloc calls the ordinary C++ destructor. */
         static void __dealloc__(CRTP* self) {
             if (std::holds_alternative<CppType>(self->m_cpp)) {
-                self->m_cpp.~CppType();
+                std::get<CppType>(self->m_cpp).~CppType();
             }
             CRTP::type.tp_free(self);
         }
@@ -636,7 +739,7 @@ protected:
 
         static int __traverse__(CRTP* self, visitproc visit, void* arg) {
             if (std::holds_alternative<CppType>(self->m_cpp)) {
-                for (auto& item : self->m_cpp) {
+                for (auto& item : std::get<CppType>(self->m_cpp)) {
                     Py_VISIT(ptr(item));
                 }
             }
@@ -648,7 +751,7 @@ protected:
                 /// NOTE: In order to avoid a double free, we release() all of the
                 /// container's items here, so that when their destructors are called
                 /// in __dealloc__(), they see a null pointer and do nothing.
-                for (auto& item : self->m_cpp) {
+                for (auto& item : std::get<CppType>(self->m_cpp)) {
                     Py_XDECREF(release(item));
                 }
             }
@@ -659,7 +762,12 @@ protected:
         for every type during the module initialization function, which is executed by
         calling `impl::ModuleDef::__ready__()`. */
         template <std::derived_from<impl::ModuleTag> Mod>
-        static void __ready__(Mod& parent) {
+        static void __ready__(
+            Mod& parent,
+            const std::string& name,
+            const std::string& doc,
+            const std::vector<PyTypeObject*>& bases
+        ) {
             static bool initialized = false;
             if (initialized) {
                 return;
@@ -668,63 +776,92 @@ protected:
             // initialize the metaclass if it hasn't been already
             impl::BertrandMeta::__ready__();
 
-            // if the wrapper type is generic, a public proxy type needs to be created
-            // that can be indexed to resolve individual instantiations
-            if constexpr (impl::is_generic<Wrapper>) {
-                // TODO: ensure that the parent is a module, and automatically generate
-                // a public-facing proxy if it does not already exist.  Then use that
-                // type here to create the actual type object.  This effectively
-                // replaces the following code:
+            // if the wrapper type is not generic, it can be directly instantiated and
+            // attached to the module
+            if constexpr (!impl::is_generic<Wrapper>) {
+                PyObject* _bases = PyTuple_New(bases.size());
+                if (_bases == nullptr) {
+                    Exception::from_python();
+                }
+                for (size_t i = 1; i < bases.size() + 1; ++i) {
+                    PyTuple_SET_ITEM(_bases, i, Py_NewRef(bases[i]));
+                }
 
-                // // ensure that the parent type is an instance of the metaclass and has
-                // // a template_instantiations dictionary
-                // int is_meta = PyType_IsSubtype(
-                //     Py_TYPE(ptr(parent)),
-                //     &impl::BertrandMeta::type
-                // );
-                // if (is_meta < 0) {
-                //     Exception::from_python();
-                // }
-                // impl::BertrandMeta* parent_ptr = reinterpret_cast<impl::BertrandMeta*>(
-                //     ptr(parent)
-                // );
-                // if (parent_ptr->template_instantiations == nullptr) {
-                //     parent_ptr->template_instantiations = PyDict_New();
-                //     if (parent_ptr->template_instantiations == nullptr) {
-                //         Exception::from_python();
-                //     }
-                // }
-
-                // use the metaclass to convert the type_spec into a heap type
+                // generate a type spec and convert to a heap type using BertrandMeta
                 impl::BertrandMeta* cls = reinterpret_cast<impl::BertrandMeta*>(
                     PyType_FromMetaclass(
-                        &impl::BertrandMeta::type,
-                        nullptr,  // templates aren't attached to a module directly
+                        &impl::BertrandMeta::__type__,
+                        ptr(parent),
                         &type_spec(),
-                        nullptr  // bases are encoded in the type_spec itself
+                        _bases
                     )
                 );
+                Py_DECREF(_bases);
                 if (cls == nullptr) {
                     Exception::from_python();
                 }
 
                 try {
-                    // set the demangled name for the type
-                    std::string demangled =
-                        "<class '" + impl::demangle(cls->base.tp_name) + "'>";
-                    cls->demangled = PyUnicode_FromStringAndSize(
-                        demangled.c_str(),
-                        demangled.size()
-                    );
-                    if (cls->demangled == nullptr) {
+                    cls->template_instantiations = nullptr;
+                    if (cls->demangle()) {
                         Exception::from_python();
                     }
+
+                } catch (...) {
+                    Py_DECREF(cls);
+                    throw;
+                }
+
+                // store a borrowed reference to the type for later use
+                __type__ = reinterpret_cast<PyTypeObject*>(cls);
+                Py_DECREF(cls);  // module now owns only reference
+
+            // if the wrapper type is generic, a public proxy type needs to be created
+            // that can be indexed to resolve individual instantiations
+            } else {
+                // initialize or retrieve the proxy type under which the instantiation
+                // will be stored.  the instantiation always inherits from this type,
+                // in addition to any other bases that are specified
+                impl::BertrandMeta* stub = impl::BertrandMeta::stub(
+                    parent,
+                    name,
+                    doc,
+                    bases
+                );
+                PyObject* _bases = PyTuple_New(bases.size() + 1);
+                if (_bases == nullptr) {
+                    Py_DECREF(stub);
+                    Exception::from_python();
+                }
+                for (size_t i = 0; i < bases.size(); ++i) {
+                    PyTuple_SET_ITEM(_bases, i, Py_NewRef(bases[i]));
+                }
+                PyTuple_SET_ITEM(_bases, bases.size(), stub);  // steals a reference
+
+                // use the metaclass to convert the type_spec into a heap type
+                impl::BertrandMeta* cls = reinterpret_cast<impl::BertrandMeta*>(
+                    PyType_FromMetaclass(
+                        &impl::BertrandMeta::__type__,
+                        nullptr,  // instantiations aren't directly attached to a module
+                        &type_spec(),
+                        _bases
+                    )
+                );
+                Py_DECREF(_bases);
+                if (cls == nullptr) {
+                    Exception::from_python();
+                }
+
+                try {
                     cls->template_instantiations = nullptr;
+                    if (cls->demangle()) {
+                        Exception::from_python();
+                    }
 
                     // insert the class into the parent's template_instantiations
                     PyObject* key = build_key<CppType>{}();
                     if (PyDict_SetItem(
-                        parent_ptr->template_instantiations,
+                        stub->template_instantiations,
                         key,
                         reinterpret_cast<PyObject*>(cls)
                     )) {
@@ -733,67 +870,20 @@ protected:
                     }
                     Py_DECREF(key);
 
-                    // store a borrowed reference to the type for later use
-                    __type__ = cls;  // TODO: maybe this needs to be an opaque PyTypeObject*?
-
                 } catch (...) {
                     Py_DECREF(cls);
                     throw;
-                }
-                Py_DECREF(cls);  // parent type now owns the only reference
-
-            // otherwise, the type can be created directly
-            } else {
-                // generate a type spec and convert to a heap type using BertrandMeta
-                impl::BertrandMeta* cls = reinterpret_cast<impl::BertrandMeta*>(
-                    PyType_FromMetaclass(
-                        &impl::BertrandMeta::type,
-                        ptr(parent),
-                        &type_spec(),
-                        nullptr  // bases are encoded in the type_spec itself
-                    )
-                );
-                if (cls == nullptr) {
-                    Exception::from_python();
                 }
 
                 // store a borrowed reference to the type for later use
-                __type__ = cls;  // TODO: maybe this needs to be an opaque PyTypeObject*?
-
-                try {
-                    // set the demangled name for the type
-                    std::string demangled =
-                        "<class '" + impl::demangle(cls->base.tp_name) + "'>";
-                    cls->demangled = PyUnicode_FromStringAndSize(
-                        demangled.c_str(),
-                        demangled.size()
-                    );
-                    if (cls->demangled == nullptr) {
-                        Exception::from_python();
-                    }
-
-                    // by definition, generated types do not have any instantiations
-                    cls->template_instantiations = nullptr;
-                } catch (...) {
-                    Py_DECREF(cls);
-                    throw;
-                }
-                Py_DECREF(cls);  // module now owns only reference
+                __type__ = reinterpret_cast<PyTypeObject*>(cls);
+                Py_DECREF(cls);  // stub now owns the only reference
             }
 
             initialized = true;
         }
 
     };
-
-    // TODO: use this as follows:
-    //
-    // class Foo : public Object {
-    // public:
-    //     struct __python__ : public Object::__python__<__python__, Foo, Bar> {};
-
-    // TODO: this pattern could also model Python-level inheritance as well, and
-    // closely couple it to the bases of the Object wrapper itself.
 
 public:
 
