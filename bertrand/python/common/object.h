@@ -1,6 +1,7 @@
 #ifndef BERTRAND_PYTHON_COMMON_OBJECT_H
 #define BERTRAND_PYTHON_COMMON_OBJECT_H
 
+#include "Python.h"
 #include "declarations.h"
 #include "except.h"
 #include "ops.h"
@@ -305,101 +306,6 @@ implement certain common behaviors that are shared across all Bertrand types, li
 template subscripting via `__getitem__`.)doc",
     };
 
-    /* Implements common logic for the impl::Binding<> CRTP base class. */
-    template <typename CRTP, typename CppType>
-    struct Bind : public BertrandTag {
-        PyObject_HEAD
-        CppType m_cpp;
-
-        inline static PyTypeObject* __type__ = nullptr;
-
-        /* Free the C++ object when the Python object is garbage collected. */
-        static void __dealloc__(CRTP* self) {
-            self->m_cpp.~CppType();
-            CRTP::type.tp_free(self);
-        }
-
-        /* Default repr() func demangles the type name and includes memory address
-        similar to Python. */
-        static PyObject* __repr__(CRTP* self) {
-            try {
-                std::string str = repr(self->m_cpp);
-                PyObject* result = PyUnicode_FromStringAndSize(
-                    str.c_str(),
-                    str.size()
-                );
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                return result;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
-
-        // TODO: unary operators (e.g. iterators, call operator, indexing, etc.) might
-        // be easily implemented here if the underlying object supports them.
-
-
-        // TODO: the only way to do this properly is via the AST parser.  I'm going to
-        // have to try and figure out how many possible overloads there are for each
-        // operator, and generate an overload set for each one.  This is going to be
-        // very difficult to do, but it's the only way to get this to work.
-        // -> There will have to be a pretty robust way, given a TemplateDecl, to
-        // figure out a list of all the unique instantiations of that template across
-        // the module unit.  I would then generate an overload set containing each one
-        // and expose that to Python.
-
-        // TODO: turns out there's a `FunctionTemplateDecl::specializations()` method
-        // that should allow me to iterate over the specializations.  I can then add
-        // them to the overload set and expose them to Python as if they were
-        // traditional function overloads.
-
-        // static PyObject* __add__(PyObject* lhs, PyObject* rhs) {
-        //     int unwrap_lhs = PyObject_IsInstance(
-        //         lhs,
-        //         reinterpret_cast<PyObject*>(CRTP::type)
-        //     );
-        //     if (unwrap_lhs == -1) {
-        //         return nullptr;
-        //     }
-        //     int unwrap_rhs = PyObject_IsInstance(
-        //         rhs,
-        //         reinterpret_cast<PyObject*>(CRTP::type)
-        //     );
-        //     if (unwrap_rhs == -1) {
-        //         return nullptr;
-        //     }
-        //     try {
-        //         if (unwrap_lhs && unwrap_rhs) {
-        //             CppType& l = reinterpret_cast<CRTP*>(lhs)->m_cpp;
-        //             CppType& r = reinterpret_cast<CRTP*>(rhs)->m_cpp;
-        //             return release(as_object(l + r));
-        //         } else if (unwrap_lhs) {
-        //             CppType& l = reinterpret_cast<CRTP*>(lhs)->m_cpp;
-        //             Object r = reinterpret_borrow<Object>(rhs);
-        //             return release(as_object(l + r));
-        //         } else if (unwrap_rhs) {
-        //             Object l = reinterpret_borrow<Object>(lhs);
-        //             CppType& r = reinterpret_cast<CRTP*>(rhs)->m_cpp;
-        //             return release(as_object(l + r));
-        //         } else {
-        //             Object l = reinterpret_borrow<Object>(lhs);
-        //             Object r = reinterpret_borrow<Object>(rhs);
-        //             throw TypeError(
-        //                 "unsupported operand types for +: '" +
-        //                 repr(Type(l)) + "' and '" + repr(Type(r)) + "'"
-        //             );
-        //         }
-        //     } catch (...) {
-        //         Exception::to_python();
-        //         return nullptr;
-        //     }
-        // }
-
-    };
-
 }
 
 
@@ -414,77 +320,152 @@ protected:
     template <std::derived_from<Object> T>
     friend T reinterpret_steal(Handle);
 
-    /* A CRTP base class that generates boilerplate Python bindings around an external
-    C++ class. */
-    template <typename CRTP, typename CppType>
-    struct __python__ : impl::Bind<CRTP, CppType> {
+    /* A CRTP base class that automatically generates boilerplate bindings for a new
+    Python type which wraps an existing C++ type.  This is the preferred way of writing
+    new Python types in C++.  By inheriting from this class in a nested (public)
+    `__python__` type, a `py::Object` subclass avoids the need to:
 
-        /* Initialize a non-generic type using the derived class's type_spec.  This
-        should be called in the module initialization function for every type that is
-        exposed to Python.  Such types must be attached to a module object. */
-        template <std::derived_from<impl::ModuleTag> Parent>
-        static void __ready__(Parent& parent) {
-            static bool initialized = false;
-            if (!initialized) {
-                // initialize the metaclass if it hasn't been already
-                impl::BertrandMeta::__ready__();
+        -   Navigate the vagaries of the CPython API when it comes to type creation and
+            management.
+        -   Handle low-level memory management and interactions with Python's garbage
+            collector.
+        -   Handle shared state and direct access from C++ to Python and vice versa.
+        -   Initialize and store the type object itself.
+        -   Implement common operators that can be inferred through template
+            metaprogramming, like `__hash__`, `__repr__`, `__iter__`, and others.
+        -   Automatically generate overload sets and public proxies for template
+            instantiations, as well as expose the template hierarchy to Python
 
-                // use the metaclass to convert the type_spec into a heap type
-                impl::BertrandMeta* cls = reinterpret_cast<impl::BertrandMeta*>(
-                    PyType_FromMetaclass(
-                        &impl::BertrandMeta::type,
-                        &CRTP::type_spec,
-                        ptr(parent),
-                        nullptr  // bases are encoded in the type_spec itself
-                    )
-                );
-                if (cls == nullptr) {
-                    Exception::from_python();
-                }
+    Needless to say, these are all very complex and error-prone tasks that are best
+    left to Bertrand's metaprogramming facilities.  By using this base class, the user
+    can focus only on the public interface of the class they're trying to bind and not
+    any of the low-level details necessary to configure it for Python.  It also strongly
+    couples that type with the enclosing wrapper, producing a single unit of code. */
+    template <typename Wrapper, typename CRTP, typename CppType>
+    struct __python__ : public impl::BertrandTag {
+    private:
+        template <typename T>
+            requires (
+                __as_object__<T>::enable &&
+                impl::is_extension<typename __as_object__<T>::type> &&
+                std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
+            )
+        friend __as_object__<T>::type wrap(const T& obj);
+        template <typename T>
+            requires (
+                __as_object__<T>::enable &&
+                impl::is_extension<typename __as_object__<T>::type> &&
+                std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
+            )
+        friend __as_object__<T>::type wrap(T& obj);
+        template <std::derived_from<Object> T> requires (impl::is_extension<T>)
+        friend auto& unwrap(T& obj);
+        template <std::derived_from<Object> T> requires (impl::is_extension<T>)
+        friend auto& unwrap(const T& obj);
 
-                // store a borrowed reference to the type for later use
-                impl::Bind<CRTP, CppType>::__type__ =
-                    reinterpret_cast<PyTypeObject*>(cls);
-
-                try {
-                    // set the demangled name for the type
-                    std::string demangled =
-                        "<class '" + impl::demangle(cls->base.tp_name) + "'>";
-                    cls->demangled = PyUnicode_FromStringAndSize(
-                        demangled.c_str(),
-                        demangled.size()
-                    );
-                    if (cls->demangled == nullptr) {
-                        Exception::from_python();
-                    }
-                    cls->template_instantiations = nullptr;
-                } catch (...) {
-                    Py_DECREF(cls);
-                    throw;
-                }
-                Py_DECREF(cls);  // parent type now owns only reference
-                initialized = true;
+        /* Implements py::wrap() for immutable references. */
+        static Wrapper _wrap(const CppType& cpp) {
+            PyObject* self = __type__->base.tp_alloc(
+                reinterpret_cast<PyTypeObject*>(__type__),
+                0
+            );
+            if (self == nullptr) {
+                Exception::from_python();
             }
+            new (&reinterpret_cast<CRTP*>(self)->m_cpp) Variant(&cpp);
+            return reinterpret_steal<Wrapper>(self);
         }
 
-        inline static PyType_Spec type_spec = {
+        /* Implements py::wrap() for mutable references. */
+        static Wrapper _wrap(CppType& cpp) {
+            PyObject* self = __type__->base.tp_alloc(
+                reinterpret_cast<PyTypeObject*>(__type__),
+                0
+            );
+            if (self == nullptr) {
+                Exception::from_python();
+            }
+            new (&reinterpret_cast<CRTP*>(self)->m_cpp) Variant(&cpp);
+            return reinterpret_steal<Wrapper>(self);
+        }
 
-        };
+        /* Implements py::unwrap() for immutable wrappers. */
+        static const CppType& _unwrap(const Wrapper& obj) {
+            return std::visit(Visitor{
+                [](const CppType& cpp) {
+                    return cpp;
+                },
+                [](const CppType* cpp) {
+                    return *cpp;
+                }
+            }, obj.m_cpp);
+        }
 
-    };
+        /* Implements py::unwrap() for mutable wrappers. */
+        static CppType& _unwrap(Wrapper& obj) {
+            return std::visit(Visitor{
+                [](CppType& cpp) {
+                    return cpp;
+                },
+                [](CppType* cpp) {
+                    return *cpp;
+                },
+                [&obj](const CppType* cpp) {
+                    throw TypeError(
+                        "requested a mutable reference to const object: " +
+                        repr(obj)
+                    );
+                }
+            }, obj.m_cpp);
+        }
 
-    /* A CRTP base class for Python bindings around existing C++ classes.  If the C++
-    class is a template accepting only other types, then this specialization will be
-    chosen, which enables the C++ template hierarchy to be navigated from Python. */
-    template <typename CRTP, impl::is_generic CppType>
-    struct __python__<CRTP, CppType> : impl::Bind<CRTP, CppType> {
-    private:
+        /* Generates a PyType_Spec config that models the CRTP type in Python.  This is
+        called automatically in __ready__(), which handles type initialization and
+        attaches the result to a module or public template proxy. */
+        static PyType_Spec& type_spec() {
+            unsigned int tpflags =
+                Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE;
+            #if (PY_MAJOR_VERSION >= 3 && PY_MAJOR_VERSION >= 12)
+                tpflags |= Py_TPFLAGS_MANAGED_WEAKREF;
+            #endif
+            static std::vector<PyType_Slot> type_slots = {
+                {Py_tp_dealloc, (void*) CRTP::__dealloc__},
+                {Py_tp_repr, (void*) CRTP::__repr__},
+                {Py_tp_hash, (void*) CRTP::__hash__},
+                {Py_tp_str, (void*) CRTP::__str__},
+            };
+            if constexpr (
+                impl::is_iterable<CppType> &&
+                std::derived_from<impl::iter_type<CppType>, Object>
+            ) {
+                tpflags |= Py_TPFLAGS_HAVE_GC;
+                type_slots.push_back({Py_tp_traverse, (void*) CRTP::__traverse__});
+                type_slots.push_back({Py_tp_clear, (void*) CRTP::__clear__});
+            }
 
+            // TODO: continue on with the rest of the slots
+
+            static std::string name = impl::demangle(typeid(CppType).name());
+            static PyType_Spec spec = {
+                .name = name.c_str(),
+                .basicsize = sizeof(CRTP),
+                .itemsize = 0,
+                .flags = tpflags,
+                .slots = type_slots.data(),
+            };
+            return spec;
+        }
+
+        // TODO: template_key may need to deal with template parameters that don't have
+        // an equivalent Python type.  
+
+        /* Generates the key under which to insert a particular template instantiation
+        into the public proxy's `__getitem__` dict, so that the template hierarchy is
+        navigable in Python. */
         template <typename T>
-        struct build_key {
+        struct template_key {
             /// NOTE: this specialization should never be called since impl::is_generic
-            /// guarantees that the type is a template.  It's here to ensure that the
-            /// compiler doesn't complain about the lack of a default specialization.
+            /// guarantees that the type is a template.
             static PyObject* operator()() {
                 throw TypeError(
                     "cannot generate a key for a non-template type: " +
@@ -493,7 +474,8 @@ protected:
             }
         };
         template <template <typename...> class T, typename... Ts>
-        struct build_key<T<Ts...>> {
+            requires (__as_object__<Ts>::enable && ...)  // TODO: is this necessary?
+        struct template_key<T<Ts...>> {
             static PyObject* operator()() {
                 PyObject* key = PyTuple_Pack(sizeof...(Ts), ptr(Type<Ts>())...);
                 if (key == nullptr) {
@@ -503,43 +485,224 @@ protected:
             }
         };
 
+    protected:
+        using Variant = std::variant<CppType, CppType*, const CppType*>;
+
+        template <typename... Ts>
+        struct Visitor : Ts... {
+            using Ts::operator()...;
+        };
+
     public:
+        inline static impl::BertrandMeta* __type__ = nullptr;
 
-        /* Initialize a generic type using the derived class's type_spec.  This should
-        be called in the module initialization function for every type that is exposed
-        to Python. */
-        template <std::derived_from<impl::TypeTag> Parent>
-        static void __ready__(Parent& parent) {
-            static bool initialized = false;
-            if (!initialized) {
-                // initialize the metaclass if it hasn't been already
-                impl::BertrandMeta::__ready__();
+        PyObject_HEAD
+        Variant m_cpp;
+        using t_cpp = CppType;
 
-                // ensure that the parent type is an instance of the metaclass and has
-                // a template_instantiations dictionary
-                int is_meta = PyType_IsSubtype(
-                    Py_TYPE(ptr(parent)),
-                    &impl::BertrandMeta::type
-                );
-                if (is_meta < 0) {
-                    Exception::from_python();
-                }
-                impl::BertrandMeta* parent_ptr = reinterpret_cast<impl::BertrandMeta*>(
-                    ptr(parent)
-                );
-                if (parent_ptr->template_instantiations == nullptr) {
-                    parent_ptr->template_instantiations = PyDict_New();
-                    if (parent_ptr->template_instantiations == nullptr) {
-                        Exception::from_python();
+        /* TODO: implement the following slots using metaprogramming where possible:
+         *
+        //  * tp_name
+        //  * tp_basicsize
+        //  * tp_itemsize
+        //  * tp_dealloc
+        //  * tp_repr
+        //  * tp_hash
+         * tp_vectorcall_offset
+         * tp_call
+        //  * tp_str
+        //  * tp_traverse
+        //  * tp_clear
+         * tp_iter
+         * tp_iternext
+         * tp_init
+         * tp_alloc
+         * tp_new
+         * tp_free
+         * tp_is_gc
+         * tp_finalize
+         * tp_vectorcall
+         *
+         * to be defined in subclasses:
+         *
+         * tp_as_number
+         * tp_as_sequence
+         * tp_as_mapping
+         * tp_as_async
+         * tp_getattro
+         * tp_setattro
+         * tp_as_buffer
+         * tp_doc
+         * tp_richcompare
+         * tp_methods
+         * tp_members
+         * tp_getset
+         * tp_bases
+         * tp_descr_get
+         * tp_descr_set
+         *
+         * These cannot be contextually inferred from the AST, and must have
+         * corresponding attributes in the original C++ type:
+         *
+         * tp_as_async  -> [[py::__await__]] + [[py::__aiter__]] + [[py::__anext__]] + [[py::__asend__]]
+         * tp_getattro  -> [[py::__getattr__]]
+         * tp_setattro  -> [[py::__setattr__]] + [[py::__delattr__]]
+         * tp_as_buffer -> [[py::__buffer__]] + [[py::__release_buffer__]]
+         * tp_descr_get -> [[py::__get__]]
+         * tp_descr_set -> [[py::__set__]] + [[py::__delete__]]
+         *
+         * TODO: perhaps these are passed into __ready__() from the derived class as
+         * arguments?
+         */
+
+        // TODO: I'll have to implement a Python wrapper around a C++ iterator, which
+        // would share some of the concerns about mutability.  It will probably need
+        // some of the same infrastructure as mutable variables, which are equivalent
+        // to this type, but holds a reference to an object rather than an object
+        // itself.
+        // -> Maybe all of these classes allocate space for the object, but can also
+        // be used to store a reference to such.
+
+        /* tp_repr demangles the exact C++ type name and includes memory address
+        similar to Python. */
+        static PyObject* __repr__(CRTP* self) {
+            try {
+                std::string str = std::visit(Visitor{
+                    [](const CppType& cpp) {
+                        return repr(cpp);
+                    },
+                    [](const CppType* cpp) {
+                        return repr(*cpp);
                     }
+                }, self->m_cpp);
+                PyObject* result = PyUnicode_FromStringAndSize(
+                    str.c_str(),
+                    str.size()
+                );
+                if (result == nullptr) {
+                    return nullptr;
                 }
+                return result;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        }
+
+        /* tp_hash delegates to `std::hash` if possible, or raises a TypeError. */
+        static Py_hash_t __hash__(CRTP* self) {
+            if constexpr (!impl::hashable<CppType>) {
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "unhashable type: '%s'",
+                    impl::demangle(CRTP::__type__.base.tp_name).c_str()
+                );
+                return -1;
+            } else {
+                try {
+                    return std::visit(Visitor{
+                        [](const CppType& cpp) {
+                            return std::hash<CppType>{}(cpp);
+                        },
+                        [](const CppType* cpp) {
+                            return std::hash<CppType>{}(*cpp);
+                        }
+                    }, self->m_cpp);
+                } catch (...) {
+                    Exception::to_python();
+                    return -1;
+                }
+            }
+        }
+
+        /* tp_str defaults to tp_repr. */
+        static PyObject* __str__(CRTP* self) {
+            return __repr__(self);
+        }
+
+        /* tp_dealloc calls the ordinary C++ destructor. */
+        static void __dealloc__(CRTP* self) {
+            if (std::holds_alternative<CppType>(self->m_cpp)) {
+                self->m_cpp.~CppType();
+            }
+            CRTP::type.tp_free(self);
+        }
+
+        /* Owning references to C++ objects that themselves reference Python objects
+         * need to be registered with Python's cyclic garbage collector.  This is
+         * extremely confusing and dangerous to do alone, so we automate it here by
+         * detecting C++ types that yield Python objects when iterated over.
+         */
+
+        static int __traverse__(CRTP* self, visitproc visit, void* arg) {
+            if (std::holds_alternative<CppType>(self->m_cpp)) {
+                for (auto& item : self->m_cpp) {
+                    Py_VISIT(ptr(item));
+                }
+            }
+            return 0;
+        }
+
+        static int __clear__(CRTP* self) {
+            if (std::holds_alternative<CppType>(self->m_cpp)) {
+                /// NOTE: In order to avoid a double free, we release() all of the
+                /// container's items here, so that when their destructors are called
+                /// in __dealloc__(), they see a null pointer and do nothing.
+                for (auto& item : self->m_cpp) {
+                    Py_XDECREF(release(item));
+                }
+            }
+            return 0;
+        }
+
+        /* Initialize a type and attach it to a module.  This is called automatically
+        for every type during the module initialization function, which is executed by
+        calling `impl::ModuleDef::__ready__()`. */
+        template <std::derived_from<impl::ModuleTag> Mod>
+        static void __ready__(Mod& parent) {
+            static bool initialized = false;
+            if (initialized) {
+                return;
+            }
+
+            // initialize the metaclass if it hasn't been already
+            impl::BertrandMeta::__ready__();
+
+            // if the wrapper type is generic, a public proxy type needs to be created
+            // that can be indexed to resolve individual instantiations
+            if constexpr (impl::is_generic<Wrapper>) {
+                // TODO: ensure that the parent is a module, and automatically generate
+                // a public-facing proxy if it does not already exist.  Then use that
+                // type here to create the actual type object.  This effectively
+                // replaces the following code:
+
+                // // ensure that the parent type is an instance of the metaclass and has
+                // // a template_instantiations dictionary
+                // int is_meta = PyType_IsSubtype(
+                //     Py_TYPE(ptr(parent)),
+                //     &impl::BertrandMeta::type
+                // );
+                // if (is_meta < 0) {
+                //     Exception::from_python();
+                // }
+                // impl::BertrandMeta* parent_ptr = reinterpret_cast<impl::BertrandMeta*>(
+                //     ptr(parent)
+                // );
+                // if (parent_ptr->template_instantiations == nullptr) {
+                //     parent_ptr->template_instantiations = PyDict_New();
+                //     if (parent_ptr->template_instantiations == nullptr) {
+                //         Exception::from_python();
+                //     }
+                // }
 
                 // use the metaclass to convert the type_spec into a heap type
-                impl::BertrandMeta* cls = PyType_FromMetaclass(
-                    &impl::BertrandMeta::type,
-                    &CRTP::type_spec,
-                    nullptr,  // template instantiations are not attached to any module
-                    nullptr  // bases are encoded in the PyType_Spec itself
+                impl::BertrandMeta* cls = reinterpret_cast<impl::BertrandMeta*>(
+                    PyType_FromMetaclass(
+                        &impl::BertrandMeta::type,
+                        nullptr,  // templates aren't attached to a module directly
+                        &type_spec(),
+                        nullptr  // bases are encoded in the type_spec itself
+                    )
                 );
                 if (cls == nullptr) {
                     Exception::from_python();
@@ -571,22 +734,66 @@ protected:
                     Py_DECREF(key);
 
                     // store a borrowed reference to the type for later use
-                    impl::Bind<CRTP, CppType>::__type__ =
-                        reinterpret_cast<PyTypeObject*>(cls);
+                    __type__ = cls;  // TODO: maybe this needs to be an opaque PyTypeObject*?
 
                 } catch (...) {
                     Py_DECREF(cls);
                     throw;
                 }
                 Py_DECREF(cls);  // parent type now owns the only reference
-                initialized = true;
+
+            // otherwise, the type can be created directly
+            } else {
+                // generate a type spec and convert to a heap type using BertrandMeta
+                impl::BertrandMeta* cls = reinterpret_cast<impl::BertrandMeta*>(
+                    PyType_FromMetaclass(
+                        &impl::BertrandMeta::type,
+                        ptr(parent),
+                        &type_spec(),
+                        nullptr  // bases are encoded in the type_spec itself
+                    )
+                );
+                if (cls == nullptr) {
+                    Exception::from_python();
+                }
+
+                // store a borrowed reference to the type for later use
+                __type__ = cls;  // TODO: maybe this needs to be an opaque PyTypeObject*?
+
+                try {
+                    // set the demangled name for the type
+                    std::string demangled =
+                        "<class '" + impl::demangle(cls->base.tp_name) + "'>";
+                    cls->demangled = PyUnicode_FromStringAndSize(
+                        demangled.c_str(),
+                        demangled.size()
+                    );
+                    if (cls->demangled == nullptr) {
+                        Exception::from_python();
+                    }
+
+                    // by definition, generated types do not have any instantiations
+                    cls->template_instantiations = nullptr;
+                } catch (...) {
+                    Py_DECREF(cls);
+                    throw;
+                }
+                Py_DECREF(cls);  // module now owns only reference
             }
+
+            initialized = true;
         }
 
-        inline static PyType_Spec type_spec = {
-
-        };
     };
+
+    // TODO: use this as follows:
+    //
+    // class Foo : public Object {
+    // public:
+    //     struct __python__ : public Object::__python__<__python__, Foo, Bar> {};
+
+    // TODO: this pattern could also model Python-level inheritance as well, and
+    // closely couple it to the bases of the Object wrapper itself.
 
 public:
 
@@ -668,22 +875,6 @@ public:
 };
 
 
-template <std::derived_from<Object> T> requires (impl::is_extension<T>)
-[[nodiscard]] inline auto& unwrap(T& obj) {
-    using pytype = T::__python__;
-    pytype* instance = reinterpret_cast<pytype*>(ptr(obj));
-    return instance->m_cpp;
-}
-
-
-template <std::derived_from<Object> T> requires (impl::is_extension<T>)
-[[nodiscard]] inline const auto& unwrap(const T& obj) {
-    using pytype = T::__python__;
-    pytype* instance = reinterpret_cast<pytype*>(ptr(obj));
-    return instance->m_cpp;
-}
-
-
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_borrow(Handle obj) {
     return T(obj, Object::borrowed_t{});
@@ -693,6 +884,40 @@ template <std::derived_from<Object> T>
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_steal(Handle obj) {
     return T(obj, Object::stolen_t{});
+}
+
+
+template <typename T>
+    requires (
+        __as_object__<T>::enable &&
+        impl::is_extension<typename __as_object__<T>::type> &&
+        std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
+    )
+[[nodiscard]] __as_object__<T>::type wrap(T& obj)  {
+    return T::__python__::_wrap(obj);
+}
+
+
+template <typename T>
+    requires (
+        __as_object__<T>::enable &&
+        impl::is_extension<typename __as_object__<T>::type> &&
+        std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
+    )
+[[nodiscard]] __as_object__<T>::type wrap(const T& obj) {
+    return T::__python__::_wrap(obj);
+}
+
+
+template <std::derived_from<Object> T> requires (impl::is_extension<T>)
+[[nodiscard]] auto& unwrap(T& obj) {
+    return T::__python__::_unwrap(obj);
+}
+
+
+template <std::derived_from<Object> T> requires (impl::is_extension<T>)
+[[nodiscard]] const auto& unwrap(const T& obj) {
+    return T::__python__::_unwrap(obj);
 }
 
 
@@ -1068,6 +1293,224 @@ template <typename T, typename... Args> requires (std::constructible_from<T, Arg
 struct __call__<Type<T>, Args...>                           : Returns<T> {
     static auto operator()(const Type<T>& self, Args&&... args) {
         return T(std::forward<Args>(args)...);
+    }
+};
+
+
+//////////////////////
+////    MODULE    ////
+//////////////////////
+
+
+namespace impl {
+
+    /* A unique subclass of Python's base module type that allows us to add descriptors
+    for computed properties and overload sets without affecting any other modules. */
+    template <StaticStr Name>
+    struct PyModule {
+        PyModuleObject base;
+
+        // TODO: ensure everything below this line is handled properly, and then
+        // implement the module initialization helpers in the public API, particularly
+        // submodule() and var().  The first is done, and the second should take a
+        // reference (mutable or immutable) to a raw variable, and generate a property
+        // descript with an appropriate getter/setter and attach it to the module's
+        // type object.  Types and functions should be handled via their own __ready__
+        // calls, which can attach them to either a module, submodule, or type as
+        // needed.
+
+        // TODO: if I want to use raw getset descriptors, then I probably need to
+        // register those *before* readying the type, since they are part of the
+        // PyType_Spec that needs to be defined.  Perhaps this is implemented as a
+        // vector of internal descriptor structs that are generated by a var()
+        // static method.  The vector's data() would then be used to initialize the
+        // PyType_Spec when __ready__() is called.  The best way to do this is to
+        // probably place the configuration structs within __ready__ as static
+        // variables, so that they are only evaluated once __ready__() is actually
+        // called.  This gives us time to append variables to the vector and then
+        // pass them in as static getset descriptors, rather than dynamically
+        // generating a property.
+
+        // So the module initialization function basically progresses as follows:
+        // -> call the module's `var()` method for each variable that needs to be
+        // exposed.
+        // -> __ready__() all the global types that do not have any template parameters,
+        // including a synthesized root type for templates.  That should probably also
+        // be handled as a helper method similar to var(), or be subsumed into __ready__
+        // the first time a template type is readied.
+
+        /* Initialize the module and assign its type. */
+        static Module<Name> __ready__(const Str& doc) {
+            PyObject* _mod = PyModule_Create(&module_def);
+            if (_mod == nullptr) {
+                Exception::from_python();
+            }
+            Module<Name> mod = reinterpret_steal<Module<Name>>(_mod);
+            PyObject* type = PyType_FromSpec(&type_spec);
+            if (type == nullptr) {
+                return nullptr;
+            }
+            Py_SET_TYPE(ptr(mod), reinterpret_cast<PyTypeObject*>(type));
+            setattr<"__doc__">(mod, doc);
+            return mod;
+        }
+
+        template <StaticStr SubName>
+        static Module<Name + "." + SubName> submodule(
+            Module<Name>& parent,
+            const Str& doc
+        ) {
+            auto mod = Module<Name + "." + SubName>::__ready__(doc);
+
+            // add the submodule to the interpreter's import list
+            PyObject* _mod_ptr = PyImport_AddModuleObject(
+                impl::TemplateString<Name + "." + SubName>::ptr
+            );
+            if (_mod_ptr == nullptr) {
+                Exception::from_python();
+            }
+            Py_DECREF(_mod_ptr);
+
+            // set the submodule as an attribute of the parent module
+            if (PyObject_SetAttr(
+                ptr(parent),
+                impl::TemplateString<SubName>::ptr,
+                ptr(mod)
+            )) {
+                Exception::from_python();
+            }
+            return mod;
+        }
+
+        // TODO: perhaps add a var() method for adding a global variable to the
+        // module scope.  It could take separate overloads for const vs mutable
+        // references, and generate a setter for the second case, and only a setter
+        // for the first.
+
+        // TODO: I might be able to do something similar with functions, in which
+        // case I would automatically generate an overload set for each function as
+        // it is added, or append to it as needed.  Alternatively, I can use the same
+        // attach() method that I'm exposing to the public.
+
+        // TODO: maybe also a __type__ method, which would add a type directly to the
+        // module if it is not generic, or generate a front-facing abstract type if it
+        // is.  That should pretty much automate the process of handling generic types.
+
+        inline static PyModuleDef module_def = {
+            .m_base = PyModuleDef_HEAD_INIT,
+            .m_name = Name,
+            .m_doc = "A Python wrapper around the '" + Name + "' C++ module.",
+            .m_size = -1,
+        };
+
+        inline static PyType_Slot type_slots[] = {
+            {Py_tp_base, &PyModule_Type},
+            {0, nullptr}
+        };
+
+        inline static PyType_Spec type_spec = {
+            .name = typeid(PyModule).name(),
+            .basicsize = sizeof(PyModuleObject),
+            .itemsize = 0,
+            .flags =
+                Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE |
+                Py_TPFLAGS_DISALLOW_INSTANTIATION,
+            .slots = type_slots,
+        };
+
+    };
+
+}
+
+
+/* A Python module with a unique type, which supports the addition of descriptors for
+computed properties, overload sets, etc. */
+template <StaticStr Name>
+class Module : public Object, public impl::ModuleTag {
+    using Base = Object;
+
+public:
+
+    Module(Handle h, borrowed_t t) : Base(h, t) {}
+    Module(Handle h, stolen_t t) : Base(h, t) {}
+
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<Module, __init__<Module, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Module, std::remove_cvref_t<Args>...>::enable
+        )
+    Module(Args&&... args) : Base((
+        Interpreter::init(),
+        __init__<Module, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    )) {}
+
+    template <typename... Args>
+        requires (
+            !__init__<Module, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Module, __explicit_init__<Module, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Module, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Module(Args&&... args) : Base((
+        Interpreter::init(),
+        __explicit_init__<Module, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    )) {}
+
+};
+
+
+/* Default-initializing a py::Module is functionally equivalent to an import
+statement. */
+template <StaticStr Name>
+struct __init__<Module<Name>>                               : Returns<Module<Name>> {
+    static auto operator()() {
+        PyObject* mod = PyImport_Import(impl::TemplateString<Name>::ptr);
+        if (mod == nullptr) {
+            throw Exception();
+        }
+        return reinterpret_steal<Module<Name>>(mod);
+    }
+};
+
+
+template <StaticStr Name>
+class Type<Module<Name>> : public Object {
+    using Base = Object;
+
+public:
+
+    Type(Handle h, borrowed_t t) : Base(h, t) {}
+    Type(Handle h, stolen_t t) : Base(h, t) {}
+
+    template <typename... Args>
+        requires (
+            std::is_invocable_r_v<Type, __init__<Type, std::remove_cvref_t<Args>...>, Args...> &&
+            __init__<Type, std::remove_cvref_t<Args>...>::enable
+        )
+    Type(Args&&... args) : Base((
+        Interpreter::init(),
+        __init__<Type, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    )) {}
+
+    template <typename... Args>
+        requires (
+            !__init__<Type, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<Type, __explicit_init__<Type, std::remove_cvref_t<Args>...>, Args...> &&
+            __explicit_init__<Type, std::remove_cvref_t<Args>...>::enable
+        )
+    explicit Type(Args&&... args) : Base((
+        Interpreter::init(),
+        __explicit_init__<Type, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    )) {}
+
+};
+
+
+template <StaticStr Name>
+struct __init__<Type<Module<Name>>> {
+    static auto operator()() {
+        return reintepret_steal<Type<Module<Name>>>(
+            reinterpret_cast<PyObject*>(Py_TYPE(ptr(Module<Name>())))
+        );
     }
 };
 

@@ -888,16 +888,9 @@ return the raw pointer. */
 [[nodiscard]] inline PyObject* release(Handle obj);
 
 
-/* Retrieve an internal C++ object from a `py::Object` wrapper.  Note that this only
-works if the wrapper was declared using the `__python__` CRTP helper. */
-template <std::derived_from<Object> T> requires (impl::is_extension<T>)
-[[nodiscard]] inline auto& unwrap(T& obj);
-
-
-/* Retrieve an internal C++ object from a `py::Object` wrapper.  Note that this only
-works if the wrapper was declared using the `__python__` CRTP helper. */
-template <std::derived_from<Object> T> requires (impl::is_extension<T>)
-[[nodiscard]] inline const auto& unwrap(const T& obj);
+/* Steal a reference to a raw Python handle. */
+template <std::derived_from<Object> T>
+[[nodiscard]] T reinterpret_steal(Handle obj);
 
 
 /* Borrow a reference to a raw Python handle. */
@@ -905,9 +898,56 @@ template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_borrow(Handle obj);
 
 
-/* Steal a reference to a raw Python handle. */
-template <std::derived_from<Object> T>
-[[nodiscard]] T reinterpret_steal(Handle obj);
+/* Wrap a non-owning, mutable reference to a C++ object into a `py::Object` proxy that
+exposes it to Python.  Note that this only works if a corresponding `py::Object`
+subclass exists, which was declared using the `__python__` CRTP helper, and whose C++
+type exactly matches the argument.
+
+WARNING: This function is unsafe and should be used with caution.  It is the caller's
+responsibility to make sure that the underlying object outlives the wrapper, otherwise
+undefined behavior will occur.  It is mostly intended for internal use in order to
+expose shared state to Python, for instance to model exported global variables. */
+template <typename T>
+    requires (
+        __as_object__<T>::enable &&
+        impl::is_extension<typename __as_object__<T>::type> &&
+        std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
+    )
+[[nodiscard]] __as_object__<T>::type wrap(T& obj);
+
+
+/* Wrap a non-owning, immutable reference to a C++ object into a `py::Object` proxy
+that exposes it to Python.  Note that this only works if a corresponding `py::Object`
+subclass exists, which was declared using the `__python__` CRTP helper, and whose C++
+type exactly matches the argument.
+
+WARNING: This function is unsafe and should be used with caution.  It is the caller's
+responsibility to make sure that the underlying object outlives the wrapper, otherwise
+undefined behavior will occur.  It is mostly intended for internal use in order to
+expose shared state to Python, for instance to model exported global variables. */
+template <typename T>
+    requires (
+        __as_object__<T>::enable &&
+        impl::is_extension<typename __as_object__<T>::type> &&
+        std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
+    )
+[[nodiscard]] __as_object__<T>::type wrap(const T& obj);
+
+
+/* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper.
+Note that this only works if the wrapper was declared using the `__python__` CRTP
+helper.  If the wrapper does not own the backing object, this method will follow the
+pointer to resolve the reference. */
+template <std::derived_from<Object> T> requires (impl::is_extension<T>)
+[[nodiscard]] auto& unwrap(T& obj);
+
+
+/* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper.
+Note that this only works if the wrapper was declared using the `__python__` CRTP
+helper.  If the wrapper does not own the backing object, this method will follow the
+pointer to resolve the reference. */
+template <std::derived_from<Object> T> requires (impl::is_extension<T>)
+[[nodiscard]] const auto& unwrap(const T& obj);
 
 
 }  // namespace py
