@@ -913,7 +913,7 @@ template <typename T>
         impl::is_extension<typename __as_object__<T>::type> &&
         std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
     )
-[[nodiscard]] __as_object__<T>::type wrap(T& obj);
+[[nodiscard]] auto wrap(T& obj) -> __as_object__<T>::type;
 
 
 /* Wrap a non-owning, immutable reference to a C++ object into a `py::Object` proxy
@@ -931,7 +931,7 @@ template <typename T>
         impl::is_extension<typename __as_object__<T>::type> &&
         std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
     )
-[[nodiscard]] __as_object__<T>::type wrap(const T& obj);
+[[nodiscard]] auto wrap(const T& obj) -> __as_object__<T>::type;
 
 
 /* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper.
