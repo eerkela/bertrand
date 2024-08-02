@@ -383,10 +383,28 @@ namespace impl {
     template <typename T>
     concept is_generic = is_generic_helper<T>;
 
+    template <typename T, typename = void>
+    constexpr bool is_extension_helper = false;
+    template <typename T>
+    constexpr bool is_extension_helper<T, std::void_t<typename T::__python__>> = true;
+
+    // TODO: use the presence of the __python__ member to identify extension types.
+    // -> the CRTP class may not need the Wrapper class at all in that case, since it
+    // might be inferred from the CppType?
+
     template <typename T>
     concept is_extension = requires(T&& t) {
         { T::__python__::__type__ } -> std::convertible_to<PyTypeObject*>;
     };
+
+    template <typename T, typename = void>
+    constexpr bool is_module_helper = false;
+    template <typename T>
+    constexpr bool is_module_helper<T, std::void_t<typename T::__module__>> = true;
+
+    template <typename T>
+    concept is_module =
+        is_module_helper<T> && std::derived_from<typename T::__module__, ModuleTag>;
 
     template <typename T, StaticStr Name, typename... Args>
     concept attr_is_callable_with =
