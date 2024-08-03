@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <typeindex>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -60,10 +61,10 @@ using bertrand::StaticStr;
 
 namespace impl {
     struct BertrandTag {};
+    struct TypeTag;
+    struct ModuleTag;
     struct ArgTag : public BertrandTag {};
     struct ProxyTag : public BertrandTag {};
-    struct TypeTag : public BertrandTag {};
-    struct ModuleTag : public BertrandTag {};
     struct FunctionTag : public BertrandTag {};
     struct TupleTag : public BertrandTag {};
     struct ListTag : public BertrandTag{};
@@ -118,6 +119,11 @@ namespace impl {
             return unpack_arg<I - 1>(std::forward<Ts>(next)...);
         }
     }
+
+    enum class Origin {
+        PYTHON,
+        CPP
+    };
 
 }
 
@@ -388,9 +394,8 @@ namespace impl {
     template <typename T>
     constexpr bool is_extension_helper<T, std::void_t<typename T::__python__>> = true;
 
-    // TODO: use the presence of the __python__ member to identify extension types.
-    // -> the CRTP class may not need the Wrapper class at all in that case, since it
-    // might be inferred from the CppType?
+    // TODO: is_extension is probably not needed, since I can check against the
+    // __type__'s __origin__ attribute directly.
 
     template <typename T>
     concept is_extension = requires(T&& t) {
@@ -401,6 +406,9 @@ namespace impl {
     constexpr bool is_module_helper = false;
     template <typename T>
     constexpr bool is_module_helper<T, std::void_t<typename T::__module__>> = true;
+
+    // TODO: is_module should just check for ModuleTag as a base, since all modules now
+    // must inherit from it to gain access to __module__ in the first place.
 
     template <typename T>
     concept is_module =

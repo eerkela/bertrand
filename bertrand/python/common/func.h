@@ -2167,26 +2167,21 @@ public:
     // be compatible.  Perhaps in the future, I can analyze the type hints to determine
     // compatibility.
 
-    template <typename... Args>
-        requires (
-            std::is_invocable_r_v<Function, __init__<Function, std::remove_cvref_t<Args>...>, Args...> &&
-            __init__<Function, std::remove_cvref_t<Args>...>::enable
-        )
-    Function(Args&&... args) : Base((
-        Interpreter::init(),
-        __init__<Function, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
 
-    template <typename... Args>
-        requires (
-            !__init__<Function, std::remove_cvref_t<Args>...>::enable &&
-            std::is_invocable_r_v<Function, __explicit_init__<Function, std::remove_cvref_t<Args>...>, Args...> &&
-            __explicit_init__<Function, std::remove_cvref_t<Args>...>::enable
-        )
-    explicit Function(Args&&... args) : Base((
-        Interpreter::init(),
-        __explicit_init__<Function, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
+    Function(Handle h, borrowed_t t) : Base(h, t) {}
+    Function(Handle h, stolen_t t) : Base(h, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Function>::template enable<Args...>)
+    Function(Args&&... args) : Base(
+        implicit_ctor<Function>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Function>::template enable<Args...>)
+    explicit Function(Args&&... args) : Base(
+        explicit_ctor<Function>{},
+        std::forward<Args>(args)...
+    ) {}
 
     // TODO: these can now be replaced with __init__ specializations?
 
