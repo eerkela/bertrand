@@ -7,6 +7,9 @@
 #include "ops.h"
 
 
+#include "type.h"
+
+
 namespace py {
 namespace impl {
 

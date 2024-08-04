@@ -364,7 +364,7 @@ struct __init__<Object, T>                                  : Returns<Object> {
 
 
 /* Implicitly convert a py::Object (or any of its subclasses) into one of its
-subclasses by applying a runtime type check. */
+subclasses by applying a runtime `isinstance()` check. */
 template <std::derived_from<Object> From, std::derived_from<From> To>
 struct __cast__<From, To>                                   : Returns<To> {
     static auto operator()(const From& from) {

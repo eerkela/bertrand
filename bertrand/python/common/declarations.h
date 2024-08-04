@@ -165,6 +165,7 @@ class Handle;
 class Object;
 template <typename>
 class Type;
+class BertrandMeta;
 template <StaticStr Name, typename T>
 class Arg;
 template <typename>
