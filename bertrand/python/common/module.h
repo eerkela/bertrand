@@ -103,7 +103,7 @@ namespace impl {
                     );
                     return -1;
                 };
-                CRTP::tp_getset.push_back({
+                tp_getset.push_back({
                     Name,
                     (getter) +get,  // converts a stateless lambda to a function pointer
                     (setter) +set,
@@ -150,7 +150,7 @@ namespace impl {
                         return -1;
                     }
                 };
-                CRTP::tp_getset.push_back({
+                tp_getset.push_back({
                     Name,
                     (getter) +get,
                     (setter) +set,

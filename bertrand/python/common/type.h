@@ -713,7 +713,7 @@ can be customize by specializing the `__issubclass__` control struct.)doc"
 // template <typename T>
 // struct __isinstance__<T, BertrandMeta>                      : Returns<bool> {};  // TODO: implement default behavior
 // template <typename T>
-// struct __issubclass__<T, BertrandMeta>                       : Returns<bool> {};  // TODO: implement default behavior
+// struct __issubclass__<T, BertrandMeta>                      : Returns<bool> {};  // TODO: implement default behavior
 template <>
 struct __len__<BertrandMeta>                                : Returns<size_t> {};
 template <>
@@ -730,23 +730,192 @@ namespace impl {
 
     template <typename CRTP, typename Wrapper, typename CppType>
     struct TypeTag::def : public BaseDef {
-        static constexpr Origin __origin__ = Origin::CPP;
-        static constexpr StaticStr __doc__ = [] {
-            return (
-                "A Bertrand-generated Python wrapper for the '" +
-                impl::demangle(typeid(CppType).name()) + "' C++ type."
-            );
-        }();
-
-        using t_cpp = CppType;
-
     protected:
-        using Variant = std::variant<t_cpp, t_cpp*, const t_cpp*>;
+        using Variant = std::variant<CppType, CppType*, const CppType*>;
 
         template <typename... Ts>
         struct Visitor : Ts... {
             using Ts::operator()...;
         };
+
+        /* Expose an immutable member variable to Python as a computed property, which
+        synchronizes its state.  Can only be called during `__setup__()`. */
+        template <StaticStr Name, typename T>
+        static void var(const T CppType::*value) {
+            if (setup_complete) {
+                throw ImportError(
+                    "The var() helper for attribute '" + Name + "' of type '" +
+                    impl::demangle(typeid(Wrapper).name()) +
+                    "' can only be called during the __setup__() method."
+                );
+            }
+            static auto get = [](PyObject* self, void* closure) -> PyObject* {
+                try {
+                    CRTP* obj = reinterpret_cast<CRTP*>(self);
+                    auto member_ptr = reinterpret_cast<const T CppType::*>(closure);
+                    return release(wrap(std::visit(
+                        Visitor{
+                            [member_ptr](const CppType& obj) {
+                                return obj.*member_ptr;
+                            },
+                            [member_ptr](const CppType* obj) {
+                                return obj->*member_ptr;
+                            }
+                        },
+                        obj->m_cpp
+                    )));
+                } catch (...) {
+                    Exception::to_python();
+                    return nullptr;
+                }
+            };
+            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "variable '" + Name + "' of type '" +
+                    impl::demangle(typeid(Wrapper).name()) + "' is immutable."
+                );
+                return -1;
+            };
+            tp_getset.push_back({
+                Name,
+                (getter) +get,  // converts a stateless lambda to a function pointer
+                (setter) +set,
+                nullptr,  // doc
+                const_cast<void*>(reinterpret_cast<const void*>(value))
+            });
+        }
+
+        /* Expose a mutable member variable to Python as a computed property, which
+        synchronizes its state.  Can only be called during `__setup__()`. */
+        template <StaticStr Name, typename T>
+        static void var(T CppType::*value) {
+            if (setup_complete) {
+                throw ImportError(
+                    "The var() helper for attribute '" + Name + "' of type '" +
+                    impl::demangle(typeid(Wrapper).name()) +
+                    "' can only be called during the __setup__() method."
+                );
+            }
+            static auto get = [](PyObject* self, void* closure) -> PyObject* {
+                try {
+                    CRTP* obj = reinterpret_cast<CRTP*>(self);
+                    auto member_ptr = reinterpret_cast<T CppType::*>(closure);
+                    return release(wrap(std::visit(
+                        Visitor{
+                            [member_ptr](CppType& obj) {
+                                return obj.*member_ptr;
+                            },
+                            [member_ptr](CppType* obj) {
+                                return obj->*member_ptr;
+                            },
+                            [member_ptr](const CppType* obj) {
+                                return obj->*member_ptr;
+                            }
+                        },
+                        obj->m_cpp
+                    )));
+                } catch (...) {
+                    Exception::to_python();
+                    return nullptr;
+                }
+            };
+            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
+                if (new_val == nullptr) {
+                    PyErr_SetString(
+                        PyExc_TypeError,
+                        "variable '" + Name + "' of type '" +
+                        impl::demangle(typeid(Wrapper).name()) +
+                        "' cannot be deleted."
+                    );
+                    return -1;
+                }
+                try {
+                    CRTP* obj = reinterpret_cast<CRTP*>(self);
+                    auto member_ptr = reinterpret_cast<T CppType::*>(closure);
+                    auto val = reinterpret_borrow<Object>(new_val);
+                    std::visit(
+                        Visitor{
+                            [member_ptr, new_val](CppType& obj) {
+                                obj.*member_ptr = static_cast<T>(
+                                    reinterpret_borrow<Object>(new_val)
+                                );
+                            },
+                            [member_ptr, new_val](CppType* obj) {
+                                obj->*member_ptr = static_cast<T>(
+                                    reinterpret_borrow<Object>(new_val)
+                                );
+                            },
+                            [member_ptr, new_val](const CppType* obj) {
+                                PyErr_SetString(
+                                    PyExc_TypeError,
+                                    "variable '" + Name + "' of type '" +
+                                    impl::demangle(typeid(Wrapper).name()) +
+                                    "' is immutable."
+                                );
+                            }
+                        },
+                        obj->m_cpp
+                    );
+                    return 0;
+                } catch (...) {
+                    Exception::to_python();
+                    return -1;
+                }
+            };
+            tp_getset.push_back({
+                Name,
+                (getter) +get,  // converts a stateless lambda to a function pointer
+                (setter) +set,
+                nullptr,  // doc
+                const_cast<void*>(reinterpret_cast<const void*>(value))
+            });
+        }
+
+        /* Expose a C++ instance method to Python as an instance method, which can be
+        overloaded from either side of the language boundary.  */
+        template <StaticStr Name, typename Return, typename... Target>
+        static void method(Return(CppType::*func)(Target...)) {
+            if (!setup_complete) {
+                throw ImportError(
+                    "The method() helper for method '" + Name + "' of type '" +
+                    impl::demangle(typeid(Wrapper).name()) +
+                    "' can only be called during the __ready__() method."
+                );
+            }
+            // func is a pointer to a member function of CppType, which can be called
+            // like this:
+            //      obj.*func(std::forward<Args>(args)...);
+        }
+
+        /* Expose a C++ static method to Python as a class method, which can be
+        overloaded from either side of the language boundary.  */
+        template <StaticStr Name, typename Return, typename... Target>
+        static void classmethod(Return(*func)(Target...)) {
+            if (!setup_complete) {
+                throw ImportError(
+                    "The classmethod() helper for method '" + Name + "' of type '" +
+                    impl::demangle(typeid(Wrapper).name()) +
+                    "' can only be called during the __ready__() method."
+                );
+            }
+            // func is a normal function pointer
+        }
+
+        /* Expose a C++ static method to Python as a static method, which can be
+        overloaded from either side of the language boundary.  */
+        template <StaticStr Name, typename Return, typename... Target>
+        static void staticmethod(Return(*func)(Target...)) {
+            if (!setup_complete) {
+                throw ImportError(
+                    "The classmethod() helper for method '" + Name + "' of type '" +
+                    impl::demangle(typeid(Wrapper).name()) +
+                    "' can only be called during the __ready__() method."
+                );
+            }
+            // func is a normal function pointer
+        }
+
 
         // TODO: implement the following helpers to call during type initialization:
         // def<"name">(doc, func, defaults)
@@ -759,6 +928,14 @@ namespace impl {
         // staticmethod<"name">(doc, func, defaults)
 
     public:
+        static constexpr Origin __origin__ = Origin::CPP;
+        static constexpr StaticStr __doc__ = [] {
+            return (
+                "A Bertrand-generated Python wrapper for the '" +
+                impl::demangle(typeid(CppType).name()) + "' C++ type."
+            );
+        }();
+
         PyObject_HEAD
         Variant m_cpp;
 
@@ -959,10 +1136,10 @@ namespace impl {
         static PyObject* __repr__(CRTP* self) {
             try {
                 std::string str = std::visit(Visitor{
-                    [](const t_cpp& cpp) {
+                    [](const CppType& cpp) {
                         return repr(cpp);
                     },
-                    [](const t_cpp* cpp) {
+                    [](const CppType* cpp) {
                         return repr(*cpp);
                     }
                 }, self->m_cpp);
@@ -982,7 +1159,7 @@ namespace impl {
 
         /* tp_hash delegates to `std::hash` if possible, or raises a TypeError. */
         static Py_hash_t __hash__(CRTP* self) {
-            if constexpr (!impl::hashable<t_cpp>) {
+            if constexpr (!impl::hashable<CppType>) {
                 PyErr_Format(
                     PyExc_TypeError,
                     "unhashable type: '%s'",
@@ -992,11 +1169,11 @@ namespace impl {
             } else {
                 try {
                     return std::visit(Visitor{
-                        [](const t_cpp& cpp) {
-                            return std::hash<t_cpp>{}(cpp);
+                        [](const CppType& cpp) {
+                            return std::hash<CppType>{}(cpp);
                         },
-                        [](const t_cpp* cpp) {
-                            return std::hash<t_cpp>{}(*cpp);
+                        [](const CppType* cpp) {
+                            return std::hash<CppType>{}(*cpp);
                         }
                     }, self->m_cpp);
                 } catch (...) {
@@ -1014,8 +1191,8 @@ namespace impl {
         /* tp_dealloc calls the ordinary C++ destructor. */
         static void __dealloc__(CRTP* self) {
             PyObject_GC_UnTrack(self);  // required for heap types
-            if (std::holds_alternative<t_cpp>(self->m_cpp)) {
-                std::get<t_cpp>(self->m_cpp).~t_cpp();
+            if (std::holds_alternative<CppType>(self->m_cpp)) {
+                std::get<CppType>(self->m_cpp).~CppType();
             }
             PyTypeObject* type = Py_TYPE(self);
             type->tp_free(self);
@@ -1025,8 +1202,8 @@ namespace impl {
         /* tp_traverse registers any Python objects that are owned by the C++ object
         with Python's cyclic garbage collector. */
         static int __traverse__(CRTP* self, visitproc visit, void* arg) {
-            if (std::holds_alternative<t_cpp>(self->m_cpp)) {
-                for (auto& item : std::get<t_cpp>(self->m_cpp)) {
+            if (std::holds_alternative<CppType>(self->m_cpp)) {
+                for (auto& item : std::get<CppType>(self->m_cpp)) {
                     Py_VISIT(ptr(item));
                 }
             }
@@ -1039,11 +1216,11 @@ namespace impl {
         double-freeing any Python objects between this method and the `__dealloc__()`
         destructor. */
         static int __clear__(CRTP* self) {
-            if (std::holds_alternative<t_cpp>(self->m_cpp)) {
+            if (std::holds_alternative<CppType>(self->m_cpp)) {
                 /// NOTE: In order to avoid a double free, we release() all of the
                 /// container's items here, so that when their destructors are called
                 /// normally in __dealloc__(), they see a null pointer and do nothing.
-                for (auto& item : std::get<t_cpp>(self->m_cpp)) {
+                for (auto& item : std::get<CppType>(self->m_cpp)) {
                     Py_XDECREF(release(item));
                 }
             }
@@ -1051,19 +1228,23 @@ namespace impl {
         }
 
     private:
+        inline static bool setup_complete = false;
+        inline static std::vector<PyMethodDef> tp_methods;
+        inline static std::vector<PyGetSetDef> tp_getset;
+        inline static std::vector<PyMemberDef> tp_members;
 
         template <typename T>
             requires (
                 __as_object__<T>::enable &&
                 impl::is_extension<typename __as_object__<T>::type> &&
-                std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
+                std::same_as<T, typename __as_object__<T>::type::__python__::CppType>
             )
         friend auto wrap(const T& obj) -> __as_object__<T>::type;
         template <typename T>
             requires (
                 __as_object__<T>::enable &&
                 impl::is_extension<typename __as_object__<T>::type> &&
-                std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
+                std::same_as<T, typename __as_object__<T>::type::__python__::CppType>
             )
         friend auto wrap(T& obj) -> __as_object__<T>::type;
         template <std::derived_from<Object> T> requires (impl::is_extension<T>)
@@ -1072,7 +1253,7 @@ namespace impl {
         friend auto& unwrap(const T& obj);
 
         /* Implements py::wrap() for immutable references. */
-        static Wrapper _wrap(const t_cpp& cpp) {
+        static Wrapper _wrap(const CppType& cpp) {
             Type<Wrapper> type;
             PyTypeObject* type_ptr = reinterpret_cast<PyTypeObject*>(ptr(type));
             PyObject* self = type_ptr->tp_alloc(type_ptr, 0);
@@ -1084,7 +1265,7 @@ namespace impl {
         }
 
         /* Implements py::wrap() for mutable references. */
-        static Wrapper _wrap(t_cpp& cpp) {
+        static Wrapper _wrap(CppType& cpp) {
             Type<Wrapper> type;
             PyTypeObject* type_ptr = reinterpret_cast<PyTypeObject*>(ptr(type));
             PyObject* self = type_ptr->tp_alloc(type_ptr, 0);
@@ -1096,27 +1277,27 @@ namespace impl {
         }
 
         /* Implements py::unwrap() for immutable wrappers. */
-        static const t_cpp& _unwrap(const Wrapper& obj) {
+        static const CppType& _unwrap(const Wrapper& obj) {
             return std::visit(Visitor{
-                [](const t_cpp& cpp) {
+                [](const CppType& cpp) {
                     return cpp;
                 },
-                [](const t_cpp* cpp) {
+                [](const CppType* cpp) {
                     return *cpp;
                 }
             }, obj.m_cpp);
         }
 
         /* Implements py::unwrap() for mutable wrappers. */
-        static t_cpp& _unwrap(Wrapper& obj) {
+        static CppType& _unwrap(Wrapper& obj) {
             return std::visit(Visitor{
-                [](t_cpp& cpp) {
+                [](CppType& cpp) {
                     return cpp;
                 },
-                [](t_cpp* cpp) {
+                [](CppType* cpp) {
                     return *cpp;
                 },
-                [&obj](const t_cpp* cpp) {
+                [&obj](const CppType* cpp) {
                     throw TypeError(
                         "requested a mutable reference to const object: " +
                         repr(obj)
@@ -1181,7 +1362,7 @@ namespace impl {
             // __instancecheck__ and __subclasscheck__ slots.
 
             type_slots.push_back({0, nullptr});
-            static std::string name = impl::demangle(typeid(t_cpp).name());
+            static std::string name = impl::demangle(typeid(CppType).name());
             static PyType_Spec spec = {
                 .name = name.c_str(),
                 .basicsize = sizeof(CRTP),
