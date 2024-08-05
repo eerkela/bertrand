@@ -167,19 +167,13 @@ namespace impl {
                     (std::derived_from<Bases, Object> && ...)
                 )
             void type() {
-                if (!setup_complete) {
-                    throw ImportError(
-                        "The type() helper for class '" + Name + "' in module '" +
-                        ModName + "' can only be called after `__setup__()`."
-                    );
-                }
-
                 using PyMeta = Type<BertrandMeta>::__python__;
                 Type<BertrandMeta> metaclass;
                 Module<ModName> mod = reinterpret_borrow<Module<ModName>>(
                     reinterpret_cast<PyObject*>(this)
                 );
 
+                // ensure type name is unique or corresponds to a template interface
                 BertrandMeta existing = reinterpret_steal<BertrandMeta>(nullptr);
                 if (PyObject_HasAttr(ptr(mod), impl::TemplateString<Name>::ptr)) {
                     if constexpr (impl::is_generic<Cls>) {
@@ -213,8 +207,11 @@ namespace impl {
                     }
                 }
 
-                Type<Cls> type = Type<Cls>::__python__::__ready_impl__(mod);
+                // call the type's __ready__() method to populate the type object
+                Type<Cls> cls = Type<Cls>::__python__::template __ready_impl__<Bases...>(mod);
 
+                // if the wrapper type is generic, create or update the template
+                // interface's __getitem__ dict with the new instantiation
                 if constexpr (impl::is_generic<Cls>) {
                     if (ptr(existing) == nullptr) {
                         existing = PyMeta::stub_type<Name, Cls, Bases...>(mod);
@@ -226,7 +223,6 @@ namespace impl {
                             Exception::from_python();
                         }
                     }
-
                     PyObject* key = PyTuple_Pack(
                         sizeof...(Bases),
                         ptr(Type<Bases>())...
@@ -239,24 +235,29 @@ namespace impl {
                             ptr(existing)
                         )->template_instantiations,
                         key,
-                        ptr(type)
+                        ptr(cls)
                     );
                     Py_DECREF(key);
                     if (rc) {
                         Exception::from_python();
                     }
 
+                // otherwise, insert the type object directly into the module
                 } else {
                     if (PyModule_AddObjectRef(
-                        reinterpret_cast<PyObject*>(this),
+                        ptr(mod),
                         Name,
-                        ptr(type)
+                        ptr(cls)
                     )) {
                         Exception::from_python();
                     }
                 }
 
-                types[typeid(Cls)] = reinterpret_cast<PyTypeObject*>(ptr(type));
+                // TODO: insert into the module's `types` map, and maybe also into the
+                // "bertrand" module's `types` map, which would allow the type to be
+                // retrieved from both languages
+
+                types[typeid(Cls)] = reinterpret_cast<PyTypeObject*>(ptr(cls));
             }
 
             // TODO: I might be able to do something similar with functions, in which
