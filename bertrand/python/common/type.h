@@ -209,24 +209,21 @@ from the templated type, and then only calls the Python-level `isinstance()` if 
 is possible. */
 template <typename T, typename Cls>
 struct __isinstance__<T, Type<Cls>>                      : Returns<bool> {
-    static consteval bool operator()(const T& obj) {
-        return (
-            __as_object__<T>::enable &&
-            std::derived_from<typename __as_object__<T>::type, Cls>
-        );
+    static constexpr bool operator()(const T& obj) {
+        return isinstance<Cls>(obj);
     }
     static constexpr bool operator()(const T& obj, const Type<Cls>& cls) {
-        if constexpr (operator()()) {
+        if constexpr (impl::is_object_exact<T>) {
             int result = PyObject_IsInstance(
                 ptr(as_object(obj)),
                 ptr(cls)
             );
-            if (result == -1) {
+            if (result < 0) {
                 Exception::from_python();
             }
             return result;
         } else {
-            return false;
+            return issubclass<T, Cls>();  // TODO: is this correct?
         }
     }
 };
@@ -239,8 +236,7 @@ is possible. */
 template <typename T, typename Cls>
 struct __issubclass__<T, Type<Cls>>                        : Returns<bool> {
     static consteval bool operator()() {
-        return __as_object__<T>::enable &&
-            std::derived_from<typename __as_object__<T>::type, Cls>;
+        return issubclass<T, Cls>();
     }
     static constexpr bool operator()(const T& obj) {
         if constexpr (operator()() && impl::type_like<T>) {
@@ -256,7 +252,7 @@ struct __issubclass__<T, Type<Cls>>                        : Returns<bool> {
         }
     }
     static constexpr bool operator()(const T& obj, const Type<Cls>& cls) {
-        if constexpr (operator()()) {
+        if constexpr (operator()() && impl::type_like<T>) {
             int result = PyObject_IsSubclass(
                 ptr(as_object(obj)),
                 ptr(cls)
@@ -394,6 +390,8 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         using Setters = std::unordered_map<std::string_view, Set>;
 
         PyTypeObject base;
+        bool(*instancecheck)(PyObject*);
+        bool(*subclasscheck)(PyObject*);
         Getters getters;
         Setters setters;
         PyObject* demangled;
@@ -401,6 +399,11 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
 
         // TODO: this should be split into __setup__() and __ready__() and use helpers
         // from TypeTag::def
+        // -> __ready__() must be implemented on the other type tag as well, not just
+        // __import__().  Typically, this will handle all the logic itself, without
+        // any helpers, similar to what I'm doing here.  It's sufficient to just
+        // return the type object itself if it's truly external.  Otherwise, if the
+        // type is implemented inline, then it should be created here and returned.
 
         /* Ready the metatype and attach it to a module. */
         template <std::derived_from<impl::ModuleTag> Mod>
@@ -423,8 +426,9 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
                 .basicsize = sizeof(BertrandMeta),
                 .itemsize = 0,
                 .flags =
-                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE |
-                    Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_HAVE_GC,
+                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION |
+                    Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_TYPE_SUBCLASS |
+                    Py_TPFLAGS_MANAGED_WEAKREF | Py_TPFLAGS_MANAGED_DICT,
                 .slots = slots
             };
             PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(PyType_FromModuleAndSpec(
@@ -582,69 +586,57 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         /* isinstance(obj, cls) forwards the behavior of the __isinstance__ control
         struct and accounts for template instantiations. */
         static PyObject* __instancecheck__(__python__* cls, PyObject* instance) {
-            PyObject* result = PyObject_CallMethodOneArg(
-                reinterpret_cast<PyObject*>(cls),
-                impl::TemplateString<"_instancecheck">::ptr,
-                instance
-            );
-            if (result == nullptr || Py_IsTrue(result)) {
-                return result;
-            } else if (cls->template_instantiations) {
-                PyObject* key;
-                PyObject* value;
-                Py_ssize_t pos = 0;
-                while (PyDict_Next(
-                    cls->template_instantiations,
-                    &pos,
-                    &key,
-                    &value
-                )) {
-                    Py_DECREF(result);
-                    result = PyObject_CallMethodOneArg(
-                        value,
-                        impl::TemplateString<"_instancecheck">::ptr,
-                        instance
-                    );
-                    if (result == nullptr || Py_IsTrue(result)) {
-                        return result;
+            try {
+                if (cls->instancecheck(instance)) {
+                    Py_RETURN_TRUE;
+                } else if (cls->template_instantiations) {
+                    PyObject* key;
+                    PyObject* value;
+                    Py_ssize_t pos = 0;
+                    while (PyDict_Next(
+                        cls->template_instantiations,
+                        &pos,
+                        &key,
+                        &value
+                    )) {
+                        if (reinterpret_cast<__python__*>(value)->instancecheck(instance)) {
+                            Py_RETURN_TRUE;
+                        }
                     }
                 }
+                Py_RETURN_FALSE;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
             }
-            return result;
         }
 
         /* issubclass(sub, cls) forwards the behavior of the __issubclass__ control
         struct and accounts for template instantiations. */
         static PyObject* __subclasscheck__(__python__* cls, PyObject* subclass) {
-            PyObject* result = PyObject_CallMethodOneArg(
-                reinterpret_cast<PyObject*>(cls),
-                impl::TemplateString<"_subclasscheck">::ptr,
-                subclass
-            );
-            if (result == nullptr || Py_IsTrue(result)) {
-                return result;
-            } else if (cls->template_instantiations) {
-                PyObject* key;
-                PyObject* value;
-                Py_ssize_t pos = 0;
-                while (PyDict_Next(
-                    cls->template_instantiations,
-                    &pos,
-                    &key,
-                    &value
-                )) {
-                    Py_DECREF(result);
-                    result = PyObject_CallMethodOneArg(
-                        value,
-                        impl::TemplateString<"_subclasscheck">::ptr,
-                        subclass
-                    );
-                    if (result == nullptr || Py_IsTrue(result)) {
-                        return result;
+            try {
+                if (cls->subclasscheck(subclass)) {
+                    Py_RETURN_TRUE;
+                } else if (cls->template_instantiations) {
+                    PyObject* key;
+                    PyObject* value;
+                    Py_ssize_t pos = 0;
+                    while (PyDict_Next(
+                        cls->template_instantiations,
+                        &pos,
+                        &key,
+                        &value
+                    )) {
+                        if (reinterpret_cast<__python__*>(value)->subclasscheck(subclass)) {
+                            Py_RETURN_TRUE;
+                        }
                     }
                 }
+                Py_RETURN_FALSE;
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
             }
-            return result;
         }
 
         /* Free the type name and any template instantiations when an instance of this
@@ -829,7 +821,7 @@ namespace impl {
         };
 
         /* A mutable blueprint for a type, which is configured in the type's
-        `__ready__()` function. */
+        `__ready__()` method. */
         struct Bindings {
             using PyMeta = typename Type<BertrandMeta>::__python__;
             PyObject* context;
@@ -1246,6 +1238,8 @@ namespace impl {
                 PyMeta* meta = reinterpret_cast<PyMeta*>(ptr(cls));
 
                 // populate the metaclass's C++ fields
+                meta->instancecheck = &def::instancecheck;
+                meta->subclasscheck = &def::subclasscheck;
                 new (&meta->getters) PyMeta::Getters(std::move(class_getters));
                 new (&meta->setters) PyMeta::Setters(std::move(class_setters));
                 meta->template_instantiations = nullptr;
@@ -1301,14 +1295,13 @@ namespace impl {
             Bindings bind;
             CRTP::__ready__(bind);
 
-            static unsigned int tpflags =
+            static unsigned int tp_flags =
                 Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE |
-                Py_TPFLAGS_HAVE_GC;
-            #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
-                tpflags |= Py_TPFLAGS_MANAGED_WEAKREF;
-            #endif
+                Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_MANAGED_WEAKREF |
+                Py_TPFLAGS_MANAGED_DICT;
             static bool initialized = false;
             static std::vector<PyType_Slot> type_slots {
+                {Py_tp_doc, reinterpret_cast<void*>(CRTP::__doc__.buffer)},
                 {Py_tp_dealloc, reinterpret_cast<void*>(CRTP::__dealloc__)},
                 {Py_tp_repr, reinterpret_cast<void*>(CRTP::__repr__)},
                 {Py_tp_hash, reinterpret_cast<void*>(CRTP::__hash__)},
@@ -1317,18 +1310,6 @@ namespace impl {
                 {Py_tp_clear, reinterpret_cast<void*>(CRTP::__clear__)},
             };
             if (!initialized) {
-                tp_methods.push_back({
-                    "_instancecheck",
-                    (PyCFunction) _instancecheck,
-                    METH_CLASS | METH_O,
-                    nullptr
-                });
-                tp_methods.push_back({
-                    "_subclasscheck",
-                    (PyCFunction) _subclasscheck,
-                    METH_CLASS | METH_O,
-                    nullptr
-                });
                 tp_methods.push_back({
                     nullptr,
                     nullptr,
@@ -1374,7 +1355,7 @@ namespace impl {
                 .name = typeid(CppType).name(),
                 .basicsize = sizeof(CRTP),
                 .itemsize = 0,
-                .flags = tpflags,
+                .flags = tp_flags,
                 .slots = type_slots.data()
             };
 
@@ -1536,6 +1517,9 @@ namespace impl {
             return 0;
         }
 
+        // TODO: the only way to properly handle the call operator, init, etc. is to
+        // use overload sets, and register each one independently.
+
         /* TODO: implement the following slots using metaprogramming where possible:
         *
         //  * tp_name
@@ -1544,7 +1528,9 @@ namespace impl {
         //  * tp_dealloc
         //  * tp_repr
         //  * tp_hash
-        * tp_vectorcall_offset
+        * tp_vectorcall_offset  // needs some extra work in PyMemberDef
+        * tp_dictoffset (or Py_TPFLAGS_MANAGED_DICT)
+        * tp_weaklistoffset (or Py_TPFLAGS_MANAGED_WEAKREF)
         * tp_call
         //  * tp_str
         //  * tp_traverse
@@ -1552,14 +1538,14 @@ namespace impl {
         * tp_iter
         * tp_iternext
         * tp_init
-        * tp_alloc
-        * tp_new
-        * tp_free
-        * tp_is_gc
-        * tp_finalize
+        * tp_alloc  // -> leave blank
+        * tp_new  // -> always does C++-level initialization.
+        * tp_free  // leave blank
+        * tp_is_gc  // leave blank
+        * tp_finalize  // leave blank
         * tp_vectorcall  (not valid for heap types?)
         *
-        * to be defined in subclasses:
+        * to be defined in subclasses (check for dunder methods on CRTP type?):
         *
         * tp_as_number
         * tp_as_sequence
@@ -1568,12 +1554,12 @@ namespace impl {
         * tp_getattro
         * tp_setattro
         * tp_as_buffer
-        * tp_doc
+        // * tp_doc
         * tp_richcompare
         * tp_methods
         * tp_members
         * tp_getset
-        * tp_bases
+        // * tp_bases
         * tp_descr_get
         * tp_descr_set
         *
@@ -1676,31 +1662,19 @@ namespace impl {
         // __issubclass__ for C++-origin types should not call a Python-level
         // check, or possibly the other way around.  It might be possible to use
         // PyType_IsSubtype() to break the recursion.
+        // -> Maybe when I write the __isinstance__ check for C++-origin types, it
+        // will default to PyType_IsSubType()?
 
         /* Implements Python-level `isinstance()` checks against the class, forwarding
         to the `__isinstance__` control struct. */
-        static PyObject* _instancecheck(PyObject* cls, PyObject* instance) {
-            try {
-                return PyBool_FromLong(
-                    isinstance<Wrapper>(reinterpret_borrow<Object>(instance))
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+        static bool instancecheck(PyObject* instance) {
+            return isinstance<Wrapper>(reinterpret_borrow<Object>(instance));
         }
 
         /* Implements Python-level `issubclass()` checks against the class, forwarding
         to the `__issubclass__` control struct. */
-        static PyObject* _subclasscheck(PyObject* cls, PyObject* subclass) {
-            try {
-                return PyBool_FromLong(
-                    issubclass<Wrapper>(reinterpret_borrow<Object>(subclass))
-                );
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
+        static bool subclasscheck(PyObject* subclass) {
+            return issubclass<Wrapper>(reinterpret_borrow<Object>(subclass));
         }
 
     };

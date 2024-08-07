@@ -78,7 +78,7 @@ dependencies = [
     "tomlkit",
     "tzlocal",
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 
 [project.scripts]
 bertrand = "bertrand.__main__:main"

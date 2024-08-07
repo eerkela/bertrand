@@ -387,12 +387,10 @@ namespace impl {
                 static PyModuleDef_Slot slots[] = {
                     {Py_mod_create, reinterpret_cast<void*>(__create__)},
                     {Py_mod_exec, reinterpret_cast<void*>(__exec__)},
-                    #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
                     {
                         Py_mod_multiple_interpreters,
                         Py_MOD_PER_INTERPRETER_GIL_SUPPORTED
                     },
-                    #endif
                     {0, nullptr}
                 };
                 static PyModuleDef def = {

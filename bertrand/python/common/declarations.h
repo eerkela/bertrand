@@ -611,7 +611,7 @@ namespace impl {
     concept any_are_python_like = (python_like<Ts> || ...);
 
     template <typename T>
-    concept is_object_exact = std::same_as<std::decay_t<T>, Object>;
+    concept is_object_exact = std::same_as<std::decay_t<T>, Object>;  // TODO: rename to dynamic_type and include Handle?
 
     template <typename T>
     concept proxy_like = std::derived_from<std::decay_t<T>, ProxyTag>;

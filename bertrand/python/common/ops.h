@@ -39,6 +39,42 @@ template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
 }
 
 
+/* Equivalent to Python `isinstance(obj, base)`, except that base is given as a
+template parameter for which __isinstance__ has been specialized. */
+template <typename Base, typename Derived>
+    requires (__as_object__<Base>::enable && __as_object__<Derived>::enable)
+[[nodiscard]] constexpr bool isinstance(const Derived& obj) {
+    if constexpr (impl::proxy_like<Derived>) {
+        return isinstance<Base>(obj.value());
+
+    } else if constexpr (std::is_invocable_v<
+        __isinstance__<Derived, Base>,
+        const Derived&
+    >) {
+        return __isinstance__<Derived, Base>{}(obj);
+
+    } else if constexpr (impl::is_object_exact<Derived>) {
+        int result = PyObject_IsInstance(
+            ptr(obj),
+            ptr(Type<Base>())
+        );
+        if (result < 0) {
+            Exception::from_python();
+        }
+        return result;
+
+    } else {
+        return issubclass<Derived, Base>();
+    }
+}
+
+
+// TODO: Maybe this version is disabled by default unless the corresponding
+// operator exists on the __isinstance__ check?  That would prevent you from
+// writing something like `isinstance(x, 1)`.
+// -> I should also be able to use a tuple of type-like objects to check against.
+
+
 /* Equivalent to Python `isinstance(obj, base)`. */
 template <typename Derived, typename Base>
     requires (std::is_invocable_r_v<
@@ -58,38 +94,19 @@ template <typename Derived, typename Base>
 }
 
 
-/* Equivalent to Python `isinstance(obj, base)`, except that base is given as a
-template parameter for which __isinstance__ has been specialized. */
-template <typename Base, typename Derived>
-    requires (std::is_invocable_r_v<
-        bool,
-        __isinstance__<Derived, Base>,
-        const Derived&
-    >)
-[[nodiscard]] constexpr bool isinstance(const Derived& obj) {
-    if constexpr (impl::proxy_like<Derived>) {
-        return isinstance<Base>(obj.value());
-    } else {
-        return __isinstance__<Derived, Base>{}(obj);
-    }
-}
-
-
-/* Equivalent to Python `issubclass(obj, base)`. */
+/* Equivalent to Python `issubclass(obj, base)`, except that both arguments are given
+as template parameters, marking the check as `consteval`. */
 template <typename Derived, typename Base>
-    requires (std::is_invocable_r_v<
-        bool,
-        __issubclass__<Derived, Base>,
-        const Derived&,
-        const Base&
-    >)
-[[nodiscard]] bool issubclass(const Derived& obj, const Base& base) {
-    if constexpr (impl::proxy_like<Derived>) {
-        return issubclass(obj.value(), base);
-    } else if constexpr (impl::proxy_like<Base>) {
-        return issubclass(obj, base.value());
+    requires (__as_object__<Base>::enable && __as_object__<Derived>::enable)
+[[nodiscard]] consteval bool issubclass() {
+    if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>>) {
+        return __issubclass__<Derived, Base>{}();
+
     } else {
-        return __issubclass__<Derived, Base>{}(obj, base);
+        return std::derived_from<
+            typename __as_object__<Derived>::type,
+            typename __as_object__<Base>::type
+        >;
     }
 }
 
@@ -111,12 +128,27 @@ template <typename Base, typename Derived>
 }
 
 
-/* Equivalent to Python `issubclass(obj, base)`, except that both arguments are given
-as template parameters, marking the check as `consteval`. */
+/* Equivalent to Python `issubclass(obj, base)`. */
 template <typename Derived, typename Base>
-    requires (std::is_invocable_r_v<bool, __issubclass__<Derived, Base>>)
-[[nodiscard]] consteval bool issubclass() {
-    return __issubclass__<Derived, Base>{}();
+    requires (__as_object__<Base>::enable && __as_object__<Derived>::enable)
+[[nodiscard]] bool issubclass(const Derived& obj, const Base& base) {
+    if constexpr (impl::proxy_like<Derived>) {
+        return issubclass(obj.value(), base);
+
+    } else if constexpr (impl::proxy_like<Base>) {
+        return issubclass(obj, base.value());
+
+    } else if constexpr (std::is_invocable_v<
+        __issubclass__<Derived, Base>,
+        const Derived&,
+        const Base&
+    >) {
+        return __issubclass__<Derived, Base>{}(obj, base);
+
+    } else {
+        // TODO: provide default behavior
+        return false;
+    }
 }
 
 
@@ -208,33 +240,6 @@ void delattr(const T& obj) {
             Exception::from_python();
         }
     }
-}
-
-
-/* Equivalent to Python `print(args...)`. */
-template <typename... Args>
-void print(Args&&... args) {
-    // auto impl = [](
-    //     py::Arg<"args", const std::string&>::args args,
-    //     py::Arg<"sep", const std::string&>::opt sep,
-    //     py::Arg<"end", const std::string&>::opt end,
-    //     py::Arg<"file", const py::Object&>::opt file,
-    //     py::Arg<"flush", bool>::opt flush
-    // ) {
-
-    // };
-
-
-    // // TODO: I have to support keyword arguments here, so this can only be fully
-    // // implemented once functions are good and ready.  For now, I only keep the
-    // // positional arguments.
-    // // -> pybind11 implementation is in pybind11.h
-
-    // try {
-    //     pybind11::print(as_object(std::forward<Args>(args))...);
-    // } catch (...) {
-    //     Exception::from_pybind11();
-    // }
 }
 
 

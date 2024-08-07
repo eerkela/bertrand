@@ -20,7 +20,6 @@ namespace py {
 
 template <typename T>
 struct __issubclass__<T, Code>                              : Returns<bool> {
-    static consteval bool operator()(const T&) { return operator()(); }
     static consteval bool operator()() { return std::derived_from<T, Code>; }
 };
 
@@ -28,14 +27,10 @@ struct __issubclass__<T, Code>                              : Returns<bool> {
 template <typename T>
 struct __isinstance__<T, Code>                              : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Code>();
-        } else if constexpr (issubclass<T, Code>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyCode_Check(obj.ptr());
+        if constexpr (impl::is_object_exact<T>) {
+            return PyCode_Check(ptr(obj));
         } else {
-            return false;
+            return issubclass<T, Code>();
         }
     }
 };
@@ -493,7 +488,6 @@ struct __explicit_init__<Code, std::string_view>            : Returns<Code> {
 
 template <typename T>
 struct __issubclass__<T, Frame>                              : Returns<bool> {
-    static consteval bool operator()(const T&) { return operator()(); }
     static consteval bool operator()() { return std::derived_from<T, Frame>; }
 };
 
@@ -501,14 +495,10 @@ struct __issubclass__<T, Frame>                              : Returns<bool> {
 template <typename T>
 struct __isinstance__<T, Frame>                              : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Frame>();
-        } else if constexpr (issubclass<T, Frame>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyFrame_Check(obj.ptr());
+        if constexpr (impl::is_object_exact<T>) {
+            return PyFrame_Check(ptr(obj));
         } else {
-            return false;
+            return issubclass<T, Frame>();
         }
     }
 };

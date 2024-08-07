@@ -9,7 +9,6 @@ namespace py {
 
 template <typename T>
 struct __issubclass__<T, Bool>                              : Returns<bool> {
-    static consteval bool operator()(const T&) { return operator()(); }
     static consteval bool operator()() { return impl::bool_like<T>; }
 };
 
@@ -17,14 +16,10 @@ struct __issubclass__<T, Bool>                              : Returns<bool> {
 template <typename T>
 struct __isinstance__<T, Bool>                              : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Bool>();
-        } else if constexpr (issubclass<T, Bool>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyBool_Check(obj.ptr());
+        if constexpr (impl::is_object_exact<T>) {
+            return PyBool_Check(ptr(obj));
         } else {
-            return false;
+            return issubclass<T, Bool>();
         }
     }
 };

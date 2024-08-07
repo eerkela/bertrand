@@ -233,7 +233,7 @@ public:
 
     /* Copy assignment operator. */
     Object& operator=(const Object& other) {
-        print("object copy assignment");  // TODO: remove debugging print statement
+        std::println("object copy assignment");  // TODO: remove debugging print statement
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = Py_XNewRef(other.m_ptr);
@@ -244,7 +244,7 @@ public:
 
     /* Move assignment operator. */
     Object& operator=(Object&& other) {
-        print("object move assignment");  // TODO: remove debugging print statement
+        std::println("object move assignment");  // TODO: remove debugging print statement
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = other.m_ptr;
@@ -306,7 +306,20 @@ template <std::derived_from<Object> T> requires (impl::is_extension<T>)
 template <typename T>
 struct __issubclass__<T, Object>                            : Returns<bool> {
     static consteval bool operator()() { return std::derived_from<T, Object>; }
-    static constexpr bool operator()(const T& obj) { return operator()(); }
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::is_object_exact<T>) {
+            int result = PyObject_IsSubclass(
+                ptr(obj),
+                reinterpret_cast<PyObject*>(&PyBaseObject_Type)
+            );
+            if (result < 0) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return impl::type_like<T>;
+        }
+    }
     static bool operator()(const T& obj, const Object& cls) {
         int result = PyObject_IsSubclass(
             ptr(as_object(obj)),
@@ -322,19 +335,15 @@ struct __issubclass__<T, Object>                            : Returns<bool> {
 
 template <typename T>
 struct __isinstance__<T, Object>                            : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::python_like<T>) {
-            return ptr(obj) != nullptr;
-        } else {
-            return issubclass<Object>(obj);
-        }
+    static consteval bool operator()(const T& obj) {
+        return __as_object__<T>::enable;
     }
     static bool operator()(const T& obj, const Object& cls) {
         int result = PyObject_IsInstance(
             ptr(as_object(obj)),
             ptr(cls)
         );
-        if (result == -1) {
+        if (result < 0) {
             Exception::from_python();
         }
         return result;
@@ -410,15 +419,14 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
         long long result = PyLong_AsLongLong(ptr(from));
         if (result == -1 && PyErr_Occurred()) {
             Exception::from_python();
-        }
-        constexpr auto min = std::numeric_limits<To>::min();
-        constexpr auto max = std::numeric_limits<To>::max();
-        if (result < min || result > max) {
-            std::string message = "integer out of range for ";
-            message += BERTRAND_STRINGIFY(To);
-            message += ": ";
-            message += std::to_string(result);
-            throw OverflowError(message);
+        } else if (
+            result < std::numeric_limits<To>::min() ||
+            result > std::numeric_limits<To>::max()
+        ) {
+            throw OverflowError(
+                "integer out of range for " + impl::demangle(typeid(To).name()) +
+                ": " + std::to_string(result)
+            );
         }
         return result;
     }
@@ -441,8 +449,8 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 
 /* Explicitly convert a py::Object (or any of its subclasses) into a C++ complex number
 by calling `complex(obj)` at the Python level. */
-template <std::derived_from<Object> From, impl::cpp_like To>
-    requires (impl::complex_like<To>)
+template <std::derived_from<Object> From, impl::complex_like To>
+    requires (impl::cpp_like<To>)
 struct __explicit_cast__<From, To>                          : Returns<To> {
     static To operator()(const From& from) {
         Py_complex result = PyComplex_AsCComplex(ptr(from));

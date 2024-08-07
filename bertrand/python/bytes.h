@@ -20,7 +20,6 @@ namespace py {
 
 template <typename T>
 struct __issubclass__<T, Bytes>                             : Returns<bool> {
-    static consteval bool operator()(const T&) { return operator()(); }
     static consteval bool operator()() { return impl::bytes_like<T>; }
 };
 
@@ -28,14 +27,10 @@ struct __issubclass__<T, Bytes>                             : Returns<bool> {
 template <typename T>
 struct __isinstance__<T, Bytes>                             : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Bytes>();
-        } else if constexpr (issubclass<T, Bytes>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyBytes_Check(obj.ptr());
+        if constexpr (impl::is_object_exact<T>) {
+            return PyBytes_Check(ptr(obj));
         } else {
-            return false;
+            return issubclass<T, Bytes>();
         }
     }
 };
@@ -505,7 +500,6 @@ struct __imul__<L, R>                                       : Returns<Bytes&> {
 
 template <typename T>
 struct __issubclass__<T, ByteArray>                         : Returns<bool> {
-    static consteval bool operator()(const T&) { return operator()(); }
     static consteval bool operator()() { return impl::bytearray_like<T>; }
 };
 
@@ -513,14 +507,10 @@ struct __issubclass__<T, ByteArray>                         : Returns<bool> {
 template <typename T>
 struct __isinstance__<T, ByteArray>                         : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, ByteArray>();
-        } else if constexpr (issubclass<T, ByteArray>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyByteArray_Check(obj.ptr());
+        if constexpr (impl::is_object_exact<T>) {
+            return PyByteArray_Check(ptr(obj));
         } else {
-            return false;
+            return issubclass<T, ByteArray>();
         }
     }
 };

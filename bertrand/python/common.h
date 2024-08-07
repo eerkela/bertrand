@@ -21,7 +21,6 @@ namespace py {
 
 template <typename T>
 struct __issubclass__<T, NoneType>                          : Returns<bool> {
-    static constexpr bool operator()(const T&) { return operator()(); }
     static consteval bool operator()() { return impl::none_like<T>; }
 };
 
@@ -29,14 +28,10 @@ struct __issubclass__<T, NoneType>                          : Returns<bool> {
 template <typename T>
 struct __isinstance__<T, NoneType>                          : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, NoneType>();
-        } else if constexpr (issubclass<T, NoneType>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && Py_IsNone(obj.ptr());
+        if constexpr (impl::is_object_exact<T>) {
+            return Py_IsNone(ptr(obj));
         } else {
-            return false;
+            return issubclass<T, NoneType>();
         }
     }
 };
@@ -45,34 +40,23 @@ struct __isinstance__<T, NoneType>                          : Returns<bool> {
 /* Represents the type of Python's `None` singleton in C++. */
 class NoneType : public Object {
     using Base = Object;
-    using Self = NoneType;
 
 public:
-    static const Type type;
 
     NoneType(Handle h, borrowed_t t) : Base(h, t) {}
     NoneType(Handle h, stolen_t t) : Base(h, t) {}
 
-    template <typename... Args>
-        requires (
-            std::is_invocable_r_v<NoneType, __init__<NoneType, std::remove_cvref_t<Args>...>, Args...> &&
-            __init__<NoneType, std::remove_cvref_t<Args>...>::enable
-        )
-    NoneType(Args&&... args) : Base((
-        Interpreter::init(),
-        __init__<NoneType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
+    template <typename... Args> requires (implicit_ctor<NoneType>::template enable<Args...>)
+    NoneType(Args&&... args) : Base(
+        implicit_ctor<NoneType>{},
+        std::forward<Args>(args)...
+    ) {}
 
-    template <typename... Args>
-        requires (
-            !__init__<NoneType, std::remove_cvref_t<Args>...>::enable &&
-            std::is_invocable_r_v<NoneType, __explicit_init__<NoneType, std::remove_cvref_t<Args>...>, Args...> &&
-            __explicit_init__<NoneType, std::remove_cvref_t<Args>...>::enable
-        )
-    explicit NoneType(Args&&... args) : Base((
-        Interpreter::init(),
-        __explicit_init__<NoneType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
+    template <typename... Args> requires (explicit_ctor<NoneType>::template enable<Args...>)
+    explicit NoneType(Args&&... args) : Base(
+        explicit_ctor<NoneType>{},
+        std::forward<Args>(args)...
+    ) {}
 
 };
 
@@ -98,7 +82,6 @@ struct __init__<NoneType, T>                                : Returns<NoneType> 
 
 template <typename T>
 struct __issubclass__<T, NotImplementedType>                : Returns<bool> {
-    static constexpr bool operator()(const T&) { return operator()(); }
     static consteval bool operator()() { return impl::notimplemented_like<T>; }
 };
 
@@ -106,24 +89,10 @@ struct __issubclass__<T, NotImplementedType>                : Returns<bool> {
 template <typename T>
 struct __isinstance__<T, NotImplementedType>                : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, NotImplementedType>();
-        } else if constexpr (issubclass<T, NotImplementedType>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
-                return false;
-            }
-            int result = PyObject_IsInstance(
-                obj.ptr(),
-                (PyObject*) Py_TYPE(Py_NotImplemented)
-            );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
+        if constexpr (impl::is_object_exact<T>) {
+            return PyType_IsSubtype(Py_TYPE(ptr(obj)), Py_TYPE(Py_NotImplemented));
         } else {
-            return false;
+            return issubclass<T, NotImplementedType>();
         }
     }
 };
@@ -132,34 +101,25 @@ struct __isinstance__<T, NotImplementedType>                : Returns<bool> {
 /* Represents the type of Python's `NotImplemented` singleton in C++. */
 class NotImplementedType : public Object {
     using Base = Object;
-    using Self = NotImplementedType;
 
 public:
-    static const Type type;
 
     NotImplementedType(Handle h, borrowed_t t) : Base(h, t) {}
     NotImplementedType(Handle h, stolen_t t) : Base(h, t) {}
 
     template <typename... Args>
-        requires (
-            std::is_invocable_r_v<NotImplementedType, __init__<NotImplementedType, std::remove_cvref_t<Args>...>, Args...> &&
-            __init__<NotImplementedType, std::remove_cvref_t<Args>...>::enable
-        )
-    NotImplementedType(Args&&... args) : Base((
-        Interpreter::init(),
-        __init__<NotImplementedType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
+        requires (implicit_ctor<NotImplementedType>::template enable<Args...>)
+    NotImplementedType(Args&&... args) : Base(
+        implicit_ctor<NotImplementedType>{},
+        std::forward<Args>(args)...
+    ) {}
 
     template <typename... Args>
-        requires (
-            !__init__<NotImplementedType, std::remove_cvref_t<Args>...>::enable &&
-            std::is_invocable_r_v<NotImplementedType, __explicit_init__<NotImplementedType, std::remove_cvref_t<Args>...>, Args...> &&
-            __explicit_init__<NotImplementedType, std::remove_cvref_t<Args>...>::enable
-        )
-    explicit NotImplementedType(Args&&... args) : Base((
-        Interpreter::init(),
-        __explicit_init__<NotImplementedType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
+        requires (explicit_ctor<NotImplementedType>::template enable<Args...>)
+    explicit NotImplementedType(Args&&... args) : Base(
+        explicit_ctor<NotImplementedType>{},
+        std::forward<Args>(args)...
+    ) {}
 
 };
 
@@ -185,7 +145,6 @@ struct __init__<NotImplementedType, T>                      : Returns<NotImpleme
 
 template <typename T>
 struct __issubclass__<T, EllipsisType>                      : Returns<bool> {
-    static constexpr bool operator()(const T&) { return operator()(); }
     static consteval bool operator()() { return impl::ellipsis_like<T>; }
 };
 
@@ -193,24 +152,10 @@ struct __issubclass__<T, EllipsisType>                      : Returns<bool> {
 template <typename T>
 struct __isinstance__<T, EllipsisType>                      : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, EllipsisType>();
-        } else if constexpr (issubclass<T, EllipsisType>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            if (obj.ptr() == nullptr) {
-                return false;
-            }
-            int result = PyObject_IsInstance(
-                obj.ptr(),
-                (PyObject*) Py_TYPE(Py_Ellipsis)
-            );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
+        if constexpr (impl::is_object_exact<T>) {
+            return PyType_IsSubtype(Py_TYPE(ptr(obj)), Py_TYPE(Py_Ellipsis));
         } else {
-            return false;
+            return issubclass<T, EllipsisType>();
         }
     }
 };
@@ -219,34 +164,25 @@ struct __isinstance__<T, EllipsisType>                      : Returns<bool> {
 /* Represents the type of Python's `Ellipsis` singleton in C++. */
 class EllipsisType : public Object {
     using Base = Object;
-    using Self = EllipsisType;
 
 public:
-    static const Type type;
 
     EllipsisType(Handle h, borrowed_t t) : Base(h, t) {}
     EllipsisType(Handle h, stolen_t t) : Base(h, t) {}
 
     template <typename... Args>
-        requires (
-            std::is_invocable_r_v<EllipsisType, __init__<EllipsisType, std::remove_cvref_t<Args>...>, Args...> &&
-            __init__<EllipsisType, std::remove_cvref_t<Args>...>::enable
-        )
-    EllipsisType(Args&&... args) : Base((
-        Interpreter::init(),
-        __init__<EllipsisType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
+        requires (implicit_ctor<EllipsisType>::template enable<Args...>)
+    EllipsisType(Args&&... args) : Base(
+        implicit_ctor<EllipsisType>{},
+        std::forward<Args>(args)...
+    ) {}
 
     template <typename... Args>
-        requires (
-            !__init__<EllipsisType, std::remove_cvref_t<Args>...>::enable &&
-            std::is_invocable_r_v<EllipsisType, __explicit_init__<EllipsisType, std::remove_cvref_t<Args>...>, Args...> &&
-            __explicit_init__<EllipsisType, std::remove_cvref_t<Args>...>::enable
-        )
-    explicit EllipsisType(Args&&... args) : Base((
-        Interpreter::init(),
-        __explicit_init__<EllipsisType, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
+        requires (explicit_ctor<EllipsisType>::template enable<Args...>)
+    explicit EllipsisType(Args&&... args) : Base(
+        explicit_ctor<EllipsisType>{},
+        std::forward<Args>(args)...
+    ) {}
 
 };
 
@@ -277,7 +213,6 @@ inline const NotImplementedType NotImplemented;
 
 template <typename T>
 struct __issubclass__<T, Slice>                             : Returns<bool> {
-    static constexpr bool operator()(const T& obj) { return operator()(); }
     static consteval bool operator()() { return impl::slice_like<T>; }
 };
 
@@ -285,14 +220,10 @@ struct __issubclass__<T, Slice>                             : Returns<bool> {
 template <typename T>
 struct __isinstance__<T, Slice>                             : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Slice>();
-        } else if constexpr (issubclass<T, Slice>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PySlice_Check(obj.ptr());
+        if constexpr (impl::is_object_exact<T>) {
+            return PySlice_Check(ptr(obj));
         } else {
-            return false;
+            return issubclass<T, Slice>();
         }
     }
 };
@@ -315,34 +246,23 @@ namespace impl {
 stop, and step values do not strictly need to be integers. */
 class Slice : public Object {
     using Base = Object;
-    using Self = Slice;
 
 public:
-    static const Type type;
 
     Slice(Handle h, borrowed_t t) : Base(h, t) {}
     Slice(Handle h, stolen_t t) : Base(h, t) {}
 
-    template <typename... Args>
-        requires (
-            std::is_invocable_r_v<Slice, __init__<Slice, std::remove_cvref_t<Args>...>, Args...> &&
-            __init__<Slice, std::remove_cvref_t<Args>...>::enable
-        )
-    Slice(Args&&... args) : Base((
-        Interpreter::init(),
-        __init__<Slice, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
+    template <typename... Args> requires (implicit_ctor<Slice>::template enable<Args...>)
+    Slice(Args&&... args) : Base(
+        implicit_ctor<Slice>{},
+        std::forward<Args>(args)...
+    ) {}
 
-    template <typename... Args>
-        requires (
-            !__init__<Slice, std::remove_cvref_t<Args>...>::enable &&
-            std::is_invocable_r_v<Slice, __explicit_init__<Slice, std::remove_cvref_t<Args>...>, Args...> &&
-            __explicit_init__<Slice, std::remove_cvref_t<Args>...>::enable
-        )
-    explicit Slice(Args&&... args) : Base((
-        Interpreter::init(),
-        __explicit_init__<Slice, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
+    template <typename... Args> requires (explicit_ctor<Slice>::template enable<Args...>)
+    explicit Slice(Args&&... args) : Base(
+        explicit_ctor<Slice>{},
+        std::forward<Args>(args)...
+    ) {}
 
     /* Initializer list constructor.  Unlike the other constructors (which can accept
     any kind of object), this syntax is restricted only to integers, py::None, and
@@ -358,7 +278,11 @@ public:
         for (const impl::SliceInitializer& item : indices) {
             params[i++] = item.value;
         }
-        m_ptr = PySlice_New(params[0].ptr(), params[1].ptr(), params[2].ptr());
+        m_ptr = PySlice_New(
+            ptr(params[0]),
+            ptr(params[1]),
+            ptr( params[2])
+        );
         if (m_ptr == nullptr) {
             Exception::from_python();
         }
@@ -405,7 +329,7 @@ public:
 
         Indices result;
         if (PySlice_GetIndicesEx(
-            this->ptr(),
+            ptr(*this),
             size,
             &result.start,
             &result.stop,
@@ -428,9 +352,9 @@ template <
 struct __explicit_init__<Slice, Start, Stop, Step>           : Returns<Slice> {
     static auto operator()(const Object& start, const Object& stop, const Object& step) {
         PyObject* result = PySlice_New(
-            start.ptr(),
-            stop.ptr(),
-            step.ptr()
+            ptr(start),
+            ptr(stop),
+            ptr(step)
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -447,8 +371,8 @@ template <
 struct __explicit_init__<Slice, Start, Stop>                 : Returns<Slice> {
     static auto operator()(const Object& start, const Object& stop) {
         PyObject* result = PySlice_New(
-            start.ptr(),
-            stop.ptr(),
+            ptr(start),
+            ptr(stop),
             nullptr
         );
         if (result == nullptr) {
@@ -464,7 +388,7 @@ struct __explicit_init__<Slice, Stop>                        : Returns<Slice> {
     static auto operator()(const Object& stop) {
         PyObject* result = PySlice_New(
             nullptr,
-            stop.ptr(),
+            ptr(stop),
             nullptr
         );
         if (result == nullptr) {
@@ -487,99 +411,42 @@ struct __init__<Slice>                                      : Returns<Slice> {
 };
 
 
-//////////////////////
-////    MODULE    ////
-//////////////////////
+////////////////////////////////
+////    GLOBAL FUNCTIONS    ////
+////////////////////////////////
 
 
-template <typename T>
-struct __issubclass__<T, Module>                            : Returns<bool> {
-    static constexpr bool operator()(const T& obj) { return operator()(); }
-    static consteval bool operator()() { return impl::module_like<T>; }
-};
-
-
-template <typename T>
-struct __isinstance__<T, Module>                            : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::cpp_like<T>) {
-            return issubclass<T, Module>();
-        } else if constexpr (issubclass<T, Module>()) {
-            return obj.ptr() != nullptr;
-        } else if constexpr (impl::is_object_exact<T>) {
-            return obj.ptr() != nullptr && PyModule_Check(obj.ptr());
-        } else {
-            return false;
-        }
-    }
-};
-
-
-/* Represents an imported Python module in C++. */
-class Module : public Object {
-    using Base = Object;
-    using Self = Module;
-
-public:
-    static const Type type;
-
-    Module(Handle h, borrowed_t t) : Base(h, t) {}
-    Module(Handle h, stolen_t t) : Base(h, t) {}
-
-    template <typename... Args>
-        requires (
-            std::is_invocable_r_v<Module, __init__<Module, std::remove_cvref_t<Args>...>, Args...> &&
-            __init__<Module, std::remove_cvref_t<Args>...>::enable
-        )
-    Module(Args&&... args) : Base((
-        Interpreter::init(),
-        __init__<Module, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
-
-    template <typename... Args>
-        requires (
-            !__init__<Module, std::remove_cvref_t<Args>...>::enable &&
-            std::is_invocable_r_v<Module, __explicit_init__<Module, std::remove_cvref_t<Args>...>, Args...> &&
-            __explicit_init__<Module, std::remove_cvref_t<Args>...>::enable
-        )
-    explicit Module(Args&&... args) : Base((
-        Interpreter::init(),
-        __explicit_init__<Module, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
-
-    // TODO: there may be no need to have a special case for overloading, either.  This
-    // would just be handled automatically by the modular descriptor objects.  If the
-    // same method is defined multiple times, the first conflict would convert the
-    // descriptor into an overload set, and subsequent conflicts would add to that set.
-    // They would be resolved using a trie rather than a linear search.
-
-    // TODO: check if the function is overwriting an existing attribute?
-
-    template <typename Func, typename... Defaults>
-    Module& def(const Str& name, const Str& doc, Func&& body, Defaults&&... defaults);
-
-    /* Attach a submodule to this module to represent nested namespaces, etc. */
-    Module def_submodule(const Str& name, const Str& doc);
-
-    void reload() {
-        PyObject *obj = PyImport_ReloadModule(this->ptr());
-        if (obj == nullptr) {
+/* Equivalent to Python `print(args...)`. */
+template <typename... Args>
+    requires (
+        Function<void(
+            Arg<"args", const Str&>::args,
+            Arg<"sep", const Str&>::opt,
+            Arg<"end", const Str&>::opt,
+            Arg<"file", const Object&>::opt,
+            Arg<"flush", const Bool&>::opt
+        )>::invocable<Args...>
+    )
+void print(Args&&... args) {
+    static Object func = [] {
+        PyObject* builtins = PyEval_GetBuiltins();
+        if (builtins == nullptr) {
             Exception::from_python();
         }
-        *this = reinterpret_steal<Module>(obj);
-    }
+        PyObject* func = PyDict_GetItem(builtins, impl::TemplateString<"print">::ptr);
+        if (func == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<Object>(func);
+    }();
 
-};
-
-
-/* Equivalent to Python `import module`.  Only recognizes absolute imports. */
-template <StaticStr name>
-Module import() {
-    PyObject* obj = PyImport_Import(impl::TemplateString<name>::ptr);
-    if (obj == nullptr) {
-        Exception::from_python();
-    }
-    return reinterpret_steal<Module>(obj);
+    Function<void(
+        Arg<"args", const Str&>::args,
+        Arg<"sep", const Str&>::opt,
+        Arg<"end", const Str&>::opt,
+        Arg<"file", const Object&>::opt,
+        Arg<"flush", const Bool&>::opt
+    )>::invoke_py(func, std::forward<Args>(args)...);
 }
 
 
@@ -602,7 +469,7 @@ template <typename Self> requires (__iter__<Self>::enable)
     } else if constexpr (impl::has_static_begin<__iter__<Self>, Self>) {
         return __iter__<Self>{}.begin(self);
     } else {
-        PyObject* iter = PyObject_GetIter(self.ptr());
+        PyObject* iter = PyObject_GetIter(ptr(self));
         if (iter == nullptr) {
             Exception::from_python();
         }
@@ -690,37 +557,25 @@ template <std::derived_from<Object> Self, typename... Args>
         impl::attr_is_callable_with<Self, "__init__", Args...> ||
         impl::attr_is_callable_with<Self, "__new__", Args...>
     )
-struct __explicit_init__<Type<Self>, Args...>                  : Returns<Self> {
-    static auto operator()(const Type<Self>& self, Args&&... args) {
+struct __explicit_init__<Self, Args...>                     : Returns<Self> {
+    static auto operator()(Args&&... args) {
         static_assert(
             impl::attr_is_callable_with<Self, "__init__", Args...> ||
             impl::attr_is_callable_with<Self, "__new__", Args...>,
             "Type must have either an __init__ or __new__ method that is callable "
             "with the given arguments."
         );
-
-        PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(ptr(self));
-
-        auto collect = [&cls](
-            Arg<"args", Object>::args args,
-            Arg<"kwargs", Object>::kwargs kwargs
-        ) {
-            PyObject* result = cls->tp_new(cls, ptr(args), ptr(kwargs));
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            cls->tp_init(result, ptr(args), ptr(kwargs));
-            if (PyErr_Occurred()) {
-                Py_DECREF(result);
-                Exception::from_python();
-            }
-            return reinterpret_steal<Self>(result);
-        };
-
-        return Function<decltype(collect)>::invoke_cpp(
-            collect,
-            std::forward<Args>(args)...
-        );
+        if constexpr (impl::attr_is_callable_with<Self, "__init__", Args...>) {
+            return __getattr__<Self, "__init__">::type::template with_return<Self>::invoke_py(
+                Type<Self>(),
+                std::forward<Args>(args)...
+            );
+        } else {
+            return __getattr__<Self, "__new__">::type::invoke_py(
+                Type<Self>(),
+                std::forward<Args>(args)...
+            );
+        }
     }
 };
 
@@ -748,9 +603,9 @@ struct __explicit_init__<Type<T>, Args...> {
                 py::Arg<"dict", const Dict<Str, Object>&>)
             >::template invoke_py<Type<T>>(
                 reinterpret_cast<PyObject*>(Py_TYPE(ptr(self))),
-                name,
+                name.value,
                 Tuple<Type<T>>{self},
-                dict
+                dict.value
             );
         };
         return Function<decltype(helper)>::template invoke_cpp(
@@ -761,8 +616,8 @@ struct __explicit_init__<Type<T>, Args...> {
 
 
 /* Invoke the `type` metaclass to dynamically create a new Python type.  This
-3-argument form is only available for the root py::Type<> class, and allows a tuple of
-bases to be passed to enable multiple inheritance. */
+3-argument form is only available for the root Type<Object> class, and allows a tuple
+of bases to be passed to enable multiple inheritance. */
 template <typename... Args>
     requires (
         Function<Type<Object>(
@@ -778,7 +633,7 @@ struct __explicit_init__<Type<Object>, Args...> {
             py::Arg<"bases", const Tuple<Type<Object>>&>,
             py::Arg<"dict", const Dict<Str, Object>&>)
         >::template invoke_py<Type<Object>>(
-            reinterpret_cast<PyObject*>(PyType_Type),
+            reinterpret_cast<PyObject*>(&PyType_Type),
             std::forward<Args>(args)...
         );
     }

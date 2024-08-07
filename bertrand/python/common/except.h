@@ -118,14 +118,7 @@ namespace impl {
             py_frame(reinterpret_cast<PyFrameObject*>(Py_XNewRef(frame)))
         {
             if (py_frame != nullptr) {
-                #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 9)
-                    PyCodeObject* code = PyFrame_GetCode(py_frame);
-                #else
-                    PyCodeObject* code = reinterpret_cast<PyCodeObject*>(
-                        Py_XNewRef(py_frame->f_code)
-                    );
-                #endif
-
+                PyCodeObject* code = PyFrame_GetCode(py_frame);
                 if (code != nullptr) {
                     filename = PyUnicode_AsUTF8(code->co_filename);
                     funcname = PyUnicode_AsUTF8(code->co_name);
@@ -405,16 +398,12 @@ namespace impl {
             PyErr_Clear();
             PyTracebackObject* tb = to_python();
             PyErr_SetString(type, value);
-            #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
-                if (tb != nullptr) {
-                    PyException_SetTraceback(
-                        thread->current_exception,
-                        reinterpret_cast<PyObject*>(tb)
-                    );
-                }
-            #else
-                thread->curexc_traceback = Py_XNewRef(tb);
-            #endif
+            if (tb != nullptr) {
+                PyException_SetTraceback(
+                    thread->current_exception,
+                    reinterpret_cast<PyObject*>(tb)
+                );
+            }
         }
 
         /* Build an equivalent Python traceback object for this stack trace.  The
@@ -439,11 +428,7 @@ namespace impl {
                     tb->tb_frame = reinterpret_cast<PyFrameObject*>(
                         Py_XNewRef((*it).to_python())
                     );
-                    #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11)
-                        tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
-                    #else
-                        tb->tb_lasti = tb->tb_frame->f_lasti * sizeof(_Py_CODEUNIT);
-                    #endif
+                    tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
                     tb->tb_lineno = PyFrame_GetLineNumber(tb->tb_frame);
                     PyObject_GC_Track(tb);
                     py_traceback = tb;
@@ -876,33 +861,16 @@ public:
 
         // interacting with the Python error state is rather clumsy and was recently
         // changed in Python 3.12, so we need to handle both cases
-        #if (PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 12)
-            PyObject* value = thread->current_exception;
-            if (value == nullptr) {
-                throw std::logic_error(
-                    "could not convert Python exception into a C++ exception - "
-                    "exception is not set."
-                );
-            }
-            PyObject* type = PyObject_Type(value);
-            PyObject* traceback = PyException_GetTraceback(value);
-            thread->current_exception = nullptr;
-        #else
-            PyObject* type = thread->curexc_type;
-            PyObject* value = thread->curexc_value;
-            PyObject* traceback = thread->curexc_traceback;
-            if (type == nullptr) {
-                throw std::logic_error(
-                    "could not convert Python exception into a C++ exception - "
-                    "exception is not set."
-                );
-            } else if (traceback == nullptr && value != nullptr) {
-                traceback = PyException_GetTraceback(value);
-            }
-            thread->curexc_type = nullptr;
-            thread->curexc_value = nullptr;
-            thread->curexc_traceback = nullptr;
-        #endif
+        PyObject* value = thread->current_exception;
+        if (value == nullptr) {
+            throw std::logic_error(
+                "could not convert Python exception into a C++ exception - "
+                "exception is not set."
+            );
+        }
+        PyObject* type = PyObject_Type(value);
+        PyObject* traceback = PyException_GetTraceback(value);
+        thread->current_exception = nullptr;
 
         try {
             // Re-throw the current exception as a registered bertrand exception type
