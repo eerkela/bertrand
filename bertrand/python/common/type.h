@@ -21,25 +21,508 @@ namespace py {
 
 namespace impl {
 
+    namespace pytraits {
+
+        template <typename CRTP>
+        concept has_dealloc = requires() {
+            { CRTP::__dealloc__ } -> std::convertible_to<void(*)(CRTP*)>;
+        };
+
+        template <typename CRTP>
+        concept has_vectorcall = requires() {
+            { &CRTP::__vectorcall__ } -> std::convertible_to<
+                PyObject*(*)(CRTP*, PyObject* const*, size_t, PyObject*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_await = requires() {
+            { CRTP::__await__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
+        };
+
+        template <typename CRTP>
+        concept has_aiter = requires() {
+            { CRTP::__aiter__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
+        };
+
+        template <typename CRTP>
+        concept has_anext = requires() {
+            { CRTP::__anext__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
+        };
+
+        template <typename CRTP>
+        concept has_asend = requires() {
+            { CRTP::__asend__ } -> std::convertible_to<
+                PyObject*(*)(CRTP*, PyObject*, PyObject**)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_repr = requires() {
+            { CRTP::__repr__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
+        };
+
+        template <typename CRTP>
+        concept has_add = requires() {
+            { CRTP::__add__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_subtract = requires() {
+            { CRTP::__sub__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_multiply = requires() {
+            { CRTP::__mul__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_remainder = requires() {
+            { CRTP::__mod__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_divmod = requires() {
+            { CRTP::__divmod__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_power = requires() {
+            { CRTP::__pow__ } -> std::convertible_to<
+                PyObject*(*)(PyObject*, PyObject*, PyObject*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_negative = requires() {
+            { CRTP::__neg__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_positive = requires() {
+            { CRTP::__pos__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_absolute = requires() {
+            { CRTP::__abs__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_bool = requires() {
+            { CRTP::__bool__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_invert = requires() {
+            { CRTP::__invert__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_lshift = requires() {
+            { CRTP::__lshift__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_rshift = requires() {
+            { CRTP::__rshift__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_and = requires() {
+            { CRTP::__and__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_xor = requires() {
+            { CRTP::__xor__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_or = requires() {
+            { CRTP::__or__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_int = requires() {
+            { CRTP::__int__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_float = requires() {
+            { CRTP::__float__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_inplace_add = requires() {
+            { CRTP::__iadd__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_inplace_subtract = requires() {
+            { CRTP::__isub__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_inplace_multiply = requires() {
+            { CRTP::__imul__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_inplace_remainder = requires() {
+            { CRTP::__imod__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_inplace_power = requires() {
+            { CRTP::__ipow__ } -> std::convertible_to<
+                PyObject*(*)(PyObject*, PyObject*, PyObject*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_inplace_lshift = requires() {
+            { CRTP::__ilshift__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_inplace_rshift = requires() {
+            { CRTP::__irshift__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_inplace_and = requires() {
+            { CRTP::__iand__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_inplace_xor = requires() {
+            { CRTP::__ixor__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_inplace_or = requires() {
+            { CRTP::__ior__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_floor_divide = requires() {
+            { CRTP::__floordiv__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_true_divide = requires() {
+            { CRTP::__truediv__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_inplace_floor_divide = requires() {
+            { CRTP::__ifloordiv__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_inplace_true_divide = requires() {
+            { CRTP::__itruediv__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_index = requires() {
+            { CRTP::__index__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_matrix_multiply = requires() {
+            { CRTP::__matmul__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_inplace_matrix_multiply = requires() {
+            { CRTP::__imatmul__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_len = requires() {
+            { CRTP::__len__ } -> std::convertible_to<Py_ssize_t(*)(CRTP*)>;
+        };
+
+        template <typename CRTP>
+        concept has_contains = requires() {
+            { CRTP::__contains__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_getitem = requires() {
+            { CRTP::__getitem__ } -> std::convertible_to<PyObject*(*)(CRTP*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_setitem = requires() {
+            { CRTP::__setitem__ } -> std::convertible_to<
+                int(*)(CRTP*, PyObject*, PyObject*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_delitem = requires() {
+            { CRTP::__delitem__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_hash = requires() {
+            { CRTP::__hash__ } -> std::convertible_to<Py_hash_t(*)(CRTP*)>;
+        };
+
+        template <typename CRTP>
+        concept has_call = requires() {
+            { CRTP::__call__ } -> std::convertible_to<
+                PyObject*(*)(CRTP*, PyObject*, PyObject*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_str = requires() {
+            { CRTP::__str__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
+        };
+
+        template <typename CRTP>
+        concept has_getattr = requires() {
+            { CRTP::__getattr__ } -> std::convertible_to<PyObject*(*)(CRTP*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_setattr = requires() {
+            { CRTP::__setattr__ } -> std::convertible_to<
+                int(*)(CRTP*, PyObject*, PyObject*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_delattr = requires() {
+            { CRTP::__delattr__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_buffer = requires() {
+            { CRTP::__buffer__ } -> std::convertible_to<
+                int(*)(PyObject*, Py_buffer*, int)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_release_buffer = requires() {
+            { CRTP::__release_buffer__ } -> std::convertible_to<
+                void(*)(PyObject*, Py_buffer*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_doc = requires() {
+            { CRTP::__doc__ } -> std::convertible_to<const char*>;
+        };
+
+        template <typename CRTP>
+        concept has_traverse = requires() {
+            { CRTP::__traverse__ } -> std::convertible_to<
+                int(*)(CRTP*, visitproc, void*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_clear = requires() {
+            { CRTP::__clear__ } -> std::convertible_to<int(*)(CRTP*)>;
+        };
+
+        template <typename CRTP>
+        concept has_lt = requires() {
+            { CRTP::__lt__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_le = requires() {
+            { CRTP::__le__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_eq = requires() {
+            { CRTP::__eq__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_ne = requires() {
+            { CRTP::__ne__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_ge = requires() {
+            { CRTP::__ge__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_gt = requires() {
+            { CRTP::__gt__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_iter = requires() {
+            { CRTP::__iter__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
+        };
+
+        template <typename CRTP>
+        concept has_next = requires() {
+            { CRTP::__next__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
+        };
+
+        /// NOTE: tp_methods, tp_members, tp_getset are handled via static vectors
+
+        template <typename CRTP>
+        concept has_get = requires() {
+            { CRTP::__get__ } -> std::convertible_to<
+                PyObject*(*)(CRTP*, PyObject*, PyObject*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_set = requires() {
+            { CRTP::__set__ } -> std::convertible_to<
+                int(*)(CRTP*, PyObject*, PyObject*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_delete = requires() {
+            { CRTP::__delete__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
+        };
+
+        template <typename CRTP>
+        concept has_init = requires() {
+            { CRTP::__init__ } -> std::convertible_to<
+                int(*)(CRTP*, PyObject*, PyObject*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_new = requires() {
+            { CRTP::__new__ } -> std::convertible_to<
+                PyObject*(*)(CRTP*, PyObject*, PyObject*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_instancecheck = requires() {
+            { CRTP::__instancecheck__ } -> std::convertible_to<
+                PyObject*(*)(CRTP*, PyObject*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_subclasscheck = requires() {
+            { CRTP::__subclasscheck__ } -> std::convertible_to<
+                PyObject*(*)(CRTP*, PyObject*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_enter = requires() {
+            { CRTP::__enter__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
+        };
+
+        template <typename CRTP>
+        concept has_exit = requires() {
+            { CRTP::__exit__ } -> std::convertible_to<
+                PyObject*(*)(CRTP*, PyObject*, PyObject*, PyObject*)
+            >;
+        };
+
+        template <typename CRTP>
+        concept has_aenter = requires() {
+            { CRTP::__aenter__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
+        };
+
+        template <typename CRTP>
+        concept has_aexit = requires() {
+            { CRTP::__aexit__ } -> std::convertible_to<
+                PyObject*(*)(CRTP*, PyObject*, PyObject*, PyObject*)
+            >;
+        };
+
+    }
+
+    /* Marks a py::Object subclass as a type object, and exposes several helpers to
+    make writing custom types as easy as possible.  Every specialization of `Type<>`
+    should inherit from this class and implement a public `__python__` struct that
+    inherits from its CRTP helpers. */
     struct TypeTag : public BertrandTag {
     private:
 
+        /* Shared behavior for all Python types, be they wrappers around external C++
+        classes or pure Python.  Each type must minimally support these methods.
+        Everything else is an implementation detail for the type's Python
+        representation. */
+        template <typename CRTP, typename Wrapper, typename CppType>
         struct BaseDef : public BertrandTag {
+        protected:
+            inline static std::vector<PyMethodDef> tp_methods;
+            inline static std::vector<PyGetSetDef> tp_getset;
+            inline static std::vector<PyMemberDef> tp_members;
 
-            // TODO: any shared interface (maybe __setup__/__ready__/__import__?)
+            template <StaticStr ModName>
+            friend struct Bindings;
+
+            template <StaticStr ModName>
+            struct Bindings;
+
+        public:
+
+            /* Generate a new instance of the type object to be attached to the given
+            module.
+
+            The `bindings` argument is a helper that includes a number of convenience
+            methods for exposing the type to Python.  The __export__ script must end
+            with a call to `bindings.finalize<Bases...>()`, which will build a
+            corresponding `PyType_Spec` that will be used to instantiate a unique heap
+            type for each module.  This is the correct way to expose types with
+            per-module state, as it allows for multiple sub-interpreters to run in
+            parallel without interfering with one other.  It is automatically executed
+            by the import system whenever the enclosing module is loaded into a fresh
+            interpreter.
+
+            Note that this method does not need to actually attach the type to the
+            module; that is done elsewhere in the import process in order to allow for
+            the modeling of templates. */
+            template <StaticStr ModName>
+            static Type<Wrapper> __export__(Bindings<ModName> bindings) {
+                // bindings.var<"foo">(value);
+                // bindings.method<"bar">("docstring", &CRTP::bar);
+                // ...
+                return bindings.template finalize<>();
+            }
+
+            /* Return a new reference to the type by importing its parent module and
+            unpacking this specific type.  This is called automatically by the default
+            constructor for `Type<Wrapper>`, and is the proper way to handle per-module
+            state, instead of using static type objects.  It will implicitly invoke the
+            `__export__()` method during the import process, either via
+            `PyImport_Import()` or the `Module` constructor directly. */
+            static Type<Wrapper> __import__() {
+                throw NotImplementedError(
+                    "the __import__() method must be defined for all Python types: "
+                    + demangle(typeid(CRTP).name())
+                );
+            }
 
         };
 
     protected:
 
         /* A CRTP base class that automatically generates boilerplate bindings for a
-        new Python type that wraps around an external C++ type.  This is the preferred
+        new Python type which wraps around an external C++ type.  This is the preferred
         way of writing new Python types in C++.
 
         This class is only available to specializations of `py::Type<>`, each of which
         should define a public `__python__` struct that inherits from it.  It uses CRTP
         to automate the creation of Python types and their associated methods, slots,
-        and other attributes, in a way that conforms to Python's best practices.  This
+        and other attributes in a way that conforms to Python's best practices.  This
         includes:
 
             -   The use of heap types over static types, which are closer to native
@@ -54,13 +537,13 @@ namespace impl {
             -   Default implementations of common slots like `__repr__`, `__hash__`,
                 `__iter__`, and others, which can be detected via template
                 metaprogramming and overridden by the user if necessary.
-            -   A common metaclass, which demangles the C++ type name and delegates
+            -   A shared metaclass, which demangles the C++ type name and delegates
                 `isinstance()` and `issubclass()` checks to the `py::__isinstance__`
                 and `py::__issubclass__` control structs, respectively.
             -   Support for C++ templates, which can be indexed in Python using the
                 metaclass's `__getitem__` slot.
             -   Method overloading, wherein each method is represented as an overload
-                set attached to the type via the descriptor protocol.
+                set attached to the type object via the descriptor protocol.
 
         Needless to say, these are all very complex and error-prone tasks that are best
         left to Bertrand's metaprogramming facilities.  By using this base class, the
@@ -76,22 +559,16 @@ namespace impl {
         during inheritance.  It expects the user to either implement a raw CPython type
         directly inline or supply a reference to an externally-defined `PyTypeObject`,
         which presumably exists somewhere in the CPython API or a third-party
-        library. */
+        library.
+
+        Users of this type must at least implement the `__import__()` hook, which
+        returns a new reference to the type object.  If the type is implemented inline,
+        then they must also implement the `__export__()` hook, which is called to
+        initialize the type object and expose it to Python.  Everything else is an
+        implementation detail. */
         template <typename CRTP, typename Wrapper>
-        struct def<CRTP, Wrapper, void> : public BaseDef {
+        struct def<CRTP, Wrapper, void> : public BaseDef<CRTP, Wrapper, void> {
             static constexpr Origin __origin__ = Origin::PYTHON;
-
-            /* Return a new reference to the Python type.  This must be overridden by
-            all subclasses, and may require custom C API code.  It is called whenever
-            `Type<Wrapper>()` is default-constructed, in order to enable per-module
-            state. */
-            static Type<Wrapper> __import__() {
-                throw NotImplementedError(
-                    "the __import__() method must be defined for all Python types: "
-                    + demangle(typeid(CRTP).name())
-                );
-            }
-
         };
 
     };
@@ -397,17 +874,8 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         PyObject* demangled;
         PyObject* template_instantiations;
 
-        // TODO: this should be split into __setup__() and __ready__() and use helpers
-        // from TypeTag::def
-        // -> __ready__() must be implemented on the other type tag as well, not just
-        // __import__().  Typically, this will handle all the logic itself, without
-        // any helpers, similar to what I'm doing here.  It's sufficient to just
-        // return the type object itself if it's truly external.  Otherwise, if the
-        // type is implemented inline, then it should be created here and returned.
-
-        /* Ready the metatype and attach it to a module. */
-        template <std::derived_from<impl::ModuleTag> Mod>
-        static PyTypeObject* __ready__(Mod& parent) {
+        template <StaticStr ModName>
+        static Type __export__(Bindings<ModName> parent) {
             static PyType_Slot slots[] = {
                 {Py_tp_doc, const_cast<char*>(__doc__.buffer)},
                 {Py_tp_dealloc, reinterpret_cast<void*>(__dealloc__)},
@@ -422,7 +890,7 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
                 {0, nullptr}
             };
             static PyType_Spec spec = {
-                .name = "bertrand.Meta",
+                .name = ModName + ".Meta",
                 .basicsize = sizeof(BertrandMeta),
                 .itemsize = 0,
                 .flags =
@@ -431,21 +899,42 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
                     Py_TPFLAGS_MANAGED_WEAKREF | Py_TPFLAGS_MANAGED_DICT,
                 .slots = slots
             };
-            PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(PyType_FromModuleAndSpec(
+            PyObject* cls = PyType_FromModuleAndSpec(
                 ptr(parent),
                 &spec,
                 &PyType_Type
-            ));
+            );
             if (cls == nullptr) {
                 Exception::from_python();
             }
-            return cls;
+            return reinterpret_steal<Type>(cls);
         }
 
         /* Get a new reference to the metatype from the root module. */
         static Type __import__();  // TODO: defined in __init__.h alongside "bertrand.python" module {
         //     return impl::get_type<BertrandMeta>(Module<"bertrand">());
         // }
+
+        /* Free the type name and any template instantiations when an instance of this
+        type falls out of scope. */
+        static void __dealloc__(__python__* cls) {
+            PyObject_GC_UnTrack(cls);
+            cls->getters.~Getters();
+            cls->setters.~Setters();
+            Py_XDECREF(cls->demangled);
+            Py_XDECREF(cls->template_instantiations);
+            PyTypeObject* type = Py_TYPE(cls);
+            type->tp_free(cls);
+            Py_DECREF(type);  // required for heap types
+        }
+
+        /* Track instances of this type with Python's cyclic garbage collector. */
+        static int __traverse__(__python__* cls, visitproc visit, void* arg) {
+            Py_VISIT(cls->demangled);
+            Py_VISIT(cls->template_instantiations);
+            Py_VISIT(Py_TYPE(cls));  // required for heap types
+            return 0;
+        }
 
         /* `repr(cls)` demangles the C++ type name.  */
         static PyObject* __repr__(__python__* cls) {
@@ -639,33 +1128,6 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
             }
         }
 
-        /* Free the type name and any template instantiations when an instance of this
-        type falls out of scope. */
-        static void __dealloc__(__python__* cls) {
-            PyObject_GC_UnTrack(cls);
-            cls->getters.~Getters();
-            cls->setters.~Setters();
-            Py_XDECREF(cls->demangled);
-            Py_XDECREF(cls->template_instantiations);
-            PyTypeObject* type = Py_TYPE(cls);
-            type->tp_free(cls);
-            Py_DECREF(type);  // required for heap types
-        }
-
-        /* Track instances of this type with Python's cyclic garbage collector. */
-        static int __traverse__(__python__* cls, visitproc visit, void* arg) {
-            Py_VISIT(cls->demangled);
-            Py_VISIT(cls->template_instantiations);
-            Py_VISIT(Py_TYPE(cls));  // required for heap types
-            return 0;
-        }
-
-        /* Helper to ensure the demangled name is always consistent. */
-        PyObject* get_demangled_name() {
-            std::string s = "<class '" + impl::demangle(base.tp_name) + "'>";
-            return PyUnicode_FromStringAndSize(s.c_str(), s.size());
-        }
-
         /* Create a trivial instance of the metaclass to serve as a public interface
         for a class template hierarchy.  The interface is not usable on its own
         except to provide access to its instantiations, type checks against them,
@@ -719,6 +1181,12 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
             }
             return reinterpret_steal<BertrandMeta>(reinterpret_cast<PyObject*>(cls));
         };
+
+        /* Helper to ensure the demangled name is always consistent. */
+        PyObject* get_demangled_name() {
+            std::string s = "<class '" + impl::demangle(base.tp_name) + "'>";
+            return PyUnicode_FromStringAndSize(s.c_str(), s.size());
+        }
 
     private:
 
@@ -811,7 +1279,721 @@ struct __getitem__<BertrandMeta, Tuple<Type<Object>>>       : Returns<BertrandMe
 namespace impl {
 
     template <typename CRTP, typename Wrapper, typename CppType>
-    struct TypeTag::def : public BaseDef {
+    template <StaticStr ModName>
+    struct TypeTag::BaseDef<CRTP, Wrapper, CppType>::Bindings {
+    private:
+
+        static int setattro(CRTP* self, PyObject* attr, PyObject* value) {
+            if (value == nullptr) {
+                if constexpr (pytraits::has_delattr<CRTP>) {
+                    return CRTP::__delattr__(self, attr);
+                } else {
+                    PyErr_Format(
+                        PyExc_AttributeError,
+                        "cannot delete attribute '%U' from object of type '%s'",
+                        attr,
+                        repr(Type<Wrapper>()).c_str()
+                    );
+                    return -1;
+                }
+            } else {
+                if constexpr (pytraits::has_setattr<CRTP>) {
+                    return CRTP::__setattr__(self, attr, value);
+                } else {
+                    PyErr_Format(
+                        PyExc_AttributeError,
+                        "cannot set attribute '%U' on object of type '%s'",
+                        attr,
+                        repr(Type<Wrapper>()).c_str()
+                    );
+                    return -1;
+                }
+            }
+        }
+
+        static int setitem(CRTP* self, PyObject* key, PyObject* value) {
+            if (value == nullptr) {
+                if constexpr (pytraits::has_delitem<CRTP>) {
+                    return CRTP::__delitem__(self, key);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "cannot delete item '%U' from object of type '%s'",
+                        key,
+                        repr(Type<Wrapper>()).c_str()
+                    );
+                    return -1;
+                }
+            } else {
+                if constexpr (pytraits::has_setitem<CRTP>) {
+                    return CRTP::__setitem__(self, key, value);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "cannot set item '%U' on object of type '%s'",
+                        key,
+                        repr(Type<Wrapper>()).c_str()
+                    );
+                    return -1;
+                }
+            }
+        }
+
+        static PyObject* richcompare(CRTP* self, PyObject* other, int op) {
+            switch (op) {
+                case Py_LT:
+                    if constexpr (pytraits::has_lt<CRTP>) {
+                        return CRTP::__lt__(self, other);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                case Py_LE:
+                    if constexpr (pytraits::has_le<CRTP>) {
+                        return CRTP::__le__(self, other);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                case Py_EQ:
+                    if constexpr (pytraits::has_eq<CRTP>) {
+                        return CRTP::__eq__(self, other);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                case Py_NE:
+                    if constexpr (pytraits::has_ne<CRTP>) {
+                        return CRTP::__ne__(self, other);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                case Py_GE:
+                    if constexpr (pytraits::has_ge<CRTP>) {
+                        return CRTP::__ge__(self, other);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                case Py_GT:
+                    if constexpr (pytraits::has_gt<CRTP>) {
+                        return CRTP::__gt__(self, other);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                default:
+                    PyErr_Format(
+                        PyExc_SystemError,
+                        "unrecognized rich comparison code: %d",
+                        op
+                    );
+                    return nullptr;
+            }
+        }
+
+        static int descr_set(CRTP* self, PyObject* obj, PyObject* value) {
+            if (value == nullptr) {
+                if constexpr (pytraits::has_delete<CRTP>) {
+                    return CRTP::__delete__(self, obj);
+                } else {
+                    PyErr_Format(
+                        PyExc_AttributeError,
+                        "cannot delete descriptor '%U' from object of type '%s'",
+                        obj,
+                        repr(Type<Wrapper>()).c_str()
+                    );
+                    return -1;
+                }
+            } else {
+                if constexpr (pytraits::has_set<CRTP>) {
+                    return CRTP::__set__(self, obj, value);
+                } else {
+                    PyErr_Format(
+                        PyExc_AttributeError,
+                        "cannot set descriptor '%U' on object of type '%s'",
+                        obj,
+                        repr(Type<Wrapper>()).c_str()
+                    );
+                    return -1;
+                }
+            }
+        }
+
+    public:
+        Module<ModName> module;
+
+        Bindings(const Module<ModName>& mod) : module(mod) {}
+        Bindings(const Bindings&) = delete;
+        Bindings(Bindings&&) = delete;
+
+        template <std::derived_from<Object>... Bases>
+        Type<Wrapper> finalize() {
+            static std::vector<PyType_Slot> slots;
+            static bool initialized = false;
+            if (!initialized) {
+                if constexpr (pytraits::has_dealloc<CRTP>) {
+                    slots.push_back({
+                        Py_tp_dealloc,
+                        reinterpret_cast<void*>(CRTP::__dealloc__)
+                    });
+                }
+                if constexpr (pytraits::has_vectorcall<CRTP>) {
+                    tp_members.push_back({
+                        "__vectorcalloffset__",
+                        Py_T_PYSSIZET,
+                        offsetof(CRTP, __vectorcall__),
+                        Py_READONLY,
+                    });
+                }
+                if constexpr (pytraits::has_await<CRTP>) {
+                    slots.push_back({
+                        Py_am_await,
+                        reinterpret_cast<void*>(CRTP::__await__)
+                    });
+                }
+                if constexpr (pytraits::has_aiter<CRTP>) {
+                    slots.push_back({
+                        Py_am_aiter,
+                        reinterpret_cast<void*>(CRTP::__aiter__)
+                    });
+                }
+                if constexpr (pytraits::has_anext<CRTP>) {
+                    slots.push_back({
+                        Py_am_anext,
+                        reinterpret_cast<void*>(CRTP::__anext__)
+                    });
+                }
+                if constexpr (pytraits::has_asend<CRTP>) {
+                    slots.push_back({
+                        Py_am_send,
+                        reinterpret_cast<void*>(CRTP::__asend__)
+                    });
+                }
+                if constexpr (pytraits::has_repr<CRTP>) {
+                    slots.push_back({
+                        Py_tp_repr,
+                        reinterpret_cast<void*>(CRTP::__repr__)
+                    });
+                }
+                if constexpr (pytraits::has_add<CRTP>) {
+                    slots.push_back({
+                        Py_nb_add,
+                        reinterpret_cast<void*>(CRTP::__add__)
+                    });
+                }
+                if constexpr (pytraits::has_subtract<CRTP>) {
+                    slots.push_back({
+                        Py_nb_subtract,
+                        reinterpret_cast<void*>(CRTP::__sub__)
+                    });
+                }
+                if constexpr (pytraits::has_multiply<CRTP>) {
+                    slots.push_back({
+                        Py_nb_multiply,
+                        reinterpret_cast<void*>(CRTP::__mul__)
+                    });
+                }
+                if constexpr (pytraits::has_remainder<CRTP>) {
+                    slots.push_back({
+                        Py_nb_remainder,
+                        reinterpret_cast<void*>(CRTP::__mod__)
+                    });
+                }
+                if constexpr (pytraits::has_divmod<CRTP>) {
+                    slots.push_back({
+                        Py_nb_divmod,
+                        reinterpret_cast<void*>(CRTP::__divmod__)
+                    });
+                }
+                if constexpr (pytraits::has_power<CRTP>) {
+                    slots.push_back({
+                        Py_nb_power,
+                        reinterpret_cast<void*>(CRTP::__pow__)
+                    });
+                }
+                if constexpr (pytraits::has_negative<CRTP>) {
+                    slots.push_back({
+                        Py_nb_negative,
+                        reinterpret_cast<void*>(CRTP::__neg__)
+                    });
+                }
+                if constexpr (pytraits::has_positive<CRTP>) {
+                    slots.push_back({
+                        Py_nb_positive,
+                        reinterpret_cast<void*>(CRTP::__pos__)
+                    });
+                }
+                if constexpr (pytraits::has_absolute<CRTP>) {
+                    slots.push_back({
+                        Py_nb_absolute,
+                        reinterpret_cast<void*>(CRTP::__abs__)
+                    });
+                }
+                if constexpr (pytraits::has_bool<CRTP>) {
+                    slots.push_back({
+                        Py_nb_bool,
+                        reinterpret_cast<void*>(CRTP::__bool__)
+                    });
+                }
+                if constexpr (pytraits::has_invert<CRTP>) {
+                    slots.push_back({
+                        Py_nb_invert,
+                        reinterpret_cast<void*>(CRTP::__invert__)
+                    });
+                }
+                if constexpr (pytraits::has_lshift<CRTP>) {
+                    slots.push_back({
+                        Py_nb_lshift,
+                        reinterpret_cast<void*>(CRTP::__lshift__)
+                    });
+                }
+                if constexpr (pytraits::has_rshift<CRTP>) {
+                    slots.push_back({
+                        Py_nb_rshift,
+                        reinterpret_cast<void*>(CRTP::__rshift__)
+                    });
+                }
+                if constexpr (pytraits::has_and<CRTP>) {
+                    slots.push_back({
+                        Py_nb_and,
+                        reinterpret_cast<void*>(CRTP::__and__)
+                    });
+                }
+                if constexpr (pytraits::has_xor<CRTP>) {
+                    slots.push_back({
+                        Py_nb_xor,
+                        reinterpret_cast<void*>(CRTP::__xor__)
+                    });
+                }
+                if constexpr (pytraits::has_or<CRTP>) {
+                    slots.push_back({
+                        Py_nb_or,
+                        reinterpret_cast<void*>(CRTP::__or__)
+                    });
+                }
+                if constexpr (pytraits::has_int<CRTP>) {
+                    slots.push_back({
+                        Py_nb_int,
+                        reinterpret_cast<void*>(CRTP::__int__)
+                    });
+                }
+                if constexpr (pytraits::has_float<CRTP>) {
+                    slots.push_back({
+                        Py_nb_float,
+                        reinterpret_cast<void*>(CRTP::__float__)
+                    });
+                }
+                if constexpr (pytraits::has_inplace_add<CRTP>) {
+                    slots.push_back({
+                        Py_nb_inplace_add,
+                        reinterpret_cast<void*>(CRTP::__iadd__)
+                    });
+                }
+                if constexpr (pytraits::has_inplace_subtract<CRTP>) {
+                    slots.push_back({
+                        Py_nb_inplace_subtract,
+                        reinterpret_cast<void*>(CRTP::__isub__)
+                    });
+                }
+                if constexpr (pytraits::has_inplace_multiply<CRTP>) {
+                    slots.push_back({
+                        Py_nb_inplace_multiply,
+                        reinterpret_cast<void*>(CRTP::__imul__)
+                    });
+                }
+                if constexpr (pytraits::has_inplace_remainder<CRTP>) {
+                    slots.push_back({
+                        Py_nb_inplace_remainder,
+                        reinterpret_cast<void*>(CRTP::__imod__)
+                    });
+                }
+                if constexpr (pytraits::has_inplace_power<CRTP>) {
+                    slots.push_back({
+                        Py_nb_inplace_power,
+                        reinterpret_cast<void*>(CRTP::__ipow__)
+                    });
+                }
+                if constexpr (pytraits::has_inplace_lshift<CRTP>) {
+                    slots.push_back({
+                        Py_nb_inplace_lshift,
+                        reinterpret_cast<void*>(CRTP::__ilshift__)
+                    });
+                }
+                if constexpr (pytraits::has_inplace_rshift<CRTP>) {
+                    slots.push_back({
+                        Py_nb_inplace_rshift,
+                        reinterpret_cast<void*>(CRTP::__irshift__)
+                    });
+                }
+                if constexpr (pytraits::has_inplace_and<CRTP>) {
+                    slots.push_back({
+                        Py_nb_inplace_and,
+                        reinterpret_cast<void*>(CRTP::__iand__)
+                    });
+                }
+                if constexpr (pytraits::has_inplace_xor<CRTP>) {
+                    slots.push_back({
+                        Py_nb_inplace_xor,
+                        reinterpret_cast<void*>(CRTP::__ixor__)
+                    });
+                }
+                if constexpr (pytraits::has_inplace_or<CRTP>) {
+                    slots.push_back({
+                        Py_nb_inplace_or,
+                        reinterpret_cast<void*>(CRTP::__ior__)
+                    });
+                }
+                if constexpr (pytraits::has_floor_divide<CRTP>) {
+                    slots.push_back({
+                        Py_nb_floor_divide,
+                        reinterpret_cast<void*>(CRTP::__floordiv__)
+                    });
+                }
+                if constexpr (pytraits::has_true_divide<CRTP>) {
+                    slots.push_back({
+                        Py_nb_true_divide,
+                        reinterpret_cast<void*>(CRTP::__truediv__)
+                    });
+                }
+                if constexpr (pytraits::has_inplace_floor_divide<CRTP>) {
+                    slots.push_back({
+                        Py_nb_inplace_floor_divide,
+                        reinterpret_cast<void*>(CRTP::__ifloordiv__)
+                    });
+                }
+                if constexpr (pytraits::has_inplace_true_divide<CRTP>) {
+                    slots.push_back({
+                        Py_nb_inplace_true_divide,
+                        reinterpret_cast<void*>(CRTP::__itruediv__)
+                    });
+                }
+                if constexpr (pytraits::has_index<CRTP>) {
+                    slots.push_back({
+                        Py_nb_index,
+                        reinterpret_cast<void*>(CRTP::__index__)
+                    });
+                }
+                if constexpr (pytraits::has_matrix_multiply<CRTP>) {
+                    slots.push_back({
+                        Py_nb_matrix_multiply,
+                        reinterpret_cast<void*>(CRTP::__matmul__)
+                    });
+                }
+                if constexpr (pytraits::has_inplace_matrix_multiply<CRTP>) {
+                    slots.push_back({
+                        Py_nb_inplace_matrix_multiply,
+                        reinterpret_cast<void*>(CRTP::__imatmul__)
+                    });
+                }
+                if constexpr (pytraits::has_contains<CRTP>) {
+                    slots.push_back({
+                        Py_sq_contains,
+                        reinterpret_cast<void*>(CRTP::__contains__)
+                    });
+                }
+                if constexpr (impl::sequence_like<Wrapper>) {
+                    if constexpr (pytraits::has_len<CRTP>) {
+                        slots.push_back({
+                            Py_sq_length,
+                            reinterpret_cast<void*>(CRTP::__len__)
+                        });
+                    }
+                    if constexpr (pytraits::has_getitem<CRTP>) {
+                        slots.push_back({
+                            Py_sq_item,
+                            reinterpret_cast<void*>(CRTP::__getitem__)
+                        });
+                    }
+                    if constexpr (pytraits::has_setitem<CRTP> || pytraits::has_delitem<CRTP>) {
+                        slots.push_back({
+                            Py_sq_ass_item,
+                            reinterpret_cast<void*>(setitem)
+                        });
+                    }
+                    if constexpr (pytraits::has_add<CRTP> && has_concat<Wrapper>) {
+                        slots.push_back({
+                            Py_sq_concat,
+                            reinterpret_cast<void*>(CRTP::__add__)
+                        });
+                    }
+                    if constexpr (
+                        pytraits::has_inplace_add<CRTP> && has_inplace_concat<Wrapper>
+                    ) {
+                        slots.push_back({
+                            Py_sq_inplace_concat,
+                            reinterpret_cast<void*>(CRTP::__iadd__)
+                        });
+                    }
+                    if constexpr (pytraits::has_multiply<CRTP> && has_repeat<Wrapper>) {
+                        slots.push_back({
+                            Py_sq_repeat,
+                            reinterpret_cast<void*>(CRTP::__mul__)
+                        });
+                    }
+                    if constexpr (
+                        pytraits::has_inplace_multiply<CRTP> && has_inplace_repeat<Wrapper>
+                    ) {
+                        slots.push_back({
+                            Py_sq_inplace_repeat,
+                            reinterpret_cast<void*>(CRTP::__imul__)
+                        });
+                    }
+                } else if constexpr (impl::mapping_like<Wrapper>) {
+                    if constexpr (pytraits::has_len<CRTP>) {
+                        slots.push_back({
+                            Py_mp_length,
+                            reinterpret_cast<void*>(CRTP::__len__)
+                        });
+                    }
+                    if constexpr (pytraits::has_getitem<CRTP>) {
+                        slots.push_back({
+                            Py_mp_subscript,
+                            reinterpret_cast<void*>(CRTP::__getitem__)
+                        });
+                    }
+                    if constexpr (pytraits::has_setitem<CRTP> || pytraits::has_delitem<CRTP>) {
+                        slots.push_back({
+                            Py_mp_ass_subscript,
+                            reinterpret_cast<void*>(setitem)
+                        });
+                    }
+                }
+                if constexpr (pytraits::has_hash<CRTP>) {
+                    slots.push_back({
+                        Py_tp_hash,
+                        reinterpret_cast<void*>(CRTP::__hash__)
+                    });
+                }
+                if constexpr (pytraits::has_call<CRTP>) {
+                    slots.push_back({
+                        Py_tp_call,
+                        reinterpret_cast<void*>(CRTP::__call__)
+                    });
+                }
+                if constexpr (pytraits::has_str<CRTP>) {
+                    slots.push_back({
+                        Py_tp_str,
+                        reinterpret_cast<void*>(CRTP::__str__)
+                    });
+                }
+                if constexpr (pytraits::has_getattr<CRTP>) {
+                    slots.push_back({
+                        Py_tp_getattro,
+                        reinterpret_cast<void*>(CRTP::__getattr__)
+                    });
+                }
+                if constexpr (pytraits::has_setattr<CRTP> || pytraits::has_delattr<CRTP>) {
+                    slots.push_back({
+                        Py_tp_setattro,
+                        reinterpret_cast<void*>(setattro)
+                    });
+                }
+                if constexpr (pytraits::has_buffer<CRTP>) {
+                    slots.push_back({
+                        Py_bf_getbuffer,
+                        reinterpret_cast<void*>(CRTP::__buffer__)
+                    });
+                }
+                if constexpr (pytraits::has_release_buffer<CRTP>) {
+                    slots.push_back({
+                        Py_bf_releasebuffer,
+                        reinterpret_cast<void*>(CRTP::__release_buffer__)
+                    });
+                }
+                if constexpr (pytraits::has_doc<CRTP>) {
+                    slots.push_back({
+                        Py_tp_doc,
+                        reinterpret_cast<void*>(CRTP::__doc__.buffer)
+                    });
+                }
+                if constexpr (pytraits::has_traverse<CRTP>) {
+                    slots.push_back({
+                        Py_tp_traverse,
+                        reinterpret_cast<void*>(CRTP::__traverse__)
+                    });
+                }
+                if constexpr (pytraits::has_clear<CRTP>) {
+                    slots.push_back({
+                        Py_tp_clear,
+                        reinterpret_cast<void*>(CRTP::__clear__)
+                    });
+                }
+                if constexpr (
+                    pytraits::has_lt<CRTP> || pytraits::has_le<CRTP> ||
+                    pytraits::has_eq<CRTP> || pytraits::has_ne<CRTP> ||
+                    pytraits::has_gt<CRTP> || pytraits::has_ge<CRTP>
+                ) {
+                    slots.push_back({
+                        Py_tp_richcompare,
+                        reinterpret_cast<void*>(richcompare)
+                    });
+                }
+                if constexpr (pytraits::has_iter<CRTP>) {
+                    slots.push_back({
+                        Py_tp_iter,
+                        reinterpret_cast<void*>(CRTP::__iter__)
+                    });
+                }
+                if constexpr (pytraits::has_next<CRTP>) {
+                    slots.push_back({
+                        Py_tp_iternext,
+                        reinterpret_cast<void*>(CRTP::__next__)
+                    });
+                }
+                if constexpr (pytraits::has_get<CRTP>) {
+                    slots.push_back({
+                        Py_tp_descr_get,
+                        reinterpret_cast<void*>(CRTP::__get__)
+                    });
+                }
+                if constexpr (pytraits::has_set<CRTP> || pytraits::has_delete<CRTP>) {
+                    slots.push_back({
+                        Py_tp_descr_set,
+                        reinterpret_cast<void*>(descr_set)
+                    });
+                }
+                if constexpr (pytraits::has_init<CRTP>) {
+                    slots.push_back({
+                        Py_tp_init,
+                        reinterpret_cast<void*>(CRTP::__init__)
+                    });
+                }
+                if constexpr (pytraits::has_new<CRTP>) {
+                    slots.push_back({
+                        Py_tp_new,
+                        reinterpret_cast<void*>(CRTP::__new__)
+                    });
+                }
+                if constexpr (pytraits::has_instancecheck<CRTP>) {
+                    tp_methods.push_back({
+                        "__instancecheck__",
+                        reinterpret_cast<PyCFunction>(CRTP::__instancecheck__),
+                        METH_O,
+                        nullptr
+                    });
+                }
+                if constexpr (pytraits::has_subclasscheck<CRTP>) {
+                    tp_methods.push_back({
+                        "__subclasscheck__",
+                        reinterpret_cast<PyCFunction>(CRTP::__subclasscheck__),
+                        METH_O,
+                        nullptr
+                    });
+                }
+
+
+
+
+                // TODO: check these and ensure the argument signatures are correct
+                if constexpr (pytraits::has_enter<CRTP>) {
+                    tp_methods.push_back({
+                        "__enter__",
+                        reinterpret_cast<PyCFunction>(CRTP::__enter__),
+                        METH_NOARGS,
+                        nullptr
+                    });
+                }
+                if constexpr (pytraits::has_exit<CRTP>) {
+                    tp_methods.push_back({
+                        "__exit__",
+                        reinterpret_cast<PyCFunction>(CRTP::__exit__),
+                        METH_VARARGS,
+                        nullptr
+                    });
+                }
+                if constexpr (pytraits::has_aenter<CRTP>) {
+                    tp_methods.push_back({
+                        "__aenter__",
+                        reinterpret_cast<PyCFunction>(CRTP::__aenter__),
+                        METH_NOARGS,
+                        nullptr
+                    });
+                }
+                if constexpr (pytraits::has_aexit<CRTP>) {
+                    tp_methods.push_back({
+                        "__aexit__",
+                        reinterpret_cast<PyCFunction>(CRTP::__aexit__),
+                        METH_VARARGS,
+                        nullptr
+                    });
+                }
+
+
+
+
+                if (tp_methods.size()) {
+                    tp_methods.push_back({
+                        nullptr,
+                        nullptr,
+                        0,
+                        nullptr
+                    });
+                    slots.push_back({
+                        Py_tp_methods,
+                        tp_methods.data()
+                    });
+                }
+                if (tp_members.size()) {
+                    tp_members.push_back({
+                        nullptr,
+                        0,
+                        0,
+                        0,
+                        nullptr
+                    });
+                    slots.push_back({
+                        Py_tp_members,
+                        tp_members.data()
+                    });
+                }
+                if (tp_getset.size()) {
+                    tp_getset.push_back({
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        nullptr
+                    });
+                    slots.push_back({
+                        Py_tp_getset,
+                        tp_getset.data()
+                    });
+                }
+                slots.push_back({0, nullptr});
+                initialized = true;
+            }
+            static PyType_Spec spec = {
+                .name = typeid(Wrapper).name(),
+                .basicsize = sizeof(CRTP),
+                .itemsize = 0,
+                .flags = CRTP::tp_flags,
+                .slots = slots.data()
+            };
+            PyObject* bases = nullptr;
+            if constexpr (sizeof...(Bases)) {
+                bases = PyTuple_Pack(sizeof...(Bases), ptr(Type<Bases>())...);
+                if (bases == nullptr) {
+                    Exception::from_python();
+                }
+            }
+            Type<Wrapper> cls = reinterpret_steal<Type<Wrapper>>(
+                PyType_FromMetaclass(
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>())),
+                    ptr(module),
+                    &spec,
+                    bases
+                )
+            );
+            Py_XDECREF(bases);
+            if (ptr(cls) == nullptr) {
+                Exception::from_python();
+            }
+
+            // TODO: initialize BertrandMeta fields
+
+            return cls;
+        }
+
+    };
+
+    template <typename CRTP, typename Wrapper, typename CppType>
+    struct TypeTag::def : public BaseDef<CRTP, Wrapper, CppType> {
     protected:
         using Variant = std::variant<CppType, CppType*, const CppType*>;
 
@@ -821,7 +2003,7 @@ namespace impl {
         };
 
         /* A mutable blueprint for a type, which is configured in the type's
-        `__ready__()` method. */
+        `__bind__()` method. */
         struct Bindings {
             using PyMeta = typename Type<BertrandMeta>::__python__;
             PyObject* context;
@@ -1269,45 +2451,34 @@ namespace impl {
                 impl::demangle(typeid(CppType).name()) + "' C++ type."
             );
         }();
+        static constexpr unsigned int tp_flags =
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE |
+            Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_MANAGED_WEAKREF |
+            Py_TPFLAGS_MANAGED_DICT;
 
         PyObject_HEAD
         Variant m_cpp;
 
-        /* Expose a type's C++ attributes to Python using Bertrand's binding helpers.
+        // TODO: maybe all of this is implemented in Bindings.finalize()?  The
+        // __export__ method could just return Bindings.finalize() directly?
 
-        Every extension type needs to implement this function, which is executed as a
-        script whenever its enclosing module is imported.  The `bind` argument is a
-        mutable context that includes a variety of helpers for exposing C++ attributes
-        to Python, including member and static variables with shared state, property
-        and class property descriptors, as well as instance, class, and static methods
-        that can be overloaded from either side of the language boundary.
-
-        Any attributes added at this stage are guaranteed be unique for each module,
-        allowing for sub-interpreters with correct, per-module state.  It's still up to
-        you to make sure that the data referenced by the bindings does not cause race
-        conditions with other modules, but the modules themselves will not present a
-        barrier in this regard. */
-        static void __ready__(Bindings& bind) {}
-
-        /* Internal context for the `__ready__()` method. */
+        /* Default implementation of `__export__` for C++ extensions, which delegates
+        to the `__bind__` helper to simplify type creation.  Users should never need to
+        override this method - just customize the __bind__ script instead. */
         template <typename... Bases, StaticStr ModName>
-        static Type<Wrapper> __ready_impl__(Module<ModName>& module) {
+        static Type<Wrapper> __export__(Module<ModName>& module) {
             Bindings bind;
-            CRTP::__ready__(bind);
+            CRTP::__bind__(bind);
 
-            static unsigned int tp_flags =
-                Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE |
-                Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_MANAGED_WEAKREF |
-                Py_TPFLAGS_MANAGED_DICT;
             static bool initialized = false;
             static std::vector<PyType_Slot> type_slots {
-                {Py_tp_doc, reinterpret_cast<void*>(CRTP::__doc__.buffer)},
-                {Py_tp_dealloc, reinterpret_cast<void*>(CRTP::__dealloc__)},
-                {Py_tp_repr, reinterpret_cast<void*>(CRTP::__repr__)},
-                {Py_tp_hash, reinterpret_cast<void*>(CRTP::__hash__)},
-                {Py_tp_str, reinterpret_cast<void*>(CRTP::__str__)},
-                {Py_tp_traverse, reinterpret_cast<void*>(CRTP::__traverse__)},
-                {Py_tp_clear, reinterpret_cast<void*>(CRTP::__clear__)},
+                // {Py_tp_doc, reinterpret_cast<void*>(CRTP::__doc__.buffer)},
+                // {Py_tp_dealloc, reinterpret_cast<void*>(CRTP::__dealloc__)},
+                // {Py_tp_repr, reinterpret_cast<void*>(CRTP::__repr__)},
+                // {Py_tp_hash, reinterpret_cast<void*>(CRTP::__hash__)},
+                // {Py_tp_str, reinterpret_cast<void*>(CRTP::__str__)},
+                // {Py_tp_traverse, reinterpret_cast<void*>(CRTP::__traverse__)},
+                // {Py_tp_clear, reinterpret_cast<void*>(CRTP::__clear__)},
             };
             if (!initialized) {
                 tp_methods.push_back({
@@ -1355,7 +2526,7 @@ namespace impl {
                 .name = typeid(CppType).name(),
                 .basicsize = sizeof(CRTP),
                 .itemsize = 0,
-                .flags = tp_flags,
+                .flags = CRTP::tp_flags,
                 .slots = type_slots.data()
             };
 
@@ -1383,28 +2554,23 @@ namespace impl {
             return cls;
         }
 
-        /* Return a new reference to the type by importing the corresponding module
-        and unpacking this specific type.  This is called automatically by the default
-        constructor for `Type<Wrapper>`, and is the proper way to handle per-module
-        state, instead of using static type objects.  It will implicitly invoke the
-        `__setup__()` and `__ready__()` methods during the import process, either via
-        `PyImport_Import()` or the `Module` constructor directly.
+        /* Expose a C++ class's attributes to Python using Bertrand's binding helpers.
 
-        Note the differences between this method, `__setup__()`, and `__ready__()`.
-        `__setup__()` is called once with process-level scope to initialize a
-        `PyType_Spec` representing the type's internal slots.  Then, whenever the
-        enclosing module is imported, a new type object will be instantiated and passed
-        to `__ready__()`, which completes its setup.  Finally, `__import__()` is called
-        to retrieve a new reference to the type object from the imported module.  By
-        following this 3-step process, all types can be correctly stored in per-module
-        state and modified without affecting any sub-interpreters, whilst ensuring
-        agreement between Python and C++ on the identity of each module/type. */
-        static Type<Wrapper> __import__() {
-            throw NotImplementedError(
-                "the __import__() method must be defined for all Python types: "
-                + demangle(typeid(CRTP).name())
-            );
-        }
+        Every C++ extension needs to implement this function, which is executed as a
+        script whenever its enclosing module is imported.  The argument is a mutable
+        context that includes a variety of helpers for exposing C++ attributes to
+        Python, including member and static variables with shared state, property and
+        class property descriptors, as well as instance, class, and static methods that
+        can be overloaded from either side of the language boundary.
+
+        Any attribute added at this stage is guaranteed be unique for each module,
+        allowing sub-interpreters with correct, per-module state.  It's still up to the
+        user to make sure that the data referenced by the bindings does not cause race
+        conditions with other modules, but the modules themselves will not present a
+        barrier in this regard. */
+        static void __bind__(Bindings& bind) {}
+
+        /// NOTE: make sure that every subclass defines `__import__()`
 
         /* tp_dealloc calls the ordinary C++ destructor. */
         static void __dealloc__(CRTP* self) {
@@ -1579,7 +2745,6 @@ namespace impl {
         // accurately reflect mutability and avoid unnecessary allocation overhead.
 
     private:
-        inline static bool setup_complete = false;
         inline static std::vector<PyMethodDef> tp_methods;
         inline static std::vector<PyGetSetDef> tp_getset;
         inline static std::vector<PyMemberDef> tp_members;

@@ -508,6 +508,26 @@ namespace impl {
     };
 
     template <typename T>
+    concept has_concat = requires(const T& lhs, const T& rhs) {
+        { lhs + rhs } -> std::convertible_to<T>;
+    };
+
+    template <typename T>
+    concept has_inplace_concat = requires(T& lhs, const T& rhs) {
+        { lhs += rhs } -> std::convertible_to<T&>;
+    };
+
+    template <typename T>
+    concept has_repeat = requires(const T& lhs, size_t rhs) {
+        { lhs * rhs } -> std::convertible_to<T>;
+    };
+
+    template <typename T>
+    concept has_inplace_repeat = requires(T& lhs, size_t rhs) {
+        { lhs *= rhs } -> std::convertible_to<T&>;
+    };
+
+    template <typename T>
     concept pair_like = std::tuple_size<T>::value == 2 && requires(T&& t) {
         { std::get<0>(std::forward<T>(t)) };
         { std::get<1>(std::forward<T>(t)) };

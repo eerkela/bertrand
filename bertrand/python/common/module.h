@@ -159,8 +159,7 @@ namespace impl {
                 });
             }
 
-            /* Expose a py::Object type to Python.  Can only be called during
-            `__ready__()`. */
+            /* Expose a py::Object type to Python. */
             template <StaticStr Name, typename Cls, typename... Bases>
                 requires (
                     std::derived_from<Cls, Object> &&
@@ -207,8 +206,8 @@ namespace impl {
                     }
                 }
 
-                // call the type's __ready__() method to populate the type object
-                Type<Cls> cls = Type<Cls>::__python__::template __ready_impl__<Bases...>(mod);
+                // call the type's __export__() method to populate the type object
+                Type<Cls> cls = Type<Cls>::__python__::template __export__<Bases...>(mod);
 
                 // if the wrapper type is generic, create or update the template
                 // interface's __getitem__ dict with the new instantiation
