@@ -2790,14 +2790,6 @@ namespace impl {
             }, obj.m_cpp);
         }
 
-        // TODO: I need to make sure that delegating to C++ isinstance()/issubclass()
-        // does not cause an infinite recursion.  The default specialization of
-        // __issubclass__ for C++-origin types should not call a Python-level
-        // check, or possibly the other way around.  It might be possible to use
-        // PyType_IsSubtype() to break the recursion.
-        // -> Maybe when I write the __isinstance__ check for C++-origin types, it
-        // will default to PyType_IsSubType()?
-
     };
 
     template <typename CRTP, typename Wrapper>

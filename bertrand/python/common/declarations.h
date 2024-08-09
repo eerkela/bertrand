@@ -479,6 +479,13 @@ namespace impl {
     };
 
     template <typename T>
+    static constexpr bool is_optional_helper = false;
+    template <typename T>
+    static constexpr bool is_optional_helper<std::optional<T>> = true;
+    template <typename T>
+    static constexpr bool is_optional = is_optional_helper<std::decay_t<T>>;
+
+    template <typename T>
     concept has_size = requires(T&& t) {
         { std::size(std::forward<T>(t)) } -> std::convertible_to<size_t>;
     };

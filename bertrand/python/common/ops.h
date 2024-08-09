@@ -39,6 +39,12 @@ template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
 }
 
 
+// TODO: implement the extra overloads for Object, BertrandMeta, Type, and Tuple of
+// types/generic objects
+
+// TODO: isinstance/issubclass only work on Python objects?
+
+
 /* Equivalent to Python `isinstance(obj, base)`, except that base is given as a
 template parameter.  If a specialization of `__isinstance__` exists and implements a
 call operator that takes a single `const Derived&` argument, then it will be called
@@ -104,7 +110,6 @@ template <typename Derived, typename Base>
 [[nodiscard]] consteval bool issubclass() {
     if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>>) {
         return __issubclass__<Derived, Base>{}();
-
     } else {
         return std::derived_from<
             typename __as_object__<Derived>::type,
@@ -117,9 +122,9 @@ template <typename Derived, typename Base>
 /* Equivalent to Python `issubclass(obj, base)`, except that the base is given as a
 template parameter, marking the check as `constexpr`.  This overload must be explicitly
 enabled by defining a one-argument call operator in a specialization of the
-`__issubclass__` control structure.  By default, this is only done for `Type` and
-`Object` as left-hand arguments, as well as `Type`, `BertrandMeta`, `Object`, and
-`Tuple` as right-hand arguments. */
+`__issubclass__` control structure.  By default, this is only done for `Type`,
+`BertrandMeta`, and `Object` as left-hand arguments, as well as `Type`, `BertrandMeta`,
+`Object`, and `Tuple` as right-hand arguments. */
 template <typename Base, typename Derived>
     requires (std::is_invocable_r_v<
         bool,
@@ -135,26 +140,24 @@ template <typename Base, typename Derived>
 }
 
 
-/* Equivalent to Python `issubclass(obj, base)`. */
+/* Equivalent to Python `issubclass(obj, base)`.  This overload must be explicitly
+enabled by defining a two-argument call operator in a specialization of
+`__issubclass__`.  By default, this is only done for `Type`, `BertrandMeta`, and
+`Object`, as left-hand arguments, as well as `Type`, `BertrandMeta`, `Object`, and
+`Tuple` as right-hand arguments. */
 template <typename Derived, typename Base>
-    requires (__as_object__<Base>::enable && __as_object__<Derived>::enable)
-[[nodiscard]] bool issubclass(const Derived& obj, const Base& base) {
-    if constexpr (impl::proxy_like<Derived>) {
-        return issubclass(obj.value(), base);
-
-    } else if constexpr (impl::proxy_like<Base>) {
-        return issubclass(obj, base.value());
-
-    } else if constexpr (std::is_invocable_v<
+    requires (std::is_invocable_v<
         __issubclass__<Derived, Base>,
         const Derived&,
         const Base&
-    >) {
-        return __issubclass__<Derived, Base>{}(obj, base);
-
+    >)
+[[nodiscard]] bool issubclass(const Derived& obj, const Base& base) {
+    if constexpr (impl::proxy_like<Derived>) {
+        return issubclass(obj.value(), base);
+    } else if constexpr (impl::proxy_like<Base>) {
+        return issubclass(obj, base.value());
     } else {
-        // TODO: provide default behavior
-        return false;
+        return __issubclass__<Derived, Base>{}(obj, base);
     }
 }
 
@@ -675,12 +678,42 @@ struct ArgPack {
 };
 
 
-template <std::derived_from<Object> Self> requires (__iter__<Self>::enable)
-[[nodiscard]] auto operator*(const Self& self) {
-    if constexpr (impl::proxy_like<Self>) {
+template <std::derived_from<Object> Container> requires (impl::is_iterable<Container>)
+[[nodiscard]] auto operator*(const Container& self) {
+    if constexpr (impl::proxy_like<Container>) {
         return *self.value();
     } else {
-        return ArgPack<Self>{self};
+        return ArgPack<Container>{self};
+    }
+}
+
+
+template <std::derived_from<Object> Container, std::ranges::view View>
+    requires (impl::is_iterable<Container>)
+[[nodiscard]] auto operator->*(const Container& container, const View& view) {
+    return std::views::all(container) | view;
+}
+
+
+template <std::derived_from<Object> Container, typename Func>
+    requires (
+        impl::is_iterable<Container> &&
+        std::is_invocable_v<Func, impl::iter_type<Container>>
+    )
+[[nodiscard]] auto operator->*(const Container& container, Func func) {
+    using Return = std::invoke_result_t<Func, impl::iter_type<Container>>;
+    if constexpr (impl::is_optional<Return>) {
+        return (
+            std::views::all(container) |
+            std::views::transform(func) |
+            std::views::filter([](const Return& value) {
+                return value.has_value();
+            }) | std::views::transform([](const Return& value) {
+            return value.value();
+            })
+        );
+    } else {
+        return std::views::all(container) | std::views::transform(func);
     }
 }
 
@@ -1712,18 +1745,10 @@ L& operator&=(L& lhs, const R& rhs) {
 
 
 template <typename L, typename R>
-    requires (
-        impl::any_are_python_like<L, R> &&
-        !std::ranges::view<R> &&
-        !__or__<L, R>::enable
-    )
+    requires (impl::any_are_python_like<L, R> && !__or__<L, R>::enable)
 auto operator|(const L& lhs, const R& rhs) = delete;
 template <typename L, typename R>
-    requires (
-        impl::any_are_python_like<L, R> &&
-        !std::ranges::view<R> &&
-        __or__<L, R>::enable
-    )
+    requires (impl::any_are_python_like<L, R> && __or__<L, R>::enable)
 auto operator|(const L& lhs, const R& rhs) {
     using Return = typename __or__<L, R>::type;
     static_assert(
@@ -1748,18 +1773,6 @@ auto operator|(const L& lhs, const R& rhs) {
         }
         return reinterpret_steal<Return>(result);
     }
-}
-
-
-template <std::derived_from<Object> L, std::ranges::view R>
-auto operator|(const L& container, const R& view) {
-    return std::views::all(container) | view;
-}
-
-
-template <impl::proxy_like L, std::ranges::view R>
-auto operator|(const L& container, const R& view) {
-    return container.value() | view;
 }
 
 
