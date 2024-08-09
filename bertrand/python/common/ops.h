@@ -40,7 +40,11 @@ template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
 
 
 /* Equivalent to Python `isinstance(obj, base)`, except that base is given as a
-template parameter for which __isinstance__ has been specialized. */
+template parameter.  If a specialization of `__isinstance__` exists and implements a
+call operator that takes a single `const Derived&` argument, then it will be called
+directly.  Otherwise, if the argument is a dynamic object, it falls back to a
+Python-level `isinstance()` check.  In all other cases, it will be evaluated at
+compile-time by calling `issubclass<Derived, Base>()`. */
 template <typename Base, typename Derived>
     requires (__as_object__<Base>::enable && __as_object__<Derived>::enable)
 [[nodiscard]] constexpr bool isinstance(const Derived& obj) {
@@ -69,13 +73,10 @@ template <typename Base, typename Derived>
 }
 
 
-// TODO: Maybe this version is disabled by default unless the corresponding
-// operator exists on the __isinstance__ check?  That would prevent you from
-// writing something like `isinstance(x, 1)`.
-// -> I should also be able to use a tuple of type-like objects to check against.
-
-
-/* Equivalent to Python `isinstance(obj, base)`. */
+/* Equivalent to Python `isinstance(obj, base)`.  This overload must be explicitly
+enabled by defining a two-argument call operator in a specialization of
+`__issubclass__`.  By default, this is only done for `Type`, `BertrandMeta`, `Object`,
+and `Tuple` as right-hand arguments. */
 template <typename Derived, typename Base>
     requires (std::is_invocable_r_v<
         bool,
@@ -95,7 +96,9 @@ template <typename Derived, typename Base>
 
 
 /* Equivalent to Python `issubclass(obj, base)`, except that both arguments are given
-as template parameters, marking the check as `consteval`. */
+as template parameters, marking the check as `consteval`.  This is essentially
+equivalent to a `std::derived_from<>` check, except that custom logic from the
+`__issubclass__` control structure will be used if available. */
 template <typename Derived, typename Base>
     requires (__as_object__<Base>::enable && __as_object__<Derived>::enable)
 [[nodiscard]] consteval bool issubclass() {
@@ -112,7 +115,11 @@ template <typename Derived, typename Base>
 
 
 /* Equivalent to Python `issubclass(obj, base)`, except that the base is given as a
-template parameter, marking the check as `constexpr`. */
+template parameter, marking the check as `constexpr`.  This overload must be explicitly
+enabled by defining a one-argument call operator in a specialization of the
+`__issubclass__` control structure.  By default, this is only done for `Type` and
+`Object` as left-hand arguments, as well as `Type`, `BertrandMeta`, `Object`, and
+`Tuple` as right-hand arguments. */
 template <typename Base, typename Derived>
     requires (std::is_invocable_r_v<
         bool,

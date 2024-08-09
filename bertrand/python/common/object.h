@@ -304,18 +304,27 @@ template <std::derived_from<Object> T> requires (impl::is_extension<T>)
 
 
 template <typename T>
+struct __isinstance__<T, Object>                            : Returns<bool> {
+    static consteval bool operator()(const T& obj) { return issubclass<T, Object>(); }
+    static bool operator()(const T& obj, const Object& cls) {
+        int result = PyObject_IsInstance(
+            ptr(as_object(obj)),
+            ptr(cls)
+        );
+        if (result < 0) {
+            Exception::from_python();
+        }
+        return result;
+    }
+};
+
+
+template <typename T>
 struct __issubclass__<T, Object>                            : Returns<bool> {
-    static consteval bool operator()() { return std::derived_from<T, Object>; }
+    static consteval bool operator()() { return issubclass<T, Object>(); }
     static constexpr bool operator()(const T& obj) {
         if constexpr (impl::is_object_exact<T>) {
-            int result = PyObject_IsSubclass(
-                ptr(obj),
-                reinterpret_cast<PyObject*>(&PyBaseObject_Type)
-            );
-            if (result < 0) {
-                Exception::from_python();
-            }
-            return result;
+            return PyType_Check(ptr(obj));
         } else {
             return impl::type_like<T>;
         }
@@ -326,24 +335,6 @@ struct __issubclass__<T, Object>                            : Returns<bool> {
             ptr(cls)
         );
         if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-};
-
-
-template <typename T>
-struct __isinstance__<T, Object>                            : Returns<bool> {
-    static consteval bool operator()(const T& obj) {
-        return __as_object__<T>::enable;
-    }
-    static bool operator()(const T& obj, const Object& cls) {
-        int result = PyObject_IsInstance(
-            ptr(as_object(obj)),
-            ptr(cls)
-        );
-        if (result < 0) {
             Exception::from_python();
         }
         return result;

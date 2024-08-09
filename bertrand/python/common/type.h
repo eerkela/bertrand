@@ -21,7 +21,7 @@ namespace py {
 
 namespace impl {
 
-    namespace pytraits {
+    namespace dunder {
 
         template <typename CRTP>
         concept has_dealloc = requires() {
@@ -688,17 +688,13 @@ struct __call__<Type<T>, Args...>                           : Returns<T> {
 };
 
 
-/* `isinstance()` is already implemented for all `py::Type` subclasses.  It first does
-a compile-time check to see whether the argument is compatible with Python and inherits
-from the templated type, and then only calls the Python-level `isinstance()` if a match
-is possible. */
+/* `isinstance()` is already implemented for all `py::Type` specializations by
+recurring on the templated type. */
 template <typename T, typename Cls>
 struct __isinstance__<T, Type<Cls>>                      : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
-        return isinstance<Cls>(obj);
-    }
+    static constexpr bool operator()(const T& obj) { return isinstance<Cls>(obj); }
     static constexpr bool operator()(const T& obj, const Type<Cls>& cls) {
-        if constexpr (impl::is_object_exact<T>) {
+        if constexpr (impl::is_object_exact<Cls>) {
             int result = PyObject_IsInstance(
                 ptr(as_object(obj)),
                 ptr(cls)
@@ -708,36 +704,20 @@ struct __isinstance__<T, Type<Cls>>                      : Returns<bool> {
             }
             return result;
         } else {
-            return issubclass<T, Cls>();  // TODO: is this correct?
+            return isinstance<Cls>(obj);
         }
     }
 };
 
 
-/* `issubclass()` is already implemented for all `py::Type` subclasses.  It first does
-a compile-time check to see whether the argument is compatible with Python and inherits
-from the templated type, and then only calls the Python-level `issubclass()` if a match
-is possible. */
+/* `issubclass()` is already implemented for all `py::Type` specializations by
+recurring on the templated type. */
 template <typename T, typename Cls>
 struct __issubclass__<T, Type<Cls>>                        : Returns<bool> {
-    static consteval bool operator()() {
-        return issubclass<T, Cls>();
-    }
-    static constexpr bool operator()(const T& obj) {
-        if constexpr (operator()() && impl::type_like<T>) {
-            int result = PyObject_IsSubclass(
-                ptr(as_object(obj)),
-                ptr(Type<Cls>())
-            );
-            if (result == -1) {
-                Exception::from_python();
-            }
-        } else {
-            return false;
-        }
-    }
+    static consteval bool operator()() { return issubclass<T, Cls>(); }
+    static constexpr bool operator()(const T& obj) { return issubclass<Cls>(obj); }
     static constexpr bool operator()(const T& obj, const Type<Cls>& cls) {
-        if constexpr (operator()() && impl::type_like<T>) {
+        if constexpr (impl::is_object_exact<Cls>) {
             int result = PyObject_IsSubclass(
                 ptr(as_object(obj)),
                 ptr(cls)
@@ -747,7 +727,7 @@ struct __issubclass__<T, Type<Cls>>                        : Returns<bool> {
             }
             return result;
         } else {
-            return false;
+            return issubclass<Cls>(obj);
         }
     }
 };
@@ -850,9 +830,6 @@ class Type<BertrandMeta> : public Object, public impl::TypeTag {
 
 public:
 
-    // TODO: declaration order gets really complicated here.  I might need a super
-    // granular approach.
-
     /* The python representation of the metatype.  Whenever `TypeTag::def` is
     instantiated with a C++ class, it will generate an instance of this type. */
     struct __python__ : public TypeTag::def<__python__, BertrandMeta> {
@@ -878,12 +855,17 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         using Setters = std::unordered_map<std::string_view, Set>;
 
         PyTypeObject base;
-        bool(*instancecheck)(PyObject*);
-        bool(*subclasscheck)(PyObject*);
+        bool(*instancecheck)(__python__*, PyObject*);
+        bool(*subclasscheck)(__python__*, PyObject*);
         Getters getters;
         Setters setters;
         PyObject* demangled;
         PyObject* template_instantiations;
+
+        /* Get a new reference to the metatype from the root module. */
+        static Type __import__();  // TODO: defined in __init__.h alongside "bertrand.python" module {
+        //     return impl::get_type<BertrandMeta>(Module<"bertrand">());
+        // }
 
         /* The metaclass can't use Bindings, since they depend on the metaclass to
         function.  Otherwise, it uses the same export machinery as all other types. */
@@ -923,15 +905,72 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
             return reinterpret_steal<Type>(cls);
         }
 
-        // TODO: perhaps all types have a static module name which is set the first
-        // time the module is imported, and then passed to PyImport_Import() to get
-        // the right module object.  I then search the typeinfo of the Wrapper against
-        // the module to obtain the correct type object.  That's what goes in __import__
 
-        /* Get a new reference to the metatype from the root module. */
-        static Type __import__();  // TODO: defined in __init__.h alongside "bertrand.python" module {
-        //     return impl::get_type<BertrandMeta>(Module<"bertrand">());
-        // }
+        // TODO: stub_type() can be lifted out into the C++ context, so all you need
+        // to do is call Type<BertrandMeta>::stub()?
+
+        /* Create a trivial instance of the metaclass to serve as a public interface
+        for a class template hierarchy.  The interface is not usable on its own
+        except to provide access to its instantiations, type checks against them,
+        and a central point for documentation. */
+        template <StaticStr Name, typename Cls, typename... Bases, StaticStr ModName>
+        static BertrandMeta stub_type(Module<ModName>& parent) {
+            static PyType_Slot slots[] = {
+                {Py_tp_doc, const_cast<char*>(__doc__.buffer)},  // TODO: incorrect
+                {0, nullptr}
+            };
+            static PyType_Spec spec = {
+                .name = Name,
+                .basicsize = sizeof(__python__),
+                .itemsize = 0,
+                .flags =
+                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE |
+                    Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_IMMUTABLETYPE,
+                .slots = slots
+            };
+
+            PyObject* bases = nullptr;
+            if constexpr (sizeof...(Bases)) {
+                bases = PyTuple_Pack(sizeof...(Bases), ptr(Type<Bases>())...);
+                if (bases == nullptr) {
+                    Exception::from_python();
+                }
+            }
+
+            __python__* cls = reinterpret_cast<__python__*>(PyType_FromMetaclass(
+                reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>())),
+                ptr(parent),
+                &spec,
+                bases
+            ));
+            Py_DECREF(bases);
+            if (cls == nullptr) {
+                Exception::from_python();
+            }
+            // TODO: perhaps when I generate a stub type, I assign these pointers to
+            // a different pair of backing functions that account for non-null
+            // template instantiations.  That way, the metaclass would always just
+            // `return PyBool_FromLong(instancecheck(cls, obj))` and not require
+            // any extra conditionals.  The stub class would check against its own
+            // type using PyType_IsSubtype, and then delegate to the existing helper
+            // function that all other types use to check against all instantiations.
+            // No need for any extra conditionals.
+            cls->instancecheck = ...;  // TODO: fill these in
+            cls->subclasscheck = ...;
+            new (&cls->getters) Getters();
+            new (&cls->setters) Setters();
+            cls->demangled = cls->get_demangled_name();
+            if (cls->demangled == nullptr) {
+                Py_DECREF(cls);
+                Exception::from_python();
+            }
+            cls->template_instantiations = PyDict_New();
+            if (cls->template_instantiations == nullptr) {
+                Py_DECREF(cls);
+                Exception::from_python();
+            }
+            return reinterpret_steal<BertrandMeta>(reinterpret_cast<PyObject*>(cls));
+        };
 
         /* Free the type name and any template instantiations when an instance of this
         type falls out of scope. */
@@ -1094,7 +1133,7 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         struct and accounts for template instantiations. */
         static PyObject* __instancecheck__(__python__* cls, PyObject* instance) {
             try {
-                if (cls->instancecheck(instance)) {
+                if (cls->instancecheck(cls, instance)) {
                     Py_RETURN_TRUE;
                 } else if (cls->template_instantiations) {
                     PyObject* key;
@@ -1106,7 +1145,8 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
                         &key,
                         &value
                     )) {
-                        if (reinterpret_cast<__python__*>(value)->instancecheck(instance)) {
+                        __python__* instantiation = reinterpret_cast<__python__*>(value);
+                        if (instantiation->instancecheck(cls, instance)) {
                             Py_RETURN_TRUE;
                         }
                     }
@@ -1122,7 +1162,7 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         struct and accounts for template instantiations. */
         static PyObject* __subclasscheck__(__python__* cls, PyObject* subclass) {
             try {
-                if (cls->subclasscheck(subclass)) {
+                if (cls->subclasscheck(cls, subclass)) {
                     Py_RETURN_TRUE;
                 } else if (cls->template_instantiations) {
                     PyObject* key;
@@ -1134,7 +1174,8 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
                         &key,
                         &value
                     )) {
-                        if (reinterpret_cast<__python__*>(value)->subclasscheck(subclass)) {
+                        __python__* instantiation = reinterpret_cast<__python__*>(value);
+                        if (instantiation->subclasscheck(cls, subclass)) {
                             Py_RETURN_TRUE;
                         }
                     }
@@ -1145,60 +1186,6 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
                 return nullptr;
             }
         }
-
-        /* Create a trivial instance of the metaclass to serve as a public interface
-        for a class template hierarchy.  The interface is not usable on its own
-        except to provide access to its instantiations, type checks against them,
-        and a central point for documentation. */
-        template <StaticStr Name, typename Cls, typename... Bases, StaticStr ModName>
-        static BertrandMeta stub_type(Module<ModName>& parent) {
-            static PyType_Slot slots[] = {
-                {Py_tp_doc, const_cast<char*>(__doc__.buffer)},
-                {0, nullptr}
-            };
-            static PyType_Spec spec = {
-                .name = Name,
-                .basicsize = sizeof(__python__),
-                .itemsize = 0,
-                .flags =
-                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE |
-                    Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_IMMUTABLETYPE,
-                .slots = slots
-            };
-
-            PyObject* bases = nullptr;
-            if constexpr (sizeof...(Bases)) {
-                bases = PyTuple_Pack(sizeof...(Bases), ptr(Type<Bases>())...);
-                if (bases == nullptr) {
-                    Exception::from_python();
-                }
-            }
-
-            __python__* cls = reinterpret_cast<__python__*>(PyType_FromMetaclass(
-                reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>())),
-                ptr(parent),
-                &spec,
-                bases
-            ));
-            Py_DECREF(bases);
-            if (cls == nullptr) {
-                Exception::from_python();
-            }
-
-            new (&cls->getters) Getters();
-            new (&cls->setters) Setters();
-            cls->demangled = cls->get_demangled_name();
-            if (cls->demangled == nullptr) {
-                Py_DECREF(cls);
-                Exception::from_python();
-            }
-            cls->template_instantiations = PyDict_New();
-            if (cls->template_instantiations == nullptr) {
-                Py_DECREF(cls);
-                Exception::from_python();
-            }
-            return reinterpret_steal<BertrandMeta>(reinterpret_cast<PyObject*>(cls));
-        };
 
         /* Helper to ensure the demangled name is always consistent. */
         PyObject* get_demangled_name() {
@@ -1307,7 +1294,7 @@ namespace impl {
 
         static int setattro(CRTP* self, PyObject* attr, PyObject* value) {
             if (value == nullptr) {
-                if constexpr (pytraits::has_delattr<CRTP>) {
+                if constexpr (dunder::has_delattr<CRTP>) {
                     return CRTP::__delattr__(self, attr);
                 } else {
                     PyErr_Format(
@@ -1319,7 +1306,7 @@ namespace impl {
                     return -1;
                 }
             } else {
-                if constexpr (pytraits::has_setattr<CRTP>) {
+                if constexpr (dunder::has_setattr<CRTP>) {
                     return CRTP::__setattr__(self, attr, value);
                 } else {
                     PyErr_Format(
@@ -1335,7 +1322,7 @@ namespace impl {
 
         static int setitem(CRTP* self, PyObject* key, PyObject* value) {
             if (value == nullptr) {
-                if constexpr (pytraits::has_delitem<CRTP>) {
+                if constexpr (dunder::has_delitem<CRTP>) {
                     return CRTP::__delitem__(self, key);
                 } else {
                     PyErr_Format(
@@ -1347,7 +1334,7 @@ namespace impl {
                     return -1;
                 }
             } else {
-                if constexpr (pytraits::has_setitem<CRTP>) {
+                if constexpr (dunder::has_setitem<CRTP>) {
                     return CRTP::__setitem__(self, key, value);
                 } else {
                     PyErr_Format(
@@ -1364,37 +1351,37 @@ namespace impl {
         static PyObject* richcompare(CRTP* self, PyObject* other, int op) {
             switch (op) {
                 case Py_LT:
-                    if constexpr (pytraits::has_lt<CRTP>) {
+                    if constexpr (dunder::has_lt<CRTP>) {
                         return CRTP::__lt__(self, other);
                     } else {
                         Py_RETURN_NOTIMPLEMENTED;
                     }
                 case Py_LE:
-                    if constexpr (pytraits::has_le<CRTP>) {
+                    if constexpr (dunder::has_le<CRTP>) {
                         return CRTP::__le__(self, other);
                     } else {
                         Py_RETURN_NOTIMPLEMENTED;
                     }
                 case Py_EQ:
-                    if constexpr (pytraits::has_eq<CRTP>) {
+                    if constexpr (dunder::has_eq<CRTP>) {
                         return CRTP::__eq__(self, other);
                     } else {
                         Py_RETURN_NOTIMPLEMENTED;
                     }
                 case Py_NE:
-                    if constexpr (pytraits::has_ne<CRTP>) {
+                    if constexpr (dunder::has_ne<CRTP>) {
                         return CRTP::__ne__(self, other);
                     } else {
                         Py_RETURN_NOTIMPLEMENTED;
                     }
                 case Py_GE:
-                    if constexpr (pytraits::has_ge<CRTP>) {
+                    if constexpr (dunder::has_ge<CRTP>) {
                         return CRTP::__ge__(self, other);
                     } else {
                         Py_RETURN_NOTIMPLEMENTED;
                     }
                 case Py_GT:
-                    if constexpr (pytraits::has_gt<CRTP>) {
+                    if constexpr (dunder::has_gt<CRTP>) {
                         return CRTP::__gt__(self, other);
                     } else {
                         Py_RETURN_NOTIMPLEMENTED;
@@ -1411,7 +1398,7 @@ namespace impl {
 
         static int descr_set(CRTP* self, PyObject* obj, PyObject* value) {
             if (value == nullptr) {
-                if constexpr (pytraits::has_delete<CRTP>) {
+                if constexpr (dunder::has_delete<CRTP>) {
                     return CRTP::__delete__(self, obj);
                 } else {
                     PyErr_Format(
@@ -1423,7 +1410,7 @@ namespace impl {
                     return -1;
                 }
             } else {
-                if constexpr (pytraits::has_set<CRTP>) {
+                if constexpr (dunder::has_set<CRTP>) {
                     return CRTP::__set__(self, obj, value);
                 } else {
                     PyErr_Format(
@@ -1471,6 +1458,55 @@ namespace impl {
             }
         }
 
+        // TODO: 2 competing function pointers that account for non-empty template
+        // instantiations, and which are assigned in stub_type().
+
+        /* This function is stored as a pointer in the metaclass's C++ members and
+        called whenever a Python-level `isinstance()` check is made against this class.
+        It will delegate to an `__isinstance__<Object, Wrapper>` specialization if one
+        exists.  Otherwise it will default to standard Python behavior. */
+        static bool instancecheck(PyMeta* cls, PyObject* instance) {
+            if constexpr (std::is_invocable_v<
+                __isinstance__<Object, Wrapper>,
+                const Object&
+            >) {
+                return __isinstance__<Object, Wrapper>{}(
+                    reinterpret_borrow<Object>(instance)
+                );
+            } else {
+                return PyType_IsSubtype(
+                    Py_TYPE(instance),
+                    reinterpret_cast<PyTypeObject*>(cls)
+                );
+            }
+        }
+
+        /* This function is stored as a pointer in the metaclass's C++ members and
+        called whenever a Python-level `issubclass()` check is made against this calss.
+        It will delegate to an `__issubclass__<Object, Wrapper>` specialization if one
+        exists.  Otherwise it will default to standard Python behavior. */
+        static bool subclasscheck(PyMeta* cls, PyObject* subclass) {
+            if constexpr (std::is_invocable_v<
+                __issubclass__<Object, Wrapper>,
+                const Object&
+            >) {
+                return __issubclass__<Object, Wrapper>{}(
+                    reinterpret_borrow<Object>(subclass)
+                );
+            } else {
+                if (PyType_Check(subclass)) {
+                    return PyType_IsSubtype(
+                        reinterpret_cast<PyTypeObject*>(subclass),
+                        reinterpret_cast<PyTypeObject*>(cls)
+                    );
+                } else {
+                    throw TypeError(
+                        "issubclass() arg 1 must be a class"
+                    );
+                }
+            }
+        }
+
     public:
         Module<ModName> module;
         PyObject* context;
@@ -1507,16 +1543,15 @@ namespace impl {
             static std::vector<PyType_Slot> slots;
             static bool initialized = false;
             if (!initialized) {
-
                 flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC;
                 flags |= tp_flags;
-                if constexpr (pytraits::has_dealloc<CRTP>) {
+                if constexpr (dunder::has_dealloc<CRTP>) {
                     slots.push_back({
                         Py_tp_dealloc,
                         reinterpret_cast<void*>(CRTP::__dealloc__)
                     });
                 }
-                if constexpr (pytraits::has_vectorcall<CRTP>) {
+                if constexpr (dunder::has_vectorcall<CRTP>) {
                     tp_members.push_back({
                         "__vectorcalloffset__",
                         Py_T_PYSSIZET,
@@ -1524,293 +1559,293 @@ namespace impl {
                         Py_READONLY,
                     });
                 }
-                if constexpr (pytraits::has_await<CRTP>) {
+                if constexpr (dunder::has_await<CRTP>) {
                     slots.push_back({
                         Py_am_await,
                         reinterpret_cast<void*>(CRTP::__await__)
                     });
                 }
-                if constexpr (pytraits::has_aiter<CRTP>) {
+                if constexpr (dunder::has_aiter<CRTP>) {
                     slots.push_back({
                         Py_am_aiter,
                         reinterpret_cast<void*>(CRTP::__aiter__)
                     });
                 }
-                if constexpr (pytraits::has_anext<CRTP>) {
+                if constexpr (dunder::has_anext<CRTP>) {
                     slots.push_back({
                         Py_am_anext,
                         reinterpret_cast<void*>(CRTP::__anext__)
                     });
                 }
-                if constexpr (pytraits::has_asend<CRTP>) {
+                if constexpr (dunder::has_asend<CRTP>) {
                     slots.push_back({
                         Py_am_send,
                         reinterpret_cast<void*>(CRTP::__asend__)
                     });
                 }
-                if constexpr (pytraits::has_repr<CRTP>) {
+                if constexpr (dunder::has_repr<CRTP>) {
                     slots.push_back({
                         Py_tp_repr,
                         reinterpret_cast<void*>(CRTP::__repr__)
                     });
                 }
-                if constexpr (pytraits::has_add<CRTP>) {
+                if constexpr (dunder::has_add<CRTP>) {
                     slots.push_back({
                         Py_nb_add,
                         reinterpret_cast<void*>(CRTP::__add__)
                     });
                 }
-                if constexpr (pytraits::has_subtract<CRTP>) {
+                if constexpr (dunder::has_subtract<CRTP>) {
                     slots.push_back({
                         Py_nb_subtract,
                         reinterpret_cast<void*>(CRTP::__sub__)
                     });
                 }
-                if constexpr (pytraits::has_multiply<CRTP>) {
+                if constexpr (dunder::has_multiply<CRTP>) {
                     slots.push_back({
                         Py_nb_multiply,
                         reinterpret_cast<void*>(CRTP::__mul__)
                     });
                 }
-                if constexpr (pytraits::has_remainder<CRTP>) {
+                if constexpr (dunder::has_remainder<CRTP>) {
                     slots.push_back({
                         Py_nb_remainder,
                         reinterpret_cast<void*>(CRTP::__mod__)
                     });
                 }
-                if constexpr (pytraits::has_divmod<CRTP>) {
+                if constexpr (dunder::has_divmod<CRTP>) {
                     slots.push_back({
                         Py_nb_divmod,
                         reinterpret_cast<void*>(CRTP::__divmod__)
                     });
                 }
-                if constexpr (pytraits::has_power<CRTP>) {
+                if constexpr (dunder::has_power<CRTP>) {
                     slots.push_back({
                         Py_nb_power,
                         reinterpret_cast<void*>(CRTP::__pow__)
                     });
                 }
-                if constexpr (pytraits::has_negative<CRTP>) {
+                if constexpr (dunder::has_negative<CRTP>) {
                     slots.push_back({
                         Py_nb_negative,
                         reinterpret_cast<void*>(CRTP::__neg__)
                     });
                 }
-                if constexpr (pytraits::has_positive<CRTP>) {
+                if constexpr (dunder::has_positive<CRTP>) {
                     slots.push_back({
                         Py_nb_positive,
                         reinterpret_cast<void*>(CRTP::__pos__)
                     });
                 }
-                if constexpr (pytraits::has_absolute<CRTP>) {
+                if constexpr (dunder::has_absolute<CRTP>) {
                     slots.push_back({
                         Py_nb_absolute,
                         reinterpret_cast<void*>(CRTP::__abs__)
                     });
                 }
-                if constexpr (pytraits::has_bool<CRTP>) {
+                if constexpr (dunder::has_bool<CRTP>) {
                     slots.push_back({
                         Py_nb_bool,
                         reinterpret_cast<void*>(CRTP::__bool__)
                     });
                 }
-                if constexpr (pytraits::has_invert<CRTP>) {
+                if constexpr (dunder::has_invert<CRTP>) {
                     slots.push_back({
                         Py_nb_invert,
                         reinterpret_cast<void*>(CRTP::__invert__)
                     });
                 }
-                if constexpr (pytraits::has_lshift<CRTP>) {
+                if constexpr (dunder::has_lshift<CRTP>) {
                     slots.push_back({
                         Py_nb_lshift,
                         reinterpret_cast<void*>(CRTP::__lshift__)
                     });
                 }
-                if constexpr (pytraits::has_rshift<CRTP>) {
+                if constexpr (dunder::has_rshift<CRTP>) {
                     slots.push_back({
                         Py_nb_rshift,
                         reinterpret_cast<void*>(CRTP::__rshift__)
                     });
                 }
-                if constexpr (pytraits::has_and<CRTP>) {
+                if constexpr (dunder::has_and<CRTP>) {
                     slots.push_back({
                         Py_nb_and,
                         reinterpret_cast<void*>(CRTP::__and__)
                     });
                 }
-                if constexpr (pytraits::has_xor<CRTP>) {
+                if constexpr (dunder::has_xor<CRTP>) {
                     slots.push_back({
                         Py_nb_xor,
                         reinterpret_cast<void*>(CRTP::__xor__)
                     });
                 }
-                if constexpr (pytraits::has_or<CRTP>) {
+                if constexpr (dunder::has_or<CRTP>) {
                     slots.push_back({
                         Py_nb_or,
                         reinterpret_cast<void*>(CRTP::__or__)
                     });
                 }
-                if constexpr (pytraits::has_int<CRTP>) {
+                if constexpr (dunder::has_int<CRTP>) {
                     slots.push_back({
                         Py_nb_int,
                         reinterpret_cast<void*>(CRTP::__int__)
                     });
                 }
-                if constexpr (pytraits::has_float<CRTP>) {
+                if constexpr (dunder::has_float<CRTP>) {
                     slots.push_back({
                         Py_nb_float,
                         reinterpret_cast<void*>(CRTP::__float__)
                     });
                 }
-                if constexpr (pytraits::has_inplace_add<CRTP>) {
+                if constexpr (dunder::has_inplace_add<CRTP>) {
                     slots.push_back({
                         Py_nb_inplace_add,
                         reinterpret_cast<void*>(CRTP::__iadd__)
                     });
                 }
-                if constexpr (pytraits::has_inplace_subtract<CRTP>) {
+                if constexpr (dunder::has_inplace_subtract<CRTP>) {
                     slots.push_back({
                         Py_nb_inplace_subtract,
                         reinterpret_cast<void*>(CRTP::__isub__)
                     });
                 }
-                if constexpr (pytraits::has_inplace_multiply<CRTP>) {
+                if constexpr (dunder::has_inplace_multiply<CRTP>) {
                     slots.push_back({
                         Py_nb_inplace_multiply,
                         reinterpret_cast<void*>(CRTP::__imul__)
                     });
                 }
-                if constexpr (pytraits::has_inplace_remainder<CRTP>) {
+                if constexpr (dunder::has_inplace_remainder<CRTP>) {
                     slots.push_back({
                         Py_nb_inplace_remainder,
                         reinterpret_cast<void*>(CRTP::__imod__)
                     });
                 }
-                if constexpr (pytraits::has_inplace_power<CRTP>) {
+                if constexpr (dunder::has_inplace_power<CRTP>) {
                     slots.push_back({
                         Py_nb_inplace_power,
                         reinterpret_cast<void*>(CRTP::__ipow__)
                     });
                 }
-                if constexpr (pytraits::has_inplace_lshift<CRTP>) {
+                if constexpr (dunder::has_inplace_lshift<CRTP>) {
                     slots.push_back({
                         Py_nb_inplace_lshift,
                         reinterpret_cast<void*>(CRTP::__ilshift__)
                     });
                 }
-                if constexpr (pytraits::has_inplace_rshift<CRTP>) {
+                if constexpr (dunder::has_inplace_rshift<CRTP>) {
                     slots.push_back({
                         Py_nb_inplace_rshift,
                         reinterpret_cast<void*>(CRTP::__irshift__)
                     });
                 }
-                if constexpr (pytraits::has_inplace_and<CRTP>) {
+                if constexpr (dunder::has_inplace_and<CRTP>) {
                     slots.push_back({
                         Py_nb_inplace_and,
                         reinterpret_cast<void*>(CRTP::__iand__)
                     });
                 }
-                if constexpr (pytraits::has_inplace_xor<CRTP>) {
+                if constexpr (dunder::has_inplace_xor<CRTP>) {
                     slots.push_back({
                         Py_nb_inplace_xor,
                         reinterpret_cast<void*>(CRTP::__ixor__)
                     });
                 }
-                if constexpr (pytraits::has_inplace_or<CRTP>) {
+                if constexpr (dunder::has_inplace_or<CRTP>) {
                     slots.push_back({
                         Py_nb_inplace_or,
                         reinterpret_cast<void*>(CRTP::__ior__)
                     });
                 }
-                if constexpr (pytraits::has_floor_divide<CRTP>) {
+                if constexpr (dunder::has_floor_divide<CRTP>) {
                     slots.push_back({
                         Py_nb_floor_divide,
                         reinterpret_cast<void*>(CRTP::__floordiv__)
                     });
                 }
-                if constexpr (pytraits::has_true_divide<CRTP>) {
+                if constexpr (dunder::has_true_divide<CRTP>) {
                     slots.push_back({
                         Py_nb_true_divide,
                         reinterpret_cast<void*>(CRTP::__truediv__)
                     });
                 }
-                if constexpr (pytraits::has_inplace_floor_divide<CRTP>) {
+                if constexpr (dunder::has_inplace_floor_divide<CRTP>) {
                     slots.push_back({
                         Py_nb_inplace_floor_divide,
                         reinterpret_cast<void*>(CRTP::__ifloordiv__)
                     });
                 }
-                if constexpr (pytraits::has_inplace_true_divide<CRTP>) {
+                if constexpr (dunder::has_inplace_true_divide<CRTP>) {
                     slots.push_back({
                         Py_nb_inplace_true_divide,
                         reinterpret_cast<void*>(CRTP::__itruediv__)
                     });
                 }
-                if constexpr (pytraits::has_index<CRTP>) {
+                if constexpr (dunder::has_index<CRTP>) {
                     slots.push_back({
                         Py_nb_index,
                         reinterpret_cast<void*>(CRTP::__index__)
                     });
                 }
-                if constexpr (pytraits::has_matrix_multiply<CRTP>) {
+                if constexpr (dunder::has_matrix_multiply<CRTP>) {
                     slots.push_back({
                         Py_nb_matrix_multiply,
                         reinterpret_cast<void*>(CRTP::__matmul__)
                     });
                 }
-                if constexpr (pytraits::has_inplace_matrix_multiply<CRTP>) {
+                if constexpr (dunder::has_inplace_matrix_multiply<CRTP>) {
                     slots.push_back({
                         Py_nb_inplace_matrix_multiply,
                         reinterpret_cast<void*>(CRTP::__imatmul__)
                     });
                 }
-                if constexpr (pytraits::has_contains<CRTP>) {
+                if constexpr (dunder::has_contains<CRTP>) {
                     slots.push_back({
                         Py_sq_contains,
                         reinterpret_cast<void*>(CRTP::__contains__)
                     });
                 }
                 if constexpr (impl::sequence_like<Wrapper>) {
-                    if constexpr (pytraits::has_len<CRTP>) {
+                    if constexpr (dunder::has_len<CRTP>) {
                         slots.push_back({
                             Py_sq_length,
                             reinterpret_cast<void*>(CRTP::__len__)
                         });
                     }
-                    if constexpr (pytraits::has_getitem<CRTP>) {
+                    if constexpr (dunder::has_getitem<CRTP>) {
                         slots.push_back({
                             Py_sq_item,
                             reinterpret_cast<void*>(CRTP::__getitem__)
                         });
                     }
-                    if constexpr (pytraits::has_setitem<CRTP> || pytraits::has_delitem<CRTP>) {
+                    if constexpr (dunder::has_setitem<CRTP> || dunder::has_delitem<CRTP>) {
                         slots.push_back({
                             Py_sq_ass_item,
                             reinterpret_cast<void*>(setitem)
                         });
                     }
-                    if constexpr (pytraits::has_add<CRTP> && has_concat<Wrapper>) {
+                    if constexpr (dunder::has_add<CRTP> && has_concat<Wrapper>) {
                         slots.push_back({
                             Py_sq_concat,
                             reinterpret_cast<void*>(CRTP::__add__)
                         });
                     }
                     if constexpr (
-                        pytraits::has_inplace_add<CRTP> && has_inplace_concat<Wrapper>
+                        dunder::has_inplace_add<CRTP> && has_inplace_concat<Wrapper>
                     ) {
                         slots.push_back({
                             Py_sq_inplace_concat,
                             reinterpret_cast<void*>(CRTP::__iadd__)
                         });
                     }
-                    if constexpr (pytraits::has_multiply<CRTP> && has_repeat<Wrapper>) {
+                    if constexpr (dunder::has_multiply<CRTP> && has_repeat<Wrapper>) {
                         slots.push_back({
                             Py_sq_repeat,
                             reinterpret_cast<void*>(CRTP::__mul__)
                         });
                     }
                     if constexpr (
-                        pytraits::has_inplace_multiply<CRTP> && has_inplace_repeat<Wrapper>
+                        dunder::has_inplace_multiply<CRTP> && has_inplace_repeat<Wrapper>
                     ) {
                         slots.push_back({
                             Py_sq_inplace_repeat,
@@ -1819,132 +1854,132 @@ namespace impl {
                     }
                 }
                 if constexpr (impl::mapping_like<Wrapper>) {
-                    if constexpr (pytraits::has_len<CRTP>) {
+                    if constexpr (dunder::has_len<CRTP>) {
                         slots.push_back({
                             Py_mp_length,
                             reinterpret_cast<void*>(CRTP::__len__)
                         });
                     }
-                    if constexpr (pytraits::has_getitem<CRTP>) {
+                    if constexpr (dunder::has_getitem<CRTP>) {
                         slots.push_back({
                             Py_mp_subscript,
                             reinterpret_cast<void*>(CRTP::__getitem__)
                         });
                     }
-                    if constexpr (pytraits::has_setitem<CRTP> || pytraits::has_delitem<CRTP>) {
+                    if constexpr (dunder::has_setitem<CRTP> || dunder::has_delitem<CRTP>) {
                         slots.push_back({
                             Py_mp_ass_subscript,
                             reinterpret_cast<void*>(setitem)
                         });
                     }
                 }
-                if constexpr (pytraits::has_hash<CRTP>) {
+                if constexpr (dunder::has_hash<CRTP>) {
                     slots.push_back({
                         Py_tp_hash,
                         reinterpret_cast<void*>(CRTP::__hash__)
                     });
                 }
-                if constexpr (pytraits::has_call<CRTP>) {
+                if constexpr (dunder::has_call<CRTP>) {
                     slots.push_back({
                         Py_tp_call,
                         reinterpret_cast<void*>(CRTP::__call__)
                     });
                 }
-                if constexpr (pytraits::has_str<CRTP>) {
+                if constexpr (dunder::has_str<CRTP>) {
                     slots.push_back({
                         Py_tp_str,
                         reinterpret_cast<void*>(CRTP::__str__)
                     });
                 }
-                if constexpr (pytraits::has_getattr<CRTP>) {
+                if constexpr (dunder::has_getattr<CRTP>) {
                     slots.push_back({
                         Py_tp_getattro,
                         reinterpret_cast<void*>(CRTP::__getattr__)
                     });
                 }
-                if constexpr (pytraits::has_setattr<CRTP> || pytraits::has_delattr<CRTP>) {
+                if constexpr (dunder::has_setattr<CRTP> || dunder::has_delattr<CRTP>) {
                     slots.push_back({
                         Py_tp_setattro,
                         reinterpret_cast<void*>(setattro)
                     });
                 }
-                if constexpr (pytraits::has_buffer<CRTP>) {
+                if constexpr (dunder::has_buffer<CRTP>) {
                     slots.push_back({
                         Py_bf_getbuffer,
                         reinterpret_cast<void*>(CRTP::__buffer__)
                     });
                 }
-                if constexpr (pytraits::has_release_buffer<CRTP>) {
+                if constexpr (dunder::has_release_buffer<CRTP>) {
                     slots.push_back({
                         Py_bf_releasebuffer,
                         reinterpret_cast<void*>(CRTP::__release_buffer__)
                     });
                 }
-                if constexpr (pytraits::has_doc<CRTP>) {
+                if constexpr (dunder::has_doc<CRTP>) {
                     slots.push_back({
                         Py_tp_doc,
                         reinterpret_cast<void*>(CRTP::__doc__.buffer)
                     });
                 }
-                if constexpr (pytraits::has_traverse<CRTP>) {
+                if constexpr (dunder::has_traverse<CRTP>) {
                     slots.push_back({
                         Py_tp_traverse,
                         reinterpret_cast<void*>(CRTP::__traverse__)
                     });
                 }
-                if constexpr (pytraits::has_clear<CRTP>) {
+                if constexpr (dunder::has_clear<CRTP>) {
                     slots.push_back({
                         Py_tp_clear,
                         reinterpret_cast<void*>(CRTP::__clear__)
                     });
                 }
                 if constexpr (
-                    pytraits::has_lt<CRTP> || pytraits::has_le<CRTP> ||
-                    pytraits::has_eq<CRTP> || pytraits::has_ne<CRTP> ||
-                    pytraits::has_gt<CRTP> || pytraits::has_ge<CRTP>
+                    dunder::has_lt<CRTP> || dunder::has_le<CRTP> ||
+                    dunder::has_eq<CRTP> || dunder::has_ne<CRTP> ||
+                    dunder::has_gt<CRTP> || dunder::has_ge<CRTP>
                 ) {
                     slots.push_back({
                         Py_tp_richcompare,
                         reinterpret_cast<void*>(richcompare)
                     });
                 }
-                if constexpr (pytraits::has_iter<CRTP>) {
+                if constexpr (dunder::has_iter<CRTP>) {
                     slots.push_back({
                         Py_tp_iter,
                         reinterpret_cast<void*>(CRTP::__iter__)
                     });
                 }
-                if constexpr (pytraits::has_next<CRTP>) {
+                if constexpr (dunder::has_next<CRTP>) {
                     slots.push_back({
                         Py_tp_iternext,
                         reinterpret_cast<void*>(CRTP::__next__)
                     });
                 }
-                if constexpr (pytraits::has_get<CRTP>) {
+                if constexpr (dunder::has_get<CRTP>) {
                     slots.push_back({
                         Py_tp_descr_get,
                         reinterpret_cast<void*>(CRTP::__get__)
                     });
                 }
-                if constexpr (pytraits::has_set<CRTP> || pytraits::has_delete<CRTP>) {
+                if constexpr (dunder::has_set<CRTP> || dunder::has_delete<CRTP>) {
                     slots.push_back({
                         Py_tp_descr_set,
                         reinterpret_cast<void*>(descr_set)
                     });
                 }
-                if constexpr (pytraits::has_init<CRTP>) {
+                if constexpr (dunder::has_init<CRTP>) {
                     slots.push_back({
                         Py_tp_init,
                         reinterpret_cast<void*>(CRTP::__init__)
                     });
                 }
-                if constexpr (pytraits::has_new<CRTP>) {
+                if constexpr (dunder::has_new<CRTP>) {
                     slots.push_back({
                         Py_tp_new,
                         reinterpret_cast<void*>(CRTP::__new__)
                     });
                 }
-                if constexpr (pytraits::has_instancecheck<CRTP>) {
+                if constexpr (dunder::has_instancecheck<CRTP>) {
                     tp_methods.push_back({
                         "__instancecheck__",
                         reinterpret_cast<PyCFunction>(CRTP::__instancecheck__),
@@ -1952,7 +1987,7 @@ namespace impl {
                         nullptr
                     });
                 }
-                if constexpr (pytraits::has_subclasscheck<CRTP>) {
+                if constexpr (dunder::has_subclasscheck<CRTP>) {
                     tp_methods.push_back({
                         "__subclasscheck__",
                         reinterpret_cast<PyCFunction>(CRTP::__subclasscheck__),
@@ -1960,7 +1995,7 @@ namespace impl {
                         nullptr
                     });
                 }
-                if constexpr (pytraits::has_enter<CRTP>) {
+                if constexpr (dunder::has_enter<CRTP>) {
                     tp_methods.push_back({
                         "__enter__",
                         reinterpret_cast<PyCFunction>(enter),
@@ -1968,7 +2003,7 @@ namespace impl {
                         nullptr
                     });
                 }
-                if constexpr (pytraits::has_exit<CRTP>) {
+                if constexpr (dunder::has_exit<CRTP>) {
                     tp_methods.push_back({
                         "__exit__",
                         reinterpret_cast<PyCFunction>(exit),
@@ -1976,7 +2011,7 @@ namespace impl {
                         nullptr
                     });
                 }
-                if constexpr (pytraits::has_aenter<CRTP>) {
+                if constexpr (dunder::has_aenter<CRTP>) {
                     tp_methods.push_back({
                         "__aenter__",
                         reinterpret_cast<PyCFunction>(aenter),
@@ -1984,7 +2019,7 @@ namespace impl {
                         nullptr
                     });
                 }
-                if constexpr (pytraits::has_aexit<CRTP>) {
+                if constexpr (dunder::has_aexit<CRTP>) {
                     tp_methods.push_back({
                         "__aexit__",
                         reinterpret_cast<PyCFunction>(aexit),
@@ -2060,7 +2095,8 @@ namespace impl {
                 Exception::from_python();
             }
             PyMeta* meta = reinterpret_cast<PyMeta*>(ptr(cls));
-            // TODO: instancheck/subclasscheck
+            meta->instancecheck = instancecheck;
+            meta->subclasscheck = subclasscheck;
             new (&meta->getters) PyMeta::Getters(std::move(class_getters));
             new (&meta->setters) PyMeta::Setters(std::move(class_setters));
             meta->template_instantiations = nullptr;
@@ -2761,18 +2797,6 @@ namespace impl {
         // PyType_IsSubtype() to break the recursion.
         // -> Maybe when I write the __isinstance__ check for C++-origin types, it
         // will default to PyType_IsSubType()?
-
-        /* Implements Python-level `isinstance()` checks against the class, forwarding
-        to the `__isinstance__` control struct. */
-        static bool instancecheck(PyObject* instance) {
-            return isinstance<Wrapper>(reinterpret_borrow<Object>(instance));
-        }
-
-        /* Implements Python-level `issubclass()` checks against the class, forwarding
-        to the `__issubclass__` control struct. */
-        static bool subclasscheck(PyObject* subclass) {
-            return issubclass<Wrapper>(reinterpret_borrow<Object>(subclass));
-        }
 
     };
 
