@@ -462,12 +462,6 @@ namespace impl {
         template <typename CRTP, typename Wrapper, typename CppType>
         struct BaseDef : public BertrandTag {
         protected:
-            inline static std::vector<PyMethodDef> tp_methods;
-            inline static std::vector<PyGetSetDef> tp_getset;
-            inline static std::vector<PyMemberDef> tp_members;
-
-            template <StaticStr ModName>
-            friend struct Bindings;
 
             template <StaticStr ModName>
             struct Bindings;
@@ -478,32 +472,40 @@ namespace impl {
             module.
 
             The `bindings` argument is a helper that includes a number of convenience
-            methods for exposing the type to Python.  The __export__ script must end
+            methods for exposing the type to Python.  The `__export__` script must end
             with a call to `bindings.finalize<Bases...>()`, which will build a
             corresponding `PyType_Spec` that will be used to instantiate a unique heap
-            type for each module.  This is the correct way to expose types with
-            per-module state, as it allows for multiple sub-interpreters to run in
+            type for each module.  This is the correct way to expose types via
+            per-module state, which allows for multiple sub-interpreters to run in
             parallel without interfering with one other.  It is automatically executed
             by the import system whenever the enclosing module is loaded into a fresh
-            interpreter.
+            interpreter.  It will not be executed if the type has not been exported to
+            a module, which occurs in ModuleTag::def.
+
+            Any attributes added at this stage are guaranteed be unique for each
+            module, allowing for sub-interpreters with correct, per-module state.  It's
+            still up to the user to make sure that the data referenced by the bindings
+            does not cause race conditions with other modules, but the modules
+            themselves will not present a barrier in this regard.
 
             Note that this method does not need to actually attach the type to the
-            module; that is done elsewhere in the import process in order to allow for
-            the modeling of templates. */
+            module; that is done elsewhere in the import process to allow for the
+            modeling of templates. */
             template <StaticStr ModName>
             static Type<Wrapper> __export__(Bindings<ModName> bindings) {
                 // bindings.var<"foo">(value);
                 // bindings.method<"bar">("docstring", &CRTP::bar);
                 // ...
-                return bindings.template finalize<>();
+                return bindings.template finalize<Object>();
             }
 
             /* Return a new reference to the type by importing its parent module and
             unpacking this specific type.  This is called automatically by the default
             constructor for `Type<Wrapper>`, and is the proper way to handle per-module
             state, instead of using static type objects.  It will implicitly invoke the
-            `__export__()` method during the import process, either via
-            `PyImport_Import()` or the `Module` constructor directly. */
+            `__export__()` method during the import process if the module was not
+            previously loaded into the interpreter, either via `PyImport_Import()` or
+            the `Module` constructor directly. */
             static Type<Wrapper> __import__() {
                 throw NotImplementedError(
                     "the __import__() method must be defined for all Python types: "
@@ -568,6 +570,12 @@ namespace impl {
         implementation detail. */
         template <typename CRTP, typename Wrapper>
         struct def<CRTP, Wrapper, void> : public BaseDef<CRTP, Wrapper, void> {
+        protected:
+
+            template <StaticStr ModName>
+            struct Bindings;
+
+        public:
             static constexpr Origin __origin__ = Origin::PYTHON;
         };
 
@@ -842,6 +850,9 @@ class Type<BertrandMeta> : public Object, public impl::TypeTag {
 
 public:
 
+    // TODO: declaration order gets really complicated here.  I might need a super
+    // granular approach.
+
     /* The python representation of the metatype.  Whenever `TypeTag::def` is
     instantiated with a C++ class, it will generate an instance of this type. */
     struct __python__ : public TypeTag::def<__python__, BertrandMeta> {
@@ -874,8 +885,10 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         PyObject* demangled;
         PyObject* template_instantiations;
 
+        /* The metaclass can't use Bindings, since they depend on the metaclass to
+        function.  Otherwise, it uses the same export machinery as all other types. */
         template <StaticStr ModName>
-        static Type __export__(Bindings<ModName> parent) {
+        static Type __export__(Module<ModName> module) {
             static PyType_Slot slots[] = {
                 {Py_tp_doc, const_cast<char*>(__doc__.buffer)},
                 {Py_tp_dealloc, reinterpret_cast<void*>(__dealloc__)},
@@ -894,13 +907,13 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
                 .basicsize = sizeof(BertrandMeta),
                 .itemsize = 0,
                 .flags =
-                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION |
-                    Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_TYPE_SUBCLASS |
-                    Py_TPFLAGS_MANAGED_WEAKREF | Py_TPFLAGS_MANAGED_DICT,
+                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC |
+                    Py_TPFLAGS_MANAGED_WEAKREF | Py_TPFLAGS_MANAGED_DICT |
+                    Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_TYPE_SUBCLASS,
                 .slots = slots
             };
             PyObject* cls = PyType_FromModuleAndSpec(
-                ptr(parent),
+                ptr(module),
                 &spec,
                 &PyType_Type
             );
@@ -909,6 +922,11 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
             }
             return reinterpret_steal<Type>(cls);
         }
+
+        // TODO: perhaps all types have a static module name which is set the first
+        // time the module is imported, and then passed to PyImport_Import() to get
+        // the right module object.  I then search the typeinfo of the Wrapper against
+        // the module to obtain the correct type object.  That's what goes in __import__
 
         /* Get a new reference to the metatype from the root module. */
         static Type __import__();  // TODO: defined in __init__.h alongside "bertrand.python" module {
@@ -1282,6 +1300,10 @@ namespace impl {
     template <StaticStr ModName>
     struct TypeTag::BaseDef<CRTP, Wrapper, CppType>::Bindings {
     private:
+        using PyMeta = Type<BertrandMeta>::__python__;
+        inline static std::vector<PyMethodDef> tp_methods;
+        inline static std::vector<PyGetSetDef> tp_getset;
+        inline static std::vector<PyMemberDef> tp_members;
 
         static int setattro(CRTP* self, PyObject* attr, PyObject* value) {
             if (value == nullptr) {
@@ -1415,18 +1437,79 @@ namespace impl {
             }
         }
 
+        static PyObject* enter(CRTP* self, void* /* unused */) {
+            return CRTP::__enter__(self);
+        }
+
+        static PyObject* aenter(CRTP* self, void* /* unused */) {
+            return CRTP::__aenter__(self);
+        }
+
+        static PyObject* exit(CRTP* self, PyObject* const* args, Py_ssize_t nargs) {
+            if (PyVectorcall_NARGS(nargs) == 3) {
+                return CRTP::__exit__(self, args[0], args[1], args[2]);
+            } else {
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "__exit__() takes exactly 3 arguments (%zd given)",
+                    PyVectorcall_NARGS(nargs)
+                );
+                return nullptr;
+            }
+        }
+
+        static PyObject* aexit(CRTP* self, PyObject* const* args, Py_ssize_t nargs) {
+            if (PyVectorcall_NARGS(nargs) == 3) {
+                return CRTP::__aexit__(self, args[0], args[1], args[2]);
+            } else {
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "__aexit__() takes exactly 3 arguments (%zd given)",
+                    PyVectorcall_NARGS(nargs)
+                );
+                return nullptr;
+            }
+        }
+
     public:
         Module<ModName> module;
+        PyObject* context;
+        PyMeta::Getters class_getters;
+        PyMeta::Setters class_setters;
 
-        Bindings(const Module<ModName>& mod) : module(mod) {}
+        Bindings(const Module<ModName>& mod) : module(mod), context(PyDict_New()) {
+            if (context == nullptr) {
+                Exception::from_python();
+            }
+        }
         Bindings(const Bindings&) = delete;
         Bindings(Bindings&&) = delete;
+        ~Bindings() noexcept {
+            Py_DECREF(context);
+        }
 
+        /* Finalize a type definition and produce a corresponding type object.  This
+        method should always be called in the return statement of an `__export__()`
+        script, which automates the import process.
+
+        The argument is a bitmask of Python flags that control various aspects of the
+        type's behavior.  By default, the final type supports inheritance, weak
+        references, and possesses an instance dictionary, just like normal Python
+        classes.  Note that the `Py_TPFLAGS_DEFAULT`, `Py_TPFLAGS_HEAPTYPE`, and
+        `Py_TPFLAGS_HAVE_GC` flags are always set and cannot be overridden.  These are
+        required for Bertrand types to function correctly with respect to the Python
+        interpreter. */
         template <std::derived_from<Object>... Bases>
-        Type<Wrapper> finalize() {
+        Type<Wrapper> finalize(unsigned int tp_flags =
+            Py_TPFLAGS_BASETYPE | Py_TPFLAGS_MANAGED_WEAKREF | Py_TPFLAGS_MANAGED_DICT
+        ) {
+            static unsigned int flags;
             static std::vector<PyType_Slot> slots;
             static bool initialized = false;
             if (!initialized) {
+
+                flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC;
+                flags |= tp_flags;
                 if constexpr (pytraits::has_dealloc<CRTP>) {
                     slots.push_back({
                         Py_tp_dealloc,
@@ -1734,7 +1817,8 @@ namespace impl {
                             reinterpret_cast<void*>(CRTP::__imul__)
                         });
                     }
-                } else if constexpr (impl::mapping_like<Wrapper>) {
+                }
+                if constexpr (impl::mapping_like<Wrapper>) {
                     if constexpr (pytraits::has_len<CRTP>) {
                         slots.push_back({
                             Py_mp_length,
@@ -1876,15 +1960,10 @@ namespace impl {
                         nullptr
                     });
                 }
-
-
-
-
-                // TODO: check these and ensure the argument signatures are correct
                 if constexpr (pytraits::has_enter<CRTP>) {
                     tp_methods.push_back({
                         "__enter__",
-                        reinterpret_cast<PyCFunction>(CRTP::__enter__),
+                        reinterpret_cast<PyCFunction>(enter),
                         METH_NOARGS,
                         nullptr
                     });
@@ -1892,15 +1971,15 @@ namespace impl {
                 if constexpr (pytraits::has_exit<CRTP>) {
                     tp_methods.push_back({
                         "__exit__",
-                        reinterpret_cast<PyCFunction>(CRTP::__exit__),
-                        METH_VARARGS,
+                        reinterpret_cast<PyCFunction>(exit),
+                        METH_FASTCALL,
                         nullptr
                     });
                 }
                 if constexpr (pytraits::has_aenter<CRTP>) {
                     tp_methods.push_back({
                         "__aenter__",
-                        reinterpret_cast<PyCFunction>(CRTP::__aenter__),
+                        reinterpret_cast<PyCFunction>(aenter),
                         METH_NOARGS,
                         nullptr
                     });
@@ -1908,15 +1987,11 @@ namespace impl {
                 if constexpr (pytraits::has_aexit<CRTP>) {
                     tp_methods.push_back({
                         "__aexit__",
-                        reinterpret_cast<PyCFunction>(CRTP::__aexit__),
-                        METH_VARARGS,
+                        reinterpret_cast<PyCFunction>(aexit),
+                        METH_FASTCALL,
                         nullptr
                     });
                 }
-
-
-
-
                 if (tp_methods.size()) {
                     tp_methods.push_back({
                         nullptr,
@@ -1962,7 +2037,7 @@ namespace impl {
                 .name = typeid(Wrapper).name(),
                 .basicsize = sizeof(CRTP),
                 .itemsize = 0,
-                .flags = CRTP::tp_flags,
+                .flags = flags,
                 .slots = slots.data()
             };
             PyObject* bases = nullptr;
@@ -1984,9 +2059,23 @@ namespace impl {
             if (ptr(cls) == nullptr) {
                 Exception::from_python();
             }
-
-            // TODO: initialize BertrandMeta fields
-
+            PyMeta* meta = reinterpret_cast<PyMeta*>(ptr(cls));
+            // TODO: instancheck/subclasscheck
+            new (&meta->getters) PyMeta::Getters(std::move(class_getters));
+            new (&meta->setters) PyMeta::Setters(std::move(class_setters));
+            meta->template_instantiations = nullptr;
+            meta->demangled = meta->get_demangled_name();
+            if (meta->demangled == nullptr) {
+                Exception::from_python();
+            }
+            PyObject* key;
+            PyObject* value;
+            Py_ssize_t pos = 0;
+            while (PyDict_Next(context, &pos, &key, &value)) {
+                if (PyObject_SetAttr(ptr(cls), key, value)) {
+                    Exception::from_python();
+                }
+            }
             return cls;
         }
 
@@ -2002,24 +2091,11 @@ namespace impl {
             using Ts::operator()...;
         };
 
-        /* A mutable blueprint for a type, which is configured in the type's
-        `__bind__()` method. */
-        struct Bindings {
+        template <StaticStr ModName>
+        struct Bindings : public BaseDef<CRTP, Wrapper, CppType>::template Bindings<ModName> {
             using PyMeta = typename Type<BertrandMeta>::__python__;
-            PyObject* context;
-            PyMeta::Getters class_getters;
-            PyMeta::Setters class_setters;
-
-            Bindings(const Bindings&) = delete;
-            Bindings(Bindings&&) = delete;
-            Bindings() : context(PyDict_New()) {
-                if (context == nullptr) {
-                    Exception::from_python();
-                }
-            }
-            ~Bindings() {
-                Py_DECREF(context);
-            }
+            using Base = BaseDef<CRTP, Wrapper, CppType>;
+            using Base::Base;
 
             /* Expose an immutable member variable to Python as a getset descriptor,
             which synchronizes its state. */
@@ -2163,11 +2239,11 @@ namespace impl {
                     PyErr_SetString(PyExc_TypeError, msg.c_str());
                     return -1;
                 };
-                class_getters[Name] = {
+                Base::class_getters[Name] = {
                     +get,
                     const_cast<void*>(reinterpret_cast<const void*>(&value))
                 };
-                class_setters[Name] = {
+                Base::class_setters[Name] = {
                     +set,
                     const_cast<void*>(reinterpret_cast<const void*>(&value))
                 };
@@ -2202,8 +2278,8 @@ namespace impl {
                         return -1;
                     }
                 };
-                class_getters[Name] = {+get, reinterpret_cast<void*>(&value)};
-                class_setters[Name] = {+set, reinterpret_cast<void*>(&value)};
+                Base::class_getters[Name] = {+get, reinterpret_cast<void*>(&value)};
+                Base::class_setters[Name] = {+set, reinterpret_cast<void*>(&value)};
             }
 
             /* Expose a C++-style const getter to Python as a getset descriptor. */
@@ -2342,7 +2418,7 @@ namespace impl {
                         return nullptr;
                     }
                 };
-                class_getters[Name] = {+get, reinterpret_cast<void*>(getter)};
+                Base::class_getters[Name] = {+get, reinterpret_cast<void*>(getter)};
             }
 
             /* Expose a C++-style static getter/setter pair to Python using the
@@ -2382,8 +2458,8 @@ namespace impl {
                         return -1;
                     }
                 };
-                class_getters[Name] = {+get, reinterpret_cast<void*>(&closure)};
-                class_setters[Name] = {+set, reinterpret_cast<void*>(&closure)};
+                Base::class_getters[Name] = {+get, reinterpret_cast<void*>(&closure)};
+                Base::class_setters[Name] = {+set, reinterpret_cast<void*>(&closure)};
             }
 
             /* Expose a C++ instance method to Python as an instance method, which can
@@ -2415,32 +2491,6 @@ namespace impl {
                 // func is a normal function pointer
             }
 
-            /* Initialize a type from the binding blueprint. */
-            void finalize(Type<Wrapper>& cls) {
-                PyMeta* meta = reinterpret_cast<PyMeta*>(ptr(cls));
-
-                // populate the metaclass's C++ fields
-                meta->instancecheck = &def::instancecheck;
-                meta->subclasscheck = &def::subclasscheck;
-                new (&meta->getters) PyMeta::Getters(std::move(class_getters));
-                new (&meta->setters) PyMeta::Setters(std::move(class_setters));
-                meta->template_instantiations = nullptr;
-                meta->demangled = meta->get_demangled_name();
-                if (meta->demangled == nullptr) {
-                    Exception::from_python();
-                }
-
-                // transfer the context to the Python type object
-                PyObject* key;
-                PyObject* value;
-                Py_ssize_t pos = 0;
-                while (PyDict_Next(context, &pos, &key, &value)) {
-                    if (PyObject_SetAttr(cls, key, value)) {
-                        Exception::from_python();
-                    }
-                }
-            }
-
         };
 
     public:
@@ -2451,126 +2501,8 @@ namespace impl {
                 impl::demangle(typeid(CppType).name()) + "' C++ type."
             );
         }();
-        static constexpr unsigned int tp_flags =
-            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE |
-            Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_MANAGED_WEAKREF |
-            Py_TPFLAGS_MANAGED_DICT;
-
         PyObject_HEAD
         Variant m_cpp;
-
-        // TODO: maybe all of this is implemented in Bindings.finalize()?  The
-        // __export__ method could just return Bindings.finalize() directly?
-
-        /* Default implementation of `__export__` for C++ extensions, which delegates
-        to the `__bind__` helper to simplify type creation.  Users should never need to
-        override this method - just customize the __bind__ script instead. */
-        template <typename... Bases, StaticStr ModName>
-        static Type<Wrapper> __export__(Module<ModName>& module) {
-            Bindings bind;
-            CRTP::__bind__(bind);
-
-            static bool initialized = false;
-            static std::vector<PyType_Slot> type_slots {
-                // {Py_tp_doc, reinterpret_cast<void*>(CRTP::__doc__.buffer)},
-                // {Py_tp_dealloc, reinterpret_cast<void*>(CRTP::__dealloc__)},
-                // {Py_tp_repr, reinterpret_cast<void*>(CRTP::__repr__)},
-                // {Py_tp_hash, reinterpret_cast<void*>(CRTP::__hash__)},
-                // {Py_tp_str, reinterpret_cast<void*>(CRTP::__str__)},
-                // {Py_tp_traverse, reinterpret_cast<void*>(CRTP::__traverse__)},
-                // {Py_tp_clear, reinterpret_cast<void*>(CRTP::__clear__)},
-            };
-            if (!initialized) {
-                tp_methods.push_back({
-                    nullptr,
-                    nullptr,
-                    0,
-                    nullptr
-                });
-                tp_getset.push_back({
-                    nullptr,
-                    nullptr,
-                    nullptr,
-                    nullptr,
-                    nullptr
-                });
-                tp_members.push_back({
-                    nullptr,
-                    0,
-                    0,
-                    0,
-                    nullptr
-                });
-                if (tp_methods.size() > 1) {
-                    type_slots.push_back({
-                        Py_tp_methods,
-                        tp_methods.data()
-                    });
-                }
-                if (tp_getset.size() > 1) {
-                    type_slots.push_back({
-                        Py_tp_getset,
-                        tp_getset.data()
-                    });
-                }
-                if (tp_members.size() > 1) {
-                    type_slots.push_back({
-                        Py_tp_members,
-                        tp_members.data()
-                    });
-                }
-                type_slots.push_back({0, nullptr});
-                initialized = true;
-            }
-            static PyType_Spec type_spec = {
-                .name = typeid(CppType).name(),
-                .basicsize = sizeof(CRTP),
-                .itemsize = 0,
-                .flags = CRTP::tp_flags,
-                .slots = type_slots.data()
-            };
-
-            PyObject* bases = nullptr;
-            if constexpr (sizeof...(Bases)) {
-                bases = PyTuple_Pack(sizeof...(Bases), ptr(Type<Bases>())...);
-                if (bases == nullptr) {
-                    Exception::from_python();
-                }
-            }
-            Type<Wrapper> cls = reinterpret_steal<Type<Wrapper>>(
-                PyType_FromMetaclass(
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>())),
-                    ptr(module),
-                    &type_spec,
-                    bases
-                )
-            );
-            Py_XDECREF(bases);
-            if (ptr(cls) == nullptr) {
-                Exception::from_python();
-            }
-
-            bind.finalize(cls);
-            return cls;
-        }
-
-        /* Expose a C++ class's attributes to Python using Bertrand's binding helpers.
-
-        Every C++ extension needs to implement this function, which is executed as a
-        script whenever its enclosing module is imported.  The argument is a mutable
-        context that includes a variety of helpers for exposing C++ attributes to
-        Python, including member and static variables with shared state, property and
-        class property descriptors, as well as instance, class, and static methods that
-        can be overloaded from either side of the language boundary.
-
-        Any attribute added at this stage is guaranteed be unique for each module,
-        allowing sub-interpreters with correct, per-module state.  It's still up to the
-        user to make sure that the data referenced by the bindings does not cause race
-        conditions with other modules, but the modules themselves will not present a
-        barrier in this regard. */
-        static void __bind__(Bindings& bind) {}
-
-        /// NOTE: make sure that every subclass defines `__import__()`
 
         /* tp_dealloc calls the ordinary C++ destructor. */
         static void __dealloc__(CRTP* self) {
@@ -2841,6 +2773,27 @@ namespace impl {
         static bool subclasscheck(PyObject* subclass) {
             return issubclass<Wrapper>(reinterpret_borrow<Object>(subclass));
         }
+
+    };
+
+    template <typename CRTP, typename Wrapper>
+    template <StaticStr ModName>
+    struct TypeTag::def<CRTP, Wrapper, void>::Bindings :
+        public BaseDef<CRTP, Wrapper, void>::template Bindings<ModName>
+    {
+        using PyMeta = typename Type<BertrandMeta>::__python__;
+        using Base = BaseDef<CRTP, Wrapper, void>;
+        using Base::Base;
+
+        // TODO: convenience methods for exposing members, properties, methods,
+        // etc. using the tp_methods, tp_getset, tp_members, etc. slots.
+        // All pointers to members must be for the CRTP type, and will always be
+        // owned by the CRTP type (so no need for variant).
+
+        // TODO: this requires functions, which require types, which require the
+        // metatype.  As a result, none of the metatype's behavior can rely on
+        // functions, and none of the functions can rely on itself.  Thereafter,
+        // all types should be more or less good to go.
 
     };
 
