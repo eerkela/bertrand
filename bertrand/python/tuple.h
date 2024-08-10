@@ -742,6 +742,48 @@ struct __len__<Self>                                        : Returns<size_t> {
 };
 
 
+template <std::derived_from<impl::TupleTag> Self>
+struct __iter__<Self>                                       : Returns<typename Self::value_type> {
+    static auto begin(const Self& self) {
+        return impl::Iterator<impl::TupleIter<typename __iter__<Self>::type>>(self, 0);
+    }
+    static auto end(const Self& self) {
+        return impl::Iterator<impl::TupleIter<typename __iter__<Self>::type>>(
+            PyTuple_GET_SIZE(self.ptr())
+        );
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> Self>
+struct __reversed__<Self>                                   : Returns<typename Self::value_type> {
+    static auto rbegin(const Self& self) {
+        return impl::ReverseIterator<impl::TupleIter<typename __reversed__<Self>::type>>(
+            self,
+            PyTuple_GET_SIZE(self.ptr()) - 1
+        );
+    }
+    static auto rend(const Self& self) {
+        return impl::ReverseIterator<impl::TupleIter<typename __reversed__<Self>::type>>(-1);
+    }
+};
+
+
+template <std::derived_from<impl::TupleTag> Self, std::integral Key>
+struct __getitem__<Self, Key>                               : Returns<typename Self::value_type> {
+    static auto operator()(const Self& self, const Key& key) {
+        Py_ssize_t size = PyTuple_GET_SIZE(ptr(self));
+        Py_ssize_t norm = key + size * (key < 0);
+        if (norm < 0 || norm >= size) {
+            throw IndexError("list index out of range");
+        }
+        return reinterpret_borrow<typename Self::value_type>(
+            PyTuple_GET_ITEM(ptr(self), norm)
+        );
+    }
+};
+
+
 template <std::derived_from<impl::TupleTag> L, std::convertible_to<L> R>
 struct __add__<L, R>                                        : Returns<Tuple<typename L::value_type>> {
     static auto operator()(const L& lhs, const R& rhs) {
@@ -826,33 +868,6 @@ struct __imul__<L, R>                                       : Returns<Tuple<type
         } else {
             lhs = reinterpret_steal<L>(result);
         }
-    }
-};
-
-
-template <std::derived_from<impl::TupleTag> Self>
-struct __iter__<Self>                                       : Returns<typename Self::value_type> {
-    static auto begin(const Self& self) {
-        return impl::Iterator<impl::TupleIter<typename __iter__<Self>::type>>(self, 0);
-    }
-    static auto end(const Self& self) {
-        return impl::Iterator<impl::TupleIter<typename __iter__<Self>::type>>(
-            PyTuple_GET_SIZE(self.ptr())
-        );
-    }
-};
-
-
-template <std::derived_from<impl::TupleTag> Self>
-struct __reversed__<Self>                                   : Returns<typename Self::value_type> {
-    static auto rbegin(const Self& self) {
-        return impl::ReverseIterator<impl::TupleIter<typename __reversed__<Self>::type>>(
-            self,
-            PyTuple_GET_SIZE(self.ptr()) - 1
-        );
-    }
-    static auto rend(const Self& self) {
-        return impl::ReverseIterator<impl::TupleIter<typename __reversed__<Self>::type>>(-1);
     }
 };
 

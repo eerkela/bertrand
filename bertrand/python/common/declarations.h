@@ -64,7 +64,6 @@ namespace impl {
     struct TypeTag;
     struct ModuleTag;
     struct ArgTag : public BertrandTag {};
-    struct ProxyTag : public BertrandTag {};
     struct FunctionTag : public BertrandTag {};
     struct TupleTag : public BertrandTag {};
     struct ListTag : public BertrandTag{};
@@ -641,12 +640,6 @@ namespace impl {
     concept is_object_exact = std::same_as<std::decay_t<T>, Object>;  // TODO: rename to dynamic_type and include Handle?
 
     template <typename T>
-    concept proxy_like = std::derived_from<std::decay_t<T>, ProxyTag>;
-
-    template <typename T>
-    concept not_proxy_like = !proxy_like<T>;
-
-    template <typename T>
     concept cpp_like = !python_like<T>;
 
     template <typename T>
@@ -922,13 +915,6 @@ namespace impl {
         static constexpr bool value =
             (Broadcast<Condition, Ts, R>::value && ...);
     };
-
-    template <typename T>
-    struct unwrap_proxy_helper : public BertrandTag { using type = T; };
-    template <proxy_like T>
-    struct unwrap_proxy_helper<T> : public BertrandTag { using type = typename T::type; };
-    template <typename T>
-    using unwrap_proxy = typename unwrap_proxy_helper<T>::type;
 
 }
 

@@ -764,6 +764,82 @@ struct __len__<Self>                                        : Returns<size_t> {
 };
 
 
+template <std::derived_from<impl::ListTag> Self>
+struct __iter__<Self>                                       : Returns<typename Self::value_type> {
+    static auto begin(const Self& self) {
+        return impl::Iterator<impl::ListIter<typename __iter__<Self>::type>>(self, 0);
+    }
+    static auto end(const Self& self) {
+        return impl::Iterator<impl::ListIter<typename __iter__<Self>::type>>(
+            PyList_GET_SIZE(self.ptr())
+        );
+    }
+};
+
+
+template <std::derived_from<impl::ListTag> Self>
+struct __reversed__<Self>                                   : Returns<typename Self::value_type> {
+    static auto rbegin(const Self& self) {
+        return impl::ReverseIterator<impl::ListIter<typename __reversed__<Self>::type>>(
+            self,
+            PyList_GET_SIZE(self.ptr()) - 1
+        );
+    }
+    static auto rend(const Self& self) {
+        return impl::ReverseIterator<impl::ListIter<typename __reversed__<Self>::type>>(-1);
+    }
+};
+
+
+// TODO: make sure getitem/setitem/delitem is correctly handled
+
+
+template <std::derived_from<impl::ListTag> Self, std::integral Key>
+struct __getitem__<Self, Key>                               : Returns<typename Self::value_type> {
+    static auto operator()(const Self& self, const Key& key) {
+        Py_ssize_t size = PyList_GET_SIZE(ptr(self));
+        Py_ssize_t norm = key + size * (key < 0);
+        if (norm < 0 || norm >= size) {
+            throw IndexError("list index out of range");
+        }
+        return reinterpret_borrow<typename Self::value_type>(
+            PyList_GET_ITEM(ptr(self), norm)
+        );
+    }
+};
+
+
+template <std::derived_from<impl::ListTag> Self, std::integral Key, typename Value>
+    requires (std::convertible_to<Value, typename Self::value_type>)
+struct __setitem__<Self, Key, Value>                         : Returns<void> {
+    static void operator()(Self& self, const Key& key, const Value& value) {
+        Py_ssize_t size = PyList_GET_SIZE(ptr(self));
+        Py_ssize_t norm = key + size * (key < 0);
+        if (norm < 0 || norm >= size) {
+            throw IndexError("list assignment index out of range");
+        }
+        PyObject* prev = PyList_GET_ITEM(ptr(self), norm);
+        PyList_SET_ITEM(ptr(self), norm, ptr(value));
+        Py_XDECREF(prev);
+    }
+};
+
+
+template <std::derived_from<impl::ListTag> Self, std::integral Key>
+struct __delitem__<Self, Key>                               : Returns<void> {
+    static void operator()(Self& self, const Key& key) {
+        Py_ssize_t size = PyList_GET_SIZE(ptr(self));
+        Py_ssize_t norm = key + size * (key < 0);
+        if (norm < 0 || norm >= size) {
+            throw IndexError("list assignment index out of range");
+        }
+        if (PySequence_DelItem(ptr(self), norm)) {
+            Exception::from_python();
+        }
+    }
+};
+
+
 template <std::derived_from<impl::ListTag> L, std::convertible_to<L> R>
 struct __add__<L, R>                                        : Returns<List<typename L::value_type>> {
     static auto operator()(const L& lhs, const R& rhs) {
@@ -848,33 +924,6 @@ struct __imul__<L, R>                                       : Returns<List<typen
         } else {
             lhs = reinterpret_steal<L>(result);
         }
-    }
-};
-
-
-template <std::derived_from<impl::ListTag> Self>
-struct __iter__<Self>                                       : Returns<typename Self::value_type> {
-    static auto begin(const Self& self) {
-        return impl::Iterator<impl::ListIter<typename __iter__<Self>::type>>(self, 0);
-    }
-    static auto end(const Self& self) {
-        return impl::Iterator<impl::ListIter<typename __iter__<Self>::type>>(
-            PyList_GET_SIZE(self.ptr())
-        );
-    }
-};
-
-
-template <std::derived_from<impl::ListTag> Self>
-struct __reversed__<Self>                                   : Returns<typename Self::value_type> {
-    static auto rbegin(const Self& self) {
-        return impl::ReverseIterator<impl::ListIter<typename __reversed__<Self>::type>>(
-            self,
-            PyList_GET_SIZE(self.ptr()) - 1
-        );
-    }
-    static auto rend(const Self& self) {
-        return impl::ReverseIterator<impl::ListIter<typename __reversed__<Self>::type>>(-1);
     }
 };
 

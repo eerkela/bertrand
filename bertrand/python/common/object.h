@@ -9,6 +9,71 @@
 namespace py {
 
 
+namespace impl {
+
+    /* A proxy for an item in a Python container that is controlled by the
+    `__getitem__`, `__setitem__`, and `__delitem__` control structs.
+
+    This is a simple extension of an Object type that intercepts `operator=` and
+    assigns the new value back to the container using the appropriate API.  Mutating
+    the object in any other way will also modify it in-place within the container. */
+    template <typename Container, typename Key>
+        requires (__getitem__<Container, Key>::enable)
+    class Item : public __getitem__<Container, Key>::type {
+        using Base = __getitem__<Container, Key>::type;
+
+        Container m_container;
+        Key m_key;
+
+    public:
+
+        Item(Base&& item, Container container, Key key) :
+            Base(std::move(item)), m_container(container), m_key(key)
+        {}
+        Item(const Item& other) :
+            Base(other), m_container(other.m_container), m_key(other.m_key)
+        {}
+        Item(Item&& other) :
+            Base(std::move(other)), m_container(std::move(other.m_container)),
+            m_key(std::move(other.m_key))
+        {}
+
+        // TODO: assign to std::nullopt to delete?
+
+        template <typename T>
+            requires (!__setitem__<Container, Key, std::remove_cvref_t<T>>::enable)
+        Item& operator=(T&& other) = delete;
+        template <typename T>
+            requires (__setitem__<Container, Key, std::remove_cvref_t<T>>::enable)
+        Item& operator=(T&& other) {
+            using setitem = __setitem__<Container, Key, std::remove_cvref_t<T>>;
+            using Return = typename setitem::type;
+            static_assert(
+                std::is_void_v<Return>,
+                "index assignment operator must return void.  Check your "
+                "specialization of __setitem__ for these types and ensure the Return "
+                "type is set to void."
+            );
+            Base::operator=(std::forward<T>(other));
+            if constexpr (impl::has_call_operator<setitem>) {
+                setitem{}(m_container, m_key, other);
+            } else {
+                if (PyObject_SetItem(
+                    m_container.m_ptr,
+                    ptr(as_object(m_key)),
+                    ptr(*this)
+                )) {
+                    Exception::from_python();
+                }
+            }
+            return *this;
+        }
+
+    };
+
+}
+
+
 /* A non-owning reference to a raw Python object. */
 class Handle : public impl::BertrandTag {
 protected:
@@ -75,9 +140,7 @@ public:
             "specialization of __contains__ for these types and ensure the Return "
             "type is set to bool."
         );
-        if constexpr (impl::proxy_like<Key>) {
-            return self.contains(key.value());
-        } else if constexpr (impl::has_call_operator<__contains__<Self, Key>>) {
+        if constexpr (impl::has_call_operator<__contains__<Self, Key>>) {
             return __contains__<Self, Key>{}(self, key);
         } else {
             int result = PySequence_Contains(
@@ -149,12 +212,25 @@ public:
     /* Index operator.  Specific key and element types can be controlled via the
     __getitem__, __setitem__, and __delitem__ control structs. */
     template <typename Self, typename Key> requires (__getitem__<Self, Key>::enable)
-    auto operator[](this const Self& self, const Key& key) {
+    impl::Item<Self, Key> operator[](this const Self& self, const Key& key) {
         using Return = typename __getitem__<Self, Key>::type;
-        if constexpr (impl::proxy_like<Key>) {
-            return self[key.value()];
+        static_assert(
+            std::derived_from<Return, Object>,
+            "index operator must return a subclass of py::Object.  Check your "
+            "specialization of __getitem__ for these types and ensure the Return "
+            "type is set to a subclass of py::Object."
+        );
+        if constexpr (impl::has_call_operator<__getitem__<Self, Key>>) {
+            return {__getitem__<Self, Key>{}(self, key), self, key};
         } else {
-            return impl::Item<Self, Key>(self, key);
+            PyObject* result = PyObject_GetItem(
+                self.m_ptr,
+                ptr(as_object(key))
+            );
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return {reinterpret_steal<Return>(result), self, key};
         }
     }
 

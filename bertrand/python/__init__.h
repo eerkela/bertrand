@@ -488,25 +488,6 @@ auto visit(Obj&& obj, Funcs&&... funcs) {
 }
 
 
-/* An equivalent for std::transform, which applies one of a selection of functions
-depending on the runtime type of each object in a Python iterator.
-
-This is equivalent to manually piping the iterator through std::transform and
-immediately invoking py::visit() on each element.
-*/
-template <typename... Funcs>
-auto transform(Funcs&&... funcs) {
-    return std::views::transform(
-        [&funcs...](auto&& item) {
-            return visit(
-                std::forward<decltype(item)>(item),
-                std::forward<Funcs>(funcs)...
-            );
-        }
-    );
-}
-
-
 /* Equivalent to Python `callable(obj)`, except that it supports extended C++ syntax to
 account for C++ function pointers, lambdas, and constexpr SFINAE checks.
 
@@ -1136,37 +1117,37 @@ inline Module Module::def_submodule(const Str& name, const Str& doc = "") {
 }
 
 
-// template <typename Derived, impl::is_generic CppType>
-// inline PyObject* impl::Binding<Derived, CppType>::__class_getitem__(
-//     Derived* self,
-//     PyObject* key
-// ) {
-//     if (PyTuple_Check(key)) {
-//         Py_INCREF(key);
-//     } else {
-//         PyObject* tuple = PyTuple_Pack(1, key);
-//         if (tuple == nullptr) {
-//             return nullptr;
-//         }
-//         key = tuple;
-//     }
-//     try {
-//         py::Tuple tuple = reinterpret_steal<py::Tuple<Object>>(key);
-//         auto it = template_instantiations.find(tuple);
-//         if (it == template_instantiations.end()) {
-//             // TODO: reconstruct the full __class_getitem__ call
-//             throw py::TypeError(
-//                 "class template has not been instantiated: " +
-//                 repr(key)
-//             );
-//         }
-//         return Py_NewRef(ptr(it->second));
+template <typename Derived, impl::is_generic CppType>
+inline PyObject* impl::Binding<Derived, CppType>::__class_getitem__(
+    Derived* self,
+    PyObject* key
+) {
+    if (PyTuple_Check(key)) {
+        Py_INCREF(key);
+    } else {
+        PyObject* tuple = PyTuple_Pack(1, key);
+        if (tuple == nullptr) {
+            return nullptr;
+        }
+        key = tuple;
+    }
+    try {
+        py::Tuple tuple = reinterpret_steal<py::Tuple<Object>>(key);
+        auto it = template_instantiations.find(tuple);
+        if (it == template_instantiations.end()) {
+            // TODO: reconstruct the full __class_getitem__ call
+            throw py::TypeError(
+                "class template has not been instantiated: " +
+                repr(key)
+            );
+        }
+        return Py_NewRef(ptr(it->second));
 
-//     } catch (...) {
-//         Exception::to_python();
-//         return nullptr;
-//     }
-// }
+    } catch (...) {
+        Exception::to_python();
+        return nullptr;
+    }
+}
 
 
 template <typename Return, typename... Target>

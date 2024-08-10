@@ -18,9 +18,7 @@ namespace impl {
 already. */
 template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
 [[nodiscard]] auto as_object(T&& value) {
-    if constexpr (impl::proxy_like<T>) {
-        return as_object(value.value());
-    } else if constexpr (std::derived_from<T, Object>) {
+    if constexpr (std::derived_from<T, Object>) {
         return std::forward<T>(value);
     } else {
         using U = __as_object__<std::remove_cvref_t<T>>;
@@ -54,10 +52,7 @@ compile-time by calling `issubclass<Derived, Base>()`. */
 template <typename Base, typename Derived>
     requires (__as_object__<Base>::enable && __as_object__<Derived>::enable)
 [[nodiscard]] constexpr bool isinstance(const Derived& obj) {
-    if constexpr (impl::proxy_like<Derived>) {
-        return isinstance<Base>(obj.value());
-
-    } else if constexpr (std::is_invocable_v<
+    if constexpr (std::is_invocable_v<
         __isinstance__<Derived, Base>,
         const Derived&
     >) {
@@ -91,13 +86,7 @@ template <typename Derived, typename Base>
         const Base&
     >)
 [[nodiscard]] constexpr bool isinstance(const Derived& obj, const Base& base) {
-    if constexpr (impl::proxy_like<Derived>) {
-        return isinstance(obj.value(), base);
-    } else if constexpr (impl::proxy_like<Base>) {
-        return isinstance(obj, base.value());
-    } else {
-        return __isinstance__<Derived, Base>{}(obj, base);
-    }
+    return __isinstance__<Derived, Base>{}(obj, base);
 }
 
 
@@ -132,11 +121,7 @@ template <typename Base, typename Derived>
         const Derived&
     >)
 [[nodiscard]] constexpr bool issubclass(const Derived& obj) {
-    if constexpr (impl::proxy_like<Derived>) {
-        return issubclass<Base>(obj.value());
-    } else {
-        return __issubclass__<Derived, Base>{}(obj);
-    }
+    return __issubclass__<Derived, Base>{}(obj);
 }
 
 
@@ -152,13 +137,7 @@ template <typename Derived, typename Base>
         const Base&
     >)
 [[nodiscard]] bool issubclass(const Derived& obj, const Base& base) {
-    if constexpr (impl::proxy_like<Derived>) {
-        return issubclass(obj.value(), base);
-    } else if constexpr (impl::proxy_like<Base>) {
-        return issubclass(obj, base.value());
-    } else {
-        return __issubclass__<Derived, Base>{}(obj, base);
-    }
+    return __issubclass__<Derived, Base>{}(obj, base);
 }
 
 
@@ -172,20 +151,14 @@ template <typename T, StaticStr name> requires (__as_object__<T>::enable)
 /* Equivalent to Python `hasattr(obj, name)` with a static attribute name. */
 template <StaticStr name, typename T>
 [[nodiscard]] consteval bool hasattr(const T& obj) {
-    if constexpr (impl::proxy_like<T>) {
-        return hasattr<name>(obj.value());
-    } else {
-        return __getattr__<T, name>::enable;
-    }
+    return __getattr__<T, name>::enable;
 }
 
 
 /* Equivalent to Python `getattr(obj, name)` with a static attribute name. */
 template <StaticStr name, typename T> requires (__getattr__<T, name>::enable)
 [[nodiscard]] auto getattr(const T& obj) -> __getattr__<T, name>::type {
-    if constexpr (impl::proxy_like<T>) {
-        return getattr<name>(obj.value());
-    } else if constexpr (impl::has_call_operator<__getattr__<T, name>>) {
+    if constexpr (impl::has_call_operator<__getattr__<T, name>>) {
         return __getattr__<T, name>{}(obj);
     } else {
         PyObject* result = PyObject_GetAttr(ptr(obj), impl::TemplateString<name>::ptr);
@@ -204,9 +177,7 @@ template <StaticStr name, typename T> requires (__getattr__<T, name>::enable)
     const T& obj,
     const typename __getattr__<T, name>::type& default_value
 ) -> __getattr__<T, name>::type {
-    if constexpr (impl::proxy_like<T>) {
-        return getattr<name>(obj.value(), default_value);
-    } else if constexpr (impl::has_call_operator<__getattr__<T, name>>) {
+    if constexpr (impl::has_call_operator<__getattr__<T, name>>) {
         return __getattr__<T, name>{}(obj, default_value);
     } else {
         PyObject* result = PyObject_GetAttr(ptr(obj), impl::TemplateString<name>::ptr);
@@ -222,9 +193,7 @@ template <StaticStr name, typename T> requires (__getattr__<T, name>::enable)
 /* Equivalent to Python `setattr(obj, name, value)` with a static attribute name. */
 template <StaticStr name, typename T, typename V> requires (__setattr__<T, name, V>::enable)
 void setattr(const T& obj, const V& value) {
-    if constexpr (impl::proxy_like<T>) {
-        setattr<name>(obj.value(), value);
-    } else if constexpr (impl::has_call_operator<__setattr__<T, name, V>>) {
+    if constexpr (impl::has_call_operator<__setattr__<T, name, V>>) {
         __setattr__<T, name, V>{}(obj, value);
     } else {
         if (PyObject_SetAttr(
@@ -241,9 +210,7 @@ void setattr(const T& obj, const V& value) {
 /* Equivalent to Python `delattr(obj, name)` with a static attribute name. */
 template <StaticStr name, typename T> requires (__delattr__<T, name>::enable)
 void delattr(const T& obj) {
-    if constexpr (impl::proxy_like<T>) {
-        delattr<name>(obj.value());
-    } else if constexpr (impl::has_call_operator<__delattr__<T, name>>) {
+    if constexpr (impl::has_call_operator<__delattr__<T, name>>) {
         __delattr__<T, name>{}(obj);
     } else {
         if (PyObject_DelAttr(ptr(obj), impl::TemplateString<name>::ptr) < 0) {
@@ -258,10 +225,7 @@ represent C++ types using std::to_string or the stream insertion operator (<<). 
 else fails, falls back to typeid(obj).name(). */
 template <typename T>
 [[nodiscard]] std::string repr(const T& obj) {
-    if constexpr (impl::proxy_like<T>) {
-        return repr(obj.value());
-
-    } else if constexpr (impl::has_stream_insertion<T>) {
+    if constexpr (impl::has_stream_insertion<T>) {
         std::ostringstream stream;
         stream << obj;
         return stream.str();
@@ -310,9 +274,7 @@ template <typename T> requires (__len__<T>::enable)
         "containers.  Check your specialization of __len__ for these types "
         "and ensure the Return type is set to size_t."
     );
-    if constexpr (impl::proxy_like<T>) {
-        return len(obj.value());
-    } else if constexpr (impl::has_call_operator<__len__<T>>) {
+    if constexpr (impl::has_call_operator<__len__<T>>) {
         return __len__<T>{}(obj);
     } else {
         Py_ssize_t size = PyObject_Length(ptr(as_object(obj)));
@@ -418,9 +380,7 @@ template <std::derived_from<Object> Self> requires (__abs__<Self>::enable)
         "specialization of __abs__ for this type and ensure the Return type is set to "
         "a py::Object subclass."
     );
-    if constexpr (impl::proxy_like<Self>) {
-        return abs(self.value());
-    } else if constexpr (impl::has_call_operator<__abs__<Self>>) {
+    if constexpr (impl::has_call_operator<__abs__<Self>>) {
         return __abs__<Self>{}(self);
     } else {
         PyObject* result = PyNumber_Absolute(ptr(as_object(self)));
@@ -450,11 +410,7 @@ template <typename Base, typename Exp> requires (__pow__<Base, Exp>::enable)
         "of __pow__ for this type and ensure the Return type is derived from "
         "py::Object."
     );
-    if constexpr (impl::proxy_like<Base>) {
-        return pow(base.value(), exp);
-    } else if constexpr (impl::proxy_like<Exp>) {
-        return pow(base, exp.value());
-    } else if constexpr (impl::has_call_operator<__pow__<Base, Exp>>) {
+    if constexpr (impl::has_call_operator<__pow__<Base, Exp>>) {
         return __pow__<Base, Exp>{}(base, exp);
     } else {
         PyObject* result = PyNumber_Power(
@@ -506,10 +462,13 @@ template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
         "of __pow__ for this type and ensure the Return type is derived from "
         "py::Object."
     );
-    if constexpr (impl::proxy_like<Base>) {
-        return pow(base.value(), exp, mod);
-    } else if constexpr (impl::proxy_like<Exp>) {
-        return pow(base, exp.value(), mod);
+    if constexpr (std::is_invocable_v<
+        __pow__<Base, Exp>,
+        const Base&,
+        const Exp&,
+        const Mod&
+    >) {
+        return __pow__<Base, Exp>{}(base, exp, mod);
     } else {
         PyObject* result = PyNumber_Power(
             ptr(as_object(base)),
@@ -552,11 +511,7 @@ auto floordiv(const L& lhs, const R& rhs) {
         "specialization of __floordiv__ for these types and ensure the Return "
         "type is derived from py::Object."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return floordiv(lhs.value(), rhs);
-    } else if constexpr (impl::proxy_like<R>) {
-        return floordiv(lhs, rhs.value());
-    } else if constexpr (impl::has_call_operator<__floordiv__<L, R>>) {
+    if constexpr (impl::has_call_operator<__floordiv__<L, R>>) {
         return __floordiv__<L, R>{}(lhs, rhs);
     } else {
         PyObject* result = PyNumber_FloorDivide(
@@ -580,11 +535,7 @@ L& ifloordiv(L& lhs, const R& rhs) {
         "left operand.  Check your specialization of __ifloordiv__ for these "
         "types and ensure the Return type is set to the left operand."
     );
-    if constexpr (impl::proxy_like<L>) {
-        ifloordiv(lhs.value(), rhs);
-    } else if constexpr (impl::proxy_like<R>) {
-        ifloordiv(lhs, rhs.value());
-    } else if constexpr (impl::has_call_operator<__ifloordiv__<L, R>>) {
+    if constexpr (impl::has_call_operator<__ifloordiv__<L, R>>) {
         __ifloordiv__<L, R>{}(lhs, rhs);
     } else {
         PyObject* result = PyNumber_InPlaceFloorDivide(
@@ -680,11 +631,7 @@ struct ArgPack {
 
 template <std::derived_from<Object> Container> requires (impl::is_iterable<Container>)
 [[nodiscard]] auto operator*(const Container& self) {
-    if constexpr (impl::proxy_like<Container>) {
-        return *self.value();
-    } else {
-        return ArgPack<Container>{self};
-    }
+    return ArgPack<Container>{self};
 }
 
 
@@ -697,6 +644,7 @@ template <std::derived_from<Object> Container, std::ranges::view View>
 
 template <std::derived_from<Object> Container, typename Func>
     requires (
+        !std::ranges::view<Func> &&
         impl::is_iterable<Container> &&
         std::is_invocable_v<Func, impl::iter_type<Container>>
     )
@@ -729,9 +677,7 @@ auto operator~(const Self& self) {
         "specialization of __invert__ for this type and ensure the Return type "
         "is set to a py::Object subclass."
     );
-    if constexpr (impl::proxy_like<Self>) {
-        return ~self.value();
-    } else if constexpr (impl::has_call_operator<__invert__<Self>>) {
+    if constexpr (impl::has_call_operator<__invert__<Self>>) {
         return __invert__<Self>{}(self);
     } else {
         PyObject* result = PyNumber_Invert(ptr(as_object(self)));
@@ -754,9 +700,7 @@ auto operator+(const Self& self) {
         "your specialization of __pos__ for this type and ensure the Return "
         "type is set to a py::Object subclass."
     );
-    if constexpr (impl::proxy_like<Self>) {
-        return +self.value();
-    } else if constexpr (impl::has_call_operator<__pos__<Self>>) {
+    if constexpr (impl::has_call_operator<__pos__<Self>>) {
         return __pos__<Self>{}(self);
     } else {
         PyObject* result = PyNumber_Positive(ptr(as_object(self)));
@@ -779,9 +723,7 @@ auto operator-(const Self& self) {
         "your specialization of __neg__ for this type and ensure the Return "
         "type is set to a py::Object subclass."
     );
-    if constexpr (impl::proxy_like<Self>) {
-        return -self.value();
-    } else if constexpr (impl::has_call_operator<__neg__<Self>>) {
+    if constexpr (impl::has_call_operator<__neg__<Self>>) {
         return __neg__<Self>{}(self);
     } else {
         PyObject* result = PyNumber_Negative(ptr(as_object(self)));
@@ -797,6 +739,10 @@ template <std::derived_from<Object> Self> requires (!__increment__<Self>::enable
 Self& operator++(Self& self) = delete;
 template <std::derived_from<Object> Self> requires (__increment__<Self>::enable)
 Self& operator++(Self& self) {
+    static_assert(
+        impl::python_like<Self>,
+        "Increment operator requires a Python object."
+    );
     using Return = typename __increment__<Self>::type;
     static_assert(
         std::same_as<Return, Self>,
@@ -804,24 +750,16 @@ Self& operator++(Self& self) {
         "Check your specialization of __increment__ for this type and ensure "
         "the Return type is set to the derived type."
     );
-    if constexpr (impl::proxy_like<Self>) {
-        ++self.value();
+    if constexpr (impl::has_call_operator<__increment__<Self>>) {
+        __increment__<Self>{}(self);
     } else {
-        static_assert(
-            impl::python_like<Self>,
-            "Increment operator requires a Python object."
-        );
-        if constexpr (impl::has_call_operator<__increment__<Self>>) {
-            __increment__<Self>{}(self);
+        PyObject* result = PyNumber_InPlaceAdd(ptr(self), impl::one);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(self)) {
+            Py_DECREF(result);
         } else {
-            PyObject* result = PyNumber_InPlaceAdd(ptr(self), impl::one);
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(self)) {
-                Py_DECREF(result);
-            } else {
-                self = reinterpret_steal<Return>(result);
-            }
+            self = reinterpret_steal<Return>(result);
         }
     }
     return self;
@@ -832,6 +770,10 @@ template <std::derived_from<Object> Self> requires (!__increment__<Self>::enable
 Self operator++(Self& self, int) = delete;
 template <std::derived_from<Object> Self> requires (__increment__<Self>::enable)
 Self operator++(Self& self, int) {
+    static_assert(
+        impl::python_like<Self>,
+        "Increment operator requires a Python object."
+    );
     using Return = typename __increment__<Self>::type;
     static_assert(
         std::same_as<Return, Self>,
@@ -840,24 +782,16 @@ Self operator++(Self& self, int) {
         "the Return type is set to the derived type."
     );
     Self copy = self;
-    if constexpr (impl::proxy_like<Self>) {
-        ++self.value();
+    if constexpr (impl::has_call_operator<__increment__<Self>>) {
+        __increment__<Self>{}(self);
     } else {
-        static_assert(
-            impl::python_like<Self>,
-            "Increment operator requires a Python object."
-        );
-        if constexpr (impl::has_call_operator<__increment__<Self>>) {
-            __increment__<Self>{}(self);
+        PyObject* result = PyNumber_InPlaceAdd(ptr(self), impl::one);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(self)) {
+            Py_DECREF(result);
         } else {
-            PyObject* result = PyNumber_InPlaceAdd(ptr(self), impl::one);
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(self)) {
-                Py_DECREF(result);
-            } else {
-                self = reinterpret_steal<Return>(result);
-            }
+            self = reinterpret_steal<Return>(result);
         }
     }
     return copy;
@@ -868,6 +802,10 @@ template <std::derived_from<Object> Self> requires (!__decrement__<Self>::enable
 Self& operator--(Self& self) = delete;
 template <std::derived_from<Object> Self> requires (__decrement__<Self>::enable)
 Self& operator--(Self& self) {
+    static_assert(
+        impl::python_like<Self>,
+        "Decrement operator requires a Python object."
+    );
     using Return = typename __decrement__<Self>::type;
     static_assert(
         std::same_as<Return, Self>,
@@ -875,24 +813,16 @@ Self& operator--(Self& self) {
         "Check your specialization of __decrement__ for this type and ensure "
         "the Return type is set to the derived type."
     );
-    if constexpr (impl::proxy_like<Self>) {
-        --self.value();
+    if constexpr (impl::has_call_operator<__decrement__<Self>>) {
+        __decrement__<Self>{}(self);
     } else {
-        static_assert(
-            impl::python_like<Self>,
-            "Decrement operator requires a Python object."
-        );
-        if constexpr (impl::has_call_operator<__decrement__<Self>>) {
-            __decrement__<Self>{}(self);
+        PyObject* result = PyNumber_InPlaceSubtract(ptr(self), impl::one);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(self)) {
+            Py_DECREF(result);
         } else {
-            PyObject* result = PyNumber_InPlaceSubtract(ptr(self), impl::one);
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(self)) {
-                Py_DECREF(result);
-            } else {
-                self = reinterpret_steal<Return>(result);
-            }
+            self = reinterpret_steal<Return>(result);
         }
     }
     return self;
@@ -903,6 +833,10 @@ template <std::derived_from<Object> Self> requires (!__decrement__<Self>::enable
 Self operator--(Self& self, int) = delete;
 template <std::derived_from<Object> Self> requires (__decrement__<Self>::enable)
 Self operator--(Self& self, int) {
+    static_assert(
+        impl::python_like<Self>,
+        "Decrement operator requires a Python object."
+    );
     using Return = typename __decrement__<Self>::type;
     static_assert(
         std::same_as<Return, Self>,
@@ -911,24 +845,16 @@ Self operator--(Self& self, int) {
         "the Return type is set to the derived type."
     );
     Self copy = self;
-    if constexpr (impl::proxy_like<Self>) {
-        --self.value();
+    if constexpr (impl::has_call_operator<__decrement__<Self>>) {
+        __decrement__<Self>{}(self);
     } else {
-        static_assert(
-            impl::python_like<Self>,
-            "Decrement operator requires a Python object."
-        );
-        if constexpr (impl::has_call_operator<__decrement__<Self>>) {
-            __decrement__<Self>{}(self);
+        PyObject* result = PyNumber_InPlaceSubtract(ptr(self), impl::one);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(self)) {
+            Py_DECREF(result);
         } else {
-            PyObject* result = PyNumber_InPlaceSubtract(ptr(self), impl::one);
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(self)) {
-                Py_DECREF(result);
-            } else {
-                self = reinterpret_steal<Return>(result);
-            }
+            self = reinterpret_steal<Return>(result);
         }
     }
     return copy;
@@ -948,11 +874,7 @@ auto operator<(const L& lhs, const R& rhs) {
         "specialization of __lt__ for these types and ensure the Return type "
         "is set to bool."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() < rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs < rhs.value();
-    } else if constexpr (impl::has_call_operator<__lt__<L, R>>) {
+    if constexpr (impl::has_call_operator<__lt__<L, R>>) {
         return __lt__<L, R>{}(lhs, rhs);
     } else {
         int result = PyObject_RichCompareBool(
@@ -981,11 +903,7 @@ auto operator<=(const L& lhs, const R& rhs) {
         "specialization of __le__ for this type and ensure the Return type is "
         "set to bool."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() <= rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs <= rhs.value();
-    } else if constexpr (impl::has_call_operator<__le__<L, R>>) {
+    if constexpr (impl::has_call_operator<__le__<L, R>>) {
         return __le__<L, R>{}(lhs, rhs);
     } else {
         int result = PyObject_RichCompareBool(
@@ -1014,11 +932,7 @@ auto operator==(const L& lhs, const R& rhs) {
         "specialization of __eq__ for this type and ensure the Return type is "
         "set to bool."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() == rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs == rhs.value();
-    } else if constexpr (impl::has_call_operator<__eq__<L, R>>) {
+    if constexpr (impl::has_call_operator<__eq__<L, R>>) {
         return __eq__<L, R>{}(lhs, rhs);
     } else {
         int result = PyObject_RichCompareBool(
@@ -1047,11 +961,7 @@ auto operator!=(const L& lhs, const R& rhs) {
         "specialization of __ne__ for this type and ensure the Return type is "
         "set to bool."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() != rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs != rhs.value();
-    } else if constexpr (impl::has_call_operator<__ne__<L, R>>) {
+    if constexpr (impl::has_call_operator<__ne__<L, R>>) {
         return __ne__<L, R>{}(lhs, rhs);
     } else {
         int result = PyObject_RichCompareBool(
@@ -1080,11 +990,7 @@ auto operator>=(const L& lhs, const R& rhs) {
         "your specialization of __ge__ for this type and ensure the Return "
         "type is set to bool."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() >= rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs >= rhs.value();
-    } else if constexpr (impl::has_call_operator<__ge__<L, R>>) {
+    if constexpr (impl::has_call_operator<__ge__<L, R>>) {
         return __ge__<L, R>{}(lhs, rhs);
     } else {
         int result = PyObject_RichCompareBool(
@@ -1113,11 +1019,7 @@ auto operator>(const L& lhs, const R& rhs) {
         "specialization of __gt__ for this type and ensure the Return type is "
         "set to bool."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() > rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs > rhs.value();
-    } else if constexpr (impl::has_call_operator<__gt__<L, R>>) {
+    if constexpr (impl::has_call_operator<__gt__<L, R>>) {
         return __gt__<L, R>{}(lhs, rhs);
     } else {
         int result = PyObject_RichCompareBool(
@@ -1146,11 +1048,7 @@ auto operator+(const L& lhs, const R& rhs) {
         "specialization of __add__ for this type and ensure the Return type is "
         "derived from py::Object."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() + rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs + rhs.value();
-    } else if constexpr (impl::has_call_operator<__add__<L, R>>) {
+    if constexpr (impl::has_call_operator<__add__<L, R>>) {
         return __add__<L, R>{}(lhs, rhs);
     } else {
         PyObject* result = PyNumber_Add(
@@ -1169,6 +1067,10 @@ template <std::derived_from<Object> L, typename R> requires (!__iadd__<L, R>::en
 L& operator+=(L& lhs, const R& rhs) = delete;
 template <std::derived_from<Object> L, typename R> requires (__iadd__<L, R>::enable)
 L& operator+=(L& lhs, const R& rhs) {
+    static_assert(
+        impl::python_like<L>,
+        "In-place addition operator requires a Python object."
+    );
     using Return = typename __iadd__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1176,29 +1078,19 @@ L& operator+=(L& lhs, const R& rhs) {
         "operand.  Check your specialization of __iadd__ for these types and "
         "ensure the Return type is set to the left operand."
     );
-    if constexpr (impl::proxy_like<L>) {
-        lhs.value() += rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        lhs += rhs.value();
+    if constexpr (impl::has_call_operator<__iadd__<L, R>>) {
+        __iadd__<L, R>{}(lhs, rhs);
     } else {
-        static_assert(
-            impl::python_like<L>,
-            "In-place addition operator requires a Python object."
+        PyObject* result = PyNumber_InPlaceAdd(
+            ptr(lhs),
+            ptr(as_object(rhs))
         );
-        if constexpr (impl::has_call_operator<__iadd__<L, R>>) {
-            __iadd__<L, R>{}(lhs, rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(lhs)) {
+            Py_DECREF(result);
         } else {
-            PyObject* result = PyNumber_InPlaceAdd(
-                ptr(lhs),
-                ptr(as_object(rhs))
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(lhs)) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<Return>(result);
-            }
+            lhs = reinterpret_steal<Return>(result);
         }
     }
     return lhs;
@@ -1218,11 +1110,7 @@ auto operator-(const L& lhs, const R& rhs) {
         "specialization of __sub__ for this type and ensure the Return type is "
         "derived from py::Object."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() - rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs - rhs.value();
-    } else if constexpr (impl::has_call_operator<__sub__<L, R>>) {
+    if constexpr (impl::has_call_operator<__sub__<L, R>>) {
         return __sub__<L, R>{}(lhs, rhs);
     } else {
         PyObject* result = PyNumber_Subtract(
@@ -1241,6 +1129,10 @@ template <std::derived_from<Object> L, typename R> requires (!__isub__<L, R>::en
 L& operator-=(L& lhs, const R& rhs) = delete;
 template <std::derived_from<Object> L, typename R> requires (__isub__<L, R>::enable)
 L& operator-=(L& lhs, const R& rhs) {
+    static_assert(
+        impl::python_like<L>,
+        "In-place addition operator requires a Python object."
+    );
     using Return = typename __isub__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1248,29 +1140,19 @@ L& operator-=(L& lhs, const R& rhs) {
         "operand.  Check your specialization of __isub__ for these types and "
         "ensure the Return type is set to the left operand."
     );
-    if constexpr (impl::proxy_like<L>) {
-        lhs.value() -= rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        lhs -= rhs.value();
+    if constexpr (impl::has_call_operator<__isub__<L, R>>) {
+        __isub__<L, R>{}(lhs, rhs);
     } else {
-        static_assert(
-            impl::python_like<L>,
-            "In-place addition operator requires a Python object."
+        PyObject* result = PyNumber_InPlaceSubtract(
+            ptr(lhs),
+            ptr(as_object(rhs))
         );
-        if constexpr (impl::has_call_operator<__isub__<L, R>>) {
-            __isub__<L, R>{}(lhs, rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(lhs)) {
+            Py_DECREF(result);
         } else {
-            PyObject* result = PyNumber_InPlaceSubtract(
-                ptr(lhs),
-                ptr(as_object(rhs))
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(lhs)) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<Return>(result);
-            }
+            lhs = reinterpret_steal<Return>(result);
         }
     }
     return lhs;
@@ -1290,23 +1172,17 @@ auto operator*(const L& lhs, const R& rhs) {
         "your specialization of __mul__ for this type and ensure the Return "
         "type is derived from py::Object."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() * rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs * rhs.value();
+    if constexpr (impl::has_call_operator<__mul__<L, R>>) {
+        return __mul__<L, R>{}(lhs, rhs);
     } else {
-        if constexpr (impl::has_call_operator<__mul__<L, R>>) {
-            return __mul__<L, R>{}(lhs, rhs);
-        } else {
-            PyObject* result = PyNumber_Multiply(
-                ptr(as_object(lhs)),
-                ptr(as_object(rhs))
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Return>(result);
+        PyObject* result = PyNumber_Multiply(
+            ptr(as_object(lhs)),
+            ptr(as_object(rhs))
+        );
+        if (result == nullptr) {
+            Exception::from_python();
         }
+        return reinterpret_steal<Return>(result);
     }
 }
 
@@ -1315,6 +1191,10 @@ template <std::derived_from<Object> L, typename R> requires (!__imul__<L, R>::en
 L& operator*=(L& lhs, const R& rhs) = delete;
 template <std::derived_from<Object> L, typename R> requires (__imul__<L, R>::enable)
 L& operator*=(L& lhs, const R& rhs) {
+    static_assert(
+        impl::python_like<L>,
+        "In-place multiplication operator requires a Python object."
+    );
     using Return = typename __imul__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1322,29 +1202,19 @@ L& operator*=(L& lhs, const R& rhs) {
         "left operand.  Check your specialization of __imul__ for these types "
         "and ensure the Return type is set to the left operand."
     );
-    if constexpr (impl::proxy_like<L>) {
-        lhs.value() *= rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        lhs *= rhs.value();
+    if constexpr (impl::has_call_operator<__imul__<L, R>>) {
+        __imul__<L, R>{}(lhs, rhs);
     } else {
-        static_assert(
-            impl::python_like<L>,
-            "In-place multiplication operator requires a Python object."
+        PyObject* result = PyNumber_InPlaceMultiply(
+            ptr(lhs),
+            ptr(as_object(rhs))
         );
-        if constexpr (impl::has_call_operator<__imul__<L, R>>) {
-            __imul__<L, R>{}(lhs, rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(lhs)) {
+            Py_DECREF(result);
         } else {
-            PyObject* result = PyNumber_InPlaceMultiply(
-                ptr(lhs),
-                ptr(as_object(rhs))
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(lhs)) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<Return>(result);
-            }
+            lhs = reinterpret_steal<Return>(result);
         }
     }
     return lhs;
@@ -1364,11 +1234,7 @@ auto operator/(const L& lhs, const R& rhs) {
         "your specialization of __truediv__ for this type and ensure the "
         "Return type is derived from py::Object."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() / rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs / rhs.value();
-    } else if constexpr (impl::has_call_operator<__truediv__<L, R>>) {
+    if constexpr (impl::has_call_operator<__truediv__<L, R>>) {
         return __truediv__<L, R>{}(lhs, rhs);
     } else {
         PyObject* result = PyNumber_TrueDivide(
@@ -1387,6 +1253,10 @@ template <std::derived_from<Object> L, typename R> requires (!__itruediv__<L, R>
 L& operator/=(L& lhs, const R& rhs) = delete;
 template <std::derived_from<Object> L, typename R> requires (__itruediv__<L, R>::enable)
 L& operator/=(L& lhs, const R& rhs) {
+    static_assert(
+        impl::python_like<L>,
+        "In-place true division operator requires a Python object."
+    );
     using Return = typename __itruediv__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1394,29 +1264,19 @@ L& operator/=(L& lhs, const R& rhs) {
         "left operand.  Check your specialization of __itruediv__ for these "
         "types and ensure the Return type is set to the left operand."
     );
-    if constexpr (impl::proxy_like<L>) {
-        lhs.value() /= rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        lhs /= rhs.value();
+    if constexpr (impl::has_call_operator<__itruediv__<L, R>>) {
+        __itruediv__<L, R>{}(lhs, rhs);
     } else {
-        static_assert(
-            impl::python_like<L>,
-            "In-place true division operator requires a Python object."
+        PyObject* result = PyNumber_InPlaceTrueDivide(
+            ptr(lhs),
+            ptr(as_object(rhs))
         );
-        if constexpr (impl::has_call_operator<__itruediv__<L, R>>) {
-            __itruediv__<L, R>{}(lhs, rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(lhs)) {
+            Py_DECREF(result);
         } else {
-            PyObject* result = PyNumber_InPlaceTrueDivide(
-                ptr(lhs),
-                ptr(as_object(rhs))
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(lhs)) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<Return>(result);
-            }
+            lhs = reinterpret_steal<Return>(result);
         }
     }
     return lhs;
@@ -1436,11 +1296,7 @@ auto operator%(const L& lhs, const R& rhs) {
         "specialization of __mod__ for this type and ensure the Return type "
         "is derived from py::Object."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() % rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs % rhs.value();
-    } else if constexpr (impl::has_call_operator<__mod__<L, R>>) {
+    if constexpr (impl::has_call_operator<__mod__<L, R>>) {
         return __mod__<L, R>{}(lhs, rhs);
     } else {
         PyObject* result = PyNumber_Remainder(
@@ -1459,6 +1315,10 @@ template <std::derived_from<Object> L, typename R> requires (!__imod__<L, R>::en
 L& operator%=(L& lhs, const R& rhs) = delete;
 template <std::derived_from<Object> L, typename R> requires (__imod__<L, R>::enable)
 L& operator%=(L& lhs, const R& rhs) {
+    static_assert(
+        impl::python_like<L>,
+        "In-place modulus operator requires a Python object."
+    );
     using Return = typename __imod__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1466,29 +1326,19 @@ L& operator%=(L& lhs, const R& rhs) {
         "operand.  Check your specialization of __imod__ for these types and "
         "ensure the Return type is set to the left operand."
     );
-    if constexpr (impl::proxy_like<L>) {
-        lhs.value() %= rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        lhs %= rhs.value();
+    if constexpr (impl::has_call_operator<__imod__<L, R>>) {
+        __imod__<L, R>{}(lhs, rhs);
     } else {
-        static_assert(
-            impl::python_like<L>,
-            "In-place modulus operator requires a Python object."
+        PyObject* result = PyNumber_InPlaceRemainder(
+            ptr(lhs),
+            ptr(as_object(rhs))
         );
-        if constexpr (impl::has_call_operator<__imod__<L, R>>) {
-            __imod__<L, R>{}(lhs, rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(lhs)) {
+            Py_DECREF(result);
         } else {
-            PyObject* result = PyNumber_InPlaceRemainder(
-                ptr(lhs),
-                ptr(as_object(rhs))
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(lhs)) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<Return>(result);
-            }
+            lhs = reinterpret_steal<Return>(result);
         }
     }
     return lhs;
@@ -1516,11 +1366,7 @@ auto operator<<(const L& lhs, const R& rhs) {
         "specialization of __lshift__ for this type and ensure the Return "
         "type is derived from py::Object."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() << rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs << rhs.value();
-    } else if constexpr (impl::has_call_operator<__lshift__<L, R>>) {
+    if constexpr (impl::has_call_operator<__lshift__<L, R>>) {
         return __lshift__<L, R>{}(lhs, rhs);
     } else {
         PyObject* result = PyNumber_Lshift(
@@ -1553,17 +1399,14 @@ L& operator<<(L& os, const R& obj) {
 }
 
 
-template <std::derived_from<std::ostream> L, impl::proxy_like T>
-L& operator<<(L& os, const T& proxy) {
-    os << proxy.value();
-    return os;
-}
-
-
 template <std::derived_from<Object> L, typename R> requires (!__ilshift__<L, R>::enable)
 L& operator<<=(L& lhs, const R& rhs) = delete;
 template <std::derived_from<Object> L, typename R> requires (__ilshift__<L, R>::enable)
 L& operator<<=(L& lhs, const R& rhs) {
+    static_assert(
+        impl::python_like<L>,
+        "In-place left shift operator requires a Python object."
+    );
     using Return = typename __ilshift__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1571,29 +1414,19 @@ L& operator<<=(L& lhs, const R& rhs) {
         "operand.  Check your specialization of __ilshift__ for these types "
         "and ensure the Return type is set to the left operand."
     );
-    if constexpr (impl::proxy_like<L>) {
-        lhs.value() <<= rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        lhs <<= rhs.value();
+    if constexpr (impl::has_call_operator<__ilshift__<L, R>>) {
+        __ilshift__<L, R>{}(lhs, rhs);
     } else {
-        static_assert(
-            impl::python_like<L>,
-            "In-place left shift operator requires a Python object."
+        PyObject* result = PyNumber_InPlaceLshift(
+            ptr(lhs),
+            ptr(as_object(rhs))
         );
-        if constexpr (impl::has_call_operator<__ilshift__<L, R>>) {
-            __ilshift__<L, R>{}(lhs, rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(lhs)) {
+            Py_DECREF(result);
         } else {
-            PyObject* result = PyNumber_InPlaceLshift(
-                ptr(lhs),
-                ptr(as_object(rhs))
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(lhs)) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<Return>(result);
-            }
+            lhs = reinterpret_steal<Return>(result);
         }
     }
     return lhs;
@@ -1613,11 +1446,7 @@ auto operator>>(const L& lhs, const R& rhs) {
         "specialization of __rshift__ for this type and ensure the Return "
         "type is derived from py::Object."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() >> rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs >> rhs.value();
-    } else if constexpr (impl::has_call_operator<__rshift__<L, R>>) {
+    if constexpr (impl::has_call_operator<__rshift__<L, R>>) {
         return __rshift__<L, R>{}(lhs, rhs);
     } else {
         PyObject* result = PyNumber_Rshift(
@@ -1636,6 +1465,10 @@ template <std::derived_from<Object> L, typename R> requires (!__irshift__<L, R>:
 L& operator>>=(L& lhs, const R& rhs) = delete;
 template <std::derived_from<Object> L, typename R> requires (__irshift__<L, R>::enable)
 L& operator>>=(L& lhs, const R& rhs) {
+    static_assert(
+        impl::python_like<L>,
+        "In-place right shift operator requires a Python object."
+    );
     using Return = typename __irshift__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1643,29 +1476,19 @@ L& operator>>=(L& lhs, const R& rhs) {
         "operand.  Check your specialization of __irshift__ for these types "
         "and ensure the Return type is set to the left operand."
     );
-    if constexpr (impl::proxy_like<L>) {
-        lhs.value() >>= rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        lhs >>= rhs.value();
+    if constexpr (impl::has_call_operator<__irshift__<L, R>>) {
+        __irshift__<L, R>{}(lhs, rhs);
     } else {
-        static_assert(
-            impl::python_like<L>,
-            "In-place right shift operator requires a Python object."
+        PyObject* result = PyNumber_InPlaceRshift(
+            ptr(lhs),
+            ptr(as_object(rhs))
         );
-        if constexpr (impl::has_call_operator<__irshift__<L, R>>) {
-            __irshift__<L, R>{}(lhs, rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(lhs)) {
+            Py_DECREF(result);
         } else {
-            PyObject* result = PyNumber_InPlaceRshift(
-                ptr(lhs),
-                ptr(as_object(rhs))
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(lhs)) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<Return>(result);
-            }
+            lhs = reinterpret_steal<Return>(result);
         }
     }
     return lhs;
@@ -1685,11 +1508,7 @@ auto operator&(const L& lhs, const R& rhs) {
         "specialization of __and__ for this type and ensure the Return type "
         "is derived from py::Object."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() & rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs & rhs.value();
-    } else if constexpr (impl::has_call_operator<__and__<L, R>>) {
+    if constexpr (impl::has_call_operator<__and__<L, R>>) {
         return __and__<L, R>{}(lhs, rhs);
     } else {
         PyObject* result = PyNumber_And(
@@ -1708,6 +1527,10 @@ template <std::derived_from<Object> L, typename R> requires (!__iand__<L, R>::en
 L& operator&=(L& lhs, const R& rhs) = delete;
 template <std::derived_from<Object> L, typename R> requires (__iand__<L, R>::enable)
 L& operator&=(L& lhs, const R& rhs) {
+    static_assert(
+        impl::python_like<L>,
+        "In-place bitwise AND operator requires a Python object."
+    );
     using Return = typename __iand__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1715,29 +1538,19 @@ L& operator&=(L& lhs, const R& rhs) {
         "operand.  Check your specialization of __iand__ for these types and "
         "ensure the Return type is set to the left operand."
     );
-    if constexpr (impl::proxy_like<L>) {
-        lhs.value() &= rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        lhs &= rhs.value();
+    if constexpr (impl::has_call_operator<__iand__<L, R>>) {
+        __iand__<L, R>{}(lhs, rhs);
     } else {
-        static_assert(
-            impl::python_like<L>,
-            "In-place bitwise AND operator requires a Python object."
+        PyObject* result = PyNumber_InPlaceAnd(
+            ptr(lhs),
+            ptr(as_object(rhs))
         );
-        if constexpr (impl::has_call_operator<__iand__<L, R>>) {
-            __iand__<L, R>{}(lhs, rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(lhs)) {
+            Py_DECREF(result);
         } else {
-            PyObject* result = PyNumber_InPlaceAnd(
-                ptr(lhs),
-                ptr(as_object(rhs))
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(lhs)) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<Return>(result);
-            }
+            lhs = reinterpret_steal<Return>(result);
         }
     }
     return lhs;
@@ -1757,11 +1570,7 @@ auto operator|(const L& lhs, const R& rhs) {
         "specialization of __or__ for this type and ensure the Return type is "
         "derived from py::Object."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() | rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs | rhs.value();
-    } else if constexpr (impl::has_call_operator<__or__<L, R>>) {
+    if constexpr (impl::has_call_operator<__or__<L, R>>) {
         return __or__<L, R>{}(lhs, rhs);
     } else {
         PyObject* result = PyNumber_Or(
@@ -1780,6 +1589,10 @@ template <std::derived_from<Object> L, typename R> requires (!__ior__<L, R>::ena
 L& operator|=(L& lhs, const R& rhs) = delete;
 template <std::derived_from<Object> L, typename R> requires (__ior__<L, R>::enable)
 L& operator|=(L& lhs, const R& rhs) {
+    static_assert(
+        impl::python_like<L>,
+        "In-place bitwise OR operator requires a Python object."
+    );
     using Return = typename __ior__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1787,29 +1600,19 @@ L& operator|=(L& lhs, const R& rhs) {
         "operand.  Check your specialization of __ior__ for these types and "
         "ensure the Return type is set to the left operand."
     );
-    if constexpr (impl::proxy_like<L>) {
-        lhs.value() |= rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        lhs |= rhs.value();
+    if constexpr (impl::has_call_operator<__ior__<L, R>>) {
+        __ior__<L, R>{}(lhs, rhs);
     } else {
-        static_assert(
-            impl::python_like<L>,
-            "In-place bitwise OR operator requires a Python object."
+        PyObject* result = PyNumber_InPlaceOr(
+            ptr(lhs),
+            ptr(as_object(rhs))
         );
-        if constexpr (impl::has_call_operator<__ior__<L, R>>) {
-            __ior__<L, R>{}(lhs, rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(lhs)) {
+            Py_DECREF(result);
         } else {
-            PyObject* result = PyNumber_InPlaceOr(
-                ptr(lhs),
-                ptr(as_object(rhs))
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(lhs)) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<Return>(result);
-            }
+            lhs = reinterpret_steal<Return>(result);
         }
     }
     return lhs;
@@ -1829,11 +1632,7 @@ auto operator^(const L& lhs, const R& rhs) {
         "specialization of __xor__ for this type and ensure the Return type "
         "is derived from py::Object."
     );
-    if constexpr (impl::proxy_like<L>) {
-        return lhs.value() ^ rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        return lhs ^ rhs.value();
-    } else if constexpr (impl::has_call_operator<__xor__<L, R>>) {
+    if constexpr (impl::has_call_operator<__xor__<L, R>>) {
         return __xor__<L, R>{}(lhs, rhs);
     } else {
         PyObject* result = PyNumber_Xor(
@@ -1852,6 +1651,10 @@ template <std::derived_from<Object> L, typename R> requires (!__ixor__<L, R>::en
 L& operator^=(L& lhs, const R& rhs) = delete;
 template <std::derived_from<Object> L, typename R> requires (__ixor__<L, R>::enable)
 L& operator^=(L& lhs, const R& rhs) {
+    static_assert(
+        impl::python_like<L>,
+        "In-place bitwise XOR operator requires a Python object."
+    );
     using Return = typename __ixor__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1859,29 +1662,19 @@ L& operator^=(L& lhs, const R& rhs) {
         "operand.  Check your specialization of __ixor__ for these types and "
         "ensure the Return type is set to the left operand."
     );
-    if constexpr (impl::proxy_like<L>) {
-        lhs.value() ^= rhs;
-    } else if constexpr (impl::proxy_like<R>) {
-        lhs ^= rhs.value();
+    if constexpr (impl::has_call_operator<__ixor__<L, R>>) {
+        __ixor__<L, R>{}(lhs, rhs);
     } else {
-        static_assert(
-            impl::python_like<L>,
-            "In-place bitwise XOR operator requires a Python object."
+        PyObject* result = PyNumber_InPlaceXor(
+            ptr(lhs),
+            ptr(as_object(rhs))
         );
-        if constexpr (impl::has_call_operator<__ixor__<L, R>>) {
-            __ixor__<L, R>{}(lhs, rhs);
+        if (result == nullptr) {
+            Exception::from_python();
+        } else if (result == ptr(lhs)) {
+            Py_DECREF(result);
         } else {
-            PyObject* result = PyNumber_InPlaceXor(
-                ptr(lhs),
-                ptr(as_object(rhs))
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            } else if (result == ptr(lhs)) {
-                Py_DECREF(result);
-            } else {
-                lhs = reinterpret_steal<Return>(result);
-            }
+            lhs = reinterpret_steal<Return>(result);
         }
     }
     return lhs;
@@ -1902,9 +1695,7 @@ namespace std {
             "Return type is set to size_t."
         );
         static constexpr size_t operator()(const T& obj) {
-            if constexpr (py::impl::proxy_like<T>) {
-                return hash<py::impl::unwrap_proxy<T>>{}(obj.value());
-            } else if constexpr (py::impl::has_call_operator<py::__hash__<T>>) {
+            if constexpr (py::impl::has_call_operator<py::__hash__<T>>) {
                 return py::__hash__<T>{}(obj);
             } else {
                 Py_ssize_t result = PyObject_Hash(py::ptr(obj));
