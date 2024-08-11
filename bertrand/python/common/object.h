@@ -356,34 +356,34 @@ template <std::derived_from<Object> T>
 template <typename T>
     requires (
         __as_object__<T>::enable &&
-        impl::is_extension<typename __as_object__<T>::type> &&
+        impl::originates_from_cpp<typename __as_object__<T>::type> &&
         std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
     )
 [[nodiscard]] auto wrap(T& obj) -> __as_object__<T>::type {
-    return T::__python__::_wrap(obj);
+    return Type<T>::__python__::_wrap(obj);
 }
 
 
 template <typename T>
     requires (
         __as_object__<T>::enable &&
-        impl::is_extension<typename __as_object__<T>::type> &&
+        impl::originates_from_cpp<typename __as_object__<T>::type> &&
         std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
     )
 [[nodiscard]] auto wrap(const T& obj) -> __as_object__<T>::type {
-    return T::__python__::_wrap(obj);
+    return Type<T>::__python__::_wrap(obj);
 }
 
 
-template <std::derived_from<Object> T> requires (impl::is_extension<T>)
+template <std::derived_from<Object> T> requires (impl::originates_from_cpp<T>)
 [[nodiscard]] auto& unwrap(T& obj) {
-    return T::__python__::_unwrap(obj);
+    return Type<T>::__python__::_unwrap(obj);
 }
 
 
-template <std::derived_from<Object> T> requires (impl::is_extension<T>)
+template <std::derived_from<Object> T> requires (impl::originates_from_cpp<T>)
 [[nodiscard]] const auto& unwrap(const T& obj) {
-    return T::__python__::_unwrap(obj);
+    return Type<T>::__python__::_unwrap(obj);
 }
 
 

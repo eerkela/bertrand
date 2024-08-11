@@ -69,6 +69,15 @@ class Iterator_ : public Object, public impl::IterTag {
     template <typename T>
     static constexpr bool has_increment<T, std::void_t<decltype(&T::operator++)>> = true;
 
+
+    // TODO: maybe every __python__ type defines a corresponding nested iterator type?
+    // Those that originate in Python would use PyObject_GetIter() and PyIter_Next(),
+    // while those that originate in C++ would use the container's begin() and end()
+    // iterators directly.  I might not need this class at all in that case.
+    // -> When a Python object is iterated over in C++, we would just unwrap the object
+    // and use its begin() and end() iterators directly.
+
+
     /* A C++ iterator type to use as the begin and end iterators in the range.  A pair
     of these are stored in the iterator's Python representation, and back its
     `__next__` method.  They can also be directly referenced from C++ in order to back
@@ -182,6 +191,20 @@ class Iterator_ : public Object, public impl::IterTag {
 
     };
 
+    // TODO: This class is only returned by the wrapper's begin() method if it did not
+    // originate in C++.  This is determined by doing a PyType_IsSubclass() check on
+    // the iterator's interface type.  If so, then we follow up with a PyType_IsSubtype
+    // check on the iterator's specific template type.  If true, then we cast to the
+    // __python__ type and extract the ->begin and ->end fields and return them
+    // directly.  Otherwise, we have a template mismatch and raise a TypeError.
+    // If the iterator is not a subclass of the interface type, then we return one of
+    // these types.
+
+    // -> This overload is only exposed to C++.
+
+    // How do I deal with different return types in this case?  The origin check has
+    // to be a constexpr branch, in which case 
+
     /* A generic Python iterator type that uses `PyObject_GetIter()` and `PyIter_Next()`
     to implement the interface. */
     template <typename T>
@@ -277,6 +300,16 @@ class Iterator_ : public Object, public impl::IterTag {
 
     };
 
+    // TODO: the only way to do this properly is to pass the actual iterator type into
+    // the Iter<T> class.  It might also not inherit from __iter__ at all.  In fact,
+    // it might inherit from the iterator type so that all I need to do is wrap the
+    // output.
+
+    // TODO: the simplest way to do this would be to have the Python type store two
+    // Iter<Container> objects, and would just expose them directly to Python.  Perhaps
+    // py::Iterator<Container, py::Direction::Forward/Reverse>?
+    // -> Maybe it's cleaner to use a separate ReverseIterator class?
+
     /* A generic C++ iterator type that wraps around an existing C++ iterator and
     forwards its interface. */
     template <typename T>
@@ -299,42 +332,19 @@ class Iterator_ : public Object, public impl::IterTag {
     public:
         using value_type = Base::type;
 
-        decltype(std::ranges::begin(std::declval<T>())) iter;
-        value_type curr;
+        begin_type iter;
 
-        Iter(const T& container) :
-            iter(nullptr),
-            curr(reinterpret_steal<value_type>(nullptr))
-        {}
+        Iter(const T& container) : iter(std::ranges::end(container)) {}
 
-        Iter(const T& container, int) :
-            iter(PyObject_GetIter(ptr(container))),
-            curr(reinterpret_steal<value_type>(nullptr))
-        {
-            if (iter == nullptr) {
-                Exception::from_python();
-            }
-            ++(*this);
-        }
+        Iter(const T& container, int) : iter(std::ranges::begin(container)) {}
 
-        Iter(const Iter& other) :
-            Base(other),
-            iter(Py_XNewRef(other.iter)),
-            curr(other.curr)
-        {}
+        Iter(const Iter& other) : Base(other), iter(other.iter) {}
 
-        Iter(Iter&& other) :
-            Base(std::move(other)),
-            iter(other.iter),
-            curr(std::move(other.curr))
-        {
-            other.iter = nullptr;
-        }
+        Iter(Iter&& other) : Base(std::move(other)), iter(std::move(other.iter)) {}
 
         Iter& operator=(const Iter& other) {
             if (&other != this) {
-                iter = Py_XNewRef(other.iter);
-                curr = other.curr;
+                iter = other.iter;
                 Base::operator=(other);
             }
             return *this;
@@ -342,40 +352,27 @@ class Iterator_ : public Object, public impl::IterTag {
 
         Iter& operator=(Iter&& other) {
             if (&other != this) {
-                iter = other.iter;
-                curr = std::move(other.curr);
-                other.iter = nullptr;
+                iter = std::move(other.iter);
                 Base::operator=(std::move(other));
             }
             return *this;
         }
 
-        ~Iter() {
-            Py_XDECREF(iter);
+        const value_type operator*() const {
+            return py::wrap(*iter);
         }
 
-        const value_type& operator*() const {
-            return curr;
-        }
-
-        value_type& operator*() {
-            return curr;
+        value_type operator*() {
+            return py::wrap(*iter);
         }
 
         Iter& operator++(this auto& self) {
-            self.curr = reinterpret_steal<value_type>(PyIter_Next(self.iter));
-            if (PyErr_Occurred()) {
-                Exception::from_python();
-            }
+            ++self.iter;
             return self;
         }
 
-        /// NOTE: Python iterators don't support post-increment because they don't have
-        /// accurate copy semantics.  Incrementing the iterator will always modify the
-        /// copy.
-
         bool operator==(const Iter& other) const {
-            return ptr(curr) == ptr(other.curr);
+            return iter == other.iter;
         }
 
     };
@@ -398,6 +395,17 @@ public:
     // normal, or it can be iterated over from C++, which will directly reference the
     // C++ iterators in the python object.  That way, you should get native performance
     // in both directions.
+
+    auto begin() {
+        if constexpr (
+            std::derived_from<Container, Object> &&
+            impl::originates_from_cpp<Container>
+        ) {
+            // check against this template type and issue an error if it doesn't match
+            
+        }
+    }
+
 
 };
 

@@ -390,18 +390,15 @@ namespace impl {
     template <typename T>
     concept is_generic = is_generic_helper<T>;
 
-    template <typename T, typename = void>
-    constexpr bool is_extension_helper = false;
     template <typename T>
-    constexpr bool is_extension_helper<T, std::void_t<typename T::__python__>> = true;
-
-    // TODO: is_extension is probably not needed, since I can check against the
-    // __type__'s __origin__ attribute directly.
+    concept originates_from_cpp =
+        std::derived_from<std::remove_cvref_t<T>, Object> &&
+        Type<std::remove_cvref_t<T>>::__python__::__origin__ == Origin::CPP;
 
     template <typename T>
-    concept is_extension = requires(T&& t) {
-        { T::__python__::__type__ } -> std::convertible_to<PyTypeObject*>;
-    };
+    concept originates_from_python =
+        std::derived_from<std::remove_cvref_t<T>, Object> &&
+        Type<std::remove_cvref_t<T>>::__python__::__origin__ == Origin::PYTHON;
 
     template <typename T, typename = void>
     constexpr bool is_module_helper = false;
@@ -426,56 +423,36 @@ namespace impl {
     };
 
     template <typename From, typename To>
-    concept explicitly_convertible_to = requires(From&& from) {
-        static_cast<To>(std::forward<From>(from));
+    concept explicitly_convertible_to = requires(From from) {
+        static_cast<To>(from);
     };
 
     template <typename T>
-    concept is_iterable = requires(T&& t) {
-        { std::ranges::begin(std::forward<T>(t)) } -> std::input_or_output_iterator;
-        { std::ranges::end(std::forward<T>(t)) } -> std::input_or_output_iterator;
+    concept is_iterable = requires(T t) {
+        { std::ranges::begin(t) } -> std::input_or_output_iterator;
+        { std::ranges::end(t) } -> std::input_or_output_iterator;
     };
 
     template <typename T, typename Value>
     concept yields = is_iterable<T> && std::convertible_to<iter_type<T>, Value>;
 
     template <typename T>
-    concept is_reverse_iterable = requires(T&& t) {
-        { std::ranges::rbegin(std::forward<T>(t)) } -> std::input_or_output_iterator;
-        { std::ranges::rend(std::forward<T>(t)) } -> std::input_or_output_iterator;
+    concept is_reverse_iterable = requires(T t) {
+        { std::ranges::rbegin(t) } -> std::input_or_output_iterator;
+        { std::ranges::rend(t) } -> std::input_or_output_iterator;
     };
 
     template <typename T, typename Value>
     concept yields_reverse =
         is_reverse_iterable<T> && std::convertible_to<reverse_iter_type<T>, Value>;
 
-    template <typename T, typename U>
-    concept has_static_begin = requires(T&& t, U&& u) {
-        { std::forward<T>(t).begin(std::forward<U>(u)) } -> std::input_or_output_iterator;
-    };
-
-    template <typename T, typename U>
-    concept has_static_end = requires(T&& t, U&& u) {
-        { std::forward<T>(t).end(std::forward<U>(u)) } -> std::input_or_output_iterator;
-    };
-
-    template <typename T, typename U>
-    concept has_static_rbegin = requires(T&& t, U&& u) {
-        { std::forward<T>(t).rbegin(std::forward<U>(u)) } -> std::input_or_output_iterator;
-    };
-
-    template <typename T, typename U>
-    concept has_static_rend = requires(T&& t, U&& u) {
-        { std::forward<T>(t).rend(std::forward<U>(u)) } -> std::input_or_output_iterator;
-    };
-
     template <typename T>
-    concept iterator_like = requires(T&& it, T&& end) {
-        { *std::forward<T>(it) } -> std::convertible_to<typename std::decay_t<T>::value_type>;
-        { ++std::forward<T>(it) } -> std::same_as<std::remove_reference_t<T>&>;
-        { std::forward<T>(it)++ } -> std::same_as<std::remove_reference_t<T>>;
-        { std::forward<T>(it) == std::forward<T>(end) } -> std::convertible_to<bool>;
-        { std::forward<T>(it) != std::forward<T>(end) } -> std::convertible_to<bool>;
+    concept iterator_like = requires(T begin, T end) {
+        { *begin } -> std::convertible_to<typename std::decay_t<T>::value_type>;
+        { ++begin } -> std::same_as<std::remove_reference_t<T>&>;
+        { begin++ } -> std::same_as<std::remove_reference_t<T>>;
+        { begin == end } -> std::convertible_to<bool>;
+        { begin != end } -> std::convertible_to<bool>;
     };
 
     template <typename T>
@@ -486,32 +463,32 @@ namespace impl {
     static constexpr bool is_optional = is_optional_helper<std::decay_t<T>>;
 
     template <typename T>
-    concept has_size = requires(T&& t) {
-        { std::size(std::forward<T>(t)) } -> std::convertible_to<size_t>;
+    concept has_size = requires(T t) {
+        { std::size(t) } -> std::convertible_to<size_t>;
     };
 
     template <typename T>
-    concept sequence_like = is_iterable<T> && has_size<T> && requires(T&& t) {
-        { std::forward<T>(t)[0] } -> std::convertible_to<iter_type<T>>;
+    concept sequence_like = is_iterable<T> && has_size<T> && requires(T t) {
+        { t[0] } -> std::convertible_to<iter_type<T>>;
     };
 
     template <typename T>
-    concept mapping_like = requires(T&& t) {
+    concept mapping_like = requires(T t) {
         typename std::decay_t<T>::key_type;
         typename std::decay_t<T>::mapped_type;
-        { std::forward<T>(t)[std::declval<typename std::decay_t<T>::key_type>()] } ->
+        { t[std::declval<typename std::decay_t<T>::key_type>()] } ->
             std::convertible_to<typename std::decay_t<T>::mapped_type>;
     };
 
     template <typename T, typename Key>
     concept supports_lookup = !std::is_pointer_v<T> && !std::integral<std::decay_t<T>> &&
-        requires(T&& t, Key&& key) {
-            { std::forward<T>(t)[std::forward<Key>(key)] };
+        requires(T t, Key key) {
+            { t[key] };
         };
 
     template <typename T, typename Key, typename Value>
-    concept lookup_yields = supports_lookup<T, Key> && requires(T&& t, Key&& key) {
-        { std::forward<T>(t)[std::forward<Key>(key)] } -> std::convertible_to<Value>;
+    concept lookup_yields = supports_lookup<T, Key> && requires(T t, Key key) {
+        { t[key] } -> std::convertible_to<Value>;
     };
 
     template <typename T>
@@ -535,15 +512,15 @@ namespace impl {
     };
 
     template <typename T>
-    concept pair_like = std::tuple_size<T>::value == 2 && requires(T&& t) {
-        { std::get<0>(std::forward<T>(t)) };
-        { std::get<1>(std::forward<T>(t)) };
+    concept pair_like = std::tuple_size<T>::value == 2 && requires(T t) {
+        { std::get<0>(t) };
+        { std::get<1>(t) };
     };
 
     template <typename T, typename First, typename Second>
-    concept pair_like_with = pair_like<T> && requires(T&& t) {
-        { std::get<0>(std::forward<T>(t)) } -> std::convertible_to<First>;
-        { std::get<1>(std::forward<T>(t)) } -> std::convertible_to<Second>;
+    concept pair_like_with = pair_like<T> && requires(T t) {
+        { std::get<0>(t) } -> std::convertible_to<First>;
+        { std::get<1>(t) } -> std::convertible_to<Second>;
     };
 
     template <typename T>
@@ -553,18 +530,18 @@ namespace impl {
     concept yields_pairs_with = is_iterable<T> && pair_like_with<iter_type<T>, First, Second>;
 
     template <typename T>
-    concept has_abs = requires(T&& t) {
-        { std::abs(std::forward<T>(t)) };
+    concept has_abs = requires(T t) {
+        { std::abs(t) };
     };
 
     template <typename T>
-    concept has_to_string = requires(T&& t) {
-        { std::to_string(std::forward<T>(t)) } -> std::convertible_to<std::string>;
+    concept has_to_string = requires(T t) {
+        { std::to_string(t) } -> std::convertible_to<std::string>;
     };
 
     template <typename T>
-    concept has_stream_insertion = requires(std::ostream& os, T&& t) {
-        { os << std::forward<T>(t) } -> std::convertible_to<std::ostream&>;
+    concept has_stream_insertion = requires(std::ostream& os, T t) {
+        { os << t } -> std::convertible_to<std::ostream&>;
     };
 
     template <typename T>
@@ -577,52 +554,52 @@ namespace impl {
         has_call_operator<T>;
 
     template <typename T>
-    concept hashable = requires(T&& t) {
-        { std::hash<std::decay_t<T>>{}(std::forward<T>(t)) } -> std::convertible_to<size_t>;
+    concept hashable = requires(T t) {
+        { std::hash<std::decay_t<T>>{}(t) } -> std::convertible_to<size_t>;
     };
 
     template <typename T>
-    concept string_literal = requires(T&& t) {
-        { []<size_t N>(const char(&)[N]){}(std::forward<T>(t)) };
+    concept string_literal = requires(T t) {
+        { []<size_t N>(const char(&)[N]){}(t) };
     };
 
     template <typename T>
-    concept complex_like = requires(T&& t) {
-        { std::forward<T>(t).real() } -> std::convertible_to<double>;
-        { std::forward<T>(t).imag() } -> std::convertible_to<double>;
+    concept complex_like = requires(T t) {
+        { t.real() } -> std::convertible_to<double>;
+        { t.imag() } -> std::convertible_to<double>;
     };
 
     template <typename T>
-    concept has_empty = requires(T&& t) {
-        { std::forward<T>(t).empty() } -> std::convertible_to<bool>;
+    concept has_empty = requires(T t) {
+        { t.empty() } -> std::convertible_to<bool>;
     };
 
     template <typename T>
-    concept has_reserve = requires(T&& t, size_t n) {
-        { std::forward<T>(t).reserve(n) } -> std::same_as<void>;
+    concept has_reserve = requires(T t, size_t n) {
+        { t.reserve(n) } -> std::same_as<void>;
     };
 
     template <typename T, typename Key>
-    concept has_contains = requires(T&& t, Key&& key) {
-        { std::forward<T>(t).contains(std::forward<Key>(key)) } -> std::convertible_to<bool>;
+    concept has_contains = requires(T t, Key key) {
+        { t.contains(key) } -> std::convertible_to<bool>;
     };
 
     template <typename T>
-    concept has_keys = requires(T&& t) {
-        { std::forward<T>(t).keys() } -> is_iterable;
-        { std::forward<T>(t).keys() } -> yields<typename std::decay_t<T>::key_type>;
+    concept has_keys = requires(T t) {
+        { t.keys() } -> is_iterable;
+        { t.keys() } -> yields<typename std::decay_t<T>::key_type>;
     };
 
     template <typename T>
-    concept has_values = requires(T&& t) {
-        { std::forward<T>(t).values() } -> is_iterable;
-        { std::forward<T>(t).values() } -> yields<typename std::decay_t<T>::mapped_type>;
+    concept has_values = requires(T t) {
+        { t.values() } -> is_iterable;
+        { t.values() } -> yields<typename std::decay_t<T>::mapped_type>;
     };
 
     template <typename T>
-    concept has_items = requires(T&& t) {
-        { std::forward<T>(t).items() } -> is_iterable;
-        { std::forward<T>(t).items() } -> yields_pairs_with<
+    concept has_items = requires(T t) {
+        { t.items() } -> is_iterable;
+        { t.items() } -> yields_pairs_with<
             typename std::decay_t<T>::key_type,
             typename std::decay_t<T>::mapped_type
         >;
@@ -795,43 +772,43 @@ namespace impl {
 
     template <typename L, typename R>
     struct lt_comparable : public BertrandTag {
-        static constexpr bool value = requires(L&& a, R&& b) {
-            { std::forward<L>(a) < std::forward<R>(b) } -> std::convertible_to<bool>;
+        static constexpr bool value = requires(L a, R b) {
+            { a < b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
     struct le_comparable : public BertrandTag {
-        static constexpr bool value = requires(L&& a, R&& b) {
-            { std::forward<L>(a) <= std::forward<R>(b) } -> std::convertible_to<bool>;
+        static constexpr bool value = requires(L a, R b) {
+            { a <= b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
     struct eq_comparable : public BertrandTag {
-        static constexpr bool value = requires(L&& a, R&& b) {
-            { std::forward<L>(a) == std::forward<R>(b) } -> std::convertible_to<bool>;
+        static constexpr bool value = requires(L a, R b) {
+            { a == b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
     struct ne_comparable : public BertrandTag {
-        static constexpr bool value = requires(L&& a, R&& b) {
-            { std::forward<L>(a) != std::forward<R>(b) } -> std::convertible_to<bool>;
+        static constexpr bool value = requires(L a, R b) {
+            { a != b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
     struct ge_comparable : public BertrandTag {
-        static constexpr bool value = requires(L&& a, R&& b) {
-            { std::forward<L>(a) >= std::forward<R>(b) } -> std::convertible_to<bool>;
+        static constexpr bool value = requires(L a, R b) {
+            { a >= b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
     struct gt_comparable : public BertrandTag {
-        static constexpr bool value = requires(L&& a, R&& b) {
-            { std::forward<L>(a) > std::forward<R>(b) } -> std::convertible_to<bool>;
+        static constexpr bool value = requires(L a, R b) {
+            { a > b } -> std::convertible_to<bool>;
         };
     };
 
@@ -951,7 +928,7 @@ expose shared state to Python, for instance to model exported global variables. 
 template <typename T>
     requires (
         __as_object__<T>::enable &&
-        impl::is_extension<typename __as_object__<T>::type> &&
+        impl::originates_from_cpp<typename __as_object__<T>::type> &&
         std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
     )
 [[nodiscard]] auto wrap(T& obj) -> __as_object__<T>::type;
@@ -969,7 +946,7 @@ expose shared state to Python, for instance to model exported global variables. 
 template <typename T>
     requires (
         __as_object__<T>::enable &&
-        impl::is_extension<typename __as_object__<T>::type> &&
+        impl::originates_from_cpp<typename __as_object__<T>::type> &&
         std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
     )
 [[nodiscard]] auto wrap(const T& obj) -> __as_object__<T>::type;
@@ -979,7 +956,7 @@ template <typename T>
 Note that this only works if the wrapper was declared using the `__python__` CRTP
 helper.  If the wrapper does not own the backing object, this method will follow the
 pointer to resolve the reference. */
-template <std::derived_from<Object> T> requires (impl::is_extension<T>)
+template <std::derived_from<Object> T> requires (impl::originates_from_cpp<T>)
 [[nodiscard]] auto& unwrap(T& obj);
 
 
@@ -987,7 +964,7 @@ template <std::derived_from<Object> T> requires (impl::is_extension<T>)
 Note that this only works if the wrapper was declared using the `__python__` CRTP
 helper.  If the wrapper does not own the backing object, this method will follow the
 pointer to resolve the reference. */
-template <std::derived_from<Object> T> requires (impl::is_extension<T>)
+template <std::derived_from<Object> T> requires (impl::originates_from_cpp<T>)
 [[nodiscard]] const auto& unwrap(const T& obj);
 
 
