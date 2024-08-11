@@ -212,7 +212,7 @@ public:
     /* Index operator.  Specific key and element types can be controlled via the
     __getitem__, __setitem__, and __delitem__ control structs. */
     template <typename Self, typename Key> requires (__getitem__<Self, Key>::enable)
-    impl::Item<Self, Key> operator[](this const Self& self, const Key& key) {
+    auto operator[](this const Self& self, Key&& key) {
         using Return = typename __getitem__<Self, Key>::type;
         static_assert(
             std::derived_from<Return, Object>,
@@ -221,7 +221,11 @@ public:
             "type is set to a subclass of py::Object."
         );
         if constexpr (impl::has_call_operator<__getitem__<Self, Key>>) {
-            return {__getitem__<Self, Key>{}(self, key), self, key};
+            return impl::Item<Self, Key>(
+                __getitem__<Self, Key>{}(self, key),
+                self,
+                key
+            );
         } else {
             PyObject* result = PyObject_GetItem(
                 self.m_ptr,
@@ -230,7 +234,11 @@ public:
             if (result == nullptr) {
                 Exception::from_python();
             }
-            return {reinterpret_steal<Return>(result), self, key};
+            return impl::Item<Self, Key>(
+                reinterpret_steal<Return>(result),
+                self,
+                key
+            );
         }
     }
 

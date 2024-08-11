@@ -544,7 +544,7 @@ auto Object::operator[](
     this const Self& self,
     const std::initializer_list<impl::SliceInitializer>& slice
 ) {
-    return impl::Item<Self, Slice>(self, Slice(slice));
+    return self[Slice(slice)];
 }
 
 

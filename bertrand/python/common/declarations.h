@@ -62,9 +62,10 @@ using bertrand::StaticStr;
 namespace impl {
     struct BertrandTag {};
     struct TypeTag;
-    struct ModuleTag;
+    struct IterTag : public BertrandTag {};
     struct ArgTag : public BertrandTag {};
     struct FunctionTag : public BertrandTag {};
+    struct ModuleTag;
     struct TupleTag : public BertrandTag {};
     struct ListTag : public BertrandTag{};
     struct SetTag : public BertrandTag {};
