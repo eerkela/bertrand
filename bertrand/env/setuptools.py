@@ -1577,7 +1577,6 @@ class BuildSources(setuptools_build_ext):
         self.stage1()
         self.stage2()
         self.stage3()
-        self.stage4()
 
     def stage0(self) -> None:
         """Install C++ dependencies into the environment before building the project.
@@ -2007,31 +2006,27 @@ class BuildSources(setuptools_build_ext):
 
         Notes
         -----
-        This method represents the second stage of the automated build process.  Its
-        goal is to compile the source files into objects and built module interfaces
-        (BMIs), parse the AST to compute Python bindings, and cache the results for
-        future use.  The AST parser also identifies which source files contain a
-        `main()` entry point, which will be linked as executables in stage 3.
+        This method represents the second stage of the automated build process.  This
+        is the stage where main compilation occurs, which produces complete shared
+        libraries, executables, and Built Module Interfaces (BMIs).  It is also where
+        the AST parser is invoked to generate Python bindings, which will be
+        progressively folded into the products as they are built.  
 
         Here's a brief overview of the process:
 
-            1.  Generate a temporary CMakeLists.txt file that builds all sources as
-                OBJECT libraries, excluding private module partitions or implementation
-                units, which are implicitly included in the primary module interface.
-            2.  Check the build directory for precompiled BMIs and reuse them where
-                possible to speed up compilation.
-            3.  Pass the AST parser and related attributes to clang using the
-                `-fplugin` flag, which will emit Python bindings as part of the
-                compilation process.
-            4.  Build the project, which emits `.o` artifacts for each source, along
-                with BMIs for uncached modules and additional Python bindings for
-                primary module interface units.
-            5.  Copy the BMIs into the build directory's `.modules/` cache, which
-                allows them to be reused on subsequent builds provided the compile
-                command remains compatible and the underlying modules have not changed.
+            1.  Generate a CMakeLists.txt file that builds primary module interfaces
+                as shared libraries and all other non-module sources as OBJECT files.
+            2.  Compile the project using CMake.  This will run the AST parser over all
+                sources and extend the libraries with the necessary Python bindings.
+                OBJECTS are also checked for a `main()` entry point, which is written
+                to a temporary cache.
+            3.  Once all the OBJECTs are built, check the cache and generate
+                corresponding executable targets via a custom CMake command.
+            4.  Link the executables from the OBJECT files to form the final build
+                artifacts.
 
-        The output from this stage will then be reused during stage 3 to link the
-        final build artifacts using the results of the AST parser.
+        The products from this stage will then be passed into stage 3, where they will
+        be installed into the environment and made available to the user.
         """
         self._ast_setup()
         cmakelists = self._stage2_cmakelists()
@@ -2092,32 +2087,37 @@ class BuildSources(setuptools_build_ext):
         out = self._cmakelists_header()
         out += "\n"
 
-        out += "# stage 2 builds objects using the AST parser and then determines the\n"
-        out += "# final link targets based on the output after all objects are built\n"
+        out += "# stage 2 builds objects and shared libraries using the AST parser\n"
+        out += "# and then backtracks to identify executables from the AST output\n"
         out += "set(OBJECTS)\n"
         out += "set(LIBRARIES)\n"
 
         # compile each source as an OBJECT library using the AST parser
         for source in self.extensions:
-            # skip private module partitions - they are implicitly included in the
-            # primary module interface
-            if source.module and not source.is_primary_module_interface:
-                continue
-            out += self._stage2_object_lib(source)
-            out += f"list(APPEND OBJECTS ${{{source.name}}})"
-            out += "\n"
-
-        # add an `objects` target for granular control over the build process
-        out += "add_custom_target(objects ALL DEPENDS ${OBJECTS})\n"
-
-        # link a shared library for each primary module interface
-        for source in self.extensions:
-            if source.is_primary_module_interface:
-                out += self._stage2_shared_lib(source)
-                out += f"list(APPEND LIBRARIES ${{{source.name}.lib}})\n"
+            if not source.module:
+                target = f"{source.name}.o"
+                out += f"add_library({target} OBJECT\n"
+                out += f"    {source.path.absolute()}\n"
+                for s in source.extra_sources:
+                    out += f"    {s.path.absolute()}\n"
+                out += ")\n"
+                out += self._stage2_lib(source, target)
+                out += f"list(APPEND OBJECTS ${{{target}}})\n"
                 out += "\n"
 
-        # add a `libraries` target for granular control over the build process
+            elif source.is_primary_module_interface:
+                target = f"{source.name}.lib"
+                out += f"add_library({target} SHARED\n"
+                out += f"    {source.path.absolute()}\n"
+                for s in source.extra_sources:
+                    out += f"    {s.path.absolute()}\n"
+                out += ")\n"
+                out += self._stage2_lib(source, target)
+                out += f"list(APPEND LIBRARIES ${{{target}}})\n"
+                out += "\n"
+
+        # add opaque targets for granular control over the build process
+        out += "add_custom_target(objects ALL DEPENDS ${OBJECTS})\n"
         out += "add_custom_target(libraries ALL DEPENDS ${LIBRARIES})\n"
 
         # generate an executable target for each source that has a `main()` entry point
@@ -2130,21 +2130,43 @@ class BuildSources(setuptools_build_ext):
         out +=  "    cmake_path(GET source_path PARENT_PATH source_dirs)\n"
         out +=  "    cmake_path(GET source_path STEM LAST_ONLY source_stem)\n"
         out +=  "\n"
-        out +=  "    # concatenate into a dotted name and OBJECT library\n"
+        out +=  "    # concatenate to form a dotted name and OBJECT library\n"
         out +=  "    if (\"${source_dirs}\" STREQUAL \"\")\n"
-        out +=  "        set(target \"${source_stem}.exe\")\n"
-        out +=  "        set(target_object \"$<TARGET_OBJECTS:${source_stem}.o>\")\n"
+        out +=  "        set(target \"${source_stem}\")\n"
         out +=  "    else()\n"
         out +=  "        string(REPLACE \"/\" \".\" dotted ${source_dirs})\n"
-        out +=  "        set(target \"${dotted}.${source_stem}.exe\")\n"
-        out +=  "        set(target_object \"$<TARGET_OBJECTS:${dotted}.${source_stem}.o>\")\n"
+        out +=  "        set(target \"${dotted}.${source_stem}\")\n"
         out +=  "    endif()\n"
         out +=  "\n"
+        out +=  "    # forward the object library's properties\n"
+        out +=  "    get_target_property(source_cxx_std ${target}.o CXX_STANDARD)\n"
+        out +=  "    get_target_property(source_cxx_std_req ${target}.o CXX_STANDARD_REQUIRED)\n"
+        out +=  "    get_target_property(source_linker_lang ${target}.o LINKER_LANGUAGE)\n"
+        out +=  "    get_target_property(source_link_dirs ${target}.o LINK_DIRECTORIES)\n"
+        out +=  "    get_target_property(source_link_libs ${target}.o LINK_LIBRARIES)\n"
+        out +=  "    get_target_property(source_cmake_args ${target}.o BERTRAND_CMAKE_ARGS)\n"
+        out +=  "    get_target_property(source_bmi_dir ${target}.o BERTRAND_BMI_DIR)\n"
+        out +=  "    get_target_property(source_link_args ${target}.o BERTRAND_LINK_ARGS)\n"
+        out +=  "    get_target_property(source_runtime_library_dirs ${target}.o BERTRAND_RUNTIME_LIBRARY_DIRS)\n"
+        out +=  "\n"
         out +=  "    # add an executable target that imports the precompiled OBJECT library\n"
-        out +=  "    add_executable(${target} ${target_object}>)\n"
-
-        # TODO: add options from stage 3 target
-
+        out +=  "    add_executable(${target}.exe $<TARGET_OBJECTS:${target}.o>)\n"
+        out +=  "    set_target_properties(${target}.exe PROPERTIES\n"
+        out +=  "        PREFIX \"\"\n"
+        out += f"        OUTPUT_NAME ${{target}}{sysconfig.get_config_var('EXT_SUFFIX')}\n"
+        out +=  "        SUFFIX \"\"\n"
+        out +=  "        CXX_STANDARD ${source_cxx_std}\n"
+        out +=  "        CXX_STANDARD_REQUIRED ${source_cxx_std_req}\n"
+        out +=  "        LINKER_LANGUAGE ${source_linker_lang}\n"
+        out +=  "        ${source_cmake_args}\n"
+        out +=  "    )\n"
+        out +=  "    target_link_options(${target}.exe PRIVATE\n"
+        out +=  "        -fprebuilt-module-path=${source_bmi_dir}\n"
+        out +=  "        ${source_link_args}"
+        out +=  "        ${source_runtime_library_dirs}\n"
+        out +=  "    )\n"
+        out +=  "    target_link_directories(${target}.exe PRIVATE ${source_link_dirs})\n"
+        out +=  "    target_link_libraries(${target}.exe PRIVATE ${source_link_libs})\n"
         out +=  "endfunction()\n"
         out +=  "\n"
 
@@ -2152,7 +2174,8 @@ class BuildSources(setuptools_build_ext):
         out +=  "function(find_main_entry_points cache)\n"
         out +=  "    file(READ ${cache} contents)\n"
 
-        # TODO: make sure the cache is written in the correct format
+        # TODO: make sure the cache is written in the correct format.  I can possibly
+        # get away with just a flat list of paths to make this easier.
 
         out +=  "    foreach(entry IN LISTS contents)\n"
         out +=  "        add_main_entry_point(${entry})\n"
@@ -2173,12 +2196,10 @@ class BuildSources(setuptools_build_ext):
         out += "file(WRITE ${CMAKE_BINARY_DIR}/executables.cmake\n"
         out += "    \"find_main_entry_points(\"${CMAKE_BINARY_DIR}/executable_cache\")\n"  # TODO: make sure the cache is written to this path
         out += ")\n"
+        out += "\n"
 
-        # add an `executables` target that triggers the command and gives granular control
+        # add a custom target that triggers the command and gives granular control
         out +=  "add_custom_target(executables ALL DEPENDS ${CMAKE_BINARY_DIR}/executables)\n"
-        out +=  "\n"
-
-        # add a `stage2` target that combines all of the above for easy invocation
         out +=  "add_custom_target(stage2 ALL DEPENDS ${objects} ${libraries} ${executables})\n"
 
         path = self.global_build_dir / "CMakeLists.txt"
@@ -2186,14 +2207,19 @@ class BuildSources(setuptools_build_ext):
             f.write(out)
         return path
 
-    def _stage2_object_lib(self, source: Source) -> str:
-        # build as a CMake OBJECT library
-        target = source.name
-        out = f"add_library({target} OBJECT\n"
-        source._stage2_sources = {source, *source.extra_sources}
-        for s in source._stage2_sources:
-            out += f"    {s.path.absolute()}\n"
-        out += ")\n"
+    def _stage2_lib(self, source: Source, target: str) -> str:
+        out = f"set({source.name}.cmake_args)\n"
+        for key, value in source.get_cmake_args():
+            if value is None:
+                out += f"list(APPEND {source.name}.cmake_args {key})\n"
+            else:
+                out += f"list(APPEND {source.name}.cmake_args {key} {value})\n"
+        out += f"set({source.name}.link_args)\n"
+        for flag in source.get_link_args():
+            out += f"list(APPEND {source.name}.link_args {flag})\n"
+        out += f"set({source.name}.runtime_library_dirs)\n"
+        for lib_dir in source.get_runtime_library_dirs():
+            out += f"list(APPEND {source.name}.runtime_library_dirs {lib_dir.absolute()})\n"
 
         # add FILE_SET for all modules that need to be built
         prebuilt = dict(source.bmis)
@@ -2207,27 +2233,6 @@ class BuildSources(setuptools_build_ext):
             for s in modules:
                 out += f"    {s.path.absolute()}\n"
             out += ")\n"
-
-        # configure target with CXX_STANDARD and any extra CMake arguments
-        out += f"set_target_properties({target} PROPERTIES\n"
-        out +=  "    PREFIX \"\"\n"
-        out += f"    OUTPUT_NAME {target}\n"
-        out +=  "    SUFFIX \"\"\n"
-        try:
-            out += f"    CXX_STANDARD {source.cpp_std}\n"
-        except ValueError:
-            FAIL(
-                f"C++ standard must be >= 23: found {YELLOW}{source._cpp_std}"
-                f"{WHITE} in {CYAN}{source.path}{WHITE}"
-            )
-        out +=  "    CXX_STANDARD_REQUIRED ON\n"
-        cmake_args = source.get_cmake_args()
-        for key, value in cmake_args:
-            if value is None:
-                out += f"    {key}\n"
-            else:
-                out += f"    {key} {value}\n"
-        out += ")\n"
 
         # enable AST plugins + add prebuilt modules to compile commands
         # NOTE: importing std from env/modules/ causes clang to emit a warning
@@ -2268,10 +2273,8 @@ class BuildSources(setuptools_build_ext):
         out += f"target_link_options({target} PRIVATE\n"
         for name, bmi in prebuilt.items():
             out += f"    -fmodule-file={name}={bmi.absolute()}\n"
-        for flag in source.get_link_args():
-            out += f"    {flag}\n"
-        for lib_dir in source.get_runtime_library_dirs():
-            out += f"    -Wl,-rpath,{lib_dir.absolute()}\n"
+        out += f"    ${{{source.name}.link_args}}\n"
+        out += f"    ${{{source.name}.runtime_library_dirs}}\n"
         out += ")\n"
 
         # pass any extra compile definitions, include directories, link dirs, and
@@ -2304,10 +2307,26 @@ class BuildSources(setuptools_build_ext):
                 out += f"    {lib}\n"
             out += ")\n"
 
-        return out
+        # configure target with CXX_STANDARD and any extra CMake arguments
+        out += f"set_target_properties({target} PROPERTIES\n"
+        out +=  "    PREFIX \"\"\n"
+        out += f"    OUTPUT_NAME {target}\n"
+        out +=  "    SUFFIX \"\"\n"
+        try:
+            out += f"    CXX_STANDARD {source.cpp_std}\n"
+        except ValueError:
+            FAIL(
+                f"C++ standard must be >= 23: found {YELLOW}{source._cpp_std}"
+                f"{WHITE} in {CYAN}{source.path}{WHITE}"
+            )
+        out +=  "    CXX_STANDARD_REQUIRED ON\n"
+        out +=  "    BERTRAND_CMAKE_ARGS ${bertrand_cmake_args}"
+        out += f"    BERTRAND_BMI_DIR {source.bmi_dir.absolute()}\n"
+        out +=  "    BERTRAND_LINK_ARGS ${bertrand_link_args}\n"
+        out +=  "    BERTRAND_RUNTIME_LIBRARY_DIRS ${bertrand_runtime_library_dirs}\n"
+        out +=  ")\n"
 
-    def _stage2_shared_lib(self, source: Source) -> str:
-        return ""
+        return out
 
     def _cmake_build(self, cmakelists: Path) -> None:
         # building the project using the AST plugin will emit the Python bindings
@@ -2353,180 +2372,7 @@ class BuildSources(setuptools_build_ext):
                     )
 
     def stage3(self) -> None:
-        """Link the products from stage 2 into shared libraries and executables.
-
-        Notes
-        -----
-        This method represents the third and final stage of the automated build
-        process.  Its goal is to compile the bindings emitted from stage 2, and then
-        invoke the linker to complete the build.
-
-        The outputs from this stage are shared libraries that expose the modules to the
-        Python interpreter, executables that can be run from the command line, and a
-        finalized `compile_commands.json` database that can be used for linting and
-        other static analysis tools.
-
-
-        The executables will be placed into the environment's `bin` directory, which is
-        automatically added to the system path when the environment is activated,
-        allowing them to be run directly from the command line.  Additionally, if the
-        `--inplace` option was given to `setup.py`, the shared libraries will be copied
-        into the source tree, allowing them to be imported alongside their sources.
-
-        When the products are copied out of the build directory, they are also added to
-        a persistent registry so that they can be cleaned up later with a
-        `$ bertrand clean` command.  This will remove the files from the environment,
-        but otherwise leave the build directory untouched.  If the project is
-        reinstalled without any changes to the source tree, the products will be
-        simply copied out of the build directory, avoiding the need to recompile them.
         """
-        cmakelists = self._stage3_cmakelists()
-        self._cmake_build(cmakelists)
-
-    def _stage3_cmakelists(self) -> Path:
-        """Emit a final CMakeLists.txt file that includes semantically-correct
-        shared library and executable targets based on the AST analysis, along with
-        extra Python bindings to expose the modules to the interpreter.
-
-        Returns
-        -------
-        Path
-            The path to the generated CMakeLists.txt.
-        """
-        out = self._cmakelists_header()
-        out += "\n"
-
-        # import precompiled objects from stage 2
-        out += "# stage 3 imports the object files that were compiled in stage 2\n"
-        for source in self.extensions:
-            out += f"add_library({source.name}.o OBJECT IMPORTED)\n"
-            objects = [str(source.object.absolute())]
-            objects.extend(
-                str(dep.object.absolute()) for dep in source.requires.collapse()
-                if dep is not source and dep.object.exists()
-            )
-            module_dir = source.build_dir / "modules"
-            if module_dir.exists():
-                objects.extend(str(dep.absolute()) for dep in module_dir.rglob("*.o"))
-            out += f"set_target_properties({source.name}.o PROPERTIES\n"
-            out += f"    IMPORTED_OBJECTS \"{';'.join(objects)}\"\n"
-            out += ")\n"
-        out += "\n"
-
-        # link the final shared libraries and executables
-        for source in self.extensions:
-            if source.is_primary_module_interface:
-                target = f"{source.name}{sysconfig.get_config_var('EXT_SUFFIX')}"
-                out += f"add_library({target} SHARED\n"
-                out += f"    $<TARGET_OBJECTS:{source.name}.o>\n"
-                for s in source.extra_sources - source._stage2_sources:
-                    out += f"    {s.path.absolute()}\n"
-                out += ")\n"
-                out += self._stage3_target(source, target) + "\n"
-
-            if source.is_executable:
-                target = f"{source.name}.exe"
-                out += f"add_executable({target}\n"
-                out += f"    $<TARGET_OBJECTS:{source.name}.o>\n"
-                for s in source.extra_sources - source._stage2_sources:
-                    out += f"    {s.path.absolute()}\n"
-                out += ")\n"
-                out += self._stage3_target(source, target) + "\n"
-
-        path = self.global_build_dir / "CMakeLists.txt"
-        with path.open("w") as f:
-            f.write(out)
-        return path
-
-    def _stage3_target(self, source: Source, target: str) -> str:
-        out = ""
-
-        # modules built in stage 2 will be reused in stage 3, but it is possible that
-        # a new module is added between the two that needs to be built from scratch.
-        # Typically, this should be empty, but it is included here for completeness.
-        prebuilt = dict(source.bmis)
-        modules = {s for s in source.requires.collapse() if s.module not in prebuilt}
-        if modules:
-            out += f"target_sources({target} PRIVATE\n"
-            out += f"    FILE_SET CXX_MODULES BASE_DIRS {Path.cwd()}\n"
-            out +=  "    FILES\n"
-            for s in modules:
-                out += f"    {s.path.absolute()}\n"
-            out += ")\n"
-
-        # configure target with CXX_STANDARD and any extra CMake arguments
-        out += f"set_target_properties({target} PROPERTIES\n"
-        out +=  "    PREFIX \"\"\n"
-        out += f"    OUTPUT_NAME {target}\n"
-        out +=  "    SUFFIX \"\"\n"
-        try:
-            out += f"    CXX_STANDARD {source.cpp_std}\n"
-        except ValueError:
-            FAIL(
-                f"C++ standard must be >= 23: found {YELLOW}{source._cpp_std}"
-                f"{WHITE} in {CYAN}{source.path}{WHITE}"
-            )
-        out +=  "    CXX_STANDARD_REQUIRED ON\n"
-        out +=  "    LINKER_LANGUAGE CXX\n"  # imported objects are opaque to linker
-        for key, value in source.get_cmake_args():
-            if value is None:
-                out += f"    {key}\n"
-            else:
-                out += f"    {key} {value}\n"
-        out += ")\n"
-
-        # pass prebuilt modules from stage 2 and disable AST plugins
-        bmi_dir = source.bmi_dir
-        out += f"target_compile_options({target} PRIVATE\n"
-        out +=  "    -Wno-reserved-module-identifier\n"
-        out +=  "    -Wno-unknown-attributes\n"
-        out += f"    -fprebuilt-module-path={bmi_dir.absolute()}\n"
-        out += f"    -fplugin={env / 'lib' / 'bertrand-attrs.so'}\n"
-        for flag in source.get_compile_args():
-            out += f"    {flag}\n"
-        out += ")\n"
-        out += f"target_link_options({target} PRIVATE\n"
-        out += f"    -fprebuilt-module-path={bmi_dir.absolute()}\n"
-        for flag in source.get_link_args():
-            out += f"    {flag}\n"
-        for lib_dir in source.get_runtime_library_dirs():
-            out += f"    -Wl,-rpath,{lib_dir.absolute()}\n"
-        out += ")\n"
-
-        # link against imported objects from stage 2 and pass any extra compile
-        # definitions, include directories, link dirs, and link libraries to the target.
-        define_macros = source.get_define_macros()
-        if define_macros:
-            out += f"target_compile_definitions({target} PRIVATE\n"
-            for first, second in define_macros:
-                if second is None:
-                    out += f"    {first}\n"
-                else:
-                    out += f"    {first}={second}\n"
-            out += ")\n"
-        include_dirs = source.get_include_dirs()
-        if include_dirs:
-            out += f"target_include_directories({target} PRIVATE\n"
-            for include in include_dirs:
-                out += f"    {include.absolute()}\n"
-            out += ")\n"
-        library_dirs = source.get_library_dirs()
-        if library_dirs:
-            out += f"target_link_directories({target} PRIVATE\n"
-            for lib_dir in library_dirs:
-                out += f"    {lib_dir.absolute()}\n"
-            out += ")\n"
-        libraries = source.get_libraries()
-        if libraries:
-            out += f"target_link_libraries({target} PRIVATE\n"
-            for lib in libraries:
-                out += f"    {lib}\n"
-            out += ")\n"
-
-        return out
-
-    def stage4(self) -> None:
-        """Copy the build products into the enclosing environment.
 
         Notes
         -----
@@ -2571,6 +2417,10 @@ class BuildSources(setuptools_build_ext):
         as these are considered safe to overwrite.  If you wish to force the build and
         overwrite any conflicting files, you can use the `--force` flag when invoking
         `setup.py`.
+
+        Once all of the above has been completed, the stage 2 compile_commands.json
+        will also be copied into the project root, allowing IDEs and other tools to
+        provide accurate syntax highlighting/code completion, etc.
         """
         # we need to load the previous contents of the clean.json file (if any) in
         # order to detect which files were previously generated by bertrand in the
