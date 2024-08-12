@@ -475,25 +475,21 @@ void print(Args&&... args) {
 
 template <typename Self> requires (__iter__<Self>::enable)
 [[nodiscard]] auto begin(const Self& self) {
-    if constexpr (std::is_constructible_v<__iter__<Self>, const Self&>) {
+    if constexpr (std::is_constructible_v<__iter__<Self>, const Self&, int>) {
         static_assert(
-            std::is_constructible_v<__iter__<Self>, const Self&, int>,
+            std::is_constructible_v<__iter__<Self>, const Self&>,
             "__iter__<T> specializes the begin iterator, but not the end iterator.  "
-            "Did you forget to define an `__iter__(const T&, int)` constructor?"
-        );
-        return __iter__<Self>(self);
-    } else {
-        static_assert(
-            !std::is_constructible_v<__iter__<Self>, const Self&, int>,
-            "__iter__<T> specializes the end iterator, but not the begin iterator.  "
             "Did you forget to define an `__iter__(const T&)` constructor?"
         );
-        if constexpr (
-            std::derived_from<Self, Object> &&
-            Self::__python__::__origin__ == impl::Origin::CPP
-        ) {
+        return __iter__<Self>(self, 0);
+    } else {
+        static_assert(
+            !std::is_constructible_v<__iter__<Self>, const Self&>,
+            "__iter__<T> specializes the end iterator, but not the begin iterator.  "
+            "Did you forget to define an `__iter__(const T&, int)` constructor?"
+        );
+        if constexpr (impl::originates_from_cpp<Self>) {
             return std::ranges::begin(py::unwrap(self));
-
         } else {
             using Return = typename __iter__<Self>::type;
             static_assert(
@@ -502,12 +498,11 @@ template <typename Self> requires (__iter__<Self>::enable)
                 "specialization of __iter__ for this types and ensure the Return type "
                 "is a subclass of py::Object."
             );
-
             PyObject* iter = PyObject_GetIter(ptr(self));
             if (iter == nullptr) {
                 Exception::from_python();
             }
-            return impl::Iterator<impl::GenericIter<Return>>(
+            return impl::PythonIterator<Return>(
                 reinterpret_steal<Object>(iter)
             );
         }
@@ -517,25 +512,21 @@ template <typename Self> requires (__iter__<Self>::enable)
 
 template <typename Self> requires (__iter__<Self>::enable)
 [[nodiscard]] auto end(const Self& self) {
-    if constexpr (std::is_constructible_v<__iter__<Self>, const Self&, int>) {
+    if constexpr (std::is_constructible_v<__iter__<Self>, const Self&>) {
         static_assert(
-            std::is_constructible_v<__iter__<Self>, const Self&>,
+            std::is_constructible_v<__iter__<Self>, const Self&, int>,
             "__iter__<T> specializes the begin iterator, but not the end iterator.  "
-            "Did you forget to define an `__iter__(const T&, int)` constructor?"
-        );
-        return __iter__<Self>(self, 0);
-    } else {
-        static_assert(
-            !std::is_constructible_v<__iter__<Self>, const Self&>,
-            "__iter__<T> specializes the end iterator, but not the begin iterator.  "
             "Did you forget to define an `__iter__(const T&)` constructor?"
         );
-        if constexpr (
-            std::derived_from<Self, Object> &&
-            Self::__python__::__origin__ == impl::Origin::CPP
-        ) {
+        return __iter__<Self>(self);
+    } else {
+        static_assert(
+            !std::is_constructible_v<__iter__<Self>, const Self&, int>,
+            "__iter__<T> specializes the end iterator, but not the begin iterator.  "
+            "Did you forget to define an `__iter__(const T&, int)` constructor?"
+        );
+        if constexpr (impl::originates_from_cpp<Self>) {
             return std::ranges::end(py::unwrap(self));
-
         } else {
             using Return = typename __iter__<Self>::type;
             static_assert(
@@ -544,7 +535,7 @@ template <typename Self> requires (__iter__<Self>::enable)
                 "specialization of __iter__ for this types and ensure the Return type "
                 "is a subclass of py::Object."
             );
-            return impl::Iterator<impl::GenericIter<Return>>();
+            return impl::PythonIterator<Return>();
         }
     }
 }
@@ -552,27 +543,23 @@ template <typename Self> requires (__iter__<Self>::enable)
 
 template <typename Self> requires (__reversed__<Self>::enable)
 [[nodiscard]] auto rbegin(const Self& self) {
-    if constexpr (std::is_constructible_v<__reversed__<Self>, const Self&>) {
+    if constexpr (std::is_constructible_v<__reversed__<Self>, const Self&, int>) {
         static_assert(
-            std::is_constructible_v<__reversed__<Self>, const Self&, int>,
+            std::is_constructible_v<__reversed__<Self>, const Self&>,
             "__reversed__<T> specializes the begin iterator, but not the end "
-            "iterator.  Did you forget to define an `__reversed__(const T&, int)` "
+            "iterator.  Did you forget to define a `__reversed__(const T&)` "
             "constructor?"
         );
-        return __reversed__<Self>(self);
+        return __reversed__<Self>(self, 0);
     } else {
         static_assert(
-            !std::is_constructible_v<__reversed__<Self>, const Self&, int>,
+            !std::is_constructible_v<__reversed__<Self>, const Self&>,
             "__reversed__<T> specializes the end iterator, but not the begin "
-            "iterator.  Did you forget to define an `__reversed__(const T&)` "
+            "iterator.  Did you forget to define a `__reversed__(const T&, int)` "
             "constructor?"
         );
-        if constexpr (
-            std::derived_from<Self, Object> &&
-            Self::__python__::__origin__ == impl::Origin::CPP
-        ) {
+        if constexpr (impl::originates_from_cpp<Self>) {
             return std::ranges::rbegin(py::unwrap(self));
-
         } else {
             using Return = typename __reversed__<Self>::type;
             static_assert(
@@ -581,8 +568,15 @@ template <typename Self> requires (__reversed__<Self>::enable)
                 "specialization of __reversed__ for this types and ensure the Return "
                 "type is a subclass of py::Object."
             );
-            return impl::Iterator<impl::GenericIter<Return>>(
-                impl::call_method<"__reversed__">(self)
+            PyObject* iter = PyObject_CallMethodNoArgs(
+                ptr(self),
+                impl::TemplateString<"__reversed__">::ptr
+            );
+            if (iter == nullptr) {
+                Exception::from_python();
+            }
+            return impl::PythonIterator<Return>(
+                reinterpret_steal<Object>(iter)
             );
         }
     }
@@ -591,27 +585,23 @@ template <typename Self> requires (__reversed__<Self>::enable)
 
 template <typename Self> requires (__reversed__<Self>::enable)
 [[nodiscard]] auto rend(const Self& self) {
-    if constexpr (std::is_constructible_v<__reversed__<Self>, const Self&, int>) {
+    if constexpr (std::is_constructible_v<__reversed__<Self>, const Self&>) {
         static_assert(
-            std::is_constructible_v<__reversed__<Self>, const Self&>,
+            std::is_constructible_v<__reversed__<Self>, const Self&, int>,
             "__reversed__<T> specializes the begin iterator, but not the end "
-            "iterator.  Did you forget to define an `__reversed__(const T&, int)` "
+            "iterator.  Did you forget to define a `__reversed__(const T&)` "
             "constructor?"
         );
-        return __reversed__<Self>(self, 0);
+        return __reversed__<Self>(self);
     } else {
         static_assert(
-            !std::is_constructible_v<__reversed__<Self>, const Self&>,
+            !std::is_constructible_v<__reversed__<Self>, const Self&, int>,
             "__reversed__<T> specializes the end iterator, but not the begin "
-            "iterator.  Did you forget to define an `__reversed__(const T&)` "
+            "iterator.  Did you forget to define a `__reversed__(const T&, int)` "
             "constructor?"
         );
-        if constexpr (
-            std::derived_from<Self, Object> &&
-            Self::__python__::__origin__ == impl::Origin::CPP
-        ) {
+        if constexpr (impl::originates_from_cpp<Self>) {
             return std::ranges::rend(py::unwrap(self));
-
         } else {
             using Return = typename __reversed__<Self>::type;
             static_assert(
@@ -620,7 +610,7 @@ template <typename Self> requires (__reversed__<Self>::enable)
                 "specialization of __reversed__ for this types and ensure the Return "
                 "type is a subclass of py::Object."
             );
-            return impl::Iterator<impl::GenericIter<Return>>();
+            return impl::PythonIterator<Return>();
         }
     }
 }

@@ -2084,142 +2084,230 @@ class BuildSources(setuptools_build_ext):
                     }
                 json.dump(init, f, indent=4)
 
+    # TODO: with stages 2 and 3 merged, I shouldn't need to do any manual dependency
+    # management, which means stripping out the .outdated property and makefile
+    # dependency scan, which further simplifies and improves compilation speed.
+
     def _stage2_cmakelists(self) -> Path:
         out = self._cmakelists_header()
         out += "\n"
-        for source in self.extensions:
-            # avoid rebuilding sources that have not been modified since last build
-            if not source.outdated:
-                continue
 
-            # do not build private module partitions - they are implicitly included in
-            # the primary module interface
+        out += "# stage 2 builds objects using the AST parser and then determines the\n"
+        out += "# final link targets based on the output after all objects are built\n"
+        out += "set(OBJECTS)\n"
+        out += "set(LIBRARIES)\n"
+
+        # compile each source as an OBJECT library using the AST parser
+        for source in self.extensions:
+            # skip private module partitions - they are implicitly included in the
+            # primary module interface
             if source.module and not source.is_primary_module_interface:
                 continue
-
-            # build as a CMake OBJECT library
-            target = source.name
-            out += f"add_library({target} OBJECT\n"
-            source._stage2_sources = {source, *source.extra_sources}
-            for s in source._stage2_sources:
-                out += f"    {s.path.absolute()}\n"
-            out += ")\n"
-
-            # add FILE_SET for all modules that need to be built
-            prebuilt = dict(source.bmis)
-            modules = {s for s in source.requires.collapse() if s.module not in prebuilt}
-            if source.module:
-                modules.add(source)
-            if modules:
-                out += f"target_sources({target} PRIVATE\n"
-                out += f"    FILE_SET CXX_MODULES BASE_DIRS {Path.cwd()}\n"
-                out +=  "    FILES\n"
-                for s in modules:
-                    out += f"    {s.path.absolute()}\n"
-                out += ")\n"
-
-            # configure target with CXX_STANDARD and any extra CMake arguments
-            out += f"set_target_properties({target} PROPERTIES\n"
-            out +=  "    PREFIX \"\"\n"
-            out += f"    OUTPUT_NAME {target}\n"
-            out +=  "    SUFFIX \"\"\n"
-            try:
-                out += f"    CXX_STANDARD {source.cpp_std}\n"
-            except ValueError:
-                FAIL(
-                    f"C++ standard must be >= 23: found {YELLOW}{source._cpp_std}"
-                    f"{WHITE} in {CYAN}{source.path}{WHITE}"
-                )
-            out +=  "    CXX_STANDARD_REQUIRED ON\n"
-            cmake_args = source.get_cmake_args()
-            for key, value in cmake_args:
-                if value is None:
-                    out += f"    {key}\n"
-                else:
-                    out += f"    {key} {value}\n"
-            out += ")\n"
-
-            # enable AST plugins + add prebuilt modules to compile commands
-            # NOTE: importing std from env/modules/ causes clang to emit a warning
-            # about a reserved module name, even when `std.cppm` came from clang
-            # itself.  When `import std;` is officially supported by CMake, this can be
-            # removed.
-            # NOTE: attribute plugins mess with clangd, which can't recognize them by
-            # default.  Until LLVM implements some way around this, disabling the
-            # warning is the only option.
-            out += f"target_compile_options({target} PRIVATE\n"
-            out +=  "    -Wno-reserved-module-identifier\n"
-            out +=  "    -Wno-unknown-attributes\n"
-            for name, bmi in prebuilt.items():
-                out += f"    -fmodule-file={name}={bmi.absolute()}\n"
-            out += f"    -fplugin={env / 'lib' / 'bertrand-attrs.so'}\n"
-            out += f"    -fplugin={env / 'lib' / 'bertrand-ast.so'}\n"
-            if not source.module:
-                cache_path = self._bertrand_ast_cache
-                out +=  "    -fplugin-arg-main-run\n"
-                out += f"    -fplugin-arg-main-cache={cache_path.absolute()}\n"
-            if source.is_primary_module_interface:
-                cache_path = self._bertrand_ast_cache
-                binding_path = self._bertrand_binding_root / source.path
-                binding_path.parent.mkdir(parents=True, exist_ok=True)
-                imported_cpp_module = source.module
-                exported_python_module = source.module.split(".")[-1]
-                out +=  "    -fplugin-arg-export-run\n"
-                out +=  "    -fparse-all-comments\n"
-                out += f"    -fplugin-arg-export-module={source.path.absolute()}\n"
-                out += f"    -fplugin-arg-export-import={imported_cpp_module}\n"
-                out += f"    -fplugin-arg-export-export={exported_python_module}\n"
-                out += f"    -fplugin-arg-export-binding={binding_path.absolute()}\n"
-                out += f"    -fplugin-arg-export-cache={cache_path.absolute()}\n"
-            compile_args = source.get_compile_args()
-            for flag in compile_args:
-                out += f"    {flag}\n"
-            out += ")\n"
-            out += f"target_link_options({target} PRIVATE\n"
-            for name, bmi in prebuilt.items():
-                out += f"    -fmodule-file={name}={bmi.absolute()}\n"
-            for flag in source.get_link_args():
-                out += f"    {flag}\n"
-            for lib_dir in source.get_runtime_library_dirs():
-                out += f"    -Wl,-rpath,{lib_dir.absolute()}\n"
-            out += ")\n"
-
-            # pass any extra compile definitions, include directories, link dirs, and
-            # link libraries to the target
-            define_macros = source.get_define_macros()
-            if define_macros:
-                out += f"target_compile_definitions({target} PRIVATE\n"
-                for first, second in define_macros:
-                    if second is None:
-                        out += f"    {first}\n"
-                    else:
-                        out += f"    {first}={second}\n"
-                out += ")\n"
-            include_dirs = source.get_include_dirs()
-            if include_dirs:
-                out += f"target_include_directories({target} PRIVATE\n"
-                for include in include_dirs:
-                    out += f"    {include.absolute()}\n"
-                out += ")\n"
-            library_dirs = source.get_library_dirs()
-            if library_dirs:
-                out += f"target_link_directories({target} PRIVATE\n"
-                for lib_dir in library_dirs:
-                    out += f"    {lib_dir.absolute()}\n"
-                out += ")\n"
-            libraries = source.get_libraries()
-            if libraries:
-                out += f"target_link_libraries({target} PRIVATE\n"
-                for lib in libraries:
-                    out += f"    {lib}\n"
-                out += ")\n"
-
+            out += self._stage2_object_lib(source)
+            out += f"list(APPEND OBJECTS ${{{source.name}}})"
             out += "\n"
+
+        # add an `objects` target for granular control over the build process
+        out += "add_custom_target(objects ALL DEPENDS ${OBJECTS})\n"
+
+        # link a shared library for each primary module interface
+        for source in self.extensions:
+            if source.is_primary_module_interface:
+                out += self._stage2_shared_lib(source)
+                out += f"list(APPEND LIBRARIES ${{{source.name}.lib}})\n"
+                out += "\n"
+
+        # add a `libraries` target for granular control over the build process
+        out += "add_custom_target(libraries ALL DEPENDS ${LIBRARIES})\n"
+
+        # generate an executable target for each source that has a `main()` entry point
+        out +=  "function(add_main_entry_point source)\n"
+        out +=  "    # normalize the source path\n"
+        out += f"    cmake_path(CONVERT \"{Path.cwd()}\" TO_CMAKE_PATH_LIST cwd NORMALIZE)\n"
+        out +=  "\n"
+        out +=  "    # extract the source path and stem minus the last extension\n"
+        out +=  "    file(RELATIVE_PATH source_path \"${cwd}\" \"${source}\")\n"
+        out +=  "    cmake_path(GET source_path PARENT_PATH source_dirs)\n"
+        out +=  "    cmake_path(GET source_path STEM LAST_ONLY source_stem)\n"
+        out +=  "\n"
+        out +=  "    # concatenate into a dotted name and OBJECT library\n"
+        out +=  "    if (\"${source_dirs}\" STREQUAL \"\")\n"
+        out +=  "        set(target \"${source_stem}.exe\")\n"
+        out +=  "        set(target_object \"$<TARGET_OBJECTS:${source_stem}.o>\")\n"
+        out +=  "    else()\n"
+        out +=  "        string(REPLACE \"/\" \".\" dotted ${source_dirs})\n"
+        out +=  "        set(target \"${dotted}.${source_stem}.exe\")\n"
+        out +=  "        set(target_object \"$<TARGET_OBJECTS:${dotted}.${source_stem}.o>\")\n"
+        out +=  "    endif()\n"
+        out +=  "\n"
+        out +=  "    # add an executable target that imports the precompiled OBJECT library\n"
+        out +=  "    add_executable(${target} ${target_object}>)\n"
+
+        # TODO: add options from stage 3 target
+
+        out +=  "endfunction()\n"
+        out +=  "\n"
+
+        # read the AST cache to determine which sources have a `main()` entry point
+        out +=  "function(find_main_entry_points cache)\n"
+        out +=  "    file(READ ${cache} contents)\n"
+
+        # TODO: make sure the cache is written in the correct format
+
+        out +=  "    foreach(entry IN LISTS contents)\n"
+        out +=  "        add_main_entry_point(${entry})\n"
+        out +=  "    endforeach()\n"
+        out +=  "endfunction()\n"
+        out +=  "\n"
+
+        # define a custom command that runs after the OBJECT libraries are built
+        out +=  "add_custom_command(\n"
+        out +=  "    OUTPUT ${CMAKE_BINARY_DIR}/executables\n"
+        out +=  "    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_BINARY_DIR}/executables.cmake\n"
+        out +=  "    DEPENDS ${objects}\n"
+        out +=  "    COMMENT \"Identifying executable targets\""
+        out +=  ")\n"
+        out +=  "\n"
+
+        # write the custom cmake script that will be run by the command
+        out += "file(WRITE ${CMAKE_BINARY_DIR}/executables.cmake\n"
+        out += "    \"find_main_entry_points(\"${CMAKE_BINARY_DIR}/executable_cache\")\n"  # TODO: make sure the cache is written to this path
+        out += ")\n"
+
+        # add an `executables` target that triggers the command and gives granular control
+        out +=  "add_custom_target(executables ALL DEPENDS ${CMAKE_BINARY_DIR}/executables)\n"
+        out +=  "\n"
+
+        # add a `stage2` target that combines all of the above for easy invocation
+        out +=  "add_custom_target(stage2 ALL DEPENDS ${objects} ${libraries} ${executables})\n"
 
         path = self.global_build_dir / "CMakeLists.txt"
         with path.open("w") as f:
             f.write(out)
         return path
+
+    def _stage2_object_lib(self, source: Source) -> str:
+        # build as a CMake OBJECT library
+        target = source.name
+        out = f"add_library({target} OBJECT\n"
+        source._stage2_sources = {source, *source.extra_sources}
+        for s in source._stage2_sources:
+            out += f"    {s.path.absolute()}\n"
+        out += ")\n"
+
+        # add FILE_SET for all modules that need to be built
+        prebuilt = dict(source.bmis)
+        modules = {s for s in source.requires.collapse() if s.module not in prebuilt}
+        if source.module:
+            modules.add(source)
+        if modules:
+            out += f"target_sources({target} PRIVATE\n"
+            out += f"    FILE_SET CXX_MODULES BASE_DIRS {Path.cwd()}\n"
+            out +=  "    FILES\n"
+            for s in modules:
+                out += f"    {s.path.absolute()}\n"
+            out += ")\n"
+
+        # configure target with CXX_STANDARD and any extra CMake arguments
+        out += f"set_target_properties({target} PROPERTIES\n"
+        out +=  "    PREFIX \"\"\n"
+        out += f"    OUTPUT_NAME {target}\n"
+        out +=  "    SUFFIX \"\"\n"
+        try:
+            out += f"    CXX_STANDARD {source.cpp_std}\n"
+        except ValueError:
+            FAIL(
+                f"C++ standard must be >= 23: found {YELLOW}{source._cpp_std}"
+                f"{WHITE} in {CYAN}{source.path}{WHITE}"
+            )
+        out +=  "    CXX_STANDARD_REQUIRED ON\n"
+        cmake_args = source.get_cmake_args()
+        for key, value in cmake_args:
+            if value is None:
+                out += f"    {key}\n"
+            else:
+                out += f"    {key} {value}\n"
+        out += ")\n"
+
+        # enable AST plugins + add prebuilt modules to compile commands
+        # NOTE: importing std from env/modules/ causes clang to emit a warning
+        # about a reserved module name, even when `std.cppm` came from clang
+        # itself.  When `import std;` is officially supported by CMake, this can be
+        # removed.
+        # NOTE: attribute plugins mess with clangd, which can't recognize them by
+        # default.  Until LLVM implements some way around this, disabling the
+        # warning is the only option.
+        out += f"target_compile_options({target} PRIVATE\n"
+        out +=  "    -Wno-reserved-module-identifier\n"
+        out +=  "    -Wno-unknown-attributes\n"
+        for name, bmi in prebuilt.items():
+            out += f"    -fmodule-file={name}={bmi.absolute()}\n"
+        out += f"    -fplugin={env / 'lib' / 'bertrand-attrs.so'}\n"
+        out += f"    -fplugin={env / 'lib' / 'bertrand-ast.so'}\n"
+        if not source.module:
+            cache_path = self._bertrand_ast_cache
+            out +=  "    -fplugin-arg-main-run\n"
+            out += f"    -fplugin-arg-main-cache={cache_path.absolute()}\n"
+        if source.is_primary_module_interface:
+            cache_path = self._bertrand_ast_cache
+            binding_path = self._bertrand_binding_root / source.path
+            binding_path.parent.mkdir(parents=True, exist_ok=True)
+            imported_cpp_module = source.module
+            exported_python_module = source.module.split(".")[-1]
+            out +=  "    -fplugin-arg-export-run\n"
+            out +=  "    -fparse-all-comments\n"
+            out += f"    -fplugin-arg-export-module={source.path.absolute()}\n"
+            out += f"    -fplugin-arg-export-import={imported_cpp_module}\n"
+            out += f"    -fplugin-arg-export-export={exported_python_module}\n"
+            out += f"    -fplugin-arg-export-binding={binding_path.absolute()}\n"
+            out += f"    -fplugin-arg-export-cache={cache_path.absolute()}\n"
+        compile_args = source.get_compile_args()
+        for flag in compile_args:
+            out += f"    {flag}\n"
+        out += ")\n"
+        out += f"target_link_options({target} PRIVATE\n"
+        for name, bmi in prebuilt.items():
+            out += f"    -fmodule-file={name}={bmi.absolute()}\n"
+        for flag in source.get_link_args():
+            out += f"    {flag}\n"
+        for lib_dir in source.get_runtime_library_dirs():
+            out += f"    -Wl,-rpath,{lib_dir.absolute()}\n"
+        out += ")\n"
+
+        # pass any extra compile definitions, include directories, link dirs, and
+        # link libraries to the target
+        define_macros = source.get_define_macros()
+        if define_macros:
+            out += f"target_compile_definitions({target} PRIVATE\n"
+            for first, second in define_macros:
+                if second is None:
+                    out += f"    {first}\n"
+                else:
+                    out += f"    {first}={second}\n"
+            out += ")\n"
+        include_dirs = source.get_include_dirs()
+        if include_dirs:
+            out += f"target_include_directories({target} PRIVATE\n"
+            for include in include_dirs:
+                out += f"    {include.absolute()}\n"
+            out += ")\n"
+        library_dirs = source.get_library_dirs()
+        if library_dirs:
+            out += f"target_link_directories({target} PRIVATE\n"
+            for lib_dir in library_dirs:
+                out += f"    {lib_dir.absolute()}\n"
+            out += ")\n"
+        libraries = source.get_libraries()
+        if libraries:
+            out += f"target_link_libraries({target} PRIVATE\n"
+            for lib in libraries:
+                out += f"    {lib}\n"
+            out += ")\n"
+
+        return out
+
+    def _stage2_shared_lib(self, source: Source) -> str:
+        return ""
 
     def _cmake_build(self, cmakelists: Path) -> None:
         # building the project using the AST plugin will emit the Python bindings

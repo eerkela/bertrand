@@ -9,6 +9,10 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/DiagnosticIDs.h"
+#include "clang/Basic/FileManager.h"
+#include "clang/Basic/SourceManager.h"
+#include "clang/Parse/Parser.h"
+#include "clang/Parse/ParseAST.h"
 #include "clang/Basic/ParsedAttrInfo.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendPluginRegistry.h"
@@ -419,25 +423,9 @@ public:
         std::string cache_path
     ) : compiler(compiler), module_path(module_path), import_name(import_name),
         export_name(export_name), binding_path(binding_path), cache_path(cache_path)
-    {}
-
-    ~ExportConsumer() {
-        std::string body = header();
-        for (const Namespace& name : namespaces) {
-            body += name.emit();
-        }
-        for (const Type& type : types) {
-            body += type.emit();
-        }
-        for (const Var& var : vars) {
-            body += var.emit();
-        }
-        for (const Function& func : functions) {
-            body += func.emit();
-        }
-        body += footer();
-        write(body);
-        update_cache();
+    {
+        // TODO: clear the binding file if it exists and insert only the export module
+        // partition and the import bertrand.python dependency.
     }
 
     bool HandleTopLevelDecl(clang::DeclGroupRef decl_group) override {
@@ -494,6 +482,59 @@ public:
         }
 
         return true;
+    }
+
+    void HandleTranslationUnit(clang::ASTContext& context) override {
+        // write the bindings to the previously-blank :bertrand partition
+        std::string body = header();
+        for (const Namespace& name : namespaces) {
+            body += name.emit();
+        }
+        for (const Type& type : types) {
+            body += type.emit();
+        }
+        for (const Var& var : vars) {
+            body += var.emit();
+        }
+        for (const Function& func : functions) {
+            body += func.emit();
+        }
+        body += footer();
+        write(body);
+        update_cache();
+
+        clang::FileManager& file_mgr = compiler.getFileManager();
+        clang::SourceManager& src_mgr = compiler.getSourceManager();
+        clang::Preprocessor& preprocessor = compiler.getPreprocessor();
+        clang::ASTConsumer& consumer = compiler.getASTConsumer();
+
+        // extend the AST with the newly-written bindings
+        auto file = file_mgr.getFile(binding_path);
+        if (!file) {
+            clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
+            unsigned diagnostics_id = diagnostics.getCustomDiagID(
+                clang::DiagnosticsEngine::Error,
+                "failed to open :bertrand partition at %0"
+            );
+            diagnostics.Report(diagnostics_id) << binding_path;
+            return;
+        }
+        clang::FileID file_id = src_mgr.translateFile(file.get());
+        if (file_id.isInvalid()) {
+            clang::DiagnosticsEngine& diagnostics = compiler.getDiagnostics();
+            unsigned diagnostics_id = diagnostics.getCustomDiagID(
+                clang::DiagnosticsEngine::Error,
+                "failed to get file ID for :bertrand partition at %0"
+            );
+            diagnostics.Report(diagnostics_id) << binding_path;
+            return;
+        }
+        preprocessor.EnterSourceFile(
+            file_id,
+            nullptr,
+            src_mgr.getLocForStartOfFile(file_id)
+        );
+        clang::ParseAST(preprocessor, &consumer, compiler.getASTContext());
     }
 
 };
