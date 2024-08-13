@@ -784,6 +784,18 @@ struct __iter__<Self>                                       : Returns<typename S
         index(size), curr(nullptr)
     {}
 
+    __iter__(const __iter__& other) :
+        container(other.container), size(other.size),
+        index(other.index), curr(other.curr)
+    {}
+
+    __iter__(__iter__&& other) :
+        container(std::move(other.container)), size(other.size),
+        index(other.index), curr(other.curr)
+    {
+        other.curr = nullptr;
+    }
+
     __iter__& operator=(const __iter__& other) {
         if (this != &other) {
             container = other.container;
@@ -832,7 +844,7 @@ struct __iter__<Self>                                       : Returns<typename S
         return *this;
     }
 
-    __iter__& operator++(int) {
+    __iter__ operator++(int) {
         __iter__ copy = *this;
         ++(*this);
         return copy;
@@ -863,7 +875,7 @@ struct __iter__<Self>                                       : Returns<typename S
         return *this;
     }
 
-    __iter__& operator--(int) {
+    __iter__ operator--(int) {
         __iter__ copy = *this;
         --(*this);
         return copy;
@@ -957,6 +969,18 @@ struct __reversed__<Self>                                   : Returns<typename S
         index(-1), curr(nullptr)
     {}
 
+    __reversed__(const __reversed__& other) :
+        container(other.container), size(other.size),
+        index(other.index), curr(other.curr)
+    {}
+
+    __reversed__(__reversed__&& other) :
+        container(std::move(other.container)), size(other.size),
+        index(other.index), curr(other.curr)
+    {
+        other.curr = nullptr;
+    }
+
     __reversed__& operator=(const __reversed__& other) {
         if (this != &other) {
             container = other.container;
@@ -1005,7 +1029,7 @@ struct __reversed__<Self>                                   : Returns<typename S
         return *this;
     }
 
-    __reversed__& operator++(int) {
+    __reversed__ operator++(int) {
         __reversed__ copy = *this;
         ++(*this);
         return copy;
@@ -1036,7 +1060,7 @@ struct __reversed__<Self>                                   : Returns<typename S
         return *this;
     }
 
-    __reversed__& operator--(int) {
+    __reversed__ operator--(int) {
         __reversed__ copy = *this;
         --(*this);
         return copy;

@@ -1,6 +1,7 @@
 #ifndef BERTRAND_PYTHON_DICT_H
 #define BERTRAND_PYTHON_DICT_H
 
+#include "bertrand/python/common/declarations.h"
 #include "common.h"
 #include "list.h"
 #include "set.h"
@@ -204,19 +205,102 @@ struct __explicit_init__<KeyView<Map>, Map>                 : Returns<KeyView<Ma
 
 template <std::derived_from<impl::KeyTag> Self>
 struct __iter__<Self>                                       : Returns<typename Self::key_type> {
-    using Return = typename Self::key_type;
-    static auto begin(const Self& self) {
+    using iterator_category = std::input_iterator_tag;
+    using difference_type = std::ptrdiff_t;
+    using value_type = Self::key_type;
+    using pointer = value_type*;
+    using reference = value_type&;
+
+    Self container;
+    Py_ssize_t pos;
+    PyObject* key;
+
+    __iter__(const Self& container, int) :
+        container(container), pos(0), key(nullptr)
+    {
+        ++(*this);
+    }
+
+    __iter__(Self&& container, int) :
+        container(std::move(container)), pos(0), key(nullptr)
+    {
+        ++(*this);
+    }
+
+    __iter__(const Self& container) :
+        container(container), pos(-1), key(nullptr)
+    {}
+
+    __iter__(Self&& container) :
+        container(std::move(container)), pos(-1), key(nullptr)
+    {}
+
+    __iter__(const __iter__& other) :
+        container(other.container), pos(other.pos), key(other.key)
+    {}
+
+    __iter__(__iter__&& other) :
+        container(std::move(other.container)), pos(other.pos), key(other.key)
+    {
+        other.key = nullptr;
+    }
+
+    __iter__& operator=(const __iter__& other) {
+        if (this != &other) {
+            container = other.container;
+            pos = other.pos;
+            key = other.key;
+        }
+        return *this;
+    }
+
+    __iter__& operator=(__iter__&& other) {
+        if (this != &other) {
+            container = std::move(other.container);
+            pos = other.pos;
+            key = other.key;
+            other.key = nullptr;
+        }
+        return *this;
+    }
+
+    value_type operator*() const {
+        return reinterpret_borrow<value_type>(key);
+    }
+
+    pointer operator->() const {
+        return &(**this);
+    }
+
+    __iter__& operator++() {
         PyObject* dict = reinterpret_cast<PyObject*>(
-            reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
+            reinterpret_cast<impl::_PyDictViewObject*>(ptr(container))->dv_dict
         );
-        return impl::Iterator<impl::KeyIter<Return>>(
-            reinterpret_borrow<typename Self::mapping_type>(dict)
-        );
+        if (!PyDict_Next(dict, &pos, &key, nullptr)) {
+            pos = -1;
+        }
+        return *this;
     }
-    static auto end(const Self& self) {
-        return impl::Iterator<impl::KeyIter<Return>>();
+
+    __iter__ operator++(int) {
+        __iter__ copy(*this);
+        ++(*this);
+        return copy;
     }
+
+    bool operator==(const __iter__& other) const {
+        return ptr(container) == ptr(other.container) && pos == other.pos;
+    }
+
+    bool operator!=(const __iter__& other) const {
+        return !(*this == other);
+    }
+
 };
+
+
+template <std::derived_from<impl::KeyTag> Self>
+struct __reversed__<Self>                                   : Returns<typename Self::key_type> {};
 
 
 //////////////////////
@@ -330,19 +414,102 @@ struct __explicit_init__<ValueView<Map>, Map>               : Returns<ValueView<
 
 template <std::derived_from<impl::ValueTag> Self>
 struct __iter__<Self>                                       : Returns<typename Self::mapped_type> {
-    using Return = typename Self::mapped_type;
-    static auto begin(const Self& self) {
+    using iterator_category = std::input_iterator_tag;
+    using difference_type = std::ptrdiff_t;
+    using value_type = Self::mapped_type;
+    using pointer = value_type*;
+    using reference = value_type&;
+
+    Self container;
+    Py_ssize_t pos;
+    PyObject* value;
+
+    __iter__(const Self& container, int) :
+        container(container), pos(0), value(nullptr)
+    {
+        ++(*this);
+    }
+
+    __iter__(Self&& container, int) :
+        container(std::move(container)), pos(0), value(nullptr)
+    {
+        ++(*this);
+    }
+
+    __iter__(const Self& container) :
+        container(container), pos(-1), value(nullptr)
+    {}
+
+    __iter__(Self&& container) :
+        container(std::move(container)), pos(-1), value(nullptr)
+    {}
+
+    __iter__(const __iter__& other) :
+        container(other.container), pos(other.pos), value(other.value)
+    {}
+
+    __iter__(__iter__&& other) :
+        container(std::move(other.container)), pos(other.pos), value(other.value)
+    {
+        other.value = nullptr;
+    }
+
+    __iter__& operator=(const __iter__& other) {
+        if (this != &other) {
+            container = other.container;
+            pos = other.pos;
+            value = other.value;
+        }
+        return *this;
+    }
+
+    __iter__& operator=(__iter__&& other) {
+        if (this != &other) {
+            container = std::move(other.container);
+            pos = other.pos;
+            value = other.value;
+            other.value = nullptr;
+        }
+        return *this;
+    }
+
+    value_type operator*() const {
+        return reinterpret_borrow<value_type>(value);
+    }
+
+    pointer operator->() const {
+        return &(**this);
+    }
+
+    __iter__& operator++() {
         PyObject* dict = reinterpret_cast<PyObject*>(
-            reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
+            reinterpret_cast<impl::_PyDictViewObject*>(ptr(container))->dv_dict
         );
-        return impl::Iterator<impl::ValueIter<Return>>(
-            reinterpret_borrow<typename Self::mapping_type>(dict)
-        );
+        if (!PyDict_Next(dict, &pos, nullptr, &value)) {
+            pos = -1;
+        }
+        return *this;
     }
-    static auto end(const Self& self) {
-        return impl::Iterator<impl::ValueIter<Return>>();
+
+    __iter__ operator++(int) {
+        __iter__ copy(*this);
+        ++(*this);
+        return copy;
     }
+
+    bool operator==(const __iter__& other) const {
+        return ptr(container) == ptr(other.container) && pos == other.pos;
+    }
+
+    bool operator!=(const __iter__& other) const {
+        return !(*this == other);
+    }
+
 };
+
+template <std::derived_from<impl::ValueTag> Self>
+struct __reversed__<Self>                                   : Returns<typename Self::mapped_type> {};
+
 
 
 /////////////////////
@@ -455,30 +622,113 @@ struct __explicit_init__<ItemView<Map>, Map>                : Returns<ItemView<M
 };
 
 
-// TODO: Item iterator can use an internal tuple object that it can reuse to
-// store the key and value, rather than creating a new tuple each time.  This
-// should have no extra overhead over std::pair, and would be more consistent with
-// the Python implementation.  It requires a py::Struct class though.
+template <std::derived_from<impl::ItemTag> Self>
+struct __iter__<Self>                                       : Returns<std::pair<typename Self::key_type, typename Self::mapped_type>> {
+    using iterator_category = std::input_iterator_tag;
+    using difference_type = std::ptrdiff_t;
+    using value_type = std::pair<typename Self::key_type, typename Self::mapped_type>;
+    using pointer = value_type*;
+    using reference = value_type&;
 
-// -> This is the exact use case for py::Struct, but py::Struct requires elements
-// from the function refactor (namely py::arg<name, type>)
+    Self container;
+    Py_ssize_t pos;
+    PyObject* key;
+    PyObject* value;
+
+    __iter__(const Self& container, int) :
+        container(container), pos(0), key(nullptr), value(nullptr)
+    {
+        ++(*this);
+    }
+
+    __iter__(Self&& container, int) :
+        container(std::move(container)), pos(0), key(nullptr), value(nullptr)
+    {
+        ++(*this);
+    }
+
+    __iter__(const Self& container) :
+        container(container), pos(-1), key(nullptr), value(nullptr)
+    {}
+
+    __iter__(Self&& container) :
+        container(std::move(container)), pos(-1), key(nullptr), value(nullptr)
+    {}
+
+    __iter__(const __iter__& other) :
+        container(other.container), pos(other.pos), key(other.key), value(other.value)
+    {}
+
+    __iter__(__iter__&& other) :
+        container(std::move(other.container)), pos(other.pos), key(other.key),
+        value(other.value)
+    {
+        other.key = nullptr;
+        other.value = nullptr;
+    }
+
+    __iter__& operator=(const __iter__& other) {
+        if (this != &other) {
+            container = other.container;
+            pos = other.pos;
+            key = other.key;
+            value = other.value;
+        }
+        return *this;
+    }
+
+    __iter__& operator=(__iter__&& other) {
+        if (this != &other) {
+            container = std::move(other.container);
+            pos = other.pos;
+            key = other.key;
+            value = other.value;
+            other.key = nullptr;
+            other.value = nullptr;
+        }
+        return *this;
+    }
+
+    value_type operator*() const {
+        return std::make_pair(
+            reinterpret_borrow<typename Self::key_type>(key),
+            reinterpret_borrow<typename Self::mapped_type>(value)
+        );
+    }
+
+    pointer operator->() const {
+        return &(**this);
+    }
+
+    __iter__& operator++() {
+        PyObject* dict = reinterpret_cast<PyObject*>(
+            reinterpret_cast<impl::_PyDictViewObject*>(ptr(container))->dv_dict
+        );
+        if (!PyDict_Next(dict, &pos, &key, &value)) {
+            pos = -1;
+        }
+        return *this;
+    }
+
+    __iter__ operator++(int) {
+        __iter__ copy(*this);
+        ++(*this);
+        return copy;
+    }
+
+    bool operator==(const __iter__& other) const {
+        return ptr(container) == ptr(other.container) && pos == other.pos;
+    }
+
+    bool operator!=(const __iter__& other) const {
+        return !(*this == other);
+    }
+
+};
 
 
 template <std::derived_from<impl::ItemTag> Self>
-struct __iter__<Self>                                       : Returns<std::pair<typename Self::key_type, typename Self::mapped_type>> {
-    using Return = std::pair<typename Self::key_type, typename Self::mapped_type>;
-    static auto begin(const Self& self) {
-        PyObject* dict = reinterpret_cast<PyObject*>(
-            reinterpret_cast<impl::_PyDictViewObject*>(self.ptr())->dv_dict
-        );
-        return impl::Iterator<impl::ItemIter<Return>>(
-            reinterpret_borrow<typename Self::mapping_type>(dict)
-        );
-    }
-    static auto end(const Self& self) {
-        return impl::Iterator<impl::ItemIter<Return>>();
-    }
-};
+struct __reversed__<Self>                                   : Returns<std::pair<typename Self::key_type, typename Self::mapped_type>> {};
 
 
 ////////////////////

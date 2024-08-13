@@ -286,8 +286,17 @@ template <typename T> requires (__len__<T>::enable)
     );
     if constexpr (impl::has_call_operator<__len__<T>>) {
         return __len__<T>{}(obj);
+
+    } else if constexpr (impl::cpp_or_originates_from_cpp<T>) {
+        static_assert(
+            impl::has_size<impl::cpp_type<T>>,
+            "__len__<T> is enabled for a type whose C++ representation does not have "
+            "a viable overload for `std::size(T)`"
+        );
+        return std::size(unwrap(obj));
+
     } else {
-        Py_ssize_t size = PyObject_Length(ptr(as_object(obj)));
+        Py_ssize_t size = PyObject_Length(ptr(obj));
         if (size < 0) {
             Exception::from_python();
         }
@@ -418,8 +427,17 @@ template <std::derived_from<Object> Self> requires (__abs__<Self>::enable)
     );
     if constexpr (impl::has_call_operator<__abs__<Self>>) {
         return __abs__<Self>{}(self);
+
+    } else if (impl::cpp_or_originates_from_cpp<Self>) {
+        static_assert(
+            impl::has_abs<impl::cpp_type<Self>>,
+            "__abs__<T> is enabled for a type whose C++ representation does not have "
+            "a viable overload for `std::abs(T)`"
+        );
+        return std::abs(unwrap(self));
+
     } else {
-        PyObject* result = PyNumber_Absolute(ptr(as_object(self)));
+        PyObject* result = PyNumber_Absolute(ptr(self));
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -448,6 +466,38 @@ template <typename Base, typename Exp> requires (__pow__<Base, Exp>::enable)
     );
     if constexpr (impl::has_call_operator<__pow__<Base, Exp>>) {
         return __pow__<Base, Exp>{}(base, exp);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<Base> &&
+        impl::cpp_or_originates_from_cpp<Exp>
+    ) {
+        if constexpr (
+            impl::complex_like<impl::cpp_type<Base>> &&
+            impl::complex_like<impl::cpp_type<Exp>>
+        ) {
+            return std::common_type_t<impl::cpp_type<Base>, impl::cpp_type<Exp>>(
+                pow(unwrap(base).real(), unwrap(exp).real()),
+                pow(unwrap(base).imag(), unwrap(exp).imag())
+            );
+        } else if constexpr (impl::complex_like<impl::cpp_type<Base>>) {
+            return Base(
+                pow(unwrap(base).real(), unwrap(exp)),
+                pow(unwrap(base).real(), unwrap(exp))
+            );
+        } else if constexpr (impl::complex_like<impl::cpp_type<Exp>>) {
+            return Exp(
+                pow(unwrap(base), unwrap(exp).real()),
+                pow(unwrap(base), unwrap(exp).imag())
+            );
+        } else {
+            static_assert(
+                impl::has_pow<impl::cpp_type<Base>, impl::cpp_type<Exp>>,
+                "__pow__<Base, Exp> is enabled for operands whose C++ representations "
+                "have no viable overload for `std::pow(Base, Exp)`"
+            );
+            return std::pow(unwrap(base), unwrap(exp));
+        }
+
     } else {
         PyObject* result = PyNumber_Power(
             ptr(as_object(base)),
@@ -464,25 +514,34 @@ template <typename Base, typename Exp> requires (__pow__<Base, Exp>::enable)
 
 /* Equivalent to Python `pow(base, exp)`, except that it takes a C++ value and applies
 std::pow() for identical semantics. */
-template <typename Base, typename Exp> requires (!impl::any_are_python_like<Base, Exp>)
-[[nodiscard]] auto pow(const Base& base, const Exp& exponent) {
+template <typename Base, typename Exp>
+    requires (
+        !impl::any_are_python_like<Base, Exp> &&
+        !__pow__<Base, Exp>::enable &&
+        (
+            impl::complex_like<Base> ||
+            impl::complex_like<Exp> ||
+            impl::has_pow<Base, Exp>
+        )
+    )
+[[nodiscard]] auto pow(const Base& base, const Exp& exp) {
     if constexpr (impl::complex_like<Base> && impl::complex_like<Exp>) {
         return std::common_type_t<Base, Exp>(
-            std::pow(base.real(), exponent.real()),
-            std::pow(base.imag(), exponent.imag())
+            pow(base.real(), exp.real()),
+            pow(base.imag(), exp.imag())
         );
     } else if constexpr (impl::complex_like<Base>) {
         return Base(
-            std::pow(base.real(), exponent),
-            std::pow(base.imag(), exponent)
+            pow(base.real(), exp),
+            pow(base.imag(), exp)
         );
     } else if constexpr (impl::complex_like<Exp>) {
         return Exp(
-            std::pow(base, exponent.real()),
-            std::pow(base, exponent.imag())
+            pow(base, exp.real()),
+            pow(base, exp.imag())
         );
     } else {
-        return std::pow(base, exponent);
+        return std::pow(base, exp);
     }
 }
 
@@ -505,6 +564,14 @@ template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
         const Mod&
     >) {
         return __pow__<Base, Exp>{}(base, exp, mod);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<Base> &&
+        impl::cpp_or_originates_from_cpp<Exp> &&
+        impl::cpp_or_originates_from_cpp<Mod>
+    ) {
+        return pow(unwrap(base), unwrap(exp), unwrap(mod));
+
     } else {
         PyObject* result = PyNumber_Power(
             ptr(as_object(base)),
@@ -519,23 +586,21 @@ template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
 }
 
 
-// TODO: enable C++ equivalent for modular exponentiation
-
-// /* Equivalent to Python `pow(base, exp, mod)`, but works on C++ integers with identical
-// semantics. */
-// template <std::integral Base, std::integral Exp, std::integral Mod>
-// [[nodiscard]] auto pow(Base base, Exp exp, Mod mod) {
-//     std::common_type_t<Base, Exp, Mod> result = 1;
-//     base = py::mod(base, mod);
-//     while (exp > 0) {
-//         if (exp % 2) {
-//             result = py::mod(result * base, mod);
-//         }
-//         exp >>= 1;
-//         base = py::mod(base * base, mod);
-//     }
-//     return result;
-// }
+/* Equivalent to Python `pow(base, exp, mod)`, but works on C++ integers with identical
+semantics. */
+template <std::integral Base, std::integral Exp, std::integral Mod>
+[[nodiscard]] auto pow(Base base, Exp exp, Mod mod) {
+    std::common_type_t<Base, Exp, Mod> result = 1;
+    base = base % mod;
+    while (exp > 0) {
+        if (exp % 2) {
+            result = (result * base) % mod;
+        }
+        exp >>= 1;
+        base = (base * base) % mod;
+    }
+    return result;
+}
 
 
 template <typename L, typename R> requires (__floordiv__<L, R>::enable)
@@ -715,8 +780,17 @@ auto operator~(const Self& self) {
     );
     if constexpr (impl::has_call_operator<__invert__<Self>>) {
         return __invert__<Self>{}(self);
+
+    } else if constexpr (impl::cpp_or_originates_from_cpp<Self>) {
+        static_assert(
+            impl::has_invert<impl::cpp_type<Self>>,
+            "__invert__<T> is enabled for a type whose C++ representation does not "
+            "have a viable overload for `~T`"
+        );
+        return ~unwrap(self);
+
     } else {
-        PyObject* result = PyNumber_Invert(ptr(as_object(self)));
+        PyObject* result = PyNumber_Invert(ptr(self));
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -738,8 +812,17 @@ auto operator+(const Self& self) {
     );
     if constexpr (impl::has_call_operator<__pos__<Self>>) {
         return __pos__<Self>{}(self);
+
+    } else if constexpr (impl::cpp_or_originates_from_cpp<Self>) {
+        static_assert(
+            impl::has_pos<impl::cpp_type<Self>>,
+            "__pos__<T> is enabled for a type whose C++ representation does not "
+            "have a viable overload for `+T`"
+        );
+        return +unwrap(self);
+
     } else {
-        PyObject* result = PyNumber_Positive(ptr(as_object(self)));
+        PyObject* result = PyNumber_Positive(ptr(self));
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -761,8 +844,17 @@ auto operator-(const Self& self) {
     );
     if constexpr (impl::has_call_operator<__neg__<Self>>) {
         return __neg__<Self>{}(self);
+
+    } else if constexpr (impl::cpp_or_originates_from_cpp<Self>) {
+        static_assert(
+            impl::has_neg<impl::cpp_type<Self>>,
+            "__neg__<T> is enabled for a type whose C++ representation does not "
+            "have a viable overload for `-T`"
+        );
+        return -unwrap(self);
+
     } else {
-        PyObject* result = PyNumber_Negative(ptr(as_object(self)));
+        PyObject* result = PyNumber_Negative(ptr(self));
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -788,6 +880,15 @@ Self& operator++(Self& self) {
     );
     if constexpr (impl::has_call_operator<__increment__<Self>>) {
         __increment__<Self>{}(self);
+
+    } else if constexpr (impl::cpp_or_originates_from_cpp<Self>) {
+        static_assert(
+            impl::has_preincrement<impl::cpp_type<Self>>,
+            "__increment__<T> is enabled for a type whose C++ representation does not "
+            "have a viable overload for `++T`"
+        );
+        return ++unwrap(self);
+
     } else {
         PyObject* result = PyNumber_InPlaceAdd(ptr(self), impl::one);
         if (result == nullptr) {
@@ -820,6 +921,15 @@ Self operator++(Self& self, int) {
     Self copy = self;
     if constexpr (impl::has_call_operator<__increment__<Self>>) {
         __increment__<Self>{}(self);
+
+    } else if constexpr (impl::cpp_or_originates_from_cpp<Self>) {
+        static_assert(
+            impl::has_postincrement<impl::cpp_type<Self>>,
+            "__increment__<T> is enabled for a type whose C++ representation does not "
+            "have a viable overload for `T++`"
+        );
+        return unwrap(self)++;
+
     } else {
         PyObject* result = PyNumber_InPlaceAdd(ptr(self), impl::one);
         if (result == nullptr) {
@@ -851,6 +961,15 @@ Self& operator--(Self& self) {
     );
     if constexpr (impl::has_call_operator<__decrement__<Self>>) {
         __decrement__<Self>{}(self);
+
+    } else if constexpr (impl::cpp_or_originates_from_cpp<Self>) {
+        static_assert(
+            impl::has_predecrement<impl::cpp_type<Self>>,
+            "__decrement__<T> is enabled for a type whose C++ representation does not "
+            "have a viable overload for `--T`"
+        );
+        return --unwrap(self);
+
     } else {
         PyObject* result = PyNumber_InPlaceSubtract(ptr(self), impl::one);
         if (result == nullptr) {
@@ -883,6 +1002,15 @@ Self operator--(Self& self, int) {
     Self copy = self;
     if constexpr (impl::has_call_operator<__decrement__<Self>>) {
         __decrement__<Self>{}(self);
+
+    } else if constexpr (impl::cpp_or_originates_from_cpp<Self>) {
+        static_assert(
+            impl::has_postdecrement<impl::cpp_type<Self>>,
+            "__decrement__<T> is enabled for a type whose C++ representation does not "
+            "have a viable overload for `T--`"
+        );
+        return unwrap(self)--;
+
     } else {
         PyObject* result = PyNumber_InPlaceSubtract(ptr(self), impl::one);
         if (result == nullptr) {
@@ -912,6 +1040,18 @@ auto operator<(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__lt__<L, R>>) {
         return __lt__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_lt<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__lt__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L < R`"
+        );
+        return unwrap(lhs) < unwrap(rhs);
+
     } else {
         int result = PyObject_RichCompareBool(
             ptr(as_object(lhs)),
@@ -941,6 +1081,18 @@ auto operator<=(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__le__<L, R>>) {
         return __le__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_le<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__le__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L <= R`"
+        );
+        return unwrap(lhs) <= unwrap(rhs);
+
     } else {
         int result = PyObject_RichCompareBool(
             ptr(as_object(lhs)),
@@ -970,6 +1122,18 @@ auto operator==(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__eq__<L, R>>) {
         return __eq__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_eq<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__eq__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L == R`"
+        );
+        return unwrap(lhs) == unwrap(rhs);
+
     } else {
         int result = PyObject_RichCompareBool(
             ptr(as_object(lhs)),
@@ -999,6 +1163,18 @@ auto operator!=(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__ne__<L, R>>) {
         return __ne__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_ne<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__ne__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L != R`"
+        );
+        return unwrap(lhs) != unwrap(rhs);
+
     } else {
         int result = PyObject_RichCompareBool(
             ptr(as_object(lhs)),
@@ -1028,6 +1204,18 @@ auto operator>=(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__ge__<L, R>>) {
         return __ge__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_ge<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__ge__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L >= R`"
+        );
+        return unwrap(lhs) >= unwrap(rhs);
+
     } else {
         int result = PyObject_RichCompareBool(
             ptr(as_object(lhs)),
@@ -1057,6 +1245,18 @@ auto operator>(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__gt__<L, R>>) {
         return __gt__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_gt<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__gt__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L > R`"
+        );
+        return unwrap(lhs) > unwrap(rhs);
+
     } else {
         int result = PyObject_RichCompareBool(
             ptr(as_object(lhs)),
@@ -1086,6 +1286,18 @@ auto operator+(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__add__<L, R>>) {
         return __add__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_add<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__add__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L + R`"
+        );
+        return unwrap(lhs) + unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_Add(
             ptr(as_object(lhs)),
@@ -1116,6 +1328,18 @@ L& operator+=(L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__iadd__<L, R>>) {
         __iadd__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_iadd<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__iadd__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L += R`"
+        );
+        unwrap(lhs) += unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_InPlaceAdd(
             ptr(lhs),
@@ -1148,6 +1372,18 @@ auto operator-(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__sub__<L, R>>) {
         return __sub__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_sub<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__sub__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L - R`"
+        );
+        return unwrap(lhs) - unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_Subtract(
             ptr(as_object(lhs)),
@@ -1178,6 +1414,18 @@ L& operator-=(L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__isub__<L, R>>) {
         __isub__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_isub<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__isub__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L -= R`"
+        );
+        unwrap(lhs) -= unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_InPlaceSubtract(
             ptr(lhs),
@@ -1210,6 +1458,18 @@ auto operator*(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__mul__<L, R>>) {
         return __mul__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_mul<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__mul__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L * R`"
+        );
+        return unwrap(lhs) * unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_Multiply(
             ptr(as_object(lhs)),
@@ -1240,6 +1500,18 @@ L& operator*=(L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__imul__<L, R>>) {
         __imul__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_imul<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__imul__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L *= R`"
+        );
+        unwrap(lhs) *= unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_InPlaceMultiply(
             ptr(lhs),
@@ -1272,6 +1544,18 @@ auto operator/(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__truediv__<L, R>>) {
         return __truediv__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_truediv<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__truediv__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L / R`"
+        );
+        return unwrap(lhs) / unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_TrueDivide(
             ptr(as_object(lhs)),
@@ -1302,6 +1586,18 @@ L& operator/=(L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__itruediv__<L, R>>) {
         __itruediv__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_itruediv<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__itruediv__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L /= R`"
+        );
+        unwrap(lhs) /= unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_InPlaceTrueDivide(
             ptr(lhs),
@@ -1334,6 +1630,18 @@ auto operator%(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__mod__<L, R>>) {
         return __mod__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_mod<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__mod__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L % R`"
+        );
+        return unwrap(lhs) % unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_Remainder(
             ptr(as_object(lhs)),
@@ -1364,6 +1672,18 @@ L& operator%=(L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__imod__<L, R>>) {
         __imod__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_imod<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__imod__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L %= R`"
+        );
+        unwrap(lhs) %= unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_InPlaceRemainder(
             ptr(lhs),
@@ -1404,6 +1724,18 @@ auto operator<<(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__lshift__<L, R>>) {
         return __lshift__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_lshift<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__lshift__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L << R`"
+        );
+        return unwrap(lhs) << unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_Lshift(
             ptr(as_object(lhs)),
@@ -1452,6 +1784,18 @@ L& operator<<=(L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__ilshift__<L, R>>) {
         __ilshift__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_ilshift<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__ilshift__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L <<= R`"
+        );
+        unwrap(lhs) <<= unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_InPlaceLshift(
             ptr(lhs),
@@ -1484,6 +1828,18 @@ auto operator>>(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__rshift__<L, R>>) {
         return __rshift__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_rshift<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__rshift__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L >> R`"
+        );
+        return unwrap(lhs) >> unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_Rshift(
             ptr(as_object(lhs)),
@@ -1514,6 +1870,18 @@ L& operator>>=(L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__irshift__<L, R>>) {
         __irshift__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_irshift<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__irshift__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L >>= R`"
+        );
+        unwrap(lhs) >>= unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_InPlaceRshift(
             ptr(lhs),
@@ -1546,6 +1914,18 @@ auto operator&(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__and__<L, R>>) {
         return __and__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_and<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__and__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L & R`"
+        );
+        return unwrap(lhs) & unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_And(
             ptr(as_object(lhs)),
@@ -1576,6 +1956,18 @@ L& operator&=(L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__iand__<L, R>>) {
         __iand__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_iand<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__iand__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L &= R`"
+        );
+        unwrap(lhs) &= unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_InPlaceAnd(
             ptr(lhs),
@@ -1608,6 +2000,18 @@ auto operator|(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__or__<L, R>>) {
         return __or__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_or<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__or__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L | R`"
+        );
+        return unwrap(lhs) | unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_Or(
             ptr(as_object(lhs)),
@@ -1638,6 +2042,18 @@ L& operator|=(L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__ior__<L, R>>) {
         __ior__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_ior<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__ior__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L |= R`"
+        );
+        unwrap(lhs) |= unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_InPlaceOr(
             ptr(lhs),
@@ -1670,6 +2086,18 @@ auto operator^(const L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__xor__<L, R>>) {
         return __xor__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_xor<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__xor__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L ^ R`"
+        );
+        return unwrap(lhs) ^ unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_Xor(
             ptr(as_object(lhs)),
@@ -1700,6 +2128,18 @@ L& operator^=(L& lhs, const R& rhs) {
     );
     if constexpr (impl::has_call_operator<__ixor__<L, R>>) {
         __ixor__<L, R>{}(lhs, rhs);
+
+    } else if constexpr (
+        impl::cpp_or_originates_from_cpp<L> &&
+        impl::cpp_or_originates_from_cpp<R>
+    ) {
+        static_assert(
+            impl::has_ixor<impl::cpp_type<L>, impl::cpp_type<R>>,
+            "__ixor__<L, R> is enabled for operands whose C++ representations have "
+            "no viable overload for `L ^= R`"
+        );
+        unwrap(lhs) ^= unwrap(rhs);
+
     } else {
         PyObject* result = PyNumber_InPlaceXor(
             ptr(lhs),
@@ -1733,6 +2173,13 @@ namespace std {
         static constexpr size_t operator()(const T& obj) {
             if constexpr (py::impl::has_call_operator<py::__hash__<T>>) {
                 return py::__hash__<T>{}(obj);
+            } else if constexpr (py::impl::cpp_or_originates_from_cpp<T>) {
+                static_assert(
+                    py::impl::hashable<py::impl::cpp_type<T>>,
+                    "__hash__<T> is enabled for a type whose C++ representation does "
+                    "not have a viable overload for `std::hash<T>{}`"
+                );
+                return std::hash<T>{}(py::unwrap(obj));
             } else {
                 Py_ssize_t result = PyObject_Hash(py::ptr(obj));
                 if (result == -1 && PyErr_Occurred()) {

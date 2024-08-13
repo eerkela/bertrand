@@ -366,13 +366,6 @@ namespace impl {
 
     template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
     class Item;
-    template <typename Policy>
-    class Iterator;
-    template <typename Policy>
-    class ReverseIterator;
-    template <typename Deref>
-    class GenericIter;
-
     struct SliceInitializer;
 
     template <typename T>
@@ -391,16 +384,6 @@ namespace impl {
 
     template <typename T>
     concept is_generic = is_generic_helper<T>;
-
-    template <typename T>
-    concept originates_from_cpp =
-        std::derived_from<std::remove_cvref_t<T>, Object> &&
-        Type<std::remove_cvref_t<T>>::__python__::__origin__ == Origin::CPP;
-
-    template <typename T>
-    concept originates_from_python =
-        std::derived_from<std::remove_cvref_t<T>, Object> &&
-        Type<std::remove_cvref_t<T>>::__python__::__origin__ == Origin::PYTHON;
 
     template <typename T, typename = void>
     constexpr bool is_module_helper = false;
@@ -494,6 +477,309 @@ namespace impl {
     };
 
     template <typename T>
+    concept pair_like = std::tuple_size<T>::value == 2 && requires(T t) {
+        { std::get<0>(t) };
+        { std::get<1>(t) };
+    };
+
+    template <typename T, typename First, typename Second>
+    concept pair_like_with = pair_like<T> && requires(T t) {
+        { std::get<0>(t) } -> std::convertible_to<First>;
+        { std::get<1>(t) } -> std::convertible_to<Second>;
+    };
+
+    template <typename T>
+    concept yields_pairs = is_iterable<T> && pair_like<iter_type<T>>;
+
+    template <typename T, typename First, typename Second>
+    concept yields_pairs_with = is_iterable<T> && pair_like_with<iter_type<T>, First, Second>;
+
+    template <typename T>
+    concept hashable = requires(T t) {
+        { std::hash<std::decay_t<T>>{}(t) } -> std::convertible_to<size_t>;
+    };
+
+    template <typename T>
+    concept has_abs = requires(T t) {
+        { std::abs(t) };
+    };
+
+    template <typename T, typename Return>
+    concept abs_returns = requires(T t) {
+        { std::abs(t) } -> std::convertible_to<Return>;
+    };
+
+    template <typename T>
+    concept has_invert = requires(T t) {
+        { ~t };
+    };
+
+    template <typename T, typename Return>
+    concept invert_returns = requires(T t) {
+        { ~t } -> std::convertible_to<Return>;
+    };
+
+    template <typename T>
+    concept has_pos = requires(T t) {
+        { +t };
+    };
+
+    template <typename T, typename Return>
+    concept pos_returns = requires(T t) {
+        { +t } -> std::convertible_to<Return>;
+    };
+
+    template <typename T>
+    concept has_neg = requires(T t) {
+        { -t };
+    };
+
+    template <typename T, typename Return>
+    concept neg_returns = requires(T t) {
+        { -t } -> std::convertible_to<Return>;
+    };
+
+    template <typename T>
+    concept has_preincrement = requires(T t) {
+        { ++t } -> std::convertible_to<T&>;
+    };
+
+    template <typename T>
+    concept has_postincrement = requires(T t) {
+        { t++ } -> std::convertible_to<T>;
+    };
+
+    template <typename T>
+    concept has_predecrement = requires(T t) {
+        { --t } -> std::convertible_to<T&>;
+    };
+
+    template <typename T>
+    concept has_postdecrement = requires(T t) {
+        { t-- } -> std::convertible_to<T>;
+    };
+
+    template <typename L, typename R>
+    concept has_lt = requires(L l, R r) {
+        { l < r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept lt_returns = requires(L l, R r) {
+        { l < r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_le = requires(L l, R r) {
+        { l <= r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept le_returns = requires(L l, R r) {
+        { l <= r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_eq = requires(L l, R r) {
+        { l == r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept eq_returns = requires(L l, R r) {
+        { l == r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_ne = requires(L l, R r) {
+        { l != r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept ne_returns = requires(L l, R r) {
+        { l != r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_ge = requires(L l, R r) {
+        { l >= r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept ge_returns = requires(L l, R r) {
+        { l >= r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_gt = requires(L l, R r) {
+        { l > r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept gt_returns = requires(L l, R r) {
+        { l > r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_add = requires(L l, R r) {
+        { l + r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept add_returns = requires(L l, R r) {
+        { l + r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_iadd = requires(L& l, R r) {
+        { l += r } -> std::convertible_to<L&>;
+    };
+
+    template <typename L, typename R>
+    concept has_sub = requires(L l, R r) {
+        { l - r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept sub_returns = requires(L l, R r) {
+        { l - r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_isub = requires(L& l, R r) {
+        { l -= r } -> std::convertible_to<L&>;
+    };
+
+    template <typename L, typename R>
+    concept has_mul = requires(L l, R r) {
+        { l * r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept mul_returns = requires(L l, R r) {
+        { l * r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_imul = requires(L& l, R r) {
+        { l *= r } -> std::convertible_to<L&>;
+    };
+
+    template <typename L, typename R>
+    concept has_truediv = requires(L l, R r) {
+        { l / r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept truediv_returns = requires(L l, R r) {
+        { l / r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_itruediv = requires(L& l, R r) {
+        { l /= r } -> std::convertible_to<L&>;
+    };
+
+    template <typename L, typename R>
+    concept has_mod = requires(L l, R r) {
+        { l % r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept mod_returns = requires(L l, R r) {
+        { l % r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_imod = requires(L& l, R r) {
+        { l %= r } -> std::convertible_to<L&>;
+    };
+
+    template <typename L, typename R>
+    concept has_pow = requires(L l, R r) {
+        { std::pow(l, r) };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept pow_returns = requires(L l, R r) {
+        { std::pow(l, r) } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_lshift = requires(L l, R r) {
+        { l << r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept lshift_returns = requires(L l, R r) {
+        { l << r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_ilshift = requires(L& l, R r) {
+        { l <<= r } -> std::convertible_to<L&>;
+    };
+
+    template <typename L, typename R>
+    concept has_rshift = requires(L l, R r) {
+        { l >> r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept rhsift_returns = requires(L l, R r) {
+        { l >> r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_irshift = requires(L& l, R r) {
+        { l >>= r } -> std::convertible_to<L&>;
+    };
+
+    template <typename L, typename R>
+    concept has_and = requires(L l, R r) {
+        { l & r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept and_returns = requires(L l, R r) {
+        { l & r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_iand = requires(L& l, R r) {
+        { l &= r } -> std::convertible_to<L&>;
+    };
+
+    template <typename L, typename R>
+    concept has_or = requires(L l, R r) {
+        { l | r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept or_returns = requires(L l, R r) {
+        { l | r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_ior = requires(L& l, R r) {
+        { l |= r } -> std::convertible_to<L&>;
+    };
+
+    template <typename L, typename R>
+    concept has_xor = requires(L l, R r) {
+        { l ^ r };
+    };
+
+    template <typename L, typename R, typename Return>
+    concept xor_returns = requires(L l, R r) {
+        { l ^ r } -> std::convertible_to<Return>;
+    };
+
+    template <typename L, typename R>
+    concept has_ixor = requires(L& l, R r) {
+        { l ^= r } -> std::convertible_to<L&>;
+    };
+
+    template <typename T>
     concept has_concat = requires(const T& lhs, const T& rhs) {
         { lhs + rhs } -> std::convertible_to<T>;
     };
@@ -514,29 +800,6 @@ namespace impl {
     };
 
     template <typename T>
-    concept pair_like = std::tuple_size<T>::value == 2 && requires(T t) {
-        { std::get<0>(t) };
-        { std::get<1>(t) };
-    };
-
-    template <typename T, typename First, typename Second>
-    concept pair_like_with = pair_like<T> && requires(T t) {
-        { std::get<0>(t) } -> std::convertible_to<First>;
-        { std::get<1>(t) } -> std::convertible_to<Second>;
-    };
-
-    template <typename T>
-    concept yields_pairs = is_iterable<T> && pair_like<iter_type<T>>;
-
-    template <typename T, typename First, typename Second>
-    concept yields_pairs_with = is_iterable<T> && pair_like_with<iter_type<T>, First, Second>;
-
-    template <typename T>
-    concept has_abs = requires(T t) {
-        { std::abs(t) };
-    };
-
-    template <typename T>
     concept has_to_string = requires(T t) {
         { std::to_string(t) } -> std::convertible_to<std::string>;
     };
@@ -554,11 +817,6 @@ namespace impl {
         std::is_function_v<std::remove_pointer_t<std::decay_t<T>>> ||
         std::is_member_function_pointer_v<std::decay_t<T>> ||
         has_call_operator<T>;
-
-    template <typename T>
-    concept hashable = requires(T t) {
-        { std::hash<std::decay_t<T>>{}(t) } -> std::convertible_to<size_t>;
-    };
 
     template <typename T>
     concept string_literal = requires(T t) {
@@ -616,11 +874,38 @@ namespace impl {
     template <typename... Ts>
     concept any_are_python_like = (python_like<Ts> || ...);
 
+    // TODO: is_object_exact may not be necessary
+
     template <typename T>
     concept is_object_exact = std::same_as<std::decay_t<T>, Object>;  // TODO: rename to dynamic_type and include Handle?
 
     template <typename T>
+    concept originates_from_python =
+        std::derived_from<std::remove_cvref_t<T>, Object> &&
+        Type<std::remove_cvref_t<T>>::__python__::__origin__ == Origin::PYTHON;
+
+    template <typename T>
     concept cpp_like = !python_like<T>;
+
+    template <typename T>
+    concept originates_from_cpp =
+        std::derived_from<std::remove_cvref_t<T>, Object> &&
+        Type<std::remove_cvref_t<T>>::__python__::__origin__ == Origin::CPP;
+
+    template <typename T>
+    concept cpp_or_originates_from_cpp = cpp_like<T> || originates_from_cpp<T>;
+
+    template <cpp_or_originates_from_cpp T>
+    using cpp_type = std::conditional_t<
+        originates_from_cpp<T>,
+        typename Type<std::remove_cvref_t<T>>::__python__::t_cpp,
+        T
+    >;
+
+    template <typename T>
+    concept type_like =
+        __as_object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, TypeTag>;
 
     template <typename T>
     concept none_like =
@@ -753,11 +1038,6 @@ namespace impl {
 
     template <typename T>
     concept anydict_like = dict_like<T> || mappingproxy_like<T>;
-
-    template <typename T>
-    concept type_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, TypeTag>;
 
     /* NOTE: some binary operators (such as lexicographic comparisons) accept generic
      * containers, which may be combined with containers of different types.  In these
@@ -958,7 +1238,7 @@ template <typename T>
 Note that this only works if the wrapper was declared using the `__python__` CRTP
 helper.  If the wrapper does not own the backing object, this method will follow the
 pointer to resolve the reference. */
-template <std::derived_from<Object> T> requires (impl::originates_from_cpp<T>)
+template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
 [[nodiscard]] auto& unwrap(T& obj);
 
 
@@ -966,7 +1246,7 @@ template <std::derived_from<Object> T> requires (impl::originates_from_cpp<T>)
 Note that this only works if the wrapper was declared using the `__python__` CRTP
 helper.  If the wrapper does not own the backing object, this method will follow the
 pointer to resolve the reference. */
-template <std::derived_from<Object> T> requires (impl::originates_from_cpp<T>)
+template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
 [[nodiscard]] const auto& unwrap(const T& obj);
 
 

@@ -694,7 +694,7 @@ struct __isinstance__<T, Type<Cls>>                      : Returns<bool> {
     // TODO: isinstance<Type<Cls>>(obj) should only return true if obj is a type, which
     // is a subclass of Cls.  Not if obj is an instance of Cls directly.
     static constexpr bool operator()(const T& obj) {
-        return PyType_Check(ptr(obj)) && issubclass<Cls>(obj);
+        return PyType_Check(ptr(obj)) && issubclass<Cls>(obj);  // TODO: issubclass<Cls>(obj) may not be valid
     }
     static constexpr bool operator()(const T& obj, const Type<Cls>& cls) {
         if constexpr (impl::is_object_exact<Cls>) {
@@ -1511,6 +1511,8 @@ namespace impl {
         }
 
     public:
+        using t_cpp = CppType;
+
         Module<ModName> module;
         PyObject* context;
         PyMeta::Getters class_getters;
@@ -2580,12 +2582,28 @@ namespace impl {
             ) {
                 auto result = Base::finalize(tp_flags);
                 if constexpr (impl::is_iterable<CppType>) {
-                    register_iterator<Iterator<CppType>>(result);
-                    register_iterator<Iterator<const CppType>>(result);
+                    register_iterator<Iterator<
+                        decltype(std::ranges::begin(std::declval<CppType>())),
+                        decltype(std::ranges::end(std::declval<CppType>()))
+                    >>(result);
+                }
+                if constexpr (impl::is_iterable<const CppType>) {
+                    register_iterator<Iterator<
+                        decltype(std::ranges::begin(std::declval<const CppType>())),
+                        decltype(std::ranges::end(std::declval<const CppType>()))
+                    >>(result);
                 }
                 if constexpr (impl::is_reverse_iterable<CppType>) {
-                    register_iterator<ReverseIterator<CppType>>(result);
-                    register_iterator<ReverseIterator<const CppType>>(result);
+                    register_iterator<Iterator<
+                        decltype(std::ranges::rbegin(std::declval<CppType>())),
+                        decltype(std::ranges::rend(std::declval<CppType>()))
+                    >>(result);
+                }
+                if constexpr (impl::is_reverse_iterable<const CppType>) {
+                    register_iterator<Iterator<
+                        decltype(std::ranges::rbegin(std::declval<const CppType>())),
+                        decltype(std::ranges::rend(std::declval<const CppType>()))
+                    >>(result);
                 }
                 return result;
             }
@@ -2714,19 +2732,16 @@ namespace impl {
             return 0;
         }
 
-        template <typename T> requires (impl::is_iterable<T>)
+        template <typename Begin, std::sentinel_for<Begin> End>
         struct Iterator {
-            using begin_type = decltype(std::ranges::begin(std::declval<T>()));
-            using end_type = decltype(std::ranges::end(std::declval<T>()));
-
             PyObject_HEAD
-            begin_type begin;
-            end_type end;
+            Begin begin;
+            End end;
 
             static void __dealloc__(Iterator* self) {
                 PyObject_GC_UnTrack(self);
-                self->begin.~begin_type();
-                self->end.~end_type();
+                self->begin.~Begin();
+                self->end.~End();
                 PyTypeObject* type = Py_TYPE(self);
                 type->tp_free(self);
                 Py_DECREF(type);
@@ -2738,51 +2753,6 @@ namespace impl {
             }
 
             static PyObject* __next__(Iterator* self) {
-                try {
-                    if (self->begin == self->end) {
-                        return nullptr;
-                    }
-                    if constexpr (std::is_lvalue_reference_v<decltype(*(self->begin))>) {
-                        auto result = wrap(*(self->begin));  // non-owning obj
-                        ++(self->begin);
-                        return release(result);
-                    } else {
-                        auto result = as_object(*(self->begin));  // owning obj
-                        ++(self->begin);
-                        return release(result);
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            }
-
-        };
-
-        template <typename T> requires (impl::is_reverse_iterable<T>)
-        struct ReverseIterator {
-            using begin_type = decltype(std::ranges::rbegin(std::declval<T>()));
-            using end_type = decltype(std::ranges::rend(std::declval<T>()));
-
-            PyObject_HEAD
-            begin_type begin;
-            end_type end;
-
-            static void __dealloc__(ReverseIterator* self) {
-                PyObject_GC_UnTrack(self);
-                self->begin.~begin_type();
-                self->end.~end_type();
-                PyTypeObject* type = Py_TYPE(self);
-                type->tp_free(self);
-                Py_DECREF(type);
-            }
-
-            static int __traverse__(ReverseIterator* self, visitproc visit, void* arg) {
-                Py_VISIT(Py_TYPE(self));
-                return 0;
-            }
-
-            static PyObject* __next__(ReverseIterator* self) {
                 try {
                     if (self->begin == self->end) {
                         return nullptr;
@@ -2818,7 +2788,9 @@ namespace impl {
             try {
                 PyObject* iter = std::visit(Visitor{
                     [self](CppType& cpp) -> PyObject* {
-                        using Iterator = Iterator<CppType>;
+                        using Begin = decltype(std::ranges::begin(std::declval<CppType>()));
+                        using End = decltype(std::ranges::end(std::declval<CppType>()));
+                        using Iterator = Iterator<Begin, End>;
                         PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
                             PyObject_GetAttrString(
                                 reinterpret_cast<PyObject*>(Py_TYPE(self)),
@@ -2833,12 +2805,14 @@ namespace impl {
                         if (iter == nullptr) {
                             Exception::from_python();
                         }
-                        new (&iter->begin) Iterator::begin_type(std::ranges::begin(cpp));
-                        new (&iter->end) Iterator::end_type(std::ranges::end(cpp));
+                        new (&iter->begin) Iterator::Begin(std::ranges::begin(cpp));
+                        new (&iter->end) Iterator::End(std::ranges::end(cpp));
                         return iter;
                     },
                     [self](CppType* cpp) -> PyObject* {
-                        using Iterator = Iterator<CppType>;
+                        using Begin = decltype(std::ranges::begin(std::declval<CppType>()));
+                        using End = decltype(std::ranges::end(std::declval<CppType>()));
+                        using Iterator = Iterator<Begin, End>;
                         PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
                             PyObject_GetAttrString(
                                 reinterpret_cast<PyObject*>(Py_TYPE(self)),
@@ -2853,12 +2827,14 @@ namespace impl {
                         if (iter == nullptr) {
                             Exception::from_python();
                         }
-                        new (&iter->begin) Iterator::begin_type(std::ranges::begin(*cpp));
-                        new (&iter->end) Iterator::end_type(std::ranges::end(*cpp));
+                        new (&iter->begin) Iterator::Begin(std::ranges::begin(*cpp));
+                        new (&iter->end) Iterator::End(std::ranges::end(*cpp));
                         return iter;
                     },
                     [self](const CppType* cpp) -> PyObject* {
-                        using Iterator = Iterator<const CppType>;
+                        using Begin = decltype(std::ranges::begin(std::declval<const CppType>()));
+                        using End = decltype(std::ranges::end(std::declval<const CppType>()));
+                        using Iterator = Iterator<Begin, End>;
                         PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
                             PyObject_GetAttrString(
                                 reinterpret_cast<PyObject*>(Py_TYPE(self)),
@@ -2873,8 +2849,8 @@ namespace impl {
                         if (iter == nullptr) {
                             Exception::from_python();
                         }
-                        new (&iter->begin) Iterator::begin_type(std::ranges::begin(*cpp));
-                        new (&iter->end) Iterator::end_type(std::ranges::end(*cpp));
+                        new (&iter->begin) Iterator::Begin(std::ranges::begin(*cpp));
+                        new (&iter->end) Iterator::End(std::ranges::end(*cpp));
                         return iter;
                     }
                 }, self->m_cpp);
@@ -2893,7 +2869,9 @@ namespace impl {
             try {
                 PyObject* iter = std::visit(Visitor{
                     [self](CppType& cpp) -> PyObject* {
-                        using Iterator = ReverseIterator<CppType>;
+                        using Begin = decltype(std::ranges::rbegin(std::declval<CppType>()));
+                        using End = decltype(std::ranges::rend(std::declval<CppType>()));
+                        using Iterator = Iterator<Begin, End>;
                         PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
                             PyObject_GetAttrString(
                                 reinterpret_cast<PyObject*>(Py_TYPE(self)),
@@ -2908,12 +2886,14 @@ namespace impl {
                         if (iter == nullptr) {
                             Exception::from_python();
                         }
-                        new (&iter->begin) Iterator::begin_type(std::ranges::rbegin(cpp));
-                        new (&iter->end) Iterator::end_type(std::ranges::rend(cpp));
+                        new (&iter->begin) Iterator::Begin(std::ranges::rbegin(cpp));
+                        new (&iter->end) Iterator::End(std::ranges::rend(cpp));
                         return iter;
                     },
                     [self](CppType* cpp) -> PyObject* {
-                        using Iterator = ReverseIterator<CppType>;
+                        using Begin = decltype(std::ranges::rbegin(std::declval<CppType>()));
+                        using End = decltype(std::ranges::rend(std::declval<CppType>()));
+                        using Iterator = Iterator<Begin, End>;
                         PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
                             PyObject_GetAttrString(
                                 reinterpret_cast<PyObject*>(Py_TYPE(self)),
@@ -2928,12 +2908,14 @@ namespace impl {
                         if (iter == nullptr) {
                             Exception::from_python();
                         }
-                        new (&iter->begin) Iterator::begin_type(std::ranges::rbegin(*cpp));
-                        new (&iter->end) Iterator::end_type(std::ranges::rend(*cpp));
+                        new (&iter->begin) Iterator::Begin(std::ranges::rbegin(*cpp));
+                        new (&iter->end) Iterator::End(std::ranges::rend(*cpp));
                         return iter;
                     },
                     [self](const CppType* cpp) -> PyObject* {
-                        using Iterator = ReverseIterator<const CppType>;
+                        using Begin = decltype(std::ranges::rbegin(std::declval<const CppType>()));
+                        using End = decltype(std::ranges::rend(std::declval<const CppType>()));
+                        using Iterator = Iterator<Begin, End>;
                         PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
                             PyObject_GetAttrString(
                                 reinterpret_cast<PyObject*>(Py_TYPE(self)),
@@ -2948,8 +2930,8 @@ namespace impl {
                         if (iter == nullptr) {
                             Exception::from_python();
                         }
-                        new (&iter->begin) Iterator::begin_type(std::ranges::rbegin(*cpp));
-                        new (&iter->end) Iterator::end_type(std::ranges::rend(*cpp));
+                        new (&iter->begin) Iterator::Begin(std::ranges::rbegin(*cpp));
+                        new (&iter->end) Iterator::End(std::ranges::rend(*cpp));
                         return iter;
                     }
                 }, self->m_cpp);
@@ -3037,9 +3019,9 @@ namespace impl {
                 std::same_as<T, typename __as_object__<T>::type::__python__::CppType>
             )
         friend auto wrap(T& obj) -> __as_object__<T>::type;
-        template <std::derived_from<Object> T> requires (impl::originates_from_cpp<T>)
+        template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
         friend auto& unwrap(T& obj);
-        template <std::derived_from<Object> T> requires (impl::originates_from_cpp<T>)
+        template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
         friend auto& unwrap(const T& obj);
 
         /* Implements py::wrap() for immutable references. */

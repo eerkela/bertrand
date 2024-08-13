@@ -375,15 +375,23 @@ template <typename T>
 }
 
 
-template <std::derived_from<Object> T> requires (impl::originates_from_cpp<T>)
+template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
 [[nodiscard]] auto& unwrap(T& obj) {
-    return Type<T>::__python__::_unwrap(obj);
+    if constexpr (impl::cpp_like<T>) {
+        return obj;
+    } else {
+        return Type<T>::__python__::_unwrap(obj);
+    }
 }
 
 
-template <std::derived_from<Object> T> requires (impl::originates_from_cpp<T>)
+template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
 [[nodiscard]] const auto& unwrap(const T& obj) {
-    return Type<T>::__python__::_unwrap(obj);
+    if constexpr (impl::cpp_like<T>) {
+        return obj;
+    } else {
+        return Type<T>::__python__::_unwrap(obj);
+    }
 }
 
 
