@@ -691,7 +691,11 @@ struct __call__<Type<T>, Args...>                           : Returns<T> {
 recurring on the templated type. */
 template <typename T, typename Cls>
 struct __isinstance__<T, Type<Cls>>                      : Returns<bool> {
-    static constexpr bool operator()(const T& obj) { return isinstance<Cls>(obj); }
+    // TODO: isinstance<Type<Cls>>(obj) should only return true if obj is a type, which
+    // is a subclass of Cls.  Not if obj is an instance of Cls directly.
+    static constexpr bool operator()(const T& obj) {
+        return PyType_Check(ptr(obj)) && issubclass<Cls>(obj);
+    }
     static constexpr bool operator()(const T& obj, const Type<Cls>& cls) {
         if constexpr (impl::is_object_exact<Cls>) {
             int result = PyObject_IsInstance(
@@ -1249,13 +1253,13 @@ can be customize by specializing the `__issubclass__` control struct.)doc"
     Type(Handle h, borrowed_t t) : Base(h, t) {}
     Type(Handle h, stolen_t t) : Base(h, t) {}
 
-    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
+    template <typename... Args> requires (implicit_ctor<Type>::template enable<Args...>)
     Type(Args&&... args) : Base(
         implicit_ctor<Type>{},
         std::forward<Args>(args)...
     ) {}
 
-    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
+    template <typename... Args> requires (explicit_ctor<Type>::template enable<Args...>)
     explicit Type(Args&&... args) : Base(
         explicit_ctor<Type>{},
         std::forward<Args>(args)...

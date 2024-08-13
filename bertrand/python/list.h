@@ -766,27 +766,346 @@ struct __len__<Self>                                        : Returns<size_t> {
 
 template <std::derived_from<impl::ListTag> Self>
 struct __iter__<Self>                                       : Returns<typename Self::value_type> {
-    static auto begin(const Self& self) {
-        return impl::Iterator<impl::ListIter<typename __iter__<Self>::type>>(self, 0);
+    using iterator_category = std::random_access_iterator_tag;
+    using difference_type = std::ptrdiff_t;
+    using value_type = Self::value_type;
+    using pointer = value_type*;
+    using reference = value_type&;
+
+    Self container;
+    Py_ssize_t size;
+    Py_ssize_t index;
+    PyObject* curr;
+
+    __iter__(const Self& container, int) :
+        container(container), size(PyList_GET_SIZE(ptr(container))),
+        index(0), curr(nullptr)
+        
+     {
+        if (index < size) {
+            curr = PyList_GET_ITEM(ptr(container), index);
+        }
     }
-    static auto end(const Self& self) {
-        return impl::Iterator<impl::ListIter<typename __iter__<Self>::type>>(
-            PyList_GET_SIZE(self.ptr())
+
+    __iter__(Self&& container, int) :
+        container(std::move(container)), size(PyList_GET_SIZE(ptr(this->container))),
+        index(0), curr(nullptr)
+    {
+        if (index < size) {
+            curr = PyList_GET_ITEM(ptr(this->container), index);
+        }
+    }
+
+    __iter__(const Self& container) :
+        container(container), size(PyList_GET_SIZE(ptr(container))),
+        index(size), curr(nullptr)
+    {}
+
+    __iter__(Self&& container) :
+        container(std::move(container)), size(PyList_GET_SIZE(ptr(this->container))),
+        index(size), curr(nullptr)
+    {}
+
+    __iter__& operator=(const __iter__& other) {
+        if (this != &other) {
+            container = other.container;
+            size = other.size;
+            index = other.index;
+            curr = other.curr;
+        }
+        return *this;
+    }
+
+    __iter__& operator=(__iter__&& other) {
+        if (this != &other) {
+            container = std::move(other.container);
+            size = other.size;
+            index = other.index;
+            curr = other.curr;
+            other.curr = nullptr;
+        }
+        return *this;
+    }
+
+    value_type operator*() const {
+        return reinterpret_borrow<value_type>(curr);
+    }
+
+    pointer operator->() const {
+        return &(**this);
+    }
+
+    value_type operator[](difference_type n) const {
+        Py_ssize_t i = index + n;
+        if (i < 0 || i >= size) {
+            throw IndexError("tuple index out of range");
+        }
+        return reinterpret_borrow<value_type>(
+            PyList_GET_ITEM(ptr(container), i)
         );
     }
+
+    __iter__& operator++() {
+        if (index < size) {
+            curr = PyList_GET_ITEM(ptr(container), ++index);
+        } else {
+            curr = nullptr;
+        }
+        return *this;
+    }
+
+    __iter__& operator++(int) {
+        __iter__ copy = *this;
+        ++(*this);
+        return copy;
+    }
+
+    __iter__& operator+=(difference_type n) {
+        index += n;
+        if (index >= 0 && index < size) {
+            curr = PyList_GET_ITEM(ptr(container), index);
+        } else {
+            curr = nullptr;
+        }
+        return *this;
+    }
+
+    __iter__ operator+(difference_type n) const {
+        __iter__ copy = *this;
+        copy += n;
+        return copy;
+    }
+
+    __iter__& operator--() {
+        if (index > 0) {
+            curr = PyList_GET_ITEM(ptr(container), --index);
+        } else {
+            curr = nullptr;
+        }
+        return *this;
+    }
+
+    __iter__& operator--(int) {
+        __iter__ copy = *this;
+        --(*this);
+        return copy;
+    }
+
+    __iter__& operator-=(difference_type n) {
+        index -= n;
+        if (index >= 0 && index < size) {
+            curr = PyList_GET_ITEM(ptr(container), index);
+        } else {
+            curr = nullptr;
+        }
+        return *this;
+    }
+
+    __iter__ operator-(difference_type n) const {
+        __iter__ copy = *this;
+        copy -= n;
+        return copy;
+    }
+
+    difference_type operator-(const __iter__& other) const {
+        return index - other.index;
+    }
+
+    bool operator<(const __iter__& other) const {
+        return ptr(container) == ptr(other.container) && index < other.index;
+    }
+
+    bool operator<=(const __iter__& other) const {
+        return ptr(container) == ptr(other.container) && index <= other.index;
+    }
+
+    bool operator==(const __iter__& other) const {
+        return ptr(container) == ptr(other.container) && index == other.index;
+    }
+
+    bool operator!=(const __iter__& other) const {
+        return ptr(container) != ptr(other.container) || index != other.index;
+    }
+
+    bool operator>=(const __iter__& other) const {
+        return ptr(container) == ptr(other.container) && index >= other.index;
+    }
+
+    bool operator>(const __iter__& other) const {
+        return ptr(container) == ptr(other.container) && index > other.index;
+    }
+
 };
 
 
 template <std::derived_from<impl::ListTag> Self>
 struct __reversed__<Self>                                   : Returns<typename Self::value_type> {
-    static auto rbegin(const Self& self) {
-        return impl::ReverseIterator<impl::ListIter<typename __reversed__<Self>::type>>(
-            self,
-            PyList_GET_SIZE(self.ptr()) - 1
+    using iterator_category = std::random_access_iterator_tag;
+    using difference_type = std::ptrdiff_t;
+    using value_type = Self::value_type;
+    using pointer = value_type*;
+    using reference = value_type&;
+
+    Self container;
+    Py_ssize_t size;
+    Py_ssize_t index;
+    PyObject* curr;
+
+    __reversed__(const Self& container, int) :
+        container(container), size(PyList_GET_SIZE(ptr(container))),
+        index(size - 1), curr(nullptr)
+     {
+        if (index > 0) {
+            curr = PyList_GET_ITEM(ptr(container), index);
+        }
+    }
+
+    __reversed__(Self&& container, int) :
+        container(std::move(container)), size(PyList_GET_SIZE(ptr(this->container))),
+        index(size - 1), curr(nullptr)
+    {
+        if (index > 0) {
+            curr = PyList_GET_ITEM(ptr(this->container), index);
+        }
+    }
+
+    __reversed__(const Self& container) :
+        container(container), size(PyList_GET_SIZE(ptr(container))),
+        index(-1), curr(nullptr)
+    {}
+
+    __reversed__(Self&& container) :
+        container(std::move(container)), size(PyList_GET_SIZE(ptr(this->container))),
+        index(-1), curr(nullptr)
+    {}
+
+    __reversed__& operator=(const __reversed__& other) {
+        if (this != &other) {
+            container = other.container;
+            size = other.size;
+            index = other.index;
+            curr = other.curr;
+        }
+        return *this;
+    }
+
+    __reversed__& operator=(__reversed__&& other) {
+        if (this != &other) {
+            container = std::move(other.container);
+            size = other.size;
+            index = other.index;
+            curr = other.curr;
+            other.curr = nullptr;
+        }
+        return *this;
+    }
+
+    value_type operator*() const {
+        return reinterpret_borrow<value_type>(curr);
+    }
+
+    pointer operator->() const {
+        return &(**this);
+    }
+
+    value_type operator[](difference_type n) const {
+        Py_ssize_t i = index - n;
+        if (i < 0 || i >= size) {
+            throw IndexError("tuple index out of range");
+        }
+        return reinterpret_borrow<value_type>(
+            PyList_GET_ITEM(ptr(container), i)
         );
     }
-    static auto rend(const Self& self) {
-        return impl::ReverseIterator<impl::ListIter<typename __reversed__<Self>::type>>(-1);
+
+    __reversed__& operator++() {
+        if (index < size) {
+            curr = PyList_GET_ITEM(ptr(container), --index);
+        } else {
+            curr = nullptr;
+        }
+        return *this;
+    }
+
+    __reversed__& operator++(int) {
+        __reversed__ copy = *this;
+        ++(*this);
+        return copy;
+    }
+
+    __reversed__& operator+=(difference_type n) {
+        index -= n;
+        if (index >= 0 && index < size) {
+            curr = PyList_GET_ITEM(ptr(container), index);
+        } else {
+            curr = nullptr;
+        }
+        return *this;
+    }
+
+    __reversed__ operator+(difference_type n) const {
+        __reversed__ copy = *this;
+        copy += n;
+        return copy;
+    }
+
+    __reversed__& operator--() {
+        if (index > 0) {
+            curr = PyList_GET_ITEM(ptr(container), ++index);
+        } else {
+            curr = nullptr;
+        }
+        return *this;
+    }
+
+    __reversed__& operator--(int) {
+        __reversed__ copy = *this;
+        --(*this);
+        return copy;
+    }
+
+    __reversed__& operator-=(difference_type n) {
+        index += n;
+        if (index >= 0 && index < size) {
+            curr = PyList_GET_ITEM(ptr(container), index);
+        } else {
+            curr = nullptr;
+        }
+        return *this;
+    }
+
+    __reversed__ operator-(difference_type n) const {
+        __reversed__ copy = *this;
+        copy -= n;
+        return copy;
+    }
+
+    difference_type operator-(const __reversed__& other) const {
+        return index - other.index;
+    }
+
+    bool operator<(const __reversed__& other) const {
+        return ptr(container) == ptr(other.container) && index > other.index;
+    }
+
+    bool operator<=(const __reversed__& other) const {
+        return ptr(container) == ptr(other.container) && index >= other.index;
+    }
+
+    bool operator==(const __reversed__& other) const {
+        return ptr(container) == ptr(other.container) && index == other.index;
+    }
+
+    bool operator!=(const __reversed__& other) const {
+        return ptr(container) != ptr(other.container) || index != other.index;
+    }
+
+    bool operator>=(const __reversed__& other) const {
+        return ptr(container) == ptr(other.container) && index <= other.index;
+    }
+
+    bool operator>(const __reversed__& other) const {
+        return ptr(container) == ptr(other.container) && index < other.index;
     }
 };
 

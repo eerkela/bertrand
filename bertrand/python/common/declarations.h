@@ -166,6 +166,8 @@ class Object;
 template <typename>
 class Type;
 class BertrandMeta;
+template <std::derived_from<Object> Return>
+class Iterator;
 template <StaticStr Name, typename T>
 class Arg;
 template <typename>
@@ -191,23 +193,23 @@ class Datetime;
 class Timedelta;
 class Timezone;
 class Range;
-template <typename Val = Object>
+template <std::derived_from<Object> Val = Object>
 class List;
-template <typename Val = Object>
+template <std::derived_from<Object> Val = Object>
 class Tuple;
-template <typename Key = Object>
+template <std::derived_from<Object> Key = Object>
 class Set;
-template <typename Key = Object>
+template <std::derived_from<Object> Key = Object>
 class FrozenSet;
-template <typename Key = Object, typename Val = Object>
+template <std::derived_from<Object> Key = Object, std::derived_from<Object> Val = Object>
 class Dict;
-template <typename Map>
+template <std::derived_from<Object> Map>
 class KeyView;
-template <typename Map>
+template <std::derived_from<Object> Map>
 class ValueView;
-template <typename Map>
+template <std::derived_from<Object> Map>
 class ItemView;
-template <typename Map>
+template <std::derived_from<Object> Map>
 class MappingProxy;
 
 

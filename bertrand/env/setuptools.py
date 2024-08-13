@@ -412,7 +412,6 @@ class Source(setuptools.Extension):
         self._command: BuildSources  # set in finalize_options
         self._is_interface = False  # set in stage 1
         self._is_executable = False  # set in stage 2
-        self._stage2_sources: set[Source] = set()  # set in stage 2
         self._previous_compile_hash = ""  # set in stage 2
 
     ######################
@@ -2041,6 +2040,12 @@ class BuildSources(setuptools_build_ext):
                 # This ensures stage 3 supports incremental builds like stage 2.
                 shutil.copy(pcm, bmi_dir / pcm.name)
 
+    # TODO: CMake can't read JSON, so I should probably add a custom command that
+    # invokes Python to read the JSON output from the AST parser and produce a list
+    # of executables that need to be built.  Or I can write to a separate cache that's
+    # easier for CMake to parse.  A Python command would probably be faster though
+    # since it doesn't require any separate IO.
+
     def _ast_setup(self) -> None:
         # if we're doing an incremental build, then we need to parse the cache and
         # identify which sources have been modified since the last build.  We then
@@ -2078,10 +2083,6 @@ class BuildSources(setuptools_build_ext):
                         "parsed": "",
                     }
                 json.dump(init, f, indent=4)
-
-    # TODO: with stages 2 and 3 merged, I shouldn't need to do any manual dependency
-    # management, which means stripping out the .outdated property and makefile
-    # dependency scan, which further simplifies and improves compilation speed.
 
     def _stage2_cmakelists(self) -> Path:
         out = self._cmakelists_header()
@@ -2170,33 +2171,27 @@ class BuildSources(setuptools_build_ext):
         out +=  "endfunction()\n"
         out +=  "\n"
 
-        # read the AST cache to determine which sources have a `main()` entry point
-        out +=  "function(find_main_entry_points cache)\n"
-        out +=  "    file(READ ${cache} contents)\n"
-
-        # TODO: make sure the cache is written in the correct format.  I can possibly
-        # get away with just a flat list of paths to make this easier.
-
-        out +=  "    foreach(entry IN LISTS contents)\n"
-        out +=  "        add_main_entry_point(${entry})\n"
-        out +=  "    endforeach()\n"
-        out +=  "endfunction()\n"
-        out +=  "\n"
-
         # define a custom command that runs after the OBJECT libraries are built
         out +=  "add_custom_command(\n"
         out +=  "    OUTPUT ${CMAKE_BINARY_DIR}/executables\n"
         out +=  "    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_BINARY_DIR}/executables.cmake\n"
         out +=  "    DEPENDS ${objects}\n"
-        out +=  "    COMMENT \"Identifying executable targets\""
+        out +=  "    COMMENT \"Identifying executable targets\"\n"
         out +=  ")\n"
         out +=  "\n"
 
+        # TODO: make sure the cache is written to the expected path in the correct
+        # format.  I should probably use a flat list of paths to make this easier.
+        # Whatever is easiest to handle on the CMake end.
+
         # write the custom cmake script that will be run by the command
-        out += "file(WRITE ${CMAKE_BINARY_DIR}/executables.cmake\n"
-        out += "    \"find_main_entry_points(\"${CMAKE_BINARY_DIR}/executable_cache\")\n"  # TODO: make sure the cache is written to this path
-        out += ")\n"
-        out += "\n"
+        out += "file(WRITE ${CMAKE_BINARY_DIR}/executables.cmake \"\n"
+        out +=  "    file(READ ${CMAKE_BINARY_DIR}/executable_cache contents)\n"
+        out +=  "    foreach(entry IN LISTS contents)\n"
+        out +=  "        add_main_entry_point(${entry})\n"
+        out +=  "    endforeach()\n"
+        out +=  "\")\n"
+        out +=  "\n"
 
         # add a custom target that triggers the command and gives granular control
         out +=  "add_custom_target(executables ALL DEPENDS ${CMAKE_BINARY_DIR}/executables)\n"
@@ -2320,12 +2315,11 @@ class BuildSources(setuptools_build_ext):
                 f"{WHITE} in {CYAN}{source.path}{WHITE}"
             )
         out +=  "    CXX_STANDARD_REQUIRED ON\n"
-        out +=  "    BERTRAND_CMAKE_ARGS ${bertrand_cmake_args}"
-        out += f"    BERTRAND_BMI_DIR {source.bmi_dir.absolute()}\n"
-        out +=  "    BERTRAND_LINK_ARGS ${bertrand_link_args}\n"
-        out +=  "    BERTRAND_RUNTIME_LIBRARY_DIRS ${bertrand_runtime_library_dirs}\n"
+        out += f"    BERTRAND_CMAKE_ARGS \"${{{source.name}.cmake_args}}\""
+        out += f"    BERTRAND_BMI_DIR \"{source.bmi_dir.absolute()}\"\n"
+        out += f"    BERTRAND_LINK_ARGS \"${{{source.name}.link_args}}\"\n"
+        out += f"    BERTRAND_RUNTIME_LIBRARY_DIRS \"${{{source.name}.runtime_library_dirs}}\"\n"
         out +=  ")\n"
-
         return out
 
     def _cmake_build(self, cmakelists: Path) -> None:
@@ -2365,10 +2359,6 @@ class BuildSources(setuptools_build_ext):
                         f"{YELLOW}module{WHITE} and contain a {YELLOW}main(){WHITE} "
                         f"entry point.  Please import the module in a separate source "
                         f"file instead."
-                    )
-                if source.is_primary_module_interface:
-                    source.extra_sources.add(
-                        source.spawn(self._bertrand_binding_root / source.path)
                     )
 
     def stage3(self) -> None:

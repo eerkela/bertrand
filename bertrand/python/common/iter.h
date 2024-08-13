@@ -3,411 +3,215 @@
 
 #include "declarations.h"
 #include "except.h"
-#include "object.h"
 #include "ops.h"
+#include "object.h"
+#include "pytypedefs.h"
+#include "type.h"
 
 
 namespace py {
-namespace impl {
 
 
-// TODO: Iterator should be templated on the container type?  Perhaps the iterator
-// policies are implemented in the __iter__ control struct directly?  The default
-// behavior would be to either use PyObject_GetIter() for generic Python objects or
-// unwrap the contained C++ object and use its begin() and end() iterators directly.
-// This can be detected by checking the type's __python__::__origin__ field, and should
-// not be placed in the __iter__ control struct itself, so that users don't need to
-// insert any custom logic.  Custom __iter__ logic would only be applied for tuples,
-// lists, key/value/item views, etc, and would have a 1:1 map with the iterator type.
-// -> I can probably also deduce the random_access and bidirectional properties by
-// analyzing the __iter__ specialization.  By default, the iterator will be
-// forward-only, but if the __iter__ specialization has --, then it will be considered
-// bidirectional.  If it has +/-, then it will be considered random access.
+/* A generic Python iterator with a static value type.
+
+This type has no fixed implementation, and can match any kind of iterator.  It roughly
+corresponds to the `collections.abc.Iterator` abstract base class in Python, and makes
+an arbitrary Python iterator accessible from C++.  Note that the reverse (exposing a
+C++ iterator to Python) is done via the `__python__::__iter__(PyObject* self)` API
+method, which returns a unique type for each container.  This class will match those
+types, but is not restricted to them, and will be universally slower as a result.
+
+In the interest of performance, no explicit checks are done to ensure that the return
+type matches expectations.  As such, this class is one of the rare cases where type
+safety may be violated, and should therefore be used with caution.  It is mostly meant
+for internal use to back the default result of the `begin()` and `end()` operators when
+no specialized C++ iterator can be found.  In that case, its value type is set to the
+`T` in an `__iter__<Container> : Returns<T> {}` specialization. */
+template <std::derived_from<Object> Return = Object>
+class Iterator : public Object, public impl::IterTag {
+public:
+
+    Iterator(Handle h, borrowed_t t) : Object(h, t) {}
+    Iterator(Handle h, stolen_t t) : Object(h, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Iterator>::template enable<Args...>)
+    Iterator(Args&&... args) : Object(
+        implicit_ctor<Iterator>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Iterator>::template enable<Args...>)
+    explicit Iterator(Args&&... args) : Object(
+        explicit_ctor<Iterator>{},
+        std::forward<Args>(args)...
+    ) {}
+
+};
 
 
-// TODO: The generic py::Iterator class has to store both a start and end iterator.
-// It might be able to standardize these if all iterators store the current element as
-// a PyObject*.  The end iterator would always just hold a null pointer, and would
-// terminate iteration.  This might standardize the __iter__ protocol as well, since
-// all iterators would store a `PyObject* curr` member that gets default-initialized to
-// nullptr.  It would have a constructor that takes the container type and initializes
-// the iterator.
-
-// I actually might not need to define the dereference or comparison operators this
-// way.  I would just have the __iter__ struct define a constructor to initialize any
-// internal values, and then define the increment/decrement/seek operators
-
-// TODO: maybe the __iter__ control struct just *is* the iterator itself?  If nothing
-// is filled in, then it uses a generic implementation.
-// -> every iterator would contain an __iter__<Container> field.  What actually gets
-// stored is a subclass of __iter__ that fills in any missing fields/methods.
-// -> `__iter__` would only have to define the `operator++` method, and would have to
-// use an explicit this parameter to access the container and current value, which
-// can be stored with the appropriate type so that the iterator holds strong references
-// to both the container and each element.  The dereference operator would then return
-// a reference to the current value, which avoids additional reference counting.
-
-// `__iter__` could define additional fields if necessary, which would be initialized
-// by its constructor, which takes the object to iterate over.  If `__iter__` is
-// not constructible with a container, but is trivially constructible, then I just
-// don't call the parent constructor at all.
-
-// the iterator would be marked as bidirectional if `__iter__` implements an operator--
-// using an explicit this parameter.  It would be marked as random access if it also
-// implements +, -, +=, -=, and [].  Otherwise, the iterator is forward-only.
+template <std::derived_from<Object> T, typename Return>
+struct __isinstance__<T, Iterator<Return>>                  : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        return PyIter_Check(ptr(obj));
+    }
+};
 
 
-
-// TODO: maybe const iterators are modeled by supplying a const container type to this
-// class?
-
-template <typename Container> requires (__iter__<Container>::enable)
-class Iterator_ : public Object, public impl::IterTag {
-
-    template <typename T, typename = void>
-    static constexpr bool has_increment = false;
-    template <typename T>
-    static constexpr bool has_increment<T, std::void_t<decltype(&T::operator++)>> = true;
+template <std::derived_from<Object> T, typename Return>
+struct __issubclass__<T, Iterator<Return>>                  : Returns<bool> {
+    static consteval bool operator()() {
+        return
+            std::derived_from<T, impl::IterTag> &&
+            std::convertible_to<impl::iter_type<T>, Return>;
+    }
+};
 
 
-    // TODO: maybe every __python__ type defines a corresponding nested iterator type?
-    // Those that originate in Python would use PyObject_GetIter() and PyIter_Next(),
-    // while those that originate in C++ would use the container's begin() and end()
-    // iterators directly.  I might not need this class at all in that case.
-    // -> When a Python object is iterated over in C++, we would just unwrap the object
-    // and use its begin() and end() iterators directly.
+template <typename T>
+struct __iter__<Iterator<T>>                               : Returns<T> {
+    using iterator_category = std::input_iterator_tag;
+    using difference_type   = std::ptrdiff_t;
+    using value_type        = T;
+    using pointer           = T*;
+    using reference         = T&;
 
+    Iterator<T> iter;
+    T curr;
 
-    /* A C++ iterator type to use as the begin and end iterators in the range.  A pair
-    of these are stored in the iterator's Python representation, and back its
-    `__next__` method.  They can also be directly referenced from C++ in order to back
-    iteration in either language. */
-    template <typename T>
-    class Iter;
+    /// NOTE: modifying a copy of a Python iterator will also modify the original due
+    /// to the inherent state of the iterator, which is managed by the Python runtime.
+    /// This class is only copyable in order to fulfill the requirements of the
+    /// iterator protocol, but it is not recommended to use it in this way.
 
-    /* A custom iterator type that uses logic found in the `__iter__` control struct to
-    implement the interface. */
-    template <typename T>
-        requires (!std::is_const_v<T> && has_increment<__iter__<T>>)
-    class Iter<T> : public __iter__<T> {
-        using Base = __iter__<T>;
+    __iter__(const Iterator<T>& other) :
+        iter(iter), curr(reinterpret_steal<T>(nullptr))
+    {}
 
-    public:
-        using value_type = Base::type;
+    __iter__(Iterator<T>&& iter) :
+        iter(std::move(iter)), curr(reinterpret_steal<T>(nullptr))
+    {}
 
-        T container;
-        value_type curr;
+    __iter__(const Iterator<T>& iter, int) : __iter__(iter) {
+        ++(*this);
+    }
 
-        template <typename = void>
-            requires (std::is_constructible_v<Base, const T&>)
-        Iter(const T& container) :
-            Base(container),
-            container(container),
-            curr(reinterpret_steal<value_type>(nullptr))
-        {}
+    __iter__(Iterator<T>&& iter, int) : __iter__(std::move(iter)) {
+        ++(*this);
+    }
 
-        template <typename = void>
-            requires (
-                !std::is_constructible_v<Base, const T&> &&
-                std::is_default_constructible_v<Base>
-            )
-        Iter(const T& container) :
-            container(container),
-            curr(reinterpret_steal<value_type>(nullptr))
-        {}
+    __iter__(const __iter__& other) :
+        iter(other.iter), curr(other.curr)
+    {}
 
-        template <typename = void>
-            requires (std::is_constructible_v<Base, const T&, int>)
-        Iter(const T& container, int) :
-            Base(container),
-            container(container),
-            curr(reinterpret_steal<value_type>(nullptr))
-        {
-            ++(*this);  // obtain the first value
+    __iter__(__iter__&& other) :
+        iter(std::move(other.iter)), curr(std::move(other.curr))
+    {}
+
+    __iter__& operator=(const __iter__& other) {
+        if (&other != this) {
+            iter = other.iter;
+            curr = other.curr;
         }
+        return *this;
+    }
 
-        template <typename = void>
-            requires (
-                !std::is_constructible_v<Base, const T&, int> &&
-                std::is_default_constructible_v<Base>
-            )
-        Iter(const T& container, int) :
-            container(container),
-            curr(reinterpret_steal<value_type>(nullptr))
-        {
-            ++(*this);
+    __iter__& operator=(__iter__&& other) {
+        if (&other != this) {
+            iter = std::move(other.iter);
+            curr = std::move(other.curr);
         }
+        return *this;
+    }
 
-        Iter(const Iter& other) :
-            Base(other),
-            container(other.container),
-            curr(other.curr)
-        {}
+    T& operator*() { return curr; }
+    const T& operator*() const { return curr; }
 
-        Iter(Iter&& other) :
-            Base(std::move(other)),
-            container(std::move(other.container)),
-            curr(std::move(other.curr))
-        {}
-
-        Iter& operator=(const Iter& other) {
-            if (&other != this) {
-                container = other.container;
-                curr = other.curr;
-                Base::operator=(other);
-            }
-            return *this;
+    __iter__& operator++() {
+        PyObject* next = PyIter_Next(ptr(iter));
+        if (PyErr_Occurred()) {
+            Exception::from_python();
         }
+        curr = reinterpret_steal<T>(next);
+        return *this;
+    }
 
-        Iter& operator=(Iter&& other) {
-            if (&other != this) {
-                container = std::move(other.container);
-                curr = std::move(other.curr);
-                Base::operator=(std::move(other));
-            }
-            return *this;
-        }
+    /// NOTE: post-increment is not supported due to inaccurate copy semantics.
 
-        const value_type& operator*() const {
-            return curr;
-        }
+    bool operator==(const __iter__& other) const {
+        return ptr(curr) == ptr(other.curr);
+    }
 
-        value_type& operator*() {
-            return curr;
-        }
+    bool operator!=(const __iter__& other) const {
+        return ptr(curr) != ptr(other.curr);
+    }
 
-        Iter& operator++(this auto& self) {
-            Base::operator++();
-            return self;
-        }
+};
+/// NOTE: no __iter__<const Iterator<T>> specialization since marking the iterator
+/// itself as const prevents it from being incremented.
 
-        /// NOTE: if an iterator should support post-increment or other operators, like
-        /// --, +, -, +=, -=, [], etc. then the __iter__ control struct must define
-        /// them manually.  Only ++ is guaranteed to be supported at all times.
 
-        bool operator==(const Iter& other) const {
-            return ptr(curr) == ptr(other.curr);
-        }
+template <typename T, typename Return>
+struct __contains__<T, Iterator<Return>>                    : Returns<bool> {};
+template <typename Return>
+struct __getattr__<Iterator<Return>, "__iter__">            : Returns<Function<Iterator<Return>()>> {};
+template <typename Return>
+struct __getattr__<Iterator<Return>, "__next__">            : Returns<Function<Return()>> {};
 
+
+/* The type of a generic Python iterator.  This is identical to the
+`collections.abc.Iterator` abstract base class, and will match any Python iterator
+regardless of return type. */
+template <typename Return>
+class Type<Iterator<Return>> : public Object, public impl::TypeTag {
+public:
+    struct __python__ : public TypeTag::def<__python__, Iterator<Return>> {
+        static Type<Iterator<Return>> __import__();
     };
 
-    // TODO: This class is only returned by the wrapper's begin() method if it did not
-    // originate in C++.  This is determined by doing a PyType_IsSubclass() check on
-    // the iterator's interface type.  If so, then we follow up with a PyType_IsSubtype
-    // check on the iterator's specific template type.  If true, then we cast to the
-    // __python__ type and extract the ->begin and ->end fields and return them
-    // directly.  Otherwise, we have a template mismatch and raise a TypeError.
-    // If the iterator is not a subclass of the interface type, then we return one of
-    // these types.
+    Type(Handle h, borrowed_t t) : Object(h, t) {}
+    Type(Handle h, stolen_t t) : Object(h, t) {}
 
-    // -> This overload is only exposed to C++.
+    template <typename... Args> requires (implicit_ctor<Type>::template enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
 
-    // How do I deal with different return types in this case?  The origin check has
-    // to be a constexpr branch, in which case 
+    template <typename... Args> requires (explicit_ctor<Type>::template enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
 
-    /* A generic Python iterator type that uses `PyObject_GetIter()` and `PyIter_Next()`
-    to implement the interface. */
-    template <typename T>
-        requires (
-            !std::is_const_v<T> &&
-            !has_increment<__iter__<T>> &&
-            std::derived_from<T, Object>
-        )
-    class Iter<T> : public __iter__<T> {
-        using Base = __iter__<T>;
+    static Iterator<Return> __iter__(Iterator<Return>& iter) {
+        return iter;
+    }
 
-    public:
-        using value_type = Base::type;
-
-        PyObject* iter;
-        value_type curr;
-
-        Iter(const T& container) :
-            iter(nullptr),
-            curr(reinterpret_steal<value_type>(nullptr))
-        {}
-
-        Iter(const T& container, int) :
-            iter(PyObject_GetIter(ptr(container))),
-            curr(reinterpret_steal<value_type>(nullptr))
-        {
-            if (iter == nullptr) {
-                Exception::from_python();
-            }
-            ++(*this);
-        }
-
-        Iter(const Iter& other) :
-            Base(other),
-            iter(Py_XNewRef(other.iter)),
-            curr(other.curr)
-        {}
-
-        Iter(Iter&& other) :
-            Base(std::move(other)),
-            iter(other.iter),
-            curr(std::move(other.curr))
-        {
-            other.iter = nullptr;
-        }
-
-        Iter& operator=(const Iter& other) {
-            if (&other != this) {
-                iter = Py_XNewRef(other.iter);
-                curr = other.curr;
-                Base::operator=(other);
-            }
-            return *this;
-        }
-
-        Iter& operator=(Iter&& other) {
-            if (&other != this) {
-                iter = other.iter;
-                curr = std::move(other.curr);
-                other.iter = nullptr;
-                Base::operator=(std::move(other));
-            }
-            return *this;
-        }
-
-        ~Iter() {
-            Py_XDECREF(iter);
-        }
-
-        const value_type& operator*() const {
-            return curr;
-        }
-
-        value_type& operator*() {
-            return curr;
-        }
-
-        Iter& operator++(this auto& self) {
-            self.curr = reinterpret_steal<value_type>(PyIter_Next(self.iter));
+    static Return __next__(Iterator<Return>& iter) {
+        PyObject* next = PyIter_Next(ptr(iter));
+        if (next == nullptr) {
             if (PyErr_Occurred()) {
                 Exception::from_python();
             }
-            return self;
+            throw StopIteration();
         }
-
-        /// NOTE: Python iterators don't support post-increment because they don't have
-        /// accurate copy semantics.  Incrementing the iterator will always modify the
-        /// copy.
-
-        bool operator==(const Iter& other) const {
-            return ptr(curr) == ptr(other.curr);
-        }
-
-    };
-
-    // TODO: the only way to do this properly is to pass the actual iterator type into
-    // the Iter<T> class.  It might also not inherit from __iter__ at all.  In fact,
-    // it might inherit from the iterator type so that all I need to do is wrap the
-    // output.
-
-    // TODO: the simplest way to do this would be to have the Python type store two
-    // Iter<Container> objects, and would just expose them directly to Python.  Perhaps
-    // py::Iterator<Container, py::Direction::Forward/Reverse>?
-    // -> Maybe it's cleaner to use a separate ReverseIterator class?
-
-    /* A generic C++ iterator type that wraps around an existing C++ iterator and
-    forwards its interface. */
-    template <typename T>
-        requires (
-            !std::is_const_v<T> &&
-            !has_increment<__iter__<T>> &&
-            !std::derived_from<T, Object>
-        )
-    class Iter<T> : public __iter__<T> {
-        using Base = __iter__<T>;
-
-        // TODO: what if this represents a reverse or const iterator?
-        using begin_type = decltype(std::ranges::begin(std::declval<T>()));
-        using end_type = decltype(std::ranges::end(std::declval<T>()));
-        static_assert(
-            std::same_as<begin_type, end_type>,
-            "begin and end iterators must have the same type to be compatible."
-        );
-
-    public:
-        using value_type = Base::type;
-
-        begin_type iter;
-
-        Iter(const T& container) : iter(std::ranges::end(container)) {}
-
-        Iter(const T& container, int) : iter(std::ranges::begin(container)) {}
-
-        Iter(const Iter& other) : Base(other), iter(other.iter) {}
-
-        Iter(Iter&& other) : Base(std::move(other)), iter(std::move(other.iter)) {}
-
-        Iter& operator=(const Iter& other) {
-            if (&other != this) {
-                iter = other.iter;
-                Base::operator=(other);
-            }
-            return *this;
-        }
-
-        Iter& operator=(Iter&& other) {
-            if (&other != this) {
-                iter = std::move(other.iter);
-                Base::operator=(std::move(other));
-            }
-            return *this;
-        }
-
-        const value_type operator*() const {
-            return py::wrap(*iter);
-        }
-
-        value_type operator*() {
-            return py::wrap(*iter);
-        }
-
-        Iter& operator++(this auto& self) {
-            ++self.iter;
-            return self;
-        }
-
-        bool operator==(const Iter& other) const {
-            return iter == other.iter;
-        }
-
-    };
-
-    /* An extension of the Iter class that allows it to model iterators over const
-    containers. */
-    template <typename T>
-    class Iter<const T> : public Iter<T> {
-    public:
-        using Iter<T>::Iter;
-        const Iter<T>::value_type& operator*() const { return Iter<T>::operator*(); }
-        const Iter<T>::value_type& operator*() { return Iter<T>::operator*(); }
-    };
-
-public:
-
-    // enclosing class is a py::Object subclass that stores a pair of `it` iterators
-    // in its Python representation.  The iterator can then be passed up to Python,
-    // in which case it has the normal __iter__ and __next__ methods and works like
-    // normal, or it can be iterated over from C++, which will directly reference the
-    // C++ iterators in the python object.  That way, you should get native performance
-    // in both directions.
-
-    auto begin() {
-        if constexpr (
-            std::derived_from<Container, Object> &&
-            impl::originates_from_cpp<Container>
-        ) {
-            // check against this template type and issue an error if it doesn't match
-            
-        }
+        return reinterpret_steal<Return>(next);
     }
 
-
 };
+
+
+template <typename Return>
+struct __getattr__<Type<Iterator<Return>>, "__iter__">      : Returns<Function<
+    Iterator<Return>(Iterator<Return>&)
+>> {};
+template <typename Return>
+struct __getattr__<Type<Iterator<Return>>, "__next__">      : Returns<Function<
+    Return(Iterator<Return>&)
+>> {};
+
+
+namespace impl {
 
 
 template <typename Policy>
@@ -752,230 +556,6 @@ public:
     /* Compare two iterators for equality. */
     inline bool compare(const GenericIter& other) const {
         return curr == other.curr;
-    }
-
-    inline explicit operator bool() const {
-        return curr != nullptr;
-    }
-
-};
-
-
-/* A random access iterator policy that directly addresses tuple elements using the
-CPython API. */
-template <typename Deref>
-class TupleIter : public BertrandTag {
-    Object tuple;
-    PyObject* curr;
-    Py_ssize_t index;
-    Py_ssize_t size;
-
-public:
-    using iterator_category         = std::random_access_iterator_tag;
-    using difference_type           = std::ptrdiff_t;
-    using value_type                = Deref;
-
-    /* Sentinel constructor. */
-    TupleIter(Py_ssize_t index = -1) :
-        tuple(reinterpret_steal<Object>(nullptr)), curr(nullptr), index(index),
-        size(0)
-    {}
-
-    /* Construct an iterator from a tuple and a starting index. */
-    TupleIter(const Object& tuple, Py_ssize_t index) :
-        tuple(tuple), index(index), size(PyTuple_GET_SIZE(ptr(tuple)))
-    {
-        if (index >= 0 && index < size) {
-            curr = PyTuple_GET_ITEM(ptr(tuple), index);
-        } else {
-            curr = nullptr;
-        }
-    }
-
-    /* Copy constructor. */
-    TupleIter(const TupleIter& other) :
-        tuple(other.tuple), curr(other.curr), index(other.index), size(other.size)
-    {}
-
-    /* Move constructor. */
-    TupleIter(TupleIter&& other) :
-        tuple(std::move(other.tuple)), curr(other.curr), index(other.index),
-        size(other.size)
-    {
-        other.curr = nullptr;
-    }
-
-    /* Copy assignment operator. */
-    TupleIter& operator=(const TupleIter& other) {
-        if (&other != this) {
-            tuple = other.tuple;
-            curr = other.curr;
-            index = other.index;
-            size = other.size;
-        }
-        return *this;
-    }
-
-    /* Move assignment operator. */
-    TupleIter& operator=(TupleIter&& other) {
-        if (&other != this) {
-            tuple = other.tuple;
-            curr = other.curr;
-            index = other.index;
-            size = other.size;
-            other.curr = nullptr;
-        }
-        return *this;
-    }
-
-    /* Dereference the iterator. */
-    inline Deref deref() const {
-        if (curr == nullptr) {
-            throw ValueError("attempt to dereference a null iterator.");
-        }
-        return reinterpret_borrow<Deref>(curr);
-    }
-
-    /* Advance the iterator. */
-    inline void advance(Py_ssize_t n = 1) {
-        index += n;
-        if (index >= 0 && index < size) {
-            curr = PyTuple_GET_ITEM(ptr(tuple), index);
-        } else {
-            curr = nullptr;
-        }
-    }
-
-    /* Compare two iterators for equality. */
-    inline bool compare(const TupleIter& other) const {
-        return curr == other.curr;
-    }
-
-    /* Retreat the iterator. */
-    inline void retreat(Py_ssize_t n = 1) {
-        index -= n;
-        if (index >= 0 && index < size) {
-            curr = PyTuple_GET_ITEM(ptr(tuple), index);
-        } else {
-            curr = nullptr;
-        }
-    }
-
-    /* Calculate the distance between two iterators. */
-    inline difference_type distance(const TupleIter& other) const {
-        return index - other.index;
-    }
-
-    inline explicit operator bool() const {
-        return curr != nullptr;
-    }
-
-};
-
-
-/* A random access iterator policy that directly addresses list elements using the
-CPython API. */
-template <typename Deref>
-class ListIter : public BertrandTag {
-    Object list;
-    PyObject* curr;
-    Py_ssize_t index;
-    Py_ssize_t size;
-
-public:
-    using iterator_category         = std::random_access_iterator_tag;
-    using difference_type           = std::ptrdiff_t;
-    using value_type                = Deref;
-
-    /* Sentinel constructor. */
-    ListIter(Py_ssize_t index = -1) :
-        list(reinterpret_steal<Object>(nullptr)), curr(nullptr), index(index),
-        size(0)
-    {}
-
-    /* Construct an iterator from a list and a starting index. */
-    ListIter(const Object& list, Py_ssize_t index) :
-        list(list), index(index), size(PyList_GET_SIZE(ptr(list)))
-    {
-        if (index >= 0 && index < size) {
-            curr = PyList_GET_ITEM(ptr(list), index);
-        } else {
-            curr = nullptr;
-        }
-    }
-
-    /* Copy constructor. */
-    ListIter(const ListIter& other) :
-        list(other.list), curr(other.curr), index(other.index), size(other.size)
-    {}
-
-    /* Move constructor. */
-    ListIter(ListIter&& other) :
-        list(std::move(other.list)), curr(other.curr), index(other.index),
-        size(other.size)
-    {
-        other.curr = nullptr;
-    }
-
-    /* Copy assignment operator. */
-    ListIter& operator=(const ListIter& other) {
-        if (&other != this) {
-            list = other.list;
-            curr = other.curr;
-            index = other.index;
-            size = other.size;
-        }
-        return *this;
-    }
-
-    /* Move assignment operator. */
-    ListIter& operator=(ListIter&& other) {
-        if (&other != this) {
-            list = other.list;
-            curr = other.curr;
-            index = other.index;
-            size = other.size;
-            other.curr = nullptr;
-        }
-        return *this;
-    }
-
-    /* Dereference the iterator. */
-    inline Deref deref() const {
-        if (curr == nullptr) {
-            throw IndexError("list index out of range");
-        }
-        return reinterpret_borrow<Deref>(curr);
-    }
-
-    /* Advance the iterator. */
-    inline void advance(Py_ssize_t n = 1) {
-        index += n;
-        if (index >= 0 && index < size) {
-            curr = PyList_GET_ITEM(ptr(list), index);
-        } else {
-            curr = nullptr;
-        }
-    }
-
-    /* Compare two iterators for equality. */
-    inline bool compare(const ListIter& other) const {
-        return curr == other.curr;
-    }
-
-    /* Retreat the iterator. */
-    inline void retreat(Py_ssize_t n = 1) {
-        index -= n;
-        if (index >= 0 && index < size) {
-            curr = PyList_GET_ITEM(ptr(list), index);
-        } else {
-            curr = nullptr;
-        }
-    }
-
-    /* Calculate the distance between two iterators. */
-    inline difference_type distance(const ListIter& other) const {
-        return index - other.index;
     }
 
     inline explicit operator bool() const {
