@@ -3,14 +3,13 @@
 
 #include "declarations.h"
 #include "except.h"
-#include <concepts>
 
 
 namespace py {
 
 
 namespace impl {
-    static PyObject* one = (Interpreter::init(), PyLong_FromLong(1));
+    static PyObject* one = (Interpreter::init(), PyLong_FromLong(1));  // immortal
 }
 
 
@@ -672,7 +671,6 @@ private:
         (impl::has_keys<T> && impl::has_values<T>) ||
         (impl::yields<T, key_type> && impl::lookup_yields<T, key_type, mapped_type>) ||
         (impl::has_keys<T> && impl::lookup_yields<T, key_type, mapped_type>);
-
 
     auto transform() const {
         if constexpr (impl::yields_pairs_with<T, key_type, mapped_type>) {

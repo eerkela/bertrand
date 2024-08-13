@@ -6,6 +6,7 @@
 #include <cstring>
 #include <chrono>
 #include <complex>
+#include <concepts>
 #include <deque>
 #include <fstream>
 #include <functional>
@@ -476,6 +477,13 @@ namespace impl {
         { t[key] } -> std::convertible_to<Value>;
     };
 
+    template <typename T, typename Key, typename Value>
+    concept supports_item_assignment =
+        !std::is_pointer_v<T> && !std::integral<std::decay_t<T>> &&
+        requires(T t, Key key, Value value) {
+            { t[key] = value };
+        };
+
     template <typename T>
     concept pair_like = std::tuple_size<T>::value == 2 && requires(T t) {
         { std::get<0>(t) };
@@ -797,6 +805,11 @@ namespace impl {
     template <typename T>
     concept has_inplace_repeat = requires(T& lhs, size_t rhs) {
         { lhs *= rhs } -> std::convertible_to<T&>;
+    };
+
+    template <typename T>
+    concept has_operator_bool = requires(T t) {
+        { !t } -> std::convertible_to<bool>;
     };
 
     template <typename T>

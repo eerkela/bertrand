@@ -57,6 +57,18 @@ namespace impl {
             Base::operator=(std::forward<T>(other));
             if constexpr (impl::has_call_operator<setitem>) {
                 setitem{}(m_container, m_key, other);
+
+            } else if constexpr (
+                impl::originates_from_cpp<Base> &&
+                impl::cpp_or_originates_from_cpp<Key>
+            ) {
+                static_assert(
+                    impl::supports_item_assignment<Base, Key, std::remove_cvref_t<T>>,
+                    "__setitem__<Self, Key, Value> is enabled for operands whose C++ "
+                    "representations have no viable overload for `Self[Key] = Value`"
+                );
+                unwrap(*this) = std::forward<T>(other);
+
             } else {
                 if (PyObject_SetItem(
                     m_container.m_ptr,
@@ -142,6 +154,18 @@ public:
         );
         if constexpr (impl::has_call_operator<__contains__<Self, Key>>) {
             return __contains__<Self, Key>{}(self, key);
+
+        } else if constexpr (
+            impl::originates_from_cpp<Self> &&
+            impl::cpp_or_originates_from_cpp<Key>
+        ) {
+            static_assert(
+                impl::has_contains<impl::cpp_type<Self>, impl::cpp_type<Key>>,
+                "__contains__<Self, Key> is enabled for operands whose C++ "
+                "representations have no viable overload for `Self.contains(Key)`"
+            );
+            return unwrap(self).contains(unwrap(key));
+
         } else {
             int result = PySequence_Contains(
                 self.m_ptr,
@@ -156,12 +180,20 @@ public:
 
     /* Contextually convert an Object into a boolean value for use in if/else 
     statements, with the same semantics as in Python. */
-    [[nodiscard]] explicit operator bool() const {
-        int result = PyObject_IsTrue(m_ptr);
-        if (result == -1) {
-            Exception::from_python();
+    template <typename Self>
+    [[nodiscard]] explicit operator bool(this const Self& self) {
+        if constexpr (
+            impl::originates_from_cpp<Self> &&
+            impl::has_operator_bool<impl::cpp_type<Self>>
+        ) {
+            return static_cast<bool>(unwrap(self));
+        } else {
+            int result = PyObject_IsTrue(self.m_ptr);
+            if (result == -1) {
+                Exception::from_python();
+            }
+            return result;   
         }
-        return result;
     }
 
     /* Universal implicit conversion operator.  Implemented via the __cast__ control
@@ -196,16 +228,34 @@ public:
         );
         if constexpr (impl::has_call_operator<call>) {
             return call{}(std::forward<Self>(self), std::forward<Args>(args)...);
-        } else if constexpr (std::is_void_v<Return>) {
-            Function<Return(Args...)>::template invoke_py<Return>(
-                ptr(self),
-                std::forward<Args>(args)...
+
+        } else if constexpr (
+            impl::originates_from_cpp<Self> &&
+            (impl::cpp_or_originates_from_cpp<std::decay_t<Args>> && ...)
+        ) {
+            static_assert(
+                std::is_invocable_r_v<Return, impl::cpp_type<Self>, Args...>,
+                "__call__<Self, Args...> is enabled for operands whose C++ "
+                "representations have no viable overload for `Self(Key, Args...)`"
             );
+            if constexpr (std::is_void_v<Return>) {
+                unwrap(self)(std::forward<Args>(args)...);
+            } else {
+                return unwrap(self)(std::forward<Args>(args)...);
+            }
+
         } else {
-            return Function<Return(Args...)>::template invoke_py<Return>(
-                ptr(self),
-                std::forward<Args>(args)...
-            );
+            if constexpr (std::is_void_v<Return>) {
+                Function<Return(Args...)>::template invoke_py<Return>(
+                    ptr(self),
+                    std::forward<Args>(args)...
+                );
+            } else {
+                return Function<Return(Args...)>::template invoke_py<Return>(
+                    ptr(self),
+                    std::forward<Args>(args)...
+                );
+            }
         }
     }
 
@@ -213,19 +263,31 @@ public:
     __getitem__, __setitem__, and __delitem__ control structs. */
     template <typename Self, typename Key> requires (__getitem__<Self, Key>::enable)
     auto operator[](this const Self& self, Key&& key) {
-        using Return = typename __getitem__<Self, Key>::type;
+        using Return = typename __getitem__<Self, std::decay_t<Key>>::type;
         static_assert(
             std::derived_from<Return, Object>,
             "index operator must return a subclass of py::Object.  Check your "
             "specialization of __getitem__ for these types and ensure the Return "
             "type is set to a subclass of py::Object."
         );
-        if constexpr (impl::has_call_operator<__getitem__<Self, Key>>) {
+        if constexpr (impl::has_call_operator<__getitem__<Self, std::decay_t<Key>>>) {
             return impl::Item<Self, Key>(
                 __getitem__<Self, Key>{}(self, key),
                 self,
-                key
+                std::forward<Key>(key)
             );
+
+        } else if constexpr (
+            impl::originates_from_cpp<Self> &&
+            impl::cpp_or_originates_from_cpp<std::decay_t<Key>>
+        ) {
+            static_assert(
+                impl::lookup_yields<impl::cpp_type<Self>, std::decay_t<Key>, Return>,
+                "__getitem__<Self, Args...> is enabled for operands whose C++ "
+                "representations have no viable overload for `Self[Key]`"
+            );
+            return unwrap(self)[std::forward<Key>(key)];
+
         } else {
             PyObject* result = PyObject_GetItem(
                 self.m_ptr,
@@ -234,10 +296,10 @@ public:
             if (result == nullptr) {
                 Exception::from_python();
             }
-            return impl::Item<Self, Key>(
+            return impl::Item<Self, std::decay_t<Key>>(
                 reinterpret_steal<Return>(result),
                 self,
-                key
+                std::forward<Key>(key)
             );
         }
     }
@@ -317,7 +379,6 @@ public:
 
     /* Copy assignment operator. */
     Object& operator=(const Object& other) {
-        std::println("object copy assignment");  // TODO: remove debugging print statement
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = Py_XNewRef(other.m_ptr);
@@ -328,7 +389,6 @@ public:
 
     /* Move assignment operator. */
     Object& operator=(Object&& other) {
-        std::println("object move assignment");  // TODO: remove debugging print statement
         if (this != &other) {
             PyObject* temp = m_ptr;
             m_ptr = other.m_ptr;
