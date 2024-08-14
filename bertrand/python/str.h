@@ -7,7 +7,7 @@
 #include "list.h"
 #include "set.h"
 #include "dict.h"
-#ifdef BERTRAND_HAS_STD_FORMAT
+#if defined(__clang__) && __clang_major__ >= 19
     #include <format>
 #endif
 

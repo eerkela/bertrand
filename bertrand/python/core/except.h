@@ -9,15 +9,6 @@
  *
  * Inheritance hierarchy:
  *      https://docs.python.org/3/library/exceptions.html#exception-hierarchy
- *
- * NOTE: these exceptions include Python-style tracebacks by default, even when used in
- * pure C++ code.  This gives much better diagnostics than the standard C++ exceptions,
- * but comes with a performance cost when exceptions are constructed and thrown.  This
- * can be disabled by adding the `-DBERTRAND_NO_TRACEBACK` flag to the compiler options,
- * or by placing `#define BERTRAND_NO_TRACEBACK` before including this header.  This
- * will compile out the traceback member and its associated logic, giving similar
- * performance to standard C++ exceptions.  Note that this still allows conversion to
- * Python exceptions, but the resulting tracebacks will terminate at the C++ boundary.
  */
 
 
@@ -276,7 +267,7 @@ namespace impl {
         // stack is stored in proper execution order
         std::deque<StackFrame> stack;  // [head] least recent -> most recent [tail]
 
-        BERTRAND_NOINLINE explicit StackTrace(
+        [[clang::noinline]] explicit StackTrace(
             size_t skip = 0,
             PyThreadState* tstate = nullptr
         ) : StackTrace(cpptrace::generate_trace(++skip), tstate)
@@ -549,21 +540,21 @@ namespace impl {
             public:                                                                     \
                 using base::base;                                                       \
                                                                                         \
-                BERTRAND_NOINLINE explicit cls(                                         \
+                [[clang::noinline]] explicit cls(                                       \
                     const std::string& message = "",                                    \
                     size_t skip = 0,                                                    \
                     PyThreadState* thread = nullptr                                     \
                 ) : base(message, get_trace(skip), thread)                              \
                 {}                                                                      \
                                                                                         \
-                BERTRAND_NOINLINE explicit cls(                                         \
+                [[clang::noinline]] explicit cls(                                       \
                     const std::string& message,                                         \
                     const cpptrace::stacktrace& trace,                                  \
                     PyThreadState* thread = nullptr                                     \
                 ) : base(message, trace, thread)                                        \
                 {}                                                                      \
                                                                                         \
-                BERTRAND_NOINLINE explicit cls(                                         \
+                [[clang::noinline]] explicit cls(                                       \
                     PyObject* type,                                                     \
                     PyObject* value,                                                    \
                     PyObject* traceback,                                                \
@@ -572,7 +563,7 @@ namespace impl {
                 ) : base(type, value, traceback, get_trace(skip), thread)               \
                 {}                                                                      \
                                                                                         \
-                BERTRAND_NOINLINE explicit cls(                                         \
+                [[clang::noinline]] explicit cls(                                       \
                     PyObject* type,                                                     \
                     PyObject* value,                                                    \
                     PyObject* traceback,                                                \
@@ -638,7 +629,6 @@ namespace impl {
 /* Base exception class.  Appends a C++ stack trace that will be propagated up to
 Python for cross-language diagnostics. */
 class Exception : public std::exception, public impl::BertrandTag {
-    using Base = std::exception;
     inline static bool registered =
         impl::register_exception<Exception>(PyExc_Exception);
 
@@ -675,7 +665,48 @@ protected:
         return result;
     }
 
+    /* A CRTP helper class that assists with defining new Exception types from C++. */
+    template <typename CRTP, typename = void>
+    struct def;
+
+    // TODO: both of these are going to have to implement logic to catch and throw
+    // exceptions across the language boundary, which can probably be defaulted through
+    // the CRTP pattern.  That would allow customization for each exception type.
+    // -> set_pyerr can be reimplemented here fairly easily, although it still needs
+    // to be virtual so that it can be called polymorphically from the base class.
+
+    // TODO: perhaps this is the sort of refactor that I do when std::stacktrace is
+    // implemented in clang?  That would be the final refactoring of the exception
+    // system, and would probably allow me to drop cpptrace as a dependency.
+
+    // TODO: perhaps the BERTRAND_NO_TRACEBACK macro can be centralized in the CRTP
+    // class, and everything can just call into it.
+
+    /* Specialization for a pure-Python exception, which converts it into an instance
+    of the enclosing type so that it can be caught from C++. */
+    template <typename CRTP>
+    struct def<CRTP, void> : public impl::BertrandTag {
+        // TODO: implement __import__ to get the Python exception type in C++.
+        // __export__ can be used to implement custom exception types in Python.
+    };
+
+    /* Specialization for a pure-C++ exception, which generates a Python `Exception`
+    subclass so that it can be caught from Python. */
+    template <typename CRTP, std::derived_from<std::exception> CppException>
+    struct def<CRTP, CppException> : public impl::BertrandTag {
+        // TODO: recreate the Type::__export__ logic here to create a subclass of
+        // Exception that can be caught from Python.  __export__ will be called when
+        // the associated module is imported, just like normal.
+    };
+
 public:
+
+    struct __python__ : public def<__python__> {
+        // TODO: work with the root Exception class to translate it into C++
+    };
+
+    // TODO: I should probably remove the skip and thread arguments, since I'm almost
+    // certainly not going to use them.
 
     #ifdef BERTRAND_NO_TRACEBACK
 
@@ -726,12 +757,13 @@ public:
         }
 
         Exception(const Exception& other) :
-            Base(other), what_msg(other.what_msg), what_cache(other.what_cache)
+            std::exception(other), what_msg(other.what_msg),
+            what_cache(other.what_cache)
         {}
 
         Exception& operator=(const Exception& other) {
             if (&other != this) {
-                Base::operator=(other);
+                std::exception::operator=(other);
                 what_msg = other.what_msg;
                 what_cache = other.what_cache;
             }
@@ -759,7 +791,7 @@ public:
     #else
         impl::StackTrace traceback;
 
-        BERTRAND_NOINLINE explicit Exception(
+        [[clang::noinline]] explicit Exception(
             const std::string& message = "",
             size_t skip = 0,
             PyThreadState* thread = nullptr
@@ -767,7 +799,7 @@ public:
             traceback(get_trace(skip), thread)
         {}
 
-        BERTRAND_NOINLINE explicit Exception(
+        [[clang::noinline]] explicit Exception(
             const std::string& message,
             const cpptrace::stacktrace& trace,
             PyThreadState* thread = nullptr
@@ -775,7 +807,7 @@ public:
             traceback(trace, thread)
         {}
 
-        BERTRAND_NOINLINE explicit Exception(
+        [[clang::noinline]] explicit Exception(
             PyObject* type,
             PyObject* value,
             PyObject* traceback,
@@ -796,7 +828,7 @@ public:
             }
         }
 
-        BERTRAND_NOINLINE explicit Exception(
+        [[clang::noinline]] explicit Exception(
             PyObject* type,
             PyObject* value,
             PyObject* traceback,
@@ -818,13 +850,13 @@ public:
         }
 
         Exception(const Exception& other) :
-            Base(other), what_msg(other.what_msg), what_cache(other.what_cache),
-            traceback(other.traceback)
+            std::exception(other), what_msg(other.what_msg),
+            what_cache(other.what_cache), traceback(other.traceback)
         {}
 
         Exception& operator=(const Exception& other) {
             if (&other != this) {
-                Base::operator=(other);
+                std::exception::operator=(other);
                 what_msg = other.what_msg;
                 what_cache = other.what_cache;
                 traceback = other.traceback;
@@ -859,7 +891,7 @@ public:
 
     /* Retrieve an error from a Python context and re-throw it as a C++ error with a
     matching type.  Note that this is a void function that always throws. */
-    [[noreturn]] BERTRAND_NOINLINE static void from_python(
+    [[noreturn, clang::noinline]] static void from_python(
         size_t skip = 0,
         PyThreadState* thread = nullptr
     ) {

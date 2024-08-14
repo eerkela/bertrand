@@ -291,7 +291,7 @@ public:
     /////////////////////////////
 
     /* Execute the code object without context. */
-    BERTRAND_NOINLINE Dict<Str, Object> operator()() const {
+    [[clang::noinline]] Dict<Str, Object> operator()() const {
         py::Dict<Str, Object> context;
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
@@ -302,7 +302,7 @@ public:
     }
 
     /* Execute the code object with the given context. */
-    BERTRAND_NOINLINE Dict<Str, Object>& operator()(Dict<Str, Object>& context) const {
+    [[clang::noinline]] Dict<Str, Object>& operator()(Dict<Str, Object>& context) const {
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
             Exception::from_python(1);
@@ -312,7 +312,7 @@ public:
     }
 
     /* Execute the code object with the given context. */
-    BERTRAND_NOINLINE Dict<Str, Object> operator()(Dict<Str, Object>&& context) const {
+    [[clang::noinline]] Dict<Str, Object> operator()(Dict<Str, Object>&& context) const {
         PyObject* result = PyEval_EvalCode(this->ptr(), context.ptr(), context.ptr());
         if (result == nullptr) {
             Exception::from_python(1);

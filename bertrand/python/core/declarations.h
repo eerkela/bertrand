@@ -52,7 +52,6 @@
 
 #include <cpptrace/cpptrace.hpp>
 
-#include <bertrand/common.h>
 #include <bertrand/static_str.h>
 
 

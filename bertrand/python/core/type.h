@@ -445,6 +445,11 @@ namespace impl {
             >;
         };
 
+        template <typename CRTP>
+        concept has_reversed = requires() {
+            { CRTP::__reversed__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
+        };
+
     }
 
     /* Marks a py::Object subclass as a type object, and exposes several helpers to
@@ -924,10 +929,6 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
             return reinterpret_steal<Type>(cls);
         }
 
-
-        // TODO: stub_type() can be lifted out into the C++ context, so all you need
-        // to do is call Type<BertrandMeta>::stub()?
-
         /* Create a trivial instance of the metaclass to serve as a public interface
         for a class template hierarchy.  The interface is not usable on its own
         except to provide access to its instantiations, type checks against them,
@@ -935,7 +936,7 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         template <StaticStr Name, typename Cls, typename... Bases, StaticStr ModName>
         static BertrandMeta stub_type(Module<ModName>& parent) {
             static PyType_Slot slots[] = {
-                {Py_tp_doc, const_cast<char*>(__doc__.buffer)},  // TODO: incorrect
+                {Py_tp_doc, const_cast<char*>(__doc__.buffer)},  // TODO: incorrect.  The stub type is a separate type object from the metatype itself
                 {0, nullptr}
             };
             static PyType_Spec spec = {
@@ -966,16 +967,8 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
             if (cls == nullptr) {
                 Exception::from_python();
             }
-            // TODO: perhaps when I generate a stub type, I assign these pointers to
-            // a different pair of backing functions that account for non-null
-            // template instantiations.  That way, the metaclass would always just
-            // `return PyBool_FromLong(instancecheck(cls, obj))` and not require
-            // any extra conditionals.  The stub class would check against its own
-            // type using PyType_IsSubtype, and then delegate to the existing helper
-            // function that all other types use to check against all instantiations.
-            // No need for any extra conditionals.
-            cls->instancecheck = ...;  // TODO: fill these in
-            cls->subclasscheck = ...;
+            cls->instancecheck = template_instancecheck;
+            cls->subclasscheck = template_subclasscheck;
             new (&cls->getters) Getters();
             new (&cls->setters) Setters();
             cls->demangled = cls->get_demangled_name();
@@ -1152,25 +1145,7 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         struct and accounts for template instantiations. */
         static PyObject* __instancecheck__(__python__* cls, PyObject* instance) {
             try {
-                if (cls->instancecheck(cls, instance)) {
-                    Py_RETURN_TRUE;
-                } else if (cls->template_instantiations) {
-                    PyObject* key;
-                    PyObject* value;
-                    Py_ssize_t pos = 0;
-                    while (PyDict_Next(
-                        cls->template_instantiations,
-                        &pos,
-                        &key,
-                        &value
-                    )) {
-                        __python__* instantiation = reinterpret_cast<__python__*>(value);
-                        if (instantiation->instancecheck(cls, instance)) {
-                            Py_RETURN_TRUE;
-                        }
-                    }
-                }
-                Py_RETURN_FALSE;
+                return PyBool_FromLong(cls->instancecheck(cls, instance));
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -1181,25 +1156,7 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         struct and accounts for template instantiations. */
         static PyObject* __subclasscheck__(__python__* cls, PyObject* subclass) {
             try {
-                if (cls->subclasscheck(cls, subclass)) {
-                    Py_RETURN_TRUE;
-                } else if (cls->template_instantiations) {
-                    PyObject* key;
-                    PyObject* value;
-                    Py_ssize_t pos = 0;
-                    while (PyDict_Next(
-                        cls->template_instantiations,
-                        &pos,
-                        &key,
-                        &value
-                    )) {
-                        __python__* instantiation = reinterpret_cast<__python__*>(value);
-                        if (instantiation->subclasscheck(cls, subclass)) {
-                            Py_RETURN_TRUE;
-                        }
-                    }
-                }
-                Py_RETURN_FALSE;
+                return PyBool_FromLong(cls->subclasscheck(cls, subclass));
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
@@ -1213,6 +1170,58 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         }
 
     private:
+
+        static bool template_instancecheck(__python__* cls, PyObject* instance) {
+            if (PyType_IsSubtype(
+                Py_TYPE(instance),
+                reinterpret_cast<PyTypeObject*>(cls)
+            )) {
+                return true;
+            }
+            PyObject* key;
+            PyObject* value;
+            Py_ssize_t pos = 0;
+            while (PyDict_Next(
+                cls->template_instantiations,
+                &pos,
+                &key,
+                &value
+            )) {
+                __python__* instantiation = reinterpret_cast<__python__*>(value);
+                if (instantiation->instancecheck(cls, instance)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        static bool template_subclasscheck(__python__* cls, PyObject* subclass) {
+            if (PyType_Check(subclass)) {
+                if (PyType_IsSubtype(
+                    reinterpret_cast<PyTypeObject*>(subclass),
+                    reinterpret_cast<PyTypeObject*>(cls)
+                )) {
+                    return true;
+                }
+                PyObject* key;
+                PyObject* value;
+                Py_ssize_t pos = 0;
+                while (PyDict_Next(
+                    cls->template_instantiations,
+                    &pos,
+                    &key,
+                    &value
+                )) {
+                    __python__* instantiation = reinterpret_cast<__python__*>(value);
+                    if (instantiation->subclasscheck(cls, subclass)) {
+                        return true;
+                    }
+                }
+                return false;
+            } else {
+                throw TypeError("issubclass() arg 1 must be a class");
+            }
+        }
 
         inline static PyMethodDef methods[] = {
             {
@@ -1302,14 +1311,9 @@ struct __isinstance__<T, BertrandMeta> : Returns<bool> {
     }
     static constexpr bool operator()(const T& obj, const BertrandMeta& cls) {
         if constexpr (impl::python_like<T>) {
-            int result = PyObject_IsInstance(
-                ptr(obj),
-                ptr(cls)
-            );
-            if (result < 0) {
-                Exception::from_python();
-            }
-            return result;
+            using PyMeta = Type<BertrandMeta>::__python__;
+            PyMeta* meta = reinterpret_cast<PyMeta*>(ptr(cls));
+            return meta->instancecheck(meta, ptr(obj));
         } else {
             return false;
         }
@@ -1333,14 +1337,13 @@ struct __issubclass__<T, BertrandMeta> : Returns<bool> {
         return result;
     }
     static bool operator()(const T& obj, const BertrandMeta& cls) {
-        int result = PyObject_IsSubclass(
-            ptr(obj),
-            ptr(cls)
-        );
-        if (result < 0) {
-            Exception::from_python();
+        if constexpr (impl::python_like<T>) {
+            using PyMeta = Type<BertrandMeta>::__python__;
+            PyMeta* meta = reinterpret_cast<PyMeta*>(ptr(cls));
+            return meta->subclasscheck(meta, ptr(obj));
+        } else {
+            return false;
         }
-        return result;
     }
 };
 
@@ -1534,8 +1537,9 @@ namespace impl {
             }
         }
 
-        // TODO: 2 competing function pointers that account for non-empty template
-        // instantiations, and which are assigned in stub_type().
+        static PyObject* reversed(CRTP* self, void* /* unused */) {
+            return CRTP::__reversed__(self);
+        }
 
         /* This function is stored as a pointer in the metaclass's C++ members and
         called whenever a Python-level `isinstance()` check is made against this class.
@@ -2102,6 +2106,14 @@ namespace impl {
                         "__aexit__",
                         reinterpret_cast<PyCFunction>(aexit),
                         METH_FASTCALL,
+                        nullptr
+                    });
+                }
+                if constexpr (dunder::has_reversed<CRTP>) {
+                    tp_methods.push_back({
+                        "__reversed__",
+                        reinterpret_cast<PyCFunction>(reversed),
+                        METH_NOARGS,
                         nullptr
                     });
                 }
@@ -2847,10 +2859,10 @@ namespace impl {
 
         };
 
-        // TODO: __iter__ should only be registered if the C++ type is iterable, not
-        // based on whether the Python definition has an __iter__ method.
-        // -> Actually it might be ok best if __iter__ is always defined and just
-        // raises an error if the C++ type is not iterable.
+        // TODO: __iter__/__reversed__ should only be registered if the C++ type is
+        // iterable, not based on whether the Python definition has an __iter__ method,
+        // or, alternatively, the __iter__ method should not be defined unless the
+        // C++ type is iterable.
         // -> The alternative may be preferable in order to allow for ABCs to properly
         // match against these types.  The only way I can imagine doing that, however
         // is to implement some kind of crazy CRTP scheme that avoids defining __iter__
@@ -2934,9 +2946,6 @@ namespace impl {
                 return nullptr;
             }
         }
-
-        // TODO: __reversed__ needs special attention similar to the __enter__/__exit__
-        // methods, since it doesn't have a dedicated slot.
 
         static PyObject* __reversed__(CRTP* self) {
             try {
@@ -3027,9 +3036,9 @@ namespace impl {
         // * tp_dealloc
         // * tp_repr
         // * tp_hash
-        * tp_vectorcall_offset  // needs some extra work in PyMemberDef
-        * tp_dictoffset (or Py_TPFLAGS_MANAGED_DICT)
-        * tp_weaklistoffset (or Py_TPFLAGS_MANAGED_WEAKREF)
+        // * tp_vectorcall_offset  // needs some extra work in PyMemberDef
+        // * tp_dictoffset (or Py_TPFLAGS_MANAGED_DICT)
+        // * tp_weaklistoffset (or Py_TPFLAGS_MANAGED_WEAKREF)
         * tp_call
         // * tp_str
         // * tp_traverse

@@ -1,22 +1,16 @@
 #ifndef BERTRAND_PYTHON_BOOL_H
 #define BERTRAND_PYTHON_BOOL_H
 
-#include "common.h"
+#include "core.h"
 
 
 namespace py {
 
 
 template <typename T>
-struct __issubclass__<T, Bool>                              : Returns<bool> {
-    static consteval bool operator()() { return impl::bool_like<T>; }
-};
-
-
-template <typename T>
-struct __isinstance__<T, Bool>                              : Returns<bool> {
+struct __isinstance__<T, Bool> : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::is_object_exact<T>) {
+        if constexpr (impl::dynamic_type<T>) {
             return PyBool_Check(ptr(obj));
         } else {
             return issubclass<T, Bool>();
@@ -25,64 +19,61 @@ struct __isinstance__<T, Bool>                              : Returns<bool> {
 };
 
 
+template <typename T>
+struct __issubclass__<T, Bool> : Returns<bool> {};
+
+
 /* Represents a statically-typed Python boolean in C++. */
 class Bool : public Object {
-    using Base = Object;
-    using Self = Bool;
-
 public:
-    static const Type type;
 
-    Bool(Handle h, borrowed_t t) : Base(h, t) {}
-    Bool(Handle h, stolen_t t) : Base(h, t) {}
+    Bool(Handle h, borrowed_t t) : Object(h, t) {}
+    Bool(Handle h, stolen_t t) : Object(h, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Bool>::template enable<Args...>)
+    Bool(Args&&... args) : Object(
+        implicit_ctor<Bool>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Bool>::template enable<Args...>)
+    explicit Bool(Args&&... args) : Object(
+        explicit_ctor<Bool>{},
+        std::forward<Args>(args)...
+    ) {}
 
     template <typename... Args>
-        requires (
-            std::is_invocable_r_v<Bool, __init__<Bool, std::remove_cvref_t<Args>...>, Args...> &&
-            __init__<Bool, std::remove_cvref_t<Args>...>::enable
-        )
-    Bool(Args&&... args) : Base((
-        Interpreter::init(),
-        __init__<Bool, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
-
-    template <typename... Args>
-        requires (
-            !__init__<Bool, std::remove_cvref_t<Args>...>::enable &&
-            std::is_invocable_r_v<Bool, __explicit_init__<Bool, std::remove_cvref_t<Args>...>, Args...> &&
-            __explicit_init__<Bool, std::remove_cvref_t<Args>...>::enable
-        )
-    explicit Bool(Args&&... args) : Base((
-        Interpreter::init(),
-        __explicit_init__<Bool, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
-
-    template <typename... Args> requires (impl::invocable<Self, "bit_length", Args...>)
+        requires (impl::attr_is_callable_with<Bool, "bit_length", Args...>)
     [[nodiscard]] decltype(auto) bit_length(Args&&... args) const {
         return impl::call_method<"bit_length">(*this, std::forward<Args>(args)...);
     }
 
-    template <typename... Args> requires (impl::invocable<Self, "bit_count", Args...>)
+    template <typename... Args>
+        requires (impl::attr_is_callable_with<Bool, "bit_count", Args...>)
     [[nodiscard]] decltype(auto) bit_count(Args&&... args) const {
         return impl::call_method<"bit_count">(*this, std::forward<Args>(args)...);
     }
 
-    template <typename... Args> requires (impl::invocable<Self, "to_bytes", Args...>)
+    template <typename... Args>
+        requires (impl::attr_is_callable_with<Bool, "to_bytes", Args...>)
     [[nodiscard]] decltype(auto) to_bytes(Args&&... args) const {
         return impl::call_method<"to_bytes">(*this, std::forward<Args>(args)...);
     }
 
-    template <typename... Args> requires (impl::invocable<Self, "from_bytes", Args...>)
+    template <typename... Args>
+        requires (impl::attr_is_callable_with<Bool, "from_bytes", Args...>)
     [[nodiscard]] static decltype(auto) from_bytes(Args&&... args) {
-        return impl::call_static<Self, "from_bytes">(std::forward<Args>(args)...);
+        return impl::call_static<Bool, "from_bytes">(std::forward<Args>(args)...);
     }
 
-    template <typename... Args> requires (impl::invocable<Self, "as_integer_ratio", Args...>)
+    template <typename... Args>
+        requires (impl::attr_is_callable_with<Bool, "as_integer_ratio", Args...>)
     [[nodiscard]] decltype(auto) as_integer_ratio(Args&&... args) const {
         return impl::call_method<"as_integer_ratio">(*this, std::forward<Args>(args)...);
     }
 
-    template <typename... Args> requires (impl::invocable<Self, "is_integer", Args...>)
+    template <typename... Args>
+        requires (impl::attr_is_callable_with<Bool, "is_integer", Args...>)
     [[nodiscard]] decltype(auto) is_integer(Args&&... args) const {
         return impl::call_method<"is_integer">(*this, std::forward<Args>(args)...);
     }
