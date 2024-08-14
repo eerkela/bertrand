@@ -87,6 +87,10 @@ public:
 };
 
 
+template <std::floating_point T>
+struct __as_object__<T> : Returns<Float> {};
+
+
 template <>
 struct __init__<Float>                                      : Returns<Float> {
     static auto operator()() {

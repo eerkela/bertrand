@@ -576,6 +576,14 @@ public:
 
 
 template <>
+struct __as_object__<const char*> : Returns<Str> {};
+template <>
+struct __as_object__<char*> : Returns<Str> {};
+template <size_t N>
+struct __as_object__<char[N]> : Returns<Str> {};
+
+
+template <>
 struct __init__<Str>                                        : Returns<Str> {
     static auto operator()() {
         PyObject* result = PyUnicode_FromStringAndSize("", 0);

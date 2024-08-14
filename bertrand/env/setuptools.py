@@ -374,7 +374,6 @@ class Source(setuptools.Extension):
         path: str | Path,
         *,
         cpp_std: int | None = None,
-        traceback: bool | None = None,
         extra_sources: Iterable[str | Path | Source] | None = None,
         extra_include_dirs: Iterable[Path] | None = None,
         extra_define_macros: Iterable[tuple[str, str | None]] | None = None,
@@ -400,7 +399,6 @@ class Source(setuptools.Extension):
         )
         self._path = path
         self._cpp_std = cpp_std
-        self._traceback = traceback
         self._extra_sources = set(
             s if isinstance(s, Source) else self.spawn(s) for s in extra_sources or []
         )
@@ -485,37 +483,6 @@ class Source(setuptools.Extension):
     @cpp_std.deleter
     def cpp_std(self) -> None:
         self._cpp_std = None
-
-    @property
-    def traceback(self) -> bool:
-        """Indicates whether mixed-language tracebacks are enabled for this source.
-
-        Returns
-        -------
-        bool
-            True if errors should maintain a full traceback across the language
-            boundary.  False if they should be truncated instead.
-
-        See Also
-        --------
-        bertrand.setup : sets global options and executes the build process.
-
-        Notes
-        -----
-        This property is initialized by the equivalent `setup()` argument if it is not
-        explicitly overridden in the `Source` constructor.
-        """
-        if self._traceback is None:
-            return self.command._bertrand_traceback
-        return self._traceback
-
-    @traceback.setter
-    def traceback(self, value: bool) -> None:
-        self._traceback = value
-
-    @traceback.deleter
-    def traceback(self) -> None:
-        self._traceback = None
 
     @property
     def extra_sources(self) -> set[Source]:
@@ -1205,7 +1172,6 @@ class Source(setuptools.Extension):
         result = Source(
             self._get_path(path),
             cpp_std=self._cpp_std,
-            traceback=self._traceback,
             extra_include_dirs=self.extra_include_dirs,
             extra_define_macros=self.extra_define_macros,
             extra_library_dirs=self.extra_library_dirs,
@@ -1243,10 +1209,7 @@ class Source(setuptools.Extension):
             A list of tuples that concatenates the global define macros with the extras
             for this source.
         """
-        out = self.command.global_define_macros + self.extra_define_macros
-        if not self.traceback:
-            out.append(("BERTRAND_NO_TRACEBACK", None))
-        return out
+        return self.command.global_define_macros + self.extra_define_macros
 
     def get_library_dirs(self) -> list[Path]:
         """Get the complete list of library directories for this source.
@@ -1290,10 +1253,7 @@ class Source(setuptools.Extension):
             A list of flags that concatenates the global compile flags with the extras
             for this source.
         """
-        out = self.command.global_compile_args + self.extra_compile_args
-        if self.traceback:
-            out.append("-g")
-        return out
+        return self.command.global_compile_args + self.extra_compile_args + ["-g"]
 
     def get_link_args(self) -> list[str]:
         """Get the complete list of linker flags for this source.
@@ -1491,6 +1451,8 @@ class BuildSources(setuptools_build_ext):
             A list of tuples that will be appended as define macros of every source
             file.
         """
+        if not self._bertrand_traceback:
+            return self._bertrand_define_macros + [("BERTRAND_NO_TRACEBACK", None)]
         return self._bertrand_define_macros
 
     @property
@@ -2598,8 +2560,8 @@ def setup(
         A global setting indicating whether to enable cross-language tracebacks for the
         compiled sources.  If set to True, then any error that is thrown will retain a
         coherent stack trace across the language boundary, at the cost of some
-        performance on the unhappy path.  Individual sources can override this by
-        specifying their own value in the `Source` constructor.
+        performance on the unhappy path.  This is a global option by necessity, and can
+        only be set during the setup() call.
     include_dirs : Iterable[str | Path], optional
         A list of directories to search for header files when compiling the sources.
         These are translated into `-I{path}` flags in the compiler invocation, and are

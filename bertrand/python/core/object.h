@@ -38,15 +38,10 @@ namespace impl {
             m_key(std::move(other.m_key))
         {}
 
-        // TODO: assign to std::nullopt to delete?
-
-        template <typename T>
-            requires (!__setitem__<Container, Key, std::remove_cvref_t<T>>::enable)
-        Item& operator=(T&& other) = delete;
-        template <typename T>
-            requires (__setitem__<Container, Key, std::remove_cvref_t<T>>::enable)
-        Item& operator=(T&& other) {
-            using setitem = __setitem__<Container, Key, std::remove_cvref_t<T>>;
+        template <typename Value>
+            requires (__setitem__<Container, Key, std::remove_cvref_t<Value>>::enable)
+        Item& operator=(Value&& value) {
+            using setitem = __setitem__<Container, Key, std::remove_cvref_t<Value>>;
             using Return = typename setitem::type;
             static_assert(
                 std::is_void_v<Return>,
@@ -54,20 +49,25 @@ namespace impl {
                 "specialization of __setitem__ for these types and ensure the Return "
                 "type is set to void."
             );
-            Base::operator=(std::forward<T>(other));
+            Base::operator=(std::forward<Value>(value));
             if constexpr (impl::has_call_operator<setitem>) {
-                setitem{}(m_container, m_key, other);
+                setitem{}(m_container, m_key, value);
 
             } else if constexpr (
                 impl::originates_from_cpp<Base> &&
-                impl::cpp_or_originates_from_cpp<Key>
+                impl::cpp_or_originates_from_cpp<Key> &&
+                impl::cpp_or_originates_from_cpp<std::remove_cvref_t<Value>>
             ) {
                 static_assert(
-                    impl::supports_item_assignment<Base, Key, std::remove_cvref_t<T>>,
+                    impl::supports_item_assignment<Base, Key, std::remove_cvref_t<Value>>,
                     "__setitem__<Self, Key, Value> is enabled for operands whose C++ "
                     "representations have no viable overload for `Self[Key] = Value`"
                 );
-                unwrap(*this) = std::forward<T>(other);
+                if constexpr (impl::python_like<std::remove_cvref_t<Value>>) {
+                    unwrap(*this) = unwrap(std::forward<Value>(value));
+                } else {
+                    unwrap(*this) = std::forward<Value>(value);
+                }
 
             } else {
                 if (PyObject_SetItem(
@@ -80,6 +80,34 @@ namespace impl {
             }
             return *this;
         }
+
+        template <typename = void> requires (__delitem__<Container, Key>::enable)
+        Item& operator=(del value) {
+            using delitem = __delitem__<Container, Key>;
+            using Return = typename delitem::type;
+            static_assert(
+                std::is_void_v<Return>,
+                "index deletion operator must return void.  Check your specialization "
+                "of __delitem__ for these types and ensure the Return type is set to "
+                "void."
+            );
+            if constexpr (impl::has_call_operator<delitem>) {
+                delitem{}(m_container, m_key);
+
+            } else {
+                if (PyObject_DelItem(m_container.m_ptr, ptr(as_object(m_key)))) {
+                    Exception::from_python();
+                }
+            }
+            return *this;
+        }
+
+        template <typename Value>
+            requires (
+                !__setitem__<Container, Key, std::remove_cvref_t<Value>>::enable &&
+                !__delitem__<Container, Key>::enable
+            )
+        Item& operator=(Value&& other) = delete;
 
     };
 
@@ -94,44 +122,14 @@ protected:
     friend inline PyObject* ptr(Handle handle);
     friend inline PyObject* release(Handle handle);
 
-    template <typename T>
-    struct implicit_ctor {
-        template <typename... Args>
-        static constexpr bool enable =
-            __init__<T, std::remove_cvref_t<Args>...>::enable &&
-            std::is_invocable_r_v<T, __init__<T, std::remove_cvref_t<Args>...>, Args...>;
-    };
-
-    template <typename T>
-    struct explicit_ctor {
-        template <typename... Args>
-        static constexpr bool enable =
-            !__init__<T, std::remove_cvref_t<Args>...>::enable &&
-            __explicit_init__<T, std::remove_cvref_t<Args>...>::enable &&
-            std::is_invocable_r_v<
-                T,
-                __explicit_init__<T, std::remove_cvref_t<Args>...>,
-                Args...
-            >;
-    };
-
-    template <std::derived_from<Object> T, typename... Args>
-    Handle(implicit_ctor<T>, Args&&... args) : Handle((
-        Interpreter::init(),
-        __init__<T, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
-
-    template <std::derived_from<Object> T, typename... Args>
-    Handle(explicit_ctor<T>, Args&&... args) : Handle((
-        Interpreter::init(),
-        __explicit_init__<T, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
-
 public:
 
     Handle() = default;
     Handle(const Handle&) = default;
     Handle(Handle&&) = default;
+    Handle& operator=(const Handle&) = default;
+    Handle& operator=(Handle&&) = default;
+
     Handle(PyObject* ptr) : m_ptr(ptr) {}
 
     /* Check for exact pointer identity. */
@@ -330,8 +328,6 @@ public:
 
 /* An owning reference to a dynamically-typed Python object. */
 class Object : public Handle {
-    using Base = Handle;
-
 protected:
     struct borrowed_t {};
     struct stolen_t {};
@@ -341,23 +337,56 @@ protected:
     template <std::derived_from<Object> T>
     friend T reinterpret_steal(Handle);
 
+    template <typename T>
+    struct implicit_ctor {
+        template <typename... Args>
+        static constexpr bool enable =
+            __init__<T, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<T, __init__<T, std::remove_cvref_t<Args>...>, Args...>;
+    };
+
+    template <typename T>
+    struct explicit_ctor {
+        template <typename... Args>
+        static constexpr bool enable =
+            !__init__<T, std::remove_cvref_t<Args>...>::enable &&
+            __explicit_init__<T, std::remove_cvref_t<Args>...>::enable &&
+            std::is_invocable_r_v<
+                T,
+                __explicit_init__<T, std::remove_cvref_t<Args>...>,
+                Args...
+            >;
+    };
+
+    template <std::derived_from<Object> T, typename... Args>
+    Object(implicit_ctor<T>, Args&&... args) : Handle((
+        Interpreter::init(),
+        __init__<T, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    )) {}
+
+    template <std::derived_from<Object> T, typename... Args>
+    Object(explicit_ctor<T>, Args&&... args) : Handle((
+        Interpreter::init(),
+        __explicit_init__<T, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
+    )) {}
+
 public:
 
     /* Copy constructor.  Borrows a reference to an existing object. */
-    Object(const Object& other) : Base(Py_XNewRef(py::ptr(other))) {}
+    Object(const Object& other) : Handle(Py_XNewRef(py::ptr(other))) {}
 
     /* Move constructor.  Steals a reference to a temporary object. */
-    Object(Object&& other) : Base(py::release(other)) {}
+    Object(Object&& other) : Handle(py::release(other)) {}
 
     /* reinterpret_borrow() constructor.  Borrows a reference to a raw Python handle. */
-    Object(Handle h, borrowed_t) : Base(Py_XNewRef(py::ptr(h))) {}
+    Object(Handle h, borrowed_t) : Handle(Py_XNewRef(py::ptr(h))) {}
 
     /* reinterpret_steal() constructor.  Steals a reference to a raw Python handle. */
-    Object(Handle h, stolen_t) : Base(py::ptr(h)) {}
+    Object(Handle h, stolen_t) : Handle(py::ptr(h)) {}
 
     /* Universal implicit constructor.  Implemented via the __init__ control struct. */
     template <typename... Args> requires (implicit_ctor<Object>::enable<Args...>)
-    Object(Args&&... args) : Base(
+    Object(Args&&... args) : Handle(
         implicit_ctor<Object>{},
         std::forward<Args>(args)...
     ) {}
@@ -365,7 +394,7 @@ public:
     /* Universal explicit constructor.  Implemented via the __explicit_init__ control
     struct. */
     template <typename... Args> requires (explicit_ctor<Object>::enable<Args...>)
-    explicit Object(Args&&... args) : Base(
+    explicit Object(Args&&... args) : Handle(
         explicit_ctor<Object>{},
         std::forward<Args>(args)...
     ) {}
@@ -456,26 +485,30 @@ template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
 
 
 template <typename T>
-struct __isinstance__<T, Object>                            : Returns<bool> {
-    static consteval bool operator()(const T& obj) { return issubclass<T, Object>(); }
-    static bool operator()(const T& obj, const Object& cls) {
-        int result = PyObject_IsInstance(
-            ptr(as_object(obj)),
-            ptr(cls)
-        );
-        if (result < 0) {
-            Exception::from_python();
+struct __isinstance__<T, Object> : Returns<bool> {
+    static consteval bool operator()(const T& obj) { return std::derived_from<T, Object>; }
+    static constexpr bool operator()(const T& obj, const Object& cls) {
+        if constexpr (impl::python_like<T>) {
+            int result = PyObject_IsInstance(
+                ptr(obj),
+                ptr(cls)
+            );
+            if (result < 0) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return false;
         }
-        return result;
     }
 };
 
 
 template <typename T>
-struct __issubclass__<T, Object>                            : Returns<bool> {
-    static consteval bool operator()() { return issubclass<T, Object>(); }
+struct __issubclass__<T, Object> : Returns<bool> {
+    static consteval bool operator()() { return std::derived_from<T, Object>; }
     static constexpr bool operator()(const T& obj) {
-        if constexpr (impl::is_object_exact<T>) {
+        if constexpr (impl::dynamic_type<T>) {
             return PyType_Check(ptr(obj));
         } else {
             return impl::type_like<T>;
@@ -496,7 +529,7 @@ struct __issubclass__<T, Object>                            : Returns<bool> {
 
 /* Default initialize py::Object to None. */
 template <>
-struct __init__<Object> {
+struct __init__<Object> : Returns<Object> {
     static auto operator()() {
         return reinterpret_steal<Object>(Py_NewRef(Py_None));
     }
@@ -505,7 +538,7 @@ struct __init__<Object> {
 
 /* Implicitly convert any C++ value into a py::Object by invoking as_object(). */
 template <impl::cpp_like T> requires (__as_object__<T>::enable)
-struct __init__<Object, T>                                  : Returns<Object> {
+struct __init__<Object, T> : Returns<Object> {
     static auto operator()(const T& value) {
         return reinterpret_steal<Object>(release(as_object(value)));
     }
@@ -518,7 +551,7 @@ struct __init__<Object, T>                                  : Returns<Object> {
 /* Implicitly convert a py::Object (or any of its subclasses) into one of its
 subclasses by applying a runtime `isinstance()` check. */
 template <std::derived_from<Object> From, std::derived_from<From> To>
-struct __cast__<From, To>                                   : Returns<To> {
+struct __cast__<From, To> : Returns<To> {
     static auto operator()(const From& from) {
         if (isinstance<To>(from)) {
             return reinterpret_borrow<To>(ptr(from));
@@ -547,7 +580,7 @@ Python type via __as_object__, implicitly converting to that type, and then impl
 converting to the C++ type in a 2-step process. */
 template <typename To>
     requires (!impl::bertrand_like<To> && __as_object__<To>::enable)
-struct __cast__<Object, To>                                 : Returns<To> {
+struct __cast__<Object, To> : Returns<To> {
     static auto operator()(const Object& self) {
         return self.operator typename __as_object__<To>::type().operator To();
     }
@@ -557,7 +590,7 @@ struct __cast__<Object, To>                                 : Returns<To> {
 /* Explicitly convert a py::Object (or any of its subclasses) into a C++ integer by
 calling `int(obj)` at the Python level. */
 template <std::derived_from<Object> From, std::integral To>
-struct __explicit_cast__<From, To>                          : Returns<To> {
+struct __explicit_cast__<From, To> : Returns<To> {
     static To operator()(const From& from) {
         long long result = PyLong_AsLongLong(ptr(from));
         if (result == -1 && PyErr_Occurred()) {
@@ -579,7 +612,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 /* Explicitly convert a py::Object (or any of its subclasses) into a C++ floating-point
 number by calling `float(obj)` at the Python level. */
 template <std::derived_from<Object> From, std::floating_point To>
-struct __explicit_cast__<From, To>                          : Returns<To> {
+struct __explicit_cast__<From, To> : Returns<To> {
     static To operator()(const From& from) {
         double result = PyFloat_AsDouble(ptr(from));
         if (result == -1.0 && PyErr_Occurred()) {
@@ -594,7 +627,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 by calling `complex(obj)` at the Python level. */
 template <std::derived_from<Object> From, impl::complex_like To>
     requires (impl::cpp_like<To>)
-struct __explicit_cast__<From, To>                          : Returns<To> {
+struct __explicit_cast__<From, To> : Returns<To> {
     static To operator()(const From& from) {
         Py_complex result = PyComplex_AsCComplex(ptr(from));
         if (result.real == -1.0 && PyErr_Occurred()) {
@@ -608,7 +641,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 /* Explicitly convert a py::Object (or any of its subclasses) into a C++ sd::string
 representation by calling `str(obj)` at the Python level. */
 template <std::derived_from<Object> From> 
-struct __explicit_cast__<From, std::string>                 : Returns<std::string> {
+struct __explicit_cast__<From, std::string> : Returns<std::string> {
     static auto operator()(const From& from) {
         PyObject* str = PyObject_Str(ptr(from));
         if (str == nullptr) {
@@ -632,7 +665,7 @@ checking for an equivalent Python type via __as_object__, explicitly converting 
 type, and then explicitly converting to the C++ type in a 2-step process. */
 template <std::derived_from<Object> From, typename To>
     requires (!impl::bertrand_like<To> && __as_object__<To>::enable)
-struct __explicit_cast__<From, To>                          : Returns<To> {
+struct __explicit_cast__<From, To> : Returns<To> {
     static auto operator()(const From& from) {
         return static_cast<To>(static_cast<typename __as_object__<To>::type>(from));
     }

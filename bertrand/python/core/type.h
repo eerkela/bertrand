@@ -647,7 +647,7 @@ explicit Type(const T&) -> Type<typename __as_object__<T>::type>;
 accessing the type object.  This respects per-module state and ensures that the result
 always matches the type that is stored in the Python interpreter. */
 template <typename T>
-struct __init__<Type<T>>                                    : Returns<Type<T>> {
+struct __init__<Type<T>> : Returns<Type<T>> {
     static auto operator()() {
         return Type<T>::__python__::__import__();
     }
@@ -657,7 +657,7 @@ struct __init__<Type<T>>                                    : Returns<Type<T>> {
 /* Metaclasses are represented as types of types, and are constructible by recursively
 calling `Py_TYPE(cls)` until we reach a concrete type. */
 template <typename T>
-struct __init__<Type<Type<T>>>                              : Returns<Type<Type<T>>> {
+struct __init__<Type<Type<T>>> : Returns<Type<Type<T>>> {
     static auto operator()() {
         return reinterpret_borrow<Type<Type<T>>>(reinterpret_cast<PyObject*>(
             Py_TYPE(ptr(Type<T>()))
@@ -680,7 +680,7 @@ struct __explicit_init__<Type<typename __as_object__<T>::type>, T> {
 
 /* Calling a py::Type is the same as invoking the templated type's constructor. */
 template <typename T, typename... Args> requires (std::constructible_from<T, Args...>)
-struct __call__<Type<T>, Args...>                           : Returns<T> {
+struct __call__<Type<T>, Args...> : Returns<T> {
     static auto operator()(const Type<T>& self, Args&&... args) {
         return T(std::forward<Args>(args)...);
     }
@@ -690,16 +690,32 @@ struct __call__<Type<T>, Args...>                           : Returns<T> {
 /* `isinstance()` is already implemented for all `py::Type` specializations by
 recurring on the templated type. */
 template <typename T, typename Cls>
-struct __isinstance__<T, Type<Cls>>                      : Returns<bool> {
-    // TODO: isinstance<Type<Cls>>(obj) should only return true if obj is a type, which
-    // is a subclass of Cls.  Not if obj is an instance of Cls directly.
+struct __isinstance__<T, Type<Cls>> : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
-        return PyType_Check(ptr(obj)) && issubclass<Cls>(obj);  // TODO: issubclass<Cls>(obj) may not be valid
+        if constexpr (impl::python_like<T>) {
+            if (!PyType_Check(ptr(obj))) {
+                return false;
+            }
+            if constexpr (impl::dynamic_type<Cls>) {
+                return true;
+            } else {
+                int result = PyObject_IsSubclass(
+                    ptr(obj),
+                    ptr(Type<Cls>())
+                );
+                if (result < 0) {
+                    Exception::from_python();
+                }
+                return result;
+            }
+        } else {
+            return false;
+        }
     }
     static constexpr bool operator()(const T& obj, const Type<Cls>& cls) {
-        if constexpr (impl::is_object_exact<Cls>) {
-            int result = PyObject_IsInstance(
-                ptr(as_object(obj)),
+        if constexpr (impl::python_like<T> && impl::dynamic_type<Cls>) {
+            int result = PyObject_IsSubclass(
+                ptr(obj),
                 ptr(cls)
             );
             if (result < 0) {
@@ -716,11 +732,11 @@ struct __isinstance__<T, Type<Cls>>                      : Returns<bool> {
 /* `issubclass()` is already implemented for all `py::Type` specializations by
 recurring on the templated type. */
 template <typename T, typename Cls>
-struct __issubclass__<T, Type<Cls>>                        : Returns<bool> {
+struct __issubclass__<T, Type<Cls>> : Returns<bool> {
     static consteval bool operator()() { return issubclass<T, Cls>(); }
     static constexpr bool operator()(const T& obj) { return issubclass<Cls>(obj); }
     static constexpr bool operator()(const T& obj, const Type<Cls>& cls) {
-        if constexpr (impl::is_object_exact<Cls>) {
+        if constexpr (impl::dynamic_type<Cls>) {
             int result = PyObject_IsSubclass(
                 ptr(as_object(obj)),
                 ptr(cls)
@@ -744,7 +760,7 @@ template <typename From, typename To> requires (
         typename __as_object__<To>::type
     >
 )
-struct __cast__<Type<From>, Type<To>>                       : Returns<Type<To>> {
+struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
     static auto operator()(const Type<From>& from) {
         return reinterpret_borrow<Type<To>>(ptr(from));
     }
@@ -766,7 +782,7 @@ template <typename From, typename To> requires (
         typename __as_object__<From>::type
     >
 )
-struct __cast__<Type<From>, Type<To>>                       : Returns<Type<To>> {
+struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
     static auto operator()(const Type<From>& from) {
         if (issubclass<
             typename __as_object__<To>::type,
@@ -1268,20 +1284,77 @@ can be customize by specializing the `__issubclass__` control struct.)doc"
 };
 
 
-// template <typename T>
-// struct __isinstance__<T, BertrandMeta>                      : Returns<bool> {};  // TODO: implement default behavior
-// template <typename T>
-// struct __issubclass__<T, BertrandMeta>                      : Returns<bool> {};  // TODO: implement default behavior
-template <>
-struct __len__<BertrandMeta>                                : Returns<size_t> {};
-template <>
-struct __iter__<BertrandMeta>                               : Returns<BertrandMeta> {};
 template <typename T>
-struct __getitem__<BertrandMeta, Type<T>>                   : Returns<BertrandMeta> {};
+struct __isinstance__<T, BertrandMeta> : Returns<bool> {
+    static constexpr bool operator()(const T& obj) {
+        if constexpr (impl::python_like<T>) {
+            int result = PyObject_IsInstance(
+                ptr(obj),
+                ptr(Type<BertrandMeta>())
+            );
+            if (result < 0) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return false;
+        }
+    }
+    static constexpr bool operator()(const T& obj, const BertrandMeta& cls) {
+        if constexpr (impl::python_like<T>) {
+            int result = PyObject_IsInstance(
+                ptr(obj),
+                ptr(cls)
+            );
+            if (result < 0) {
+                Exception::from_python();
+            }
+            return result;
+        } else {
+            return false;
+        }
+    }
+};
+
+
+template <typename T>
+struct __issubclass__<T, BertrandMeta> : Returns<bool> {
+    static consteval bool operator()() {
+        return impl::originates_from_cpp<T>;
+    }
+    static bool operator()(const T& obj) {
+        int result = PyObject_IsSubclass(
+            ptr(obj),
+            ptr(Type<BertrandMeta>())
+        );
+        if (result < 0) {
+            Exception::from_python();
+        }
+        return result;
+    }
+    static bool operator()(const T& obj, const BertrandMeta& cls) {
+        int result = PyObject_IsSubclass(
+            ptr(obj),
+            ptr(cls)
+        );
+        if (result < 0) {
+            Exception::from_python();
+        }
+        return result;
+    }
+};
+
+
 template <>
-struct __getitem__<BertrandMeta, Tuple<Type<Object>>>       : Returns<BertrandMeta> {};
+struct __len__<BertrandMeta> : Returns<size_t> {};
+template <>
+struct __iter__<BertrandMeta> : Returns<BertrandMeta> {};
+template <typename T>
+struct __getitem__<BertrandMeta, Type<T>> : Returns<BertrandMeta> {};
+template <>
+struct __getitem__<BertrandMeta, Tuple<Type<Object>>> : Returns<BertrandMeta> {};
 // template <typename... Ts>
-// struct __getitem__<BertrandMeta, Struct<Type<Ts>...>>       : Returns<BertrandMeta> {};  // TODO: implement Struct
+// struct __getitem__<BertrandMeta, Struct<Type<Ts>...>> : Returns<BertrandMeta> {};  // TODO: implement Struct
 
 
 namespace impl {
@@ -2538,7 +2611,7 @@ namespace impl {
         private:
 
             template <typename T>
-            void register_iterator(Type<Wrapper>& type) {
+            static void register_iterator(Type<Wrapper>& type) {
                 static PyType_Slot slots[] = {
                     {
                         Py_tp_iter,
@@ -2948,20 +3021,20 @@ namespace impl {
 
         /* TODO: implement the following slots using metaprogramming where possible:
         *
-        //  * tp_name
-        //  * tp_basicsize
-        //  * tp_itemsize
-        //  * tp_dealloc
-        //  * tp_repr
-        //  * tp_hash
+        // * tp_name
+        // * tp_basicsize
+        // * tp_itemsize
+        // * tp_dealloc
+        // * tp_repr
+        // * tp_hash
         * tp_vectorcall_offset  // needs some extra work in PyMemberDef
         * tp_dictoffset (or Py_TPFLAGS_MANAGED_DICT)
         * tp_weaklistoffset (or Py_TPFLAGS_MANAGED_WEAKREF)
         * tp_call
-        //  * tp_str
-        //  * tp_traverse
-        //  * tp_clear
-        * tp_iter
+        // * tp_str
+        // * tp_traverse
+        // * tp_clear
+        // * tp_iter
         * tp_iternext
         * tp_init
         * tp_alloc  // -> leave blank

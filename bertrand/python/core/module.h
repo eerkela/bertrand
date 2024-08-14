@@ -276,7 +276,7 @@ namespace impl {
                     throw TypeError(
                         "No module specialization found for submodule '" + FullName +
                         "'.  Please define a specialization of py::Module with this name and "
-                        "fill in its `__module__` initialization struct."
+                        "fill in its `__python__` initialization struct."
                     );
                 }
                 if (!setup_complete) {
@@ -667,6 +667,11 @@ template <StaticStr Name, StaticStr Attr, typename Value> requires (__as_object_
 struct __setattr__<Module<Name>, Attr, Value>                : Returns<void> {};
 template <StaticStr Name, StaticStr Attr>
 struct __delattr__<Module<Name>, Attr>                       : Returns<void> {};
+
+
+////////////////////
+////    TYPE    ////
+////////////////////
 
 
 template <StaticStr Name>

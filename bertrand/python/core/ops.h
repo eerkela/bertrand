@@ -45,13 +45,31 @@ template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
 // conversion occurs within the logic of isinstance() itself.
 
 
+// TODO: update docs to better reflect the actual behavior of each overload.
+//
+//  isinstance<Base>(obj): checks if obj can be safely converted to Base when narrowing
+//      a dynamic type.
+//  isinstance(obj, base): equivalent to a Python-level isinstance() check.  Base must
+//      be type-like, a union of types, or a dynamic object which can be narrowed to
+//      either of the above.
+//  issubclass<Base, Derived>(): does a compile-time check to see if Derived inherits
+//      from Base.
+//  issubclass<Base>(obj): devolves to an issubclass<Base, Derived>() check unless obj
+//      is a dynamic object which may be narrowed to a single type.
+//  issubclass(obj, base): equivalent to a Python-level issubclass() check.  Derived
+//      must be a single type or a dynamic object which can be narrowed to a single
+//      type, and base must be type-like, a union of types, or a dynamic object which
+//      can be narrowed to either of the above.
+
+
+
 /* Equivalent to Python `isinstance(obj, base)`, except that base is given as a
 template parameter.  If a specialization of `__isinstance__` exists and implements a
 call operator that takes a single `const Derived&` argument, then it will be called
 directly.  Otherwise, if the argument is a dynamic object, it falls back to a
 Python-level `isinstance()` check.  In all other cases, it will be evaluated at
 compile-time by calling `issubclass<Derived, Base>()`. */
-template <std::derived_from<Object> Base, std::derived_from<Object> Derived>
+template <typename Base, typename Derived>
 [[nodiscard]] constexpr bool isinstance(const Derived& obj) {
     if constexpr (std::is_invocable_v<
         __isinstance__<Derived, Base>,
@@ -59,11 +77,7 @@ template <std::derived_from<Object> Base, std::derived_from<Object> Derived>
     >) {
         return __isinstance__<Derived, Base>{}(obj);
 
-    // TODO: these constexpr branches might be covered by separate specializations of
-    // __isinstance__.  For instance, one which accepts any subclass of object as the
-    // left-hand argument and specifically Object as the right-hand argument.
-
-    } else if constexpr (impl::is_object_exact<Derived>) {
+    } else if constexpr (impl::python_like<Base> && impl::dynamic_type<Derived>) {
         int result = PyObject_IsInstance(
             ptr(obj),
             ptr(Type<Base>())
@@ -95,11 +109,14 @@ template <typename Derived, typename Base>
 }
 
 
+// TODO: isinstance() seems to work, but issubclass() is still complicated
+
+
 /* Equivalent to Python `issubclass(obj, base)`, except that both arguments are given
 as template parameters, marking the check as `consteval`.  This is essentially
 equivalent to a `std::derived_from<>` check, except that custom logic from the
 `__issubclass__` control structure will be used if available. */
-template <std::derived_from<Object> Derived, std::derived_from<Object> Base>
+template <typename Derived, typename Base>
 [[nodiscard]] consteval bool issubclass() {
     if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>>) {
         return __issubclass__<Derived, Base>{}();
@@ -123,7 +140,7 @@ template <std::derived_from<Object> Base, std::derived_from<Object> Derived>
     } else if constexpr (impl::type_like<Derived>) {
         return issubclass<Derived, Base>();
 
-    } else if constexpr (impl::is_object_exact<Derived>) {
+    } else if constexpr (impl::dynamic_type<Derived>) {
         return PyType_Check(ptr(obj)) && PyObject_IsSubclass(
             ptr(obj),
             ptr(Type<Base>())  // TODO: 
@@ -325,91 +342,6 @@ free-floating size() function. */
 template <typename T> requires (!__len__<T>::enable && impl::has_size<T>)
 [[nodiscard]] size_t size(const T& obj) {
     return len(obj);
-}
-
-
-/* Begin iteration operator.  Both this and the end iteration operator are
-controlled by the __iter__ control struct, whose return type dictates the
-iterator's dereference type. */
-template <typename Self> requires (__iter__<Self>::enable)
-[[nodiscard]] auto begin(Self& self);
-
-
-/* Begin iteration operator.  Both this and the end iteration operator are
-controlled by the __iter__ control struct, whose return type dictates the
-iterator's dereference type. */
-template <typename Self> requires (__iter__<const Self>::enable)
-[[nodiscard]] auto begin(const Self& self);
-
-
-/* Const iteration operator.  Python has no distinction between mutable and
-immutable iterators, so this is fundamentally the same as the ordinary begin()
-method.  Some libraries assume the existence of this method. */
-template <typename Self> requires (__iter__<const Self>::enable)
-[[nodiscard]] auto cbegin(const Self& self) {
-    return begin(self);
-}
-
-
-/* End iteration operator.  This terminates the iteration and is controlled by the
-__iter__ control struct. */
-template <typename Self> requires (__iter__<Self>::enable)
-[[nodiscard]] auto end(Self& self);
-
-
-/* End iteration operator.  This terminates the iteration and is controlled by the
-__iter__ control struct. */
-template <typename Self> requires (__iter__<const Self>::enable)
-[[nodiscard]] auto end(const Self& self);
-
-
-/* Const end operator.  Similar to `cbegin()`, this is identical to `end()`. */
-template <typename Self> requires (__iter__<const Self>::enable)
-[[nodiscard]] auto cend(const Self& self) {
-    return end(self);
-}
-
-
-/* Reverse iteration operator.  Both this and the reverse end operator are
-controlled by the __reversed__ control struct, whose return type dictates the
-iterator's dereference type. */
-template <typename Self> requires (__reversed__<Self>::enable)
-[[nodiscard]] auto rbegin(Self& self);
-
-
-/* Reverse iteration operator.  Both this and the reverse end operator are
-controlled by the __reversed__ control struct, whose return type dictates the
-iterator's dereference type. */
-template <typename Self> requires (__reversed__<const Self>::enable)
-[[nodiscard]] auto rbegin(const Self& self);
-
-
-/* Const reverse iteration operator.  Python has no distinction between mutable
-and immutable iterators, so this is fundamentally the same as the ordinary
-rbegin() method.  Some libraries assume the existence of this method. */
-template <typename Self> requires (__reversed__<const Self>::enable)
-[[nodiscard]] auto crbegin(const Self& self) {
-    return rbegin(self);
-}
-
-
-/* Reverse end operator.  This terminates the reverse iteration and is controlled
-by the __reversed__ control struct. */
-template <typename Self> requires (__reversed__<Self>::enable)
-[[nodiscard]] auto rend(Self& self);
-
-
-/* Reverse end operator.  This terminates the reverse iteration and is controlled
-by the __reversed__ control struct. */
-template <typename Self> requires (__reversed__<const Self>::enable)
-[[nodiscard]] auto rend(const Self& self);
-
-
-/* Const reverse end operator.  Similar to `crbegin()`, this is identical to
-`rend()`. */
-template <typename Self> requires (__reversed__<const Self>::enable)
-[[nodiscard]] auto crend(const Self& self) {
-    return rend(self);
 }
 
 

@@ -91,6 +91,10 @@ public:
 
 
 template <>
+struct __as_object__<bool> : Returns<Bool> {};
+
+
+template <>
 struct __init__<Bool>                                       : Returns<Bool> {
     static auto operator()() {
         return reinterpret_borrow<Bool>(Py_False);

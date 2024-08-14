@@ -100,6 +100,10 @@ public:
 };
 
 
+template <std::integral T> requires (!std::same_as<bool, T>)
+struct __as_object__<T> : Returns<Int> {};
+
+
 template <>
 struct __init__<Int>                                        : Returns<Int> {
     static auto operator()() {

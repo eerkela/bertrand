@@ -8,52 +8,14 @@
 #include "func.h"
 
 
+// TODO: eliminate this file and move its contents to the actual implementations of
+// all of these classes for better locality, and as a better model for writing custom
+// bindings, if needed.
+
+
 namespace py {
 
 
-
-template <typename R, typename... A>
-struct __as_object__<R(A...)>                               : Returns<Function<R(A...)>> {};
-template <typename R, typename... A>
-struct __as_object__<R(*)(A...)>                            : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...)>                         : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...) noexcept>                : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...) const>                   : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...) const noexcept>          : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...) volatile>                : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...) volatile noexcept>       : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...) const volatile>          : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...) const volatile noexcept> : Returns<Function<R(A...)>> {};
-template <typename R, typename... A>
-struct __as_object__<std::function<R(A...)>>                : Returns<Function<R(A...)>> {};
-template <>
-struct __as_object__<std::nullptr_t>                        : Returns<NoneType> {};
-template <>
-struct __as_object__<std::nullopt_t>                        : Returns<NoneType> {};
-template <>
-struct __as_object__<bool>                                  : Returns<Bool> {};
-template <std::integral T> requires (!std::same_as<bool, T>)
-struct __as_object__<T>                                     : Returns<Int> {};
-template <std::floating_point T>
-struct __as_object__<T>                                     : Returns<Float> {};
-template <impl::complex_like T> requires (!std::derived_from<T, Object>)
-struct __as_object__<T>                                     : Returns<Complex> {};
-template <>
-struct __as_object__<const char*>                           : Returns<Str> {};
-template <>
-struct __as_object__<char*>                                 : Returns<Str> {};
-template <size_t N>
-struct __as_object__<char[N]>                               : Returns<Str> {};
-template <>
-struct __as_object__<void*>                                 : Returns<Bytes> {};
 template <typename... Args>
 struct __as_object__<std::chrono::duration<Args...>>        : Returns<Timedelta> {};
 // TODO: std::time_t?
@@ -81,10 +43,6 @@ template <typename K, typename V, typename... Args>
 struct __as_object__<std::unordered_map<K, V, Args...>>     : Returns<Dict<impl::as_object_t<K>, impl::as_object_t<V>>> {};
 template <typename K, typename V, typename... Args>
 struct __as_object__<std::map<K, V, Args...>>               : Returns<Dict<impl::as_object_t<K>, impl::as_object_t<V>>> {};
-
-
-// TODO: list __isinstance__ and __issubclass__ for all types here.  Many (most) will
-// be forward declarations.
 
 
 // TODO: none of the dunder methods need to be given here.  They'll be automatically
@@ -1419,18 +1377,6 @@ template <StaticStr Name, std::convertible_to<Object> Value>
 struct __setattr__<Object, Name, Value>                     : Returns<void> {};
 template <StaticStr Name>
 struct __delattr__<Object, Name>                            : Returns<void> {};
-
-
-template <std::derived_from<Slice> Self>
-struct __getattr__<Self, "indices">                             : Returns<Function<
-    Tuple<Int>(Arg<"length", const Int&>)
->> {};
-template <std::derived_from<Slice> Self>
-struct __getattr__<Self, "start">                               : Returns<Object> {};
-template <std::derived_from<Slice> Self>
-struct __getattr__<Self, "stop">                                : Returns<Object> {};
-template <std::derived_from<Slice> Self>
-struct __getattr__<Self, "step">                                : Returns<Object> {};
 
 
 template <StaticStr Name>
@@ -2853,24 +2799,12 @@ struct __hash__<WeakRef>                                    : Returns<size_t> {}
 template <>
 struct __hash__<Object>                                     : Returns<size_t> {};
 template <>
-struct __hash__<NoneType>                                   : Returns<size_t> {};
-template <>
-struct __hash__<NotImplementedType>                         : Returns<size_t> {};
-template <>
-struct __hash__<EllipsisType>                               : Returns<size_t> {};
-template <>
 struct __hash__<Module>                                     : Returns<size_t> {};
 template <>
 struct __hash__<Type>                                       : Returns<size_t> {};
 template <>
 struct __hash__<Super>                                      : Returns<size_t> {};
 template <std::derived_from<Module> Self>
-struct __hash__<Self>                                       : Returns<size_t> {};
-template <std::derived_from<NoneType> Self>
-struct __hash__<Self>                                       : Returns<size_t> {};
-template <std::derived_from<NotImplementedType> Self>
-struct __hash__<Self>                                       : Returns<size_t> {};
-template <std::derived_from<EllipsisType> Self>
 struct __hash__<Self>                                       : Returns<size_t> {};
 template <std::derived_from<Bool> Self>
 struct __hash__<Self>                                       : Returns<size_t> {};
@@ -3002,10 +2936,6 @@ template <std::convertible_to<Object> R>
 struct __lt__<Super, R>                                     : Returns<bool> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
 struct __lt__<L, Super>                                     : Returns<bool> {};
-template <std::derived_from<Slice> L, impl::slice_like R>
-struct __lt__<L, R>                                         : Returns<bool> {};
-template <impl::slice_like L, std::derived_from<Slice> R> requires (!std::derived_from<L, Slice>)
-struct __lt__<L, R>                                         : Returns<bool> {};
 template <std::derived_from<Bool> L, impl::bool_like R>
 struct __lt__<L, R>                                         : Returns<bool> {};
 template <std::derived_from<Bool> L, impl::int_like R>
@@ -3104,10 +3034,6 @@ template <std::convertible_to<Object> R>
 struct __le__<Super, R>                                     : Returns<bool> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
 struct __le__<L, Super>                                     : Returns<bool> {};
-template <std::derived_from<Slice> L, impl::slice_like R>
-struct __le__<L, R>                                         : Returns<bool> {};
-template <impl::slice_like L, std::derived_from<Slice> R> requires (!std::derived_from<L, Slice>)
-struct __le__<L, R>                                         : Returns<bool> {};
 template <std::derived_from<Bool> L, impl::bool_like R>
 struct __le__<L, R>                                         : Returns<bool> {};
 template <std::derived_from<Bool> L, impl::int_like R>
@@ -3230,10 +3156,6 @@ template <std::convertible_to<Object> R>
 struct __ge__<Super, R>                                     : Returns<bool> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
 struct __ge__<L, Super>                                     : Returns<bool> {};
-template <std::derived_from<Slice> L, impl::slice_like R>
-struct __ge__<L, R>                                         : Returns<bool> {};
-template <impl::slice_like L, std::derived_from<Slice> R> requires (!std::derived_from<L, Slice>)
-struct __ge__<L, R>                                         : Returns<bool> {};
 template <std::derived_from<Bool> L, impl::bool_like R>
 struct __ge__<L, R>                                         : Returns<bool> {};
 template <std::derived_from<Bool> L, impl::int_like R>
@@ -3332,10 +3254,6 @@ template <std::convertible_to<Object> R>
 struct __gt__<Super, R>                                     : Returns<bool> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
 struct __gt__<L, Super>                                     : Returns<bool> {};
-template <std::derived_from<Slice> L, impl::slice_like R>
-struct __gt__<L, R>                                         : Returns<bool> {};
-template <impl::slice_like L, std::derived_from<Slice> R> requires (!std::derived_from<L, Slice>)
-struct __gt__<L, R>                                         : Returns<bool> {};
 template <std::derived_from<Bool> L, impl::bool_like R>
 struct __gt__<L, R>                                         : Returns<bool> {};
 template <std::derived_from<Bool> L, impl::int_like R>

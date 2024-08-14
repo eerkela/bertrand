@@ -341,6 +341,10 @@ public:
 };
 
 
+template <>
+struct __as_object__<void*> : Returns<Bytes> {};
+
+
 template <std::convertible_to<size_t> T>
 struct __init__<Bytes, T>                                   : Returns<Bytes> {
     static auto operator()(size_t size) {

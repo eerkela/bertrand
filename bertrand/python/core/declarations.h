@@ -214,6 +214,13 @@ template <std::derived_from<Object> Map>
 class MappingProxy;
 
 
+/* A simple tag struct that can be passed to an index or attribute assignment operator
+to invoke a Python-level `@property` deleter, `__delattr__()`, or `__delitem__()`
+method.  This is the closest equivalent to replicating Python's `del` keyword in the
+cases where it matters, and is not superceded by automatic reference counting. */
+struct del : public impl::BertrandTag {};
+
+
 /* Base class for enabled control structures.  Encodes the return type as a template
 parameter. */
 template <typename T>
@@ -882,15 +889,14 @@ namespace impl {
     concept bertrand_like = std::derived_from<std::decay_t<T>, BertrandTag>;
 
     template <typename T>
-    concept python_like = std::derived_from<std::decay_t<T>, Object>;
+    concept python_like = std::derived_from<std::decay_t<T>, Handle>;
 
     template <typename... Ts>
     concept any_are_python_like = (python_like<Ts> || ...);
 
-    // TODO: is_object_exact may not be necessary
-
     template <typename T>
-    concept is_object_exact = std::same_as<std::decay_t<T>, Object>;  // TODO: rename to dynamic_type and include Handle?
+    concept dynamic_type = 
+        std::same_as<std::decay_t<T>, Handle> || std::same_as<std::decay_t<T>, Object>;
 
     template <typename T>
     concept originates_from_python =

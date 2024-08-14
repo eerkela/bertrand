@@ -525,6 +525,14 @@ namespace impl {
     // module.
     // -> Maybe when generating Python->C++ bindings, I can just write out the full
     //    exception class without the need for this macro.
+    // -> Type<Exception>::__python__ can potentially also be used to register C++
+    //    exceptions as well, but that would involve turning all of these into proper
+    //    Object subclasses, which is prohibitive.
+    // -> Probably what I should do is offer a separate Exception::def CRTP helper as a
+    //    protected member, which handles the logic to represent C++ errors in Python
+    //    or vice versa.  It can have __throw__ and __catch__ methods that back
+    //    from_python() and to_python() respectively.
+    // -> Such an approach may also fix the UnicodeDecodeError issue above.
 
     #ifndef BERTRAND_NO_TRACEBACK
 
@@ -598,7 +606,7 @@ namespace impl {
                 "exception base class must derive from py::Exception"                   \
             );                                                                          \
                                                                                         \
-            class PYBIND11_EXPORT_EXCEPTION cls : public base {                         \
+            class cls : public base {                                                   \
                 inline static bool registered =                                         \
                     ::py::impl::register_exception<cls>(pytype);                        \
                                                                                         \

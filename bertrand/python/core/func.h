@@ -2692,29 +2692,32 @@ Function(std::string, std::string, F, D...) -> Function<
 >;
 
 
-// TODO: if default specialization is given, type checks should be fully generic, right?
-// issubclass<T, Function<>>() should check impl::is_callable_any<T>;
+template <typename R, typename... A>
+struct __as_object__<R(A...)> : Returns<Function<R(A...)>> {};
+template <typename R, typename... A>
+struct __as_object__<R(*)(A...)> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...)> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...) noexcept> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...) const> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...) const noexcept> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...) volatile> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...) volatile noexcept> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...) const volatile> : Returns<Function<R(A...)>> {};
+template <typename R, typename C, typename... A>
+struct __as_object__<R(C::*)(A...) const volatile noexcept> : Returns<Function<R(A...)>> {};
+template <typename R, typename... A>
+struct __as_object__<std::function<R(A...)>> : Returns<Function<R(A...)>> {};
+
 
 template <typename T, typename R, typename... A>
-struct __issubclass__<T, Function<R(A...)>>                 : Returns<bool> {
-    static consteval bool operator()() {
-        return std::is_invocable_r_v<R, T, A...>;
-    }
-    static constexpr bool operator()(const T&) {
-        // TODO: this is going to have to be radically rethought.
-        // Maybe I just forward to an issubclass() check against the type object?
-        // In fact, this could maybe be standard operating procedure for all types.
-        // 
-        return PyType_IsSubtype(
-            reinterpret_cast<PyTypeObject*>(ptr(Type<T>())),
-            reinterpret_cast<PyTypeObject*>(ptr(Type<Function<R(A...)>>()))
-        );
-    }
-};
-
-
-template <typename T, typename R, typename... A>
-struct __isinstance__<T, Function<R(A...)>>                  : Returns<bool> {
+struct __isinstance__<T, Function<R(A...)>> : Returns<bool> {
     static constexpr bool operator()(const T& obj) {
         if (impl::cpp_like<T>) {
             return issubclass<T, Function<R(A...)>>();
@@ -2731,6 +2734,27 @@ struct __isinstance__<T, Function<R(A...)>>                  : Returns<bool> {
         } else {
             return false;
         }
+    }
+};
+
+
+// TODO: if default specialization is given, type checks should be fully generic, right?
+// issubclass<T, Function<>>() should check impl::is_callable_any<T>;
+
+template <typename T, typename R, typename... A>
+struct __issubclass__<T, Function<R(A...)>> : Returns<bool> {
+    static consteval bool operator()() {
+        return std::is_invocable_r_v<R, T, A...>;
+    }
+    static constexpr bool operator()(const T&) {
+        // TODO: this is going to have to be radically rethought.
+        // Maybe I just forward to an issubclass() check against the type object?
+        // In fact, this could maybe be standard operating procedure for all types.
+        // 
+        return PyType_IsSubtype(
+            reinterpret_cast<PyTypeObject*>(ptr(Type<T>())),
+            reinterpret_cast<PyTypeObject*>(ptr(Type<Function<R(A...)>>()))
+        );
     }
 };
 
@@ -2993,7 +3017,7 @@ public:
 
 
 template <>
-struct __init__<Type<OverloadSet>>                          : Returns<Type<OverloadSet>> {
+struct __init__<Type<OverloadSet>> : Returns<Type<OverloadSet>> {
     static Type<OverloadSet> operator()() {
         return reinterpret_borrow<Type<OverloadSet>>(
             reinterpret_cast<PyObject*>(Type<OverloadSet>::__python__::type)

@@ -75,6 +75,10 @@ public:
 };
 
 
+template <impl::complex_like T> requires (!std::derived_from<T, Object>)
+struct __as_object__<T> : Returns<Complex> {};
+
+
 template <typename Real, typename Imag>
     requires (
         (impl::bool_like<Real> || impl::int_like<Real> || impl::float_like<Real>) &&
