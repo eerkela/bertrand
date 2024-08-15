@@ -161,56 +161,56 @@ private:
 };
 
 
-class Handle;
-class Object;
+struct Handle;
+struct Object;
 template <typename>
-class Type;
-class BertrandMeta;
+struct Type;
+struct BertrandMeta;
 template <std::derived_from<Object> Return>
-class Iterator;
+struct Iterator;
 template <StaticStr Name, typename T>
-class Arg;
+struct Arg;
 template <typename>
-class Function;
+struct Function;
 template <StaticStr Name>
-class Module;
-class NoneType;
-class NotImplementedType;
-class EllipsisType;
-class Slice;
-class Code;
-class Frame;
-class Bool;
-class Int;
-class Float;
-class Complex;
-class Str;
-class Bytes;
-class ByteArray;
-class Date;
-class Time;
-class Datetime;
-class Timedelta;
-class Timezone;
-class Range;
+struct Module;
+struct NoneType;
+struct NotImplementedType;
+struct EllipsisType;
+struct Slice;
+struct Code;
+struct Frame;
+struct Bool;
+struct Int;
+struct Float;
+struct Complex;
+struct Str;
+struct Bytes;
+struct ByteArray;
+struct Date;
+struct Time;
+struct Datetime;
+struct Timedelta;
+struct Timezone;
+struct Range;
 template <std::derived_from<Object> Val = Object>
-class List;
+struct List;
 template <std::derived_from<Object> Val = Object>
-class Tuple;
+struct Tuple;
 template <std::derived_from<Object> Key = Object>
-class Set;
+struct Set;
 template <std::derived_from<Object> Key = Object>
-class FrozenSet;
+struct FrozenSet;
 template <std::derived_from<Object> Key = Object, std::derived_from<Object> Val = Object>
-class Dict;
+struct Dict;
 template <std::derived_from<Object> Map>
-class KeyView;
+struct KeyView;
 template <std::derived_from<Object> Map>
-class ValueView;
+struct ValueView;
 template <std::derived_from<Object> Map>
-class ItemView;
+struct ItemView;
 template <std::derived_from<Object> Map>
-class MappingProxy;
+struct MappingProxy;
 
 
 /* A simple tag struct that can be passed to an index or attribute assignment operator
@@ -372,7 +372,7 @@ namespace impl {
     };
 
     template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
-    class Item;
+    struct Item;
     struct SliceInitializer;
 
     template <typename T>

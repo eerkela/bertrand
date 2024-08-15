@@ -1,6 +1,6 @@
 #define PYBIND11_DETAILED_ERROR_MESSAGES
 
-#include "common.h"
+#include "core.h"
 
 #include "bool.h"
 #include "int.h"
@@ -1079,6 +1079,24 @@ inline void setattr(const Handle& obj, const Str& name, const Object& value) {
 ////////////////////////////////////
 
 
+// TODO: ensure that placing set_pyerr() here doesn't cause any problems.
+
+#ifdef BERTRAND_NO_TRACEBACK
+
+    template <typename CRTP, std::derived_from<Exception> Base>
+    void bertrand_exception::set_pyerr() const override {
+        PyErr_SetString(ptr(Type<CRTP>()), Base::message().c_str());
+    }
+
+#else
+
+    template <typename CRTP, std::derived_from<Exception> Base>
+    void bertrand_exception::set_pyerr() const override {
+        Base::traceback.restore(ptr(Type<CRTP>()), Base::message().c_str());
+    }
+
+#endif
+
 template <typename Func, typename... Defaults>
 Module& Module::def(const Str& name, const Str& doc, Func&& body, Defaults&&... defaults) {
     Function f(
@@ -1280,22 +1298,112 @@ template <>
 class Module<"bertrand.python"> : public Object, public impl::ModuleTag {
 public:
 
+    /* NOTE: the bertrand.python module uses per-module state to store global
+    configuration in a way that allows per-interpreter state.  This includes:
+    
+        - The exception translation map, which allows Python exceptions to be caught
+          and rethrown in C++ using Exception::from_python().
+        - The type source translation map, which allows recognized Python type objects
+          to be mapped to the fully-qualified names of their corresponding C++ types.
+          This is used to account for Python-style type annotations when generating
+          C++ bindings for Python modules.
+
+    These maps are populated as bindings are exported, meaning that they always reflect
+    the current interpreter state.  They will be updated whenever a Bertrand-enabled
+    extension module is loaded or unloaded. */
     struct __python__ : ModuleTag::def<__python__, "bertrand.python"> {
-        // NOTE: the bertrand.python module is a special case, and uses per-module
-        // state to store global configuration, such the Python exception map, which
-        // translates Python exceptions into equivalent C++ exceptions.  Using
-        // per-module state is the correct way to handle this, since it allows multiple
-        // interpreters to provide their own exception maps, which can be modified
-        // whenever a new exception type is imported.
+        using Base = ModuleTag::def<__python__, "bertrand.python">;
+        using TypeMap = Dict<Type<>, Str>;
+        using ExceptionMap = std::unordered_map<
+            PyTypeObject*,
+            std::function<void(
+                PyObject* /* exc_type */,
+                PyObject* /* exc_value */,
+                PyObject* /* exc_traceback */,
+                size_t /* skip */,
+                PyThreadState* /* thread */
+            )>
+        >;
 
-        std::unordered_map<PyTypeObject*, std::function<void(*)(PyObject*)>> exception_map;
+        TypeMap type_map;
+        ExceptionMap exception_map;
 
-        // TODO: an __export__ script that exposes the module's Python-level contents.
+        static Module<"bertrand.python"> __export__(Bindings bindings) {
+            // TODO: add bindings here, including one for the type_map itself.
+
+            auto result = bindings.finalize();
+
+            __python__* contents = reinterpret_cast<__python__*>(ptr(result));
+            new (&contents->type_map) TypeMap();
+            new (&contents->exception_map) ExceptionMap();
+
+            return result;
+        }
+
+        static int __traverse__(__python__* self, visitproc visit, void* arg) {
+            Py_VISIT(ptr(self->type_map));
+            return Base::__traverse__(self, visit, arg);
+        }
+
+        static int __clear__(__python__* self) {
+            Py_XDECREF(release(self->type_map));
+            return Base::__clear__(self);
+        }
 
     };
 
+    Module(Handle h, borrowed_t t) : Object(h, t) {}
+    Module(Handle h, stolen_t t) : Object(h, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Module>::template enable<Args...>)
+    Module(Args&&... args) : Object(
+        implicit_ctor<Module>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Module>::template enable<Args...>)
+    explicit Module(Args&&... args) : Object(
+        explicit_ctor<Module>{},
+        std::forward<Args>(args)...
+    ) {}
+
 };
 
+
+template <typename CRTP, StaticStr ModName>
+template <typename Cls>
+void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_type(
+    Module<ModName>& mod,
+    PyTypeObject* type
+) {
+    using Mod = Module<"bertrand.python">::__python__;
+    Mod* contents;
+    if constexpr (ModName == "bertrand.python") {
+        contents = reinterpret_cast<Mod*>(ptr(mod));
+    } else {
+        contents = reinterpret_cast<Mod*>(ptr(Module<"bertrand.python">()));
+    }
+    Type<> key = reinterpret_borrow<Type<>>(reinterpret_cast<PyObject*>(type));
+    contents->type_map[key] = impl::demangle(typeid(Cls).name());
+}
+
+
+template <typename CRTP, StaticStr ModName>
+void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_exception(
+    Module<ModName>& mod,
+    PyTypeObject* type,
+    std::function<
+        void(PyObject*, PyObject*, PyObject*, size_t, PyThreadState*)
+    > callback
+) {
+    using Mod = Module<"bertrand.python">::__python__;
+    if constexpr (ModName == "bertrand.python") {
+        reinterpret_cast<Mod*>(ptr(mod))->exception_map[type] = callback;
+    } else {
+        Mod* contents = reinterpret_cast<Mod*>(ptr(Module<"bertrand.python">()));
+        contents->exception_map[type] = callback;
+    }
+}
 
 
 [[noreturn, clang::noinline]] void Exception::from_python(
@@ -1313,24 +1421,22 @@ public:
             "exception is not set."
         );
     }
-    // PyObject* type = PyObject_Type(value);
-    // PyObject* traceback = PyException_GetTraceback(value);
+    PyObject* type = Py_TYPE(value);
+    PyObject* traceback = PyException_GetTraceback(value);
     thread->current_exception = nullptr;
 
     try {
-        using ModType = Module<"bertrand.python">::__python__;
+        using Mod = Module<"bertrand.python">::__python__;
         Module<"bertrand.python"> module;
-        ModType* contents = reinterpret_cast<ModType*>(ptr(module));
-
-        auto it = contents->exception_map.find(Py_TYPE(value));
+        Mod* contents = reinterpret_cast<Mod*>(ptr(module));
+        auto it = contents->exception_map.find(type);
         if (it != contents->exception_map.end()) {
             it->second(type, value, traceback, ++skip, thread);
         }
         throw Exception(type, value, traceback, ++skip, thread);
     } catch (...) {
-        // Py_XDECREF(type);
         Py_XDECREF(value);
-        // Py_XDECREF(traceback);
+        Py_XDECREF(traceback);
         throw;
     }
 }

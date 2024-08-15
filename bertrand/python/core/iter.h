@@ -31,8 +31,7 @@ for internal use to back the default result of the `begin()` and `end()` operato
 no specialized C++ iterator can be found.  In that case, its value type is set to the
 `T` in an `__iter__<Container> : Returns<T> {};` specialization. */
 template <std::derived_from<Object> Return = Object>
-class Iterator : public Object, public impl::IterTag {
-public:
+struct Iterator : Object, impl::IterTag {
 
     Iterator(Handle h, borrowed_t t) : Object(h, t) {}
     Iterator(Handle h, stolen_t t) : Object(h, t) {}
@@ -172,8 +171,8 @@ struct __getattr__<Iterator<Return>, "__next__"> : Returns<Function<Return()>> {
 `collections.abc.Iterator` abstract base class, and will match any Python iterator
 regardless of return type. */
 template <typename Return>
-class Type<Iterator<Return>> : public Object, public impl::TypeTag {
-public:
+struct Type<Iterator<Return>> : Object, impl::TypeTag {
+
     struct __python__ : public TypeTag::def<__python__, Iterator<Return>> {
         static auto __import__();
     };

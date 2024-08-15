@@ -581,6 +581,15 @@ namespace impl {
 
         public:
             static constexpr Origin __origin__ = Origin::PYTHON;
+
+            /* Default __export__ for pure-Python types forwards to __import__ in order
+            to simplify binding standard library types.  All other types should
+            implement __export__ like normal. */
+            template <StaticStr ModName>
+            static Type<Wrapper> __export__(Bindings<ModName> bindings) {
+                return CRTP::__import__();
+            }
+
         };
 
     };
@@ -607,10 +616,8 @@ types can always be implicitly converted to this type, but doing the opposite in
 runtime `issubclass()` check, and can potentially raise a `TypeError`, just like
 `py::Object`. */
 template <>
-class Type<Object> : public Object, public impl::TypeTag {
-    using Base = Object;
+struct Type<Object> : Object, impl::TypeTag {
 
-public:
     struct __python__ : TypeTag::def<__python__, Type> {
         static Type __import__() {
             return reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(
@@ -619,17 +626,17 @@ public:
         }
     };
 
-    Type(Handle h, borrowed_t t) : Base(h, t) {}
-    Type(Handle h, stolen_t t) : Base(h, t) {}
+    Type(Handle h, borrowed_t t) : Object(h, t) {}
+    Type(Handle h, stolen_t t) : Object(h, t) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
-    Type(Args&&... args) : Base(
+    Type(Args&&... args) : Object(
         implicit_ctor<Type>{},
         std::forward<Args>(args)...
     ) {}
 
     template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
-    explicit Type(Args&&... args) : Base(
+    explicit Type(Args&&... args) : Object(
         explicit_ctor<Type>{},
         std::forward<Args>(args)...
     ) {}
@@ -640,7 +647,7 @@ public:
 /* Allow py::Type<> to be templated on C++ types by redirecting to the equivalent
 Python type. */
 template <typename T> requires (__as_object__<T>::enable)
-class Type<T> : public Type<typename __as_object__<T>::type> {};
+struct Type<T> : Type<typename __as_object__<T>::type> {};
 
 
 /* Explicitly call py::Type(obj) to deduce the Python type of an arbitrary object. */
@@ -673,7 +680,9 @@ struct __init__<Type<Type<T>>> : Returns<Type<Type<T>>> {
 
 /* Implement the CTAD guide by default-initializing the corresponding py::Type. */
 template <typename T> requires (__as_object__<T>::enable)
-struct __explicit_init__<Type<typename __as_object__<T>::type>, T> {
+struct __explicit_init__<Type<typename __as_object__<T>::type>, T> :
+    Returns<Type<typename __as_object__<T>::type>>
+{
     static auto operator()(const T& obj) {
         return Type<typename __as_object__<T>::type>();
     }
@@ -824,22 +833,19 @@ struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
 
 /* An instance of Bertrand's metatype, which is used to represent C++ types that have
 been exposed to Python. */
-class BertrandMeta : public Object {
-    using Base = Object;
+struct BertrandMeta : Object {
 
-public:
-
-    BertrandMeta(Handle h, borrowed_t t) : Base(h, t) {}
-    BertrandMeta(Handle h, stolen_t t) : Base(h, t) {}
+    BertrandMeta(Handle h, borrowed_t t) : Object(h, t) {}
+    BertrandMeta(Handle h, stolen_t t) : Object(h, t) {}
 
     template <typename... Args> requires (implicit_ctor<BertrandMeta>::enable<Args...>)
-    BertrandMeta(Args&&... args) : Base(
+    BertrandMeta(Args&&... args) : Object(
         implicit_ctor<BertrandMeta>{},
         std::forward<Args>(args)...
     ) {}
 
     template <typename... Args> requires (explicit_ctor<BertrandMeta>::enable<Args...>)
-    explicit BertrandMeta(Args&&... args) : Base(
+    explicit BertrandMeta(Args&&... args) : Object(
         explicit_ctor<BertrandMeta>{},
         std::forward<Args>(args)...
     ) {}
@@ -849,10 +855,7 @@ public:
 
 /* Bertrand's metatype, which is used to expose C++ classes to Python. */
 template <>
-class Type<BertrandMeta> : public Object, public impl::TypeTag {
-    using Base = Object;
-
-public:
+struct Type<BertrandMeta> : Object, impl::TypeTag {
 
     /* The python representation of the metatype.  Whenever `TypeTag::def` is
     instantiated with a C++ class, it will generate an instance of this type. */
@@ -1275,17 +1278,17 @@ can be customize by specializing the `__issubclass__` control struct.)doc"
 
     };
 
-    Type(Handle h, borrowed_t t) : Base(h, t) {}
-    Type(Handle h, stolen_t t) : Base(h, t) {}
+    Type(Handle h, borrowed_t t) : Object(h, t) {}
+    Type(Handle h, stolen_t t) : Object(h, t) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::template enable<Args...>)
-    Type(Args&&... args) : Base(
+    Type(Args&&... args) : Object(
         implicit_ctor<Type>{},
         std::forward<Args>(args)...
     ) {}
 
     template <typename... Args> requires (explicit_ctor<Type>::template enable<Args...>)
-    explicit Type(Args&&... args) : Base(
+    explicit Type(Args&&... args) : Object(
         explicit_ctor<Type>{},
         std::forward<Args>(args)...
     ) {}
@@ -2000,7 +2003,9 @@ namespace impl {
                 if constexpr (dunder::has_doc<CRTP>) {
                     slots.push_back({
                         Py_tp_doc,
-                        reinterpret_cast<void*>(CRTP::__doc__.buffer)
+                        const_cast<void*>(
+                            reinterpret_cast<const void*>(CRTP::__doc__.buffer)
+                        )
                     });
                 }
                 if constexpr (dunder::has_traverse<CRTP>) {
@@ -2260,7 +2265,7 @@ namespace impl {
                     PyErr_SetString(PyExc_TypeError, msg.c_str());
                     return -1;
                 };
-                def::tp_getset.push_back({
+                Base::tp_getset.push_back({
                     Name,
                     +get,  // converts a stateless lambda to a function pointer
                     +set,
@@ -2340,12 +2345,12 @@ namespace impl {
                         return -1;
                     }
                 };
-                def::tp_getset.push_back({
+                Base::tp_getset.push_back({
                     Name,
                     +get,  // converts a stateless lambda to a function pointer
                     +set,
                     nullptr,  // doc
-                    const_cast<void*>(reinterpret_cast<const void*>(value))
+                    reinterpret_cast<void*>(value)
                 });
                 skip = true;
             }
@@ -2438,7 +2443,7 @@ namespace impl {
                         return nullptr;
                     }
                 };
-                def::tp_getset.push_back({
+                Base::tp_getset.push_back({
                     Name,
                     +get,  // converts a stateless lambda to a function pointer
                     nullptr,  // setter
@@ -2706,17 +2711,6 @@ namespace impl {
         PyObject_HEAD
         Variant m_cpp;
 
-        /* tp_dealloc calls the ordinary C++ destructor. */
-        static void __dealloc__(CRTP* self) {
-            PyObject_GC_UnTrack(self);  // required for heap types
-            if (std::holds_alternative<CppType>(self->m_cpp)) {
-                std::get<CppType>(self->m_cpp).~CppType();
-            }
-            PyTypeObject* type = Py_TYPE(self);
-            type->tp_free(self);
-            Py_DECREF(type);  // required for heap types
-        }
-
         /* tp_repr demangles the exact C++ type name and includes memory address
         similar to Python. */
         static PyObject* __repr__(CRTP* self) {
@@ -2772,6 +2766,15 @@ namespace impl {
         /* tp_str defaults to tp_repr. */
         static PyObject* __str__(CRTP* self) {
             return __repr__(self);
+        }
+
+        /* tp_dealloc calls the ordinary C++ destructor. */
+        static void __dealloc__(CRTP* self) {
+            PyObject_GC_UnTrack(self);  // required for heap types
+            self->~CRTP();  // cleans up all C++ resources
+            PyTypeObject* type = Py_TYPE(self);
+            type->tp_free(self);
+            Py_DECREF(type);  // required for heap types
         }
 
         // TODO: maybe there needs to be some handling to make sure that the container

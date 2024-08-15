@@ -24,382 +24,716 @@ namespace py {
 
 namespace impl {
 
-    /* Borrow a reference to a type object registered to a particular module.  This is
-    the recommended way of accessing a global type object rather than using the
-    `static` keyword, since it allows for better encapsulation of module state.  Static
-    types and references interfere with multi-phase module initialization, and can
-    result in a situation where the result of `py::Type<MyClass>()` *does not* match
-    the equivalent type that would be accessed from Python, which can lead to subtle
-    bugs and inconsistencies.  This function avoids that problem, and causes
-    `py::Type<MyClass>()` to always yield the same result as the active interpreter. */
+    /* Get the Python type object corresponding to the templated C++ type, whcih has
+    been exposed to Python.
+
+    This function bypasses the Python interpreter and accesses the type object directly
+    from the module's internal C++ type map, which is updated whenever bindings are
+    generated for a new type.  This also allows the type to be searched using C++
+    template syntax, which is substantially more convenient.
+
+    This helper is meant to be used by the default constructor for `py::Type<T>()` when
+    the corresponding Type has been exposed to Python. */
     template <std::derived_from<Object> T, StaticStr Name>
     auto get_type(const Module<Name>& mod) {
-        return mod.template __get_type__<T>();
+        return reinterpret_cast<typename Module<Name>::__python__*>(
+            ptr(mod)
+        )->template _get_type<T>();
     }
 
     struct ModuleTag : public BertrandTag {
     protected:
         /* A CRTP base class that provides helpers for writing module initialization
         functions to provide entry points for the Python interpreter.  Every specialization
-        of `py::Module` should provide a public `__module__` type that inherits from this
-        class and implements the `__new__()` and `__init__()` methods using the provided
-        helpers.  These allow for:
+        of `py::Module` should provide a public `__python__` type that inherits from this
+        class and implements the `__export__()` method using the provided helpers.
+        These allow for:
 
-            - Possibly templated types, which will be attached to the module under a public
-            proxy type that can be indexed to resolve individual instantiations.
+            - Possibly templated types, which will be attached to the module under a
+            public proxy type that can be indexed to resolve concrete instantiations.
+            - Exceptions, which will be automatically discovered if they inherit from
+            `py::Exception` and can be caught and thrown as Python exceptions.
             - Functions, which will be modeled as overload sets at the python level and
-            can be redeclared to provide different implementations.
+            can be redeclared to provide alternate implementations.
             - Variables, which will share state across the language boundary and can be
             modified from both C++ and Python.
-            - Submodules, which can be used to model namespaces at the C++ level.
+            - Submodules, which are used to model nested namespaces at the C++ level.
 
-        Using these helpers is recommended to make writing module initialization logic as
-        easy as possible, although it is not strictly necessary.  If you introduce custom
-        logic, you should thoroughly study Python's C API and the Bertrand source code as a
-        guide.  In particular, it's important that the module initialization logic be
-        idempotent (without side effects), and NOT share state between calls.  This means
-        it cannot utilize static variables or any other form of shared state that will be
-        propagated to the resulting module.  It should instead create unique objects every
-        time the module is imported.  The helper methods do this internally, so in most
-        cases you don't have to worry about it.
+        Using these helpers is recommended to make writing module initialization logic
+        as easy as possible, although it is not strictly necessary.  If you introduce
+        custom code, you should thoroughly study Python's C API and the Bertrand source
+        code as a guide.  In particular, it's important that the module initialization
+        logic be idempotent (without side effects), and NOT share state between calls.
+        This means it cannot utilize static variables or any other form of mutable
+        shared state that will be propagated to the resulting module.  It should
+        instead create unique objects every time the module is imported.  The helper
+        methods do this internally, so in most cases you don't have to worry about it.
 
         NOTE: the idempotence requirement is due to the fact that Bertrand modules are
-        expected to support sub-interpreters, which requires that no state be shared
-        between them.  By making state unique to each module, the interpreters can work in
-        parallel without race conditions.  This is part of ongoing parallelization work in
-        CPython itself - see PEP 554 for more details.
-        
-        Another good resource is the official Python HOWTO on the subject:
+        expected to support sub-interpreters, which requires that no potentially
+        conflicting state be shared between them.  By making state unique to each
+        module, the interpreters can work in parallel without race conditions.  This is
+        part of ongoing parallelization work in CPython itself.  See PEP 554 for more
+        details.
+
+        Another good resource is the official Python HOWTO on this subject:
             https://docs.python.org/3/howto/isolating-extensions.html
         */
         template <typename CRTP, StaticStr ModName>
         struct def : public BertrandTag {
         protected:
+            /* A helper that is passed to Module<"name">::__python__::__export__() in
+            order to simplify the creation and population of a module's type object and
+            contents.  The `__export__()` method should always return the result of
+            this object's `finalize()` method, which returns a PyObject* that marks the
+            module for multi-phase initialization within the Python interpreter. */
+            struct Bindings : public BertrandTag {
+            private:
+                using Meta = Type<BertrandMeta>::__python__;
+                inline static std::vector<PyMethodDef> tp_methods;
+                inline static std::vector<PyGetSetDef> tp_getset;
+                inline static std::vector<PyMemberDef> tp_members;
 
-            /* Expose an immutable variable to Python in a way that shares memory and
-            state.  Note that this adds a getset descriptor to the module's type, and
-            therefore can only be called during `__setup__()`. */
-            template <StaticStr Name, typename T>
-            static void var(const T& value) {
-                if (setup_complete) {
-                    throw ImportError(
-                        "The var() helper for attribute '" + Name + "' of module '" + ModName +
-                        "' can only be called during the __setup__() method."
-                    );
-                }
-                static auto get = [](PyObject* self, void* value) -> PyObject* {
-                    try {
-                        return release(wrap(*reinterpret_cast<const T*>(value)));
-                    } catch (...) {
-                        Exception::to_python();
+                struct Context {
+                    bool is_var = false;
+                    bool is_type = false;
+                    bool is_template_interface = false;
+                    bool is_exception = false;
+                    bool is_function = false;
+                    bool is_submodule = false;
+                    std::vector<std::function<void(Module<ModName>&)>> callbacks;
+                };
+
+                std::unordered_map<std::string, Context> context;
+
+                /* Construct an importlib.machinery.ExtensionFileLoader for use when
+                defining submodules. */
+                template <StaticStr Name>
+                static PyObject* get_loader() {
+                    PyObject* importlib_machinery = PyImport_ImportModule("importlib.machinery");
+                    if (importlib_machinery == nullptr) {
                         return nullptr;
                     }
-                };
-                static auto set = [](PyObject* self, PyObject* new_val, void* value) -> int {
-                    PyErr_SetString(
-                        PyExc_TypeError,
-                        "variable '" + Name + "' of module '" + ModName +
-                        "' is immutable."
+                    PyObject* loader_class = PyObject_GetAttr(
+                        importlib_machinery,
+                        impl::TemplateString<"ExtensionFileLoader">::ptr
                     );
-                    return -1;
-                };
-                tp_getset.push_back({
-                    Name,
-                    (getter) +get,  // converts a stateless lambda to a function pointer
-                    (setter) +set,
-                    nullptr,
-                    &value
-                });
-            }
-
-            /* Expose a mutable variable to Python in a way that shares memory and
-            state.  Note that this adds a getset descriptor to the module's type, and
-            therefore can only be called during `__setup__()`. */
-            template <StaticStr Name, typename T>
-            static void var(T& value) {
-                if (setup_complete) {
-                    throw ImportError(
-                        "The var() helper for attribute '" + Name + "' of module '" + ModName +
-                        "' can only be called during the __setup__() method."
-                    );
-                }
-                static auto get = [](PyObject* self, void* value) -> PyObject* {
-                    try {
-                        return release(wrap(*reinterpret_cast<T*>(value)));
-                    } catch (...) {
-                        Exception::to_python();
+                    Py_DECREF(importlib_machinery);
+                    if (loader_class == nullptr) {
                         return nullptr;
                     }
-                };
-                static auto set = [](PyObject* self, PyObject* new_val, void* value) -> int {
-                    if (new_val == nullptr) {
+
+                    PyObject* filename = PyUnicode_FromString(__FILE__);
+                    if (filename == nullptr) {
+                        Py_DECREF(loader_class);
+                        return nullptr;
+                    }
+                    PyObject* loader = PyObject_CallFunctionObjArgs(
+                        loader_class,
+                        impl::TemplateString<Name>::ptr,
+                        filename,
+                        nullptr
+                    );
+                    Py_DECREF(loader_class);
+                    Py_DECREF(filename);
+
+                    if (loader == nullptr) {
+                        return nullptr;
+                    }
+                    return loader;
+                }
+
+                /* Construct a PEP 451 ModuleSpec for use when defining submodules. */
+                template <StaticStr Name>
+                static PyObject* get_spec() {
+                    PyObject* importlib_util = PyImport_ImportModule("importlib.util");
+                    if (importlib_util == nullptr) {
+                        return nullptr;
+                    }
+                    PyObject* spec_from_loader = PyObject_GetAttr(
+                        importlib_util,
+                        impl::TemplateString<"spec_from_loader">::ptr
+                    );
+                    Py_DECREF(importlib_util);
+                    if (spec_from_loader == nullptr) {
+                        return nullptr;
+                    }
+
+                    PyObject* loader = get_loader<Name>();
+                    if (loader == nullptr) {
+                        Py_DECREF(spec_from_loader);
+                        return nullptr;
+                    }
+                    PyObject* spec = PyObject_CallFunctionObjArgs(
+                        spec_from_loader,
+                        impl::TemplateString<Name>::ptr,
+                        loader,
+                        nullptr
+                    );
+                    Py_DECREF(loader);
+                    Py_DECREF(spec_from_loader);
+                    if (spec == nullptr) {
+                        return nullptr;
+                    }
+                    return spec;
+                }
+
+                /* Insert a Python type into the global `bertrand.python.type_map`
+                dictionary, so that it can be mapped to its C++ equivalent and used
+                when generating Python bindings. */
+                template <typename Cls>
+                static void register_type(Module<ModName>& mod, PyTypeObject* type);
+
+                /* Insert a Python exception type into the global
+                `bertrand.python.exception_map` dictionary, so that it can be caught
+                using its C++ equivalent. */
+                static void register_exception(
+                    Module<ModName>& mod,
+                    PyTypeObject* type,
+                    std::function<
+                        void(PyObject*, PyObject*, PyObject*, size_t, PyThreadState*)
+                    > callback
+                );
+
+            public:
+                Bindings() = default;
+                Bindings(const Bindings&) = delete;
+                Bindings(Bindings&&) = delete;
+
+                /* Expose an immutable variable to Python in a way that shares memory and
+                state.  Note that this adds a getset descriptor to the module's type, and
+                therefore can only be called during `__setup__()`. */
+                template <StaticStr Name, typename T>
+                void var(const T& value) {
+                    if (context.contains(Name)) {
+                        throw AttributeError(
+                            "Module '" + ModName + "' already has an attribute named '" +
+                            Name + "'."
+                        );
+                    }
+                    context[Name] = {
+                        .is_var = true,
+                    };
+                    static bool skip = false;
+                    if (skip) {
+                        return;
+                    }
+                    static auto get = [](PyObject* self, void* value) -> PyObject* {
+                        try {
+                            return release(wrap(*reinterpret_cast<const T*>(value)));
+                        } catch (...) {
+                            Exception::to_python();
+                            return nullptr;
+                        }
+                    };
+                    static auto set = [](PyObject* self, PyObject* new_val, void* value) -> int {
                         PyErr_SetString(
                             PyExc_TypeError,
                             "variable '" + Name + "' of module '" + ModName +
-                            "' cannot be deleted."
+                            "' is immutable."
                         );
                         return -1;
-                    }
-                    try {
-                        using Wrapper = __as_object__<T>::type;
-                        auto obj = reinterpret_borrow<Object>(new_val);
-                        *reinterpret_cast<T*>(value) = static_cast<Wrapper>(obj);
-                        return 0;
-                    } catch (...) {
-                        Exception::to_python();
-                        return -1;
-                    }
-                };
-                tp_getset.push_back({
-                    Name,
-                    (getter) +get,
-                    (setter) +set,
-                    nullptr,
-                    &value
-                });
-            }
+                    };
+                    tp_getset.push_back({
+                        Name,
+                        +get,  // converts a stateless lambda to a function pointer
+                        +set,
+                        nullptr,
+                        const_cast<void*>(reinterpret_cast<const void*>(&value))
+                    });
+                    skip = true;
+                }
 
-            /* Expose a py::Object type to Python. */
-            template <StaticStr Name, typename Cls, typename... Bases>
-                requires (
-                    std::derived_from<Cls, Object> &&
-                    (std::derived_from<Bases, Object> && ...)
-                )
-            void type() {
-                using PyMeta = Type<BertrandMeta>::__python__;
-                Type<BertrandMeta> metaclass;
-                Module<ModName> mod = reinterpret_borrow<Module<ModName>>(
-                    reinterpret_cast<PyObject*>(this)
-                );
+                /* Expose a mutable variable to Python in a way that shares memory and
+                state.  Note that this adds a getset descriptor to the module's type, and
+                therefore can only be called during `__setup__()`. */
+                template <StaticStr Name, typename T>
+                void var(T& value) {
+                    if (context.contains(Name)) {
+                        throw AttributeError(
+                            "Module '" + ModName + "' already has an attribute named '" +
+                            Name + "'."
+                        );
+                    }
+                    context[Name] = {
+                        .is_var = true,
+                    };
+                    static bool skip = false;
+                    if (skip) {
+                        return;
+                    }
+                    static auto get = [](PyObject* self, void* value) -> PyObject* {
+                        try {
+                            return release(wrap(*reinterpret_cast<T*>(value)));
+                        } catch (...) {
+                            Exception::to_python();
+                            return nullptr;
+                        }
+                    };
+                    static auto set = [](PyObject* self, PyObject* new_val, void* value) -> int {
+                        if (new_val == nullptr) {
+                            PyErr_SetString(
+                                PyExc_TypeError,
+                                "variable '" + Name + "' of module '" + ModName +
+                                "' cannot be deleted."
+                            );
+                            return -1;
+                        }
+                        try {
+                            using Wrapper = __as_object__<T>::type;
+                            *reinterpret_cast<T*>(value) = static_cast<Wrapper>(
+                                reinterpret_borrow<Object>(new_val)
+                            );
+                            return 0;
+                        } catch (...) {
+                            Exception::to_python();
+                            return -1;
+                        }
+                    };
+                    tp_getset.push_back({
+                        Name,
+                        +get,
+                        +set,
+                        nullptr,
+                        reinterpret_cast<void*>(&value)
+                    });
+                    skip = true;
+                }
 
-                // ensure type name is unique or corresponds to a template interface
-                BertrandMeta existing = reinterpret_steal<BertrandMeta>(nullptr);
-                if (PyObject_HasAttr(ptr(mod), impl::TemplateString<Name>::ptr)) {
-                    if constexpr (impl::is_generic<Cls>) {
-                        existing = reinterpret_steal<BertrandMeta>(PyObject_GetAttr(
-                            ptr(mod),
-                            impl::TemplateString<Name>::ptr
-                        ));
+                // TODO: these helpers should also ensure that Type<> is specialized
+                // for the Cls and all of its bases, since it is used internally.
+                // Constraining the template will give much better LSP hints and
+                // compile errors.
+                // -> This requires another concept `has_type`, which uses SFINAE to
+                // check whether Type<T> is well-formed.  Since the default
+                // specialization is empty, this is sufficient.
+
+                /* Expose a concrete py::Object type to Python. */
+                template <StaticStr Name, typename Cls, typename... Bases>
+                    requires (
+                        !impl::is_generic<Cls> &&
+                        std::derived_from<Cls, Object> &&
+                        (std::derived_from<Bases, Object> && ...)
+                    )
+                void type() {
+                    if (context.contains(Name)) {
+                        throw AttributeError(
+                            "Module '" + ModName + "' already has an attribute named "
+                            "'" + Name + "'."
+                        );
+                    }
+                    context[Name] = {
+                        .is_type = true,
+                        .callbacks = {
+                            [](Module<ModName>& mod) {
+                                Type<Cls> cls = Type<Cls>::__python__::__export__(mod);
+
+                                if (PyModule_AddObjectRef(
+                                    ptr(mod),
+                                    Name,
+                                    ptr(cls)
+                                )) {
+                                    Exception::from_python();
+                                }
+
+                                // insert into this module's C++ type map for fast
+                                // lookup without going through the Python interpreter
+                                reinterpret_cast<CRTP*>(ptr(mod))->type_map[typeid(Cls)] =
+                                    reinterpret_cast<PyTypeObject*>(ptr(cls));
+
+                                // insert into the global type map for use when 
+                                // generating C++ bindings from Python type hints
+                                register_type<Cls>(
+                                    mod,
+                                    reinterpret_cast<PyTypeObject*>(ptr(cls))
+                                );
+                            }
+                        }
+                    };
+                }
+
+                /* Expose an instantiation of a templated py::Object type to Python. */
+                template <StaticStr Name, typename Cls, typename... Bases>
+                    requires (
+                        impl::is_generic<Cls> &&
+                        std::derived_from<Cls, Object> &&
+                        (std::derived_from<Bases, Object> && ...)
+                    )
+                void type() {
+                    auto it = context.find(Name);
+                    if (it == context.end()) {
+                        throw TypeError(
+                            "No template interface found for type '" + Name +
+                            "' in module '" + ModName + "' with specialization '" +
+                            impl::demangle(typeid(Cls).name()) + "'.  Did "
+                            "you forget to register the unspecialized template "
+                            "first?"
+                        );
+                    } else if (!it->second.is_template_interface) {
+                        throw AttributeError(
+                            "Module '" + ModName +
+                            "' already has an attribute named '" + Name + "'."
+                        );
+                    }
+                    it->second.callbacks.push_back([](Module<ModName>& mod) {
+                        // get the template interface with the same name
+                        BertrandMeta existing = reinterpret_steal<BertrandMeta>(
+                            PyObject_GetAttr(
+                                ptr(mod),
+                                impl::TemplateString<Name>::ptr
+                            )
+                        );
                         if (ptr(existing) == nullptr) {
                             Exception::from_python();
                         }
-                        if (!(
-                            PyType_Check(ptr(existing)) &&
-                            PyType_IsSubtype(
-                                reinterpret_cast<PyTypeObject*>(ptr(existing)),
-                                reinterpret_cast<PyTypeObject*>(ptr(metaclass))
-                            ) &&
-                            reinterpret_cast<PyMeta*>(
-                                ptr(existing)
-                            )->template_instantiations != nullptr
-                        )) {
-                            throw AttributeError(
-                                "Module '" + ModName + "' already has an attribute named '" +
-                                Name + "'"
-                            );
-                        }
-                    } else {
-                        throw AttributeError(
-                            "Module '" + ModName + "' already has an attribute named '" +
-                            Name + "'"
+
+                        // call the type's __export__() method
+                        Type<Cls> cls = Type<Cls>::__python__::__export__(mod);
+
+                        // insert into the template interface's __getitem__ dict
+                        PyObject* key = PyTuple_Pack(
+                            sizeof...(Bases),
+                            ptr(Type<Bases>())...
                         );
-                    }
-                }
-
-                // call the type's __export__() method to populate the type object
-                Type<Cls> cls = Type<Cls>::__python__::__export__(mod);
-
-                // if the wrapper type is generic, create or update the template
-                // interface's __getitem__ dict with the new instantiation
-                if constexpr (impl::is_generic<Cls>) {
-                    if (ptr(existing) == nullptr) {
-                        existing = PyMeta::stub_type<Name, Cls, Bases...>(mod);
-                        if (PyModule_AddObjectRef(
-                            ptr(mod),
-                            Name,
-                            ptr(existing)
-                        )) {
+                        if (key == nullptr) {
                             Exception::from_python();
                         }
+                        if (PyDict_SetItem(
+                            reinterpret_cast<typename Type<BertrandMeta>::__python__*>(
+                                ptr(existing)
+                            )->template_instantiations,
+                            key,
+                            ptr(cls)
+                        )) {
+                            Py_DECREF(key);
+                            Exception::from_python();
+                        }
+                        Py_DECREF(key);
+
+                        // insert into this module's C++ type map for fast lookup
+                        // without going through the Python interpreter
+                        reinterpret_cast<CRTP*>(ptr(mod))->type_map[typeid(Cls)] =
+                            reinterpret_cast<PyTypeObject*>(ptr(cls));
+
+                        // insert into the global type map for use when generating C++
+                        // bindings from Python type hints
+                        register_type<Cls>(
+                            mod,
+                            reinterpret_cast<PyTypeObject*>(ptr(cls))
+                        );
+                    });
+                }
+
+                /* Expose a templated py::Object type to Python. */
+                template <StaticStr Name, template <typename...> typename Cls, typename... Bases>
+                    requires (std::derived_from<Bases, Object> && ...)
+                void type() {
+                    if (context.contains(Name)) {
+                        throw AttributeError(
+                            "Module '" + ModName + "' already has an attribute named '"
+                            + Name + "'."
+                        );
                     }
-                    PyObject* key = PyTuple_Pack(
-                        sizeof...(Bases),
-                        ptr(Type<Bases>())...
-                    );
-                    if (key == nullptr) {
-                        Exception::from_python();
+                    context[Name] = {
+                        .is_type = true,
+                        .is_template_interface = true,
+                        .callbacks = {
+                            [](Module<ModName>& mod) {
+                                BertrandMeta stub = Meta::stub_type<
+                                    Name,
+                                    Cls,
+                                    Bases...
+                                >(mod);
+
+                                if (PyModule_AddObjectRef(
+                                    ptr(mod),
+                                    Name,
+                                    ptr(stub)
+                                )) {
+                                    Exception::from_python();
+                                }
+                            }
+                        }
+                    };
+                }
+
+                /* Expose a py::Exception type to Python. */
+                template <StaticStr Name, typename Cls, typename... Bases>
+                    requires (
+                        std::derived_from<Cls, Exception> &&
+                        (std::derived_from<Bases, Exception> && ...)
+                    )
+                void type() {
+                    if (context.contains(Name)) {
+                        throw AttributeError(
+                            "Module '" + ModName + "' already has an attribute named '"
+                            + Name + "'."
+                        );
                     }
-                    int rc = PyDict_SetItem(
-                        reinterpret_cast<PyMeta*>(
-                            ptr(existing)
-                        )->template_instantiations,
-                        key,
-                        ptr(cls)
+                    context[Name] = {
+                        .is_exception = true,
+                        .callbacks = {
+                            [](Module<ModName>& mod) {
+                                Type<Cls> cls = Type<Cls>::__python__::__export__(mod);
+
+                                if (PyModule_AddObjectRef(
+                                    ptr(mod),
+                                    Name,
+                                    ptr(cls)
+                                )) {
+                                    Exception::from_python();
+                                }
+
+                                // insert into this module's C++ type map for fast
+                                // lookup without going through the Python interpreter
+                                reinterpret_cast<CRTP*>(ptr(mod))->type_map[typeid(Cls)] =
+                                    reinterpret_cast<PyTypeObject*>(ptr(cls));
+
+                                // insert into the global exception map for use when
+                                // catching Python exceptions in C++
+                                register_exception(
+                                    mod,
+                                    reinterpret_cast<PyTypeObject*>(ptr(cls)),
+                                    [](
+                                        PyObject* type,
+                                        PyObject* value,
+                                        PyObject* traceback,
+                                        size_t skip,
+                                        PyThreadState* thread
+                                    ) {
+                                        throw Cls(type, value, traceback, ++skip, thread);
+                                    }
+                                );
+                            }
+                        }
+                    };
+                }
+
+                // TODO: I might be able to do something similar with functions, in which
+                // case I would automatically generate an overload set for each function as
+                // it is added, or append to it as needed.  Alternatively, I can use the same
+                // attach() method that I'm exposing to the public.
+
+                // TODO: submodule should return a new instance of bindings, so that it
+                // can be chained?  Only the parent module's finalize() method would
+                // need to be called.
+
+                /* Add a submodule to this module in order to model nested namespaces at
+                the C++ level.  Note that a `py::Module` specialization with the
+                corresponding name (appended to the current name) must exist.  Its module
+                initialization logic will be invoked in a recursive fashion. */
+                template <StaticStr Name>
+                void submodule() {
+                    if (context.contains(Name)) {
+                        throw AttributeError(
+                            "Module '" + ModName + "' already has an attribute named "
+                            "'" + Name + "'."
+                        );
+                    }
+
+                    // TODO: revisit all of this when I try to implement namespaces
+                    // properly.
+
+                    static constexpr StaticStr FullName = ModName + "." + Name;
+                    using Mod = Module<FullName>;
+                    if constexpr (!impl::is_module<Mod>) {
+                        throw TypeError(
+                            "No module specialization found for submodule '" + FullName +
+                            "'.  Please define a specialization of py::Module with this name and "
+                            "fill in its `__python__` initialization struct."
+                        );
+                    }
+
+                    // __import__() calls PyModuleDef_Init, which casts the module def to
+                    // PyObject*.  We cast it back here to obtain the original PyModuleDef*
+                    auto module_def = reinterpret_cast<PyModuleDef*>(
+                        Mod::__module__::__import__()
                     );
-                    Py_DECREF(key);
-                    if (rc) {
+                    if (module_def == nullptr) {
                         Exception::from_python();
                     }
 
-                // otherwise, insert the type object directly into the module
-                } else {
-                    if (PyModule_AddObjectRef(
-                        ptr(mod),
-                        Name,
-                        ptr(cls)
+                    // we have to build a PEP 451 ModuleSpec for the submodule in order to begin
+                    // multi-phase initialization
+                    PyObject* spec = get_spec<FullName>();
+                    if (spec == nullptr) {
+                        Exception::from_python();
+                    }
+
+                    // phase 1 initialization runs submodule's __setup__ and creates a unique type
+                    PyObject* mod = PyModule_FromDefAndSpec(module_def, spec);
+                    Py_DECREF(spec);
+                    if (mod == nullptr) {
+                        Exception::from_python();
+                    }
+
+                    // phase 2 initialization runs submodule's __init__ and completes the import
+                    if (PyModule_ExecDef(mod, module_def) < 0) {
+                        Py_DECREF(mod);
+                        Exception::from_python();
+                    }
+
+                    // attach the submodule to the this parent
+                    if (PyObject_SetAttr(
+                        reinterpret_cast<PyObject*>(this),
+                        impl::TemplateString<Name>::ptr,
+                        mod
                     )) {
+                        Py_DECREF(mod);
                         Exception::from_python();
                     }
+                    Py_DECREF(mod);  // parent now holds the only reference to the submodule
                 }
 
-                // TODO: insert into the module's `types` map, and maybe also into the
-                // "bertrand" module's `types` map, which would allow the type to be
-                // retrieved from both languages
+                /* Convert the bindings into a full Module object with a unique type. */
+                Module<ModName> finalize() {
+                    // configure module's PyType_Spec
+                    static std::vector<PyType_Slot> slots = {
+                        {
+                            Py_tp_doc,
+                            const_cast<void*>(
+                                reinterpret_cast<const void*>(CRTP::__doc__.buffer)
+                            )
+                        },
+                        {
+                            Py_tp_dealloc,
+                            reinterpret_cast<void*>(CRTP::__dealloc__)
+                        },
+                        {
+                            Py_tp_traverse,
+                            reinterpret_cast<void*>(CRTP::__traverse__)
+                        },
+                        {
+                            Py_tp_clear,
+                            reinterpret_cast<void*>(CRTP::__clear__)
+                        },
+                    };
+                    static bool initialized = false;
+                    if (!initialized) {
+                        if (tp_methods.size()) {
+                            tp_methods.push_back({
+                                nullptr,
+                                nullptr,
+                                0,
+                                nullptr
+                            });
+                            slots.push_back({
+                                Py_tp_methods,
+                                tp_methods.data()
+                            });
+                        }
+                        if (tp_members.size()) {
+                            tp_members.push_back({
+                                nullptr,
+                                0,
+                                0,
+                                0,
+                                nullptr
+                            });
+                            slots.push_back({
+                                Py_tp_members,
+                                tp_members.data()
+                            });
+                        }
+                        if (tp_getset.size()) {
+                            tp_getset.push_back({
+                                nullptr,
+                                nullptr,
+                                nullptr,
+                                nullptr,
+                                nullptr
+                            });
+                            slots.push_back({
+                                Py_tp_getset,
+                                tp_getset.data()
+                            });
+                        }
+                        slots.push_back({0, nullptr});
+                        initialized = true;
+                    }
+                    static PyType_Spec spec = {
+                        .name = typeid(CRTP).name(),
+                        .basicsize = sizeof(CRTP),
+                        .itemsize = 0,
+                        .flags =
+                            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE |
+                            Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+                        .slots = slots.data()
+                    };
 
-                types[typeid(Cls)] = reinterpret_cast<PyTypeObject*>(ptr(cls));
-            }
-
-            // TODO: I might be able to do something similar with functions, in which
-            // case I would automatically generate an overload set for each function as
-            // it is added, or append to it as needed.  Alternatively, I can use the same
-            // attach() method that I'm exposing to the public.
-
-            /* Add a submodule to this module in order to model nested namespaces at
-            the C++ level.  Note that a `py::Module` specialization with the
-            corresponding name (appended to the current name) must exist.  Its module
-            initialization logic will be invoked in a recursive fashion. */
-            template <StaticStr Name>
-            void submodule() {
-                static constexpr StaticStr FullName = ModName + "." + Name;
-                using Mod = Module<ModName + "." + Name>;
-                if constexpr (!impl::is_module<Mod>) {
-                    throw TypeError(
-                        "No module specialization found for submodule '" + FullName +
-                        "'.  Please define a specialization of py::Module with this name and "
-                        "fill in its `__python__` initialization struct."
+                    // instantiate the type object
+                    PyTypeObject* type = reinterpret_cast<PyTypeObject*>(
+                        PyType_FromSpecWithBases(
+                            &spec,
+                            reinterpret_cast<PyObject*>(&PyModule_Type)
+                        )
                     );
-                }
-                if (!setup_complete) {
-                    throw ImportError(
-                        "The submodule() helper for submodule '" + FullName +
-                        "' can only be called after `__setup__()`."
+                    if (type == nullptr) {
+                        Exception::from_python();
+                    }
+
+                    // instantiate a module from the type
+                    Module<ModName> mod = reinterpret_steal<Module<ModName>>(
+                        type->tp_alloc(type, 0)
                     );
-                }
-                if (PyObject_HasAttr(
-                    reinterpret_cast<PyObject*>(this),
-                    impl::TemplateString<Name>::ptr
-                )) {
-                    throw AttributeError(
-                        "Module '" + ModName + "' already has an attribute named '" + Name + "'."
-                    );
+                    Py_DECREF(type);  // module now holds the only reference to its type
+                    if (ptr(mod) == nullptr) {
+                        Exception::from_python();
+                    }
+
+                    // execute the callbacks to populate the module
+                    for (auto&& [name, ctx] : context) {
+                        for (auto&& callback : ctx.callbacks) {
+                            callback(mod);
+                        }
+                    }
+
+                    return mod;
                 }
 
-                // __import__() calls PyModuleDef_Init, which casts the module def to
-                // PyObject*.  We cast it back here to obtain the original PyModuleDef*
-                auto module_def = reinterpret_cast<PyModuleDef*>(
-                    Mod::__module__::__import__()
-                );
-                if (module_def == nullptr) {
-                    Exception::from_python();
-                }
-
-                // we have to build a PEP 451 ModuleSpec for the submodule in order to begin
-                // multi-phase initialization
-                PyObject* spec = get_spec<FullName>();
-                if (spec == nullptr) {
-                    Exception::from_python();
-                }
-
-                // phase 1 initialization runs submodule's __setup__ and creates a unique type
-                PyObject* mod = PyModule_FromDefAndSpec(module_def, spec);
-                Py_DECREF(spec);
-                if (mod == nullptr) {
-                    Exception::from_python();
-                }
-
-                // phase 2 initialization runs submodule's __init__ and completes the import
-                if (PyModule_ExecDef(mod, module_def) < 0) {
-                    Py_DECREF(mod);
-                    Exception::from_python();
-                }
-
-                // attach the submodule to the this parent
-                int rc = PyObject_SetAttr(
-                    reinterpret_cast<PyObject*>(this),
-                    impl::TemplateString<Name>::ptr,
-                    mod
-                );
-                Py_DECREF(mod);  // parent now holds the only reference to the submodule
-                if (rc) {
-                    Exception::from_python();
-                }
-            }
+            };
 
         public:
             static constexpr StaticStr __doc__ =
                 "A Python wrapper around the '" + ModName +
                 "' C++ module, generated by Bertrand.";
 
-            // TODO: __import__ should be renamed to __export__ to match type
-            // definitions, and should be merged with `__setup__` and `__init__` using
-            // a Bindings struct that holds the necessary information.  Every module
-            // therefore only implements a single `__export__` method, which defines
-            // everything that is to be exported to Python.
+            /* Expose the module's contents to Python.
 
-            // TODO: the module def can then also implement `__import__()` with the
-            // same semantics as types, which would basically just call PyImport_Import
-            // under the hood.  It would not need to be defined in the module's
-            // python bindings.
+            This method will be called during the module's multi-phase initialization
+            process, and is where you should add functions, types, and any other
+            objects that will be available from its Python namespace.  The `bindings`
+            argument is a helper that includes a number of convenience methods for
+            exposing various module-level attributes to Python, including variables,
+            functions, types, and submodules.
 
-
-
-
-            /* Initialize the module's type object the first time this module is imported.
-
-            Note that this effectively populates that module's `PyType_Spec` structure, which
-            is stored with static duration and reused to initialize the module's type whenever
-            it is imported within the same process.  As such, this method will only be called
-            *once*, the first time the module is imported.  Sub interpreters will still create
-            their own unique types using the final spec, but the spec itself is a singleton.
-
-            The default implementation does nothing, but you can insert calls to the `var()`
-            method here in order to add getset descriptors to the module's type.  This is the
-            proper way of synchronizing state between Python and C++, and allows Bertrand to
-            automatically generate the necessary boilerplate for you.  Typically, that's all
-            this method will contain. */
-            static void __setup__() {};
-
-            /* Initialize the module after it has been created.
-
-            Note that unlike `__setup__()`, which is only called once per process, this method
-            is called *every* time the module is imported into a fresh interpreter.  It is
-            equivalent to running the module's body in Python, and is the proper place to add
-            functions, types, and any other objects that do not need to be efficiently
-            represented in the module's `PyType_Spec`.
-
-            The default implementation does nothing, but you can essentially treat this just
-            like a Python-level constructor for the module itself.  That includes any internal
-            fields within the module's CRTP representation, which can be initialized here.  Any
-            objects added at this stage are guaranteed be unique for each module, including any
-            descriptors that are added to its type.  It's still up to you to make sure that the
-            data they reference does not leak into any other modules, but the modules
-            themselves will not interfere with this in any way. */
-            void __init__() {};
+            The `__export__()` method should always return `bindings.finalize()`, which
+            will construct the module itself. */
+            static Module<ModName> __export__(Bindings bindings) {
+                // bindings.var<"x">(MyModule::x);
+                // bindings.type<"MyClass", MyModule::MyClass>("docstring for MyClass");
+                // bindings.function<"foo">(MyModule::foo, "docstring for foo");
+                // ...
+                return bindings.finalize();
+            };
 
             /* Import the module in the body of a module initialization function to provide
             an entry point for the Python interpreter.  For instance:
 
-                extern "C" auto PyInit_MyModule() {
+                extern "C" PyObject* PyInit_MyModule() {
                     return Module<"MyModule">::__module__::__import__();
                 }
 
             Note that the module name is ultimately determined by the suffix in the
             function (`MyModule` in this case), and the `extern "C"` portion is required
-            to make it visible to the CPython interpreter. */
+            to make it visible to the CPython interpreter.  The return type must be
+            exactly `PyObject*`. */
             static PyObject* __import__() {
                 static PyModuleDef_Slot slots[] = {
-                    {Py_mod_create, reinterpret_cast<void*>(__create__)},
-                    {Py_mod_exec, reinterpret_cast<void*>(__exec__)},
+                    {
+                        Py_mod_create,
+                        reinterpret_cast<void*>(__create__)
+                    },
                     {
                         Py_mod_multiple_interpreters,
                         Py_MOD_PER_INTERPRETER_GIL_SUPPORTED
@@ -412,31 +746,43 @@ namespace impl {
                     .m_doc = CRTP::__doc__,
                     .m_size = 0,
                     .m_slots = &slots,
-                    .m_traverse = (traverseproc) CRTP::__traverse__,
-                    .m_clear = (inquiry) CRTP::__clear__,
-                    .m_free = (freefunc) CRTP::__dealloc__,
                 };
                 return PyModuleDef_Init(&def);
             }
 
-            // TODO: traverse, clear, dealloc - maybe handled by the module's type?
+            /* tp_dealloc destroys internal C++ fields */
+            static void __dealloc__(CRTP* self) {
+                PyObject_GC_UnTrack(self);  // required for heap types
+                self->~CRTP();
+                PyTypeObject* type = Py_TYPE(self);
+                type->tp_free(self);
+                Py_DECREF(type);  // required for heap types
+            }
 
-            /* Do a truth check to see if the module's fields are already initialized.
-            This can be used to trigger proper deallocation logic before
-            re-initializing a module, or for debugging purposes. */
-            explicit operator bool() const {
-                return import_complete;
+            /* tp_traverse registers any Python objects that are owned by the module
+            with the cyclic garbage collector. */
+            static int __traverse__(CRTP* self, visitproc visit, void* arg) {
+                // call Py_VISIT() on any raw PyObject* pointers, or
+                // Py_VISIT(ptr(obj)) on any py::Object instances that may contain
+                // circular references
+                Py_VISIT(Py_TYPE(self));  // required for heap types
+                return 0;
+            }
+
+            /* tp_clear breaks possible reference cycles for Python objects that are
+            owned by the C++ object.  Note that special care has to be taken to avoid
+            double-freeing any Python objects between this method and the
+            `__dealloc__()` destructor. */
+            static int __clear__(CRTP* self) {
+                // call Py_CLEAR() on any raw PyObject* pointers, or
+                // Py_XDECREF(release(obj)) on any py::Object instances that may
+                // contain circular references
+                return 0;
             }
 
         private:
-            inline static bool setup_complete = false;
-            inline static std::vector<PyMethodDef> tp_methods;
-            inline static std::vector<PyGetSetDef> tp_getset;
-            inline static std::vector<PyMemberDef> tp_members;
-
             PyModuleObject base;
-            bool import_complete;
-            std::unordered_map<std::type_index, PyTypeObject*> types;
+            std::unordered_map<std::type_index, PyTypeObject*> type_map;
 
             /* Create the module during multi-phase initialization.  This also creates
             a unique heap type for the module, allowing for arbitrary members and
@@ -444,84 +790,30 @@ namespace impl {
             between Python and C++. */
             static PyObject* __create__(PyObject* spec, PyModuleDef* def) {
                 try {
-                    // __setup__ is only called once, and populates the statically-allocated
-                    // type spec with all of the necessary slots
-                    if (!setup_complete) {
-                        CRTP::__setup__();
-                        CRTP::tp_methods.push_back({nullptr, nullptr, 0, nullptr});
-                        CRTP::tp_getset.push_back({nullptr, nullptr, nullptr, nullptr, nullptr});
-                        CRTP::tp_members.push_back({nullptr, 0, 0, 0, nullptr});
-                        setup_complete = true;
-                    }
+                    Module<ModName> mod = CRTP::__export__(Bindings{});
 
-                    // the type spec itself is stored statically and reused whenever this
-                    // module is imported in the same process
-                    static PyType_Slot type_slots[] = {
-                        {Py_tp_methods, CRTP::tp_methods.data()},
-                        {Py_tp_getset, CRTP::tp_getset.data()},
-                        {Py_tp_members, CRTP::tp_members.data()},
-                        {0, nullptr}
-                    };
-                    static PyType_Spec type_spec = {
-                        .name = typeid(CRTP).name(),
-                        .basicsize = sizeof(CRTP),
-                        .itemsize = 0,
-                        .flags =
-                            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE |
-                            Py_TPFLAGS_DISALLOW_INSTANTIATION,
-                        .slots = type_slots
-                    };
-
-                    // converting the spec into a type generates a unique instance for every import
-                    PyTypeObject* type = reinterpret_cast<PyTypeObject*>(
-                        PyType_FromSpecWithBases(
-                            &type_spec,
-                            reinterpret_cast<PyObject*>(&PyModule_Type)
-                        )
+                    // module must use the loader's name to match Python implementation
+                    PyObject* loader_name = PyObject_GetAttr(
+                        spec,
+                        impl::TemplateString<"name">::ptr
                     );
-                    if (type == nullptr) {
+                    if (loader_name == nullptr) {
                         return nullptr;
                     }
-
-                    // we then instantiate the module object using the newly-created type
-                    PyObject* mod = type->tp_new(type, nullptr, nullptr);
-                    Py_DECREF(type);  // module now holds the only reference to its type
-                    if (mod == nullptr) {
-                        return nullptr;
-                    }
-                    reinterpret_cast<CRTP*>(mod)->import_complete = false;
-
-                    // make sure that the module uses the loader's name to match Python
-                    PyObject* name = PyObject_GetAttr(spec, impl::TemplateString<"name">::ptr);
-                    if (name == nullptr) {
-                        Py_DECREF(mod);
-                        return nullptr;
-                    }
-                    int rc = PyObject_SetAttr(mod, impl::TemplateString<"__name__">::ptr, name);
-                    Py_DECREF(name);
+                    int rc = PyObject_SetAttr(
+                        mod,
+                        impl::TemplateString<"__name__">::ptr,
+                        loader_name
+                    );
+                    Py_DECREF(loader_name);
                     if (rc < 0) {
-                        Py_DECREF(mod);
                         return nullptr;
                     }
-                    return mod;
 
+                    return release(mod);
                 } catch (...) {
                     Exception::to_python();
                     return nullptr;
-                }
-            }
-
-            /* Execute the module during multi-phase initializiation, completing the
-            import process. */
-            static int __exec__(PyObject* module) {
-                try {
-                    auto mod = reinterpret_cast<CRTP*>(module);
-                    mod->__init__();
-                    mod->import_complete = true;
-                    return 0;
-                } catch (...) {
-                    Exception::to_python();
-                    return -1;
                 }
             }
 
@@ -529,87 +821,15 @@ namespace impl {
             template <std::derived_from<Object> T, StaticStr Name>
             friend auto get_type(const Module<Name>& mod);
             template <std::derived_from<Object> T>
-            auto __get_type__() {
-                try {
-                    return reinterpret_borrow<Type<T>>(types.at(typeid(T)));
-                } catch (const std::out_of_range&) {
+            auto _get_type() {
+                auto it = type_map.find(typeid(T));
+                if (it == type_map.end()) {
                     throw KeyError(
-                        "Type '" + impl::demangle(typeid(T).name()) +
-                        "' not found in module '" + ModName + "'."
+                        "Type '" + impl::demangle(typeid(T).name()) + "' not "
+                        "found in module '" + ModName + "'."
                     );
                 }
-            }
-
-            /* Construct an importlib.machinery.ExtensionFileLoader for use when
-            defining submodules. */
-            template <StaticStr Name>
-            static PyObject* get_loader() {
-                PyObject* importlib_machinery = PyImport_ImportModule("importlib.machinery");
-                if (importlib_machinery == nullptr) {
-                    return nullptr;
-                }
-                PyObject* loader_class = PyObject_GetAttr(
-                    importlib_machinery,
-                    impl::TemplateString<"ExtensionFileLoader">::ptr
-                );
-                Py_DECREF(importlib_machinery);
-                if (loader_class == nullptr) {
-                    return nullptr;
-                }
-
-                PyObject* filename = PyUnicode_FromString(__FILE__);
-                if (filename == nullptr) {
-                    Py_DECREF(loader_class);
-                    return nullptr;
-                }
-                PyObject* loader = PyObject_CallFunctionObjArgs(
-                    loader_class,
-                    impl::TemplateString<Name>::ptr,
-                    filename,
-                    nullptr
-                );
-                Py_DECREF(loader_class);
-                Py_DECREF(filename);
-
-                if (loader == nullptr) {
-                    return nullptr;
-                }
-                return loader;
-            }
-
-            /* Construct a PEP 451 ModuleSpec for use when defining submodules. */
-            template <StaticStr Name>
-            static PyObject* get_spec() {
-                PyObject* importlib_util = PyImport_ImportModule("importlib.util");
-                if (importlib_util == nullptr) {
-                    return nullptr;
-                }
-                PyObject* spec_from_loader = PyObject_GetAttr(
-                    importlib_util,
-                    impl::TemplateString<"spec_from_loader">::ptr
-                );
-                Py_DECREF(importlib_util);
-                if (spec_from_loader == nullptr) {
-                    return nullptr;
-                }
-
-                PyObject* loader = get_loader<Name>();
-                if (loader == nullptr) {
-                    Py_DECREF(spec_from_loader);
-                    return nullptr;
-                }
-                PyObject* spec = PyObject_CallFunctionObjArgs(
-                    spec_from_loader,
-                    impl::TemplateString<Name>::ptr,
-                    loader,
-                    nullptr
-                );
-                Py_DECREF(loader);
-                Py_DECREF(spec_from_loader);
-                if (spec == nullptr) {
-                    return nullptr;
-                }
-                return spec;
+                return reinterpret_steal<Type<T>>(it->second);
             }
 
         };
@@ -622,22 +842,19 @@ namespace impl {
 /* A Python module with a unique type, which supports the addition of descriptors for
 computed properties, overload sets, etc. */
 template <StaticStr Name>
-class Module : public Object {
-    using Base = Object;
+struct Module : Object {
 
-public:
-
-    Module(Handle h, borrowed_t t) : Base(h, t) {}
-    Module(Handle h, stolen_t t) : Base(h, t) {}
+    Module(Handle h, borrowed_t t) : Object(h, t) {}
+    Module(Handle h, stolen_t t) : Object(h, t) {}
 
     template <typename... Args> requires (implicit_ctor<Module>::template enable<Args...>)
-    Module(Args&&... args) : Base(
+    Module(Args&&... args) : Object(
         implicit_ctor<Module>{},
         std::forward<Args>(args)...
     ) {}
 
     template <typename... Args> requires (explicit_ctor<Module>::template enable<Args...>)
-    explicit Module(Args&&... args) : Base(
+    explicit Module(Args&&... args) : Object(
         explicit_ctor<Module>{},
         std::forward<Args>(args)...
     ) {}
@@ -675,22 +892,19 @@ struct __delattr__<Module<Name>, Attr>                       : Returns<void> {};
 
 
 template <StaticStr Name>
-class Type<Module<Name>> : public Object {
-    using Base = Object;
+struct Type<Module<Name>> : Object {
 
-public:
-
-    Type(Handle h, borrowed_t t) : Base(h, t) {}
-    Type(Handle h, stolen_t t) : Base(h, t) {}
+    Type(Handle h, borrowed_t t) : Object(h, t) {}
+    Type(Handle h, stolen_t t) : Object(h, t) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::template enable<Args...>)
-    Type(Args&&... args) : Base(
+    Type(Args&&... args) : Object(
         implicit_ctor<Type>{},
         std::forward<Args>(args)...
     ) {}
 
     template <typename... Args> requires (explicit_ctor<Type>::template enable<Args...>)
-    explicit Type(Args&&... args) : Base(
+    explicit Type(Args&&... args) : Object(
         explicit_ctor<Type>{},
         std::forward<Args>(args)...
     ) {}

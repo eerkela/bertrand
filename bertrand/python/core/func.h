@@ -41,7 +41,8 @@ namespace py {
 /* A compile-time argument annotation that represents a bound positional or keyword
 argument to a py::Function. */
 template <StaticStr Name, typename T>
-class Arg : public impl::ArgTag {
+struct Arg : impl::ArgTag {
+private:
 
     template <bool positional, bool keyword>
     struct Optional : public impl::ArgTag {
@@ -441,11 +442,12 @@ template <typename F = Object(
     Arg<"args", const Object&>::args,
     Arg<"kwargs", const Object&>::kwargs
 )>
-class Function : public Function<typename impl::GetSignature<F>::type> {};
+struct Function : Function<typename impl::GetSignature<F>::type> {};
 
 
 template <typename Return, typename... Target>
-class Function<Return(Target...)> : public Object, public impl::FunctionTag {
+struct Function<Return(Target...)> : Object, impl::FunctionTag {
+private:
     using Base = Object;
     using Self = Function;
 
@@ -2895,7 +2897,8 @@ namespace impl {
 
 /* An Python-compatible overload set that dispatches to a collection of functions using
 an efficient trie-based data structure. */
-class OverloadSet : public Object {
+struct OverloadSet : Object {
+private:
     using Base = Object;
     friend class Type<OverloadSet>;
 
@@ -2982,23 +2985,20 @@ public:
 
 
 template <>
-class Type<OverloadSet> : public Object {
-    using Base = Object;
-
-public:
+struct Type<OverloadSet> : Object {
     using __python__ = OverloadSet::PyOverload;
 
-    Type(Handle h, borrowed_t) : Base(h, borrowed_t{}) {}
-    Type(Handle h, stolen_t) : Base(h, stolen_t{}) {}
+    Type(Handle h, borrowed_t) : Object(h, borrowed_t{}) {}
+    Type(Handle h, stolen_t) : Object(h, stolen_t{}) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::template enable<Args...>)
-    Type(Args&&... args) : Base(
+    Type(Args&&... args) : Object(
         implicit_ctor<Type>{},
         std::forward<Args>(args)...
     ) {}
 
     template <typename... Args> requires (explicit_ctor<Type>::template enable<Args...>)
-    explicit Type(Args&&... args) : Base(
+    explicit Type(Args&&... args) : Object(
         explicit_ctor<Type>{},
         std::forward<Args>(args)...
     ) {}

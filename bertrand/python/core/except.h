@@ -2,14 +2,7 @@
 #define BERTRAND_PYTHON_COMMON_EXCEPT_H
 
 #include "declarations.h"
-
-
-/* CPython exception types:
- *      https://docs.python.org/3/c-api/exceptions.html#standard-exceptions
- *
- * Inheritance hierarchy:
- *      https://docs.python.org/3/library/exceptions.html#exception-hierarchy
- */
+#include "pyerrors.h"
 
 
 // TODO: UnicodeDecodeError requires extra arguments besides PyErr_SetString.  See
@@ -23,7 +16,8 @@ namespace impl {
 
     /* A language-agnostic stack frame that is used when reporting mixed Python/C++
     error tracebacks. */
-    class StackFrame : public BertrandTag {
+    struct StackFrame : BertrandTag {
+    private:
         PyThreadState* thread;
         mutable PyFrameObject* py_frame = nullptr;
         mutable std::string string;
@@ -248,7 +242,8 @@ namespace impl {
     };
 
     /* A language-agnostic stack trace that is attached to all Python/C++ errors. */
-    class StackTrace : public BertrandTag {
+    struct StackTrace : BertrandTag {
+    private:
         mutable std::string string;
         mutable PyTracebackObject* py_traceback = nullptr;
         PyThreadState* thread;
@@ -468,170 +463,12 @@ namespace impl {
 
     };
 
-    /* Functions of this type are called to raise Python errors as equivalent C++
-    exceptions. */
-    using ExceptionCallback = std::function<void(
-        PyObject* /* exc_type */,
-        PyObject* /* exc_value */,
-        PyObject* /* ext_traceback */,
-        size_t /* skip */,
-        PyThreadState* /* curr_thread */
-    )>;
-
-    /* A registry that maps Python exception types to ExceptionCallbacks, allowing
-    them to be be reflected in C++ try/catch semantics. */
-    inline auto& exception_map() {
-        static std::unordered_map<PyObject*, ExceptionCallback> map;
-        return map;
-    }
-
-    /* Register a new exception type, pushing it to the exception map.  This is
-    automatically called by the BERTRAND_EXCEPTION() macro, so that users should never
-    need to register exceptions themselves. */
-    template <typename cpp_type>
-    bool register_exception(PyObject* py_type) {
-        auto it = exception_map().find(py_type);
-        if (it == exception_map().end()) {
-            exception_map().emplace(py_type, [](
-                PyObject* type,
-                PyObject* value,
-                PyObject* traceback,
-                size_t skip,
-                PyThreadState* thread
-            ) {
-                throw cpp_type(
-                    type,
-                    value,
-                    traceback,
-                    ++skip,
-                    thread
-                );
-            });
-        }
-        return true;
-    }
-
-    // TODO: BERTRAND_EXCEPTION needs to be lifted up to bertrand/python.h so that it
-    // can potentially be used in bindings.  Right now, it's only visible within the
-    // module.
-    // -> Maybe when generating Python->C++ bindings, I can just write out the full
-    //    exception class without the need for this macro.
-    // -> Type<Exception>::__python__ can potentially also be used to register C++
-    //    exceptions as well, but that would involve turning all of these into proper
-    //    Object subclasses, which is prohibitive.
-    // -> Probably what I should do is offer a separate Exception::def CRTP helper as a
-    //    protected member, which handles the logic to represent C++ errors in Python
-    //    or vice versa.  It can have __throw__ and __catch__ methods that back
-    //    from_python() and to_python() respectively.
-    // -> Such an approach may also fix the UnicodeDecodeError issue above.
-
-    #ifndef BERTRAND_NO_TRACEBACK
-
-        #define BERTRAND_EXCEPTION(cls, base, pytype)                                   \
-            static_assert(                                                              \
-                std::derived_from<base, ::py::Exception>,                               \
-                "exception base class must derive from py::Exception"                   \
-            );                                                                          \
-                                                                                        \
-            class cls : public base {                                                   \
-                inline static bool registered =                                         \
-                    ::py::impl::register_exception<cls>(pytype);                        \
-                                                                                        \
-            public:                                                                     \
-                using base::base;                                                       \
-                                                                                        \
-                [[clang::noinline]] explicit cls(                                       \
-                    const std::string& message = "",                                    \
-                    size_t skip = 0,                                                    \
-                    PyThreadState* thread = nullptr                                     \
-                ) : base(message, get_trace(skip), thread)                              \
-                {}                                                                      \
-                                                                                        \
-                [[clang::noinline]] explicit cls(                                       \
-                    const std::string& message,                                         \
-                    const cpptrace::stacktrace& trace,                                  \
-                    PyThreadState* thread = nullptr                                     \
-                ) : base(message, trace, thread)                                        \
-                {}                                                                      \
-                                                                                        \
-                [[clang::noinline]] explicit cls(                                       \
-                    PyObject* type,                                                     \
-                    PyObject* value,                                                    \
-                    PyObject* traceback,                                                \
-                    size_t skip = 0,                                                    \
-                    PyThreadState* thread = nullptr                                     \
-                ) : base(type, value, traceback, get_trace(skip), thread)               \
-                {}                                                                      \
-                                                                                        \
-                [[clang::noinline]] explicit cls(                                       \
-                    PyObject* type,                                                     \
-                    PyObject* value,                                                    \
-                    PyObject* traceback,                                                \
-                    const cpptrace::stacktrace& trace,                                  \
-                    PyThreadState* thread = nullptr                                     \
-                ) : base(type, value, traceback, trace, thread)                         \
-                {}                                                                      \
-                                                                                        \
-                virtual const char* what() const noexcept override {                    \
-                    if (what_cache.empty()) {                                           \
-                        what_cache = traceback.to_string() + "\n"#cls": " + message();  \
-                    }                                                                   \
-                    return what_cache.c_str();                                          \
-                }                                                                       \
-                                                                                        \
-                virtual void set_pyerr() const override {                               \
-                    traceback.restore(pytype, message().c_str());                       \
-                }                                                                       \
-                                                                                        \
-                static void from_python(                                                \
-                    size_t skip = 0,                                                    \
-                    PyThreadState* thread = nullptr                                     \
-                ) = delete;                                                             \
-            };                                                                          \
-
-    #else
-
-        #define BERTRAND_EXCEPTION(cls, base, pytype)                                   \
-            static_assert(                                                              \
-                std::derived_from<base, ::py::Exception>,                               \
-                "exception base class must derive from py::Exception"                   \
-            );                                                                          \
-                                                                                        \
-            class cls : public base {                                                   \
-                inline static bool registered =                                         \
-                    ::py::impl::register_exception<cls>(pytype);                        \
-                                                                                        \
-            public:                                                                     \
-                using base::base;                                                       \
-                                                                                        \
-                virtual const char* what() const noexcept override {                    \
-                    if (what_cache.empty()) {                                           \
-                        what_cache = #cls": " + message();                              \
-                    }                                                                   \
-                    return what_cache.c_str();                                          \
-                }                                                                       \
-                                                                                        \
-                virtual void set_pyerr() const override {                               \
-                    PyErr_SetString(pytype, message().c_str());                         \
-                }                                                                       \
-                                                                                        \
-                static void from_python(                                                \
-                    size_t skip = 0,                                                    \
-                    PyThreadState* thread = nullptr                                     \
-                ) = delete;                                                             \
-            };                                                                          \
-
-    #endif
-
 }
 
 
 /* Base exception class.  Appends a C++ stack trace that will be propagated up to
 Python for cross-language diagnostics. */
-class Exception : public std::exception, public impl::BertrandTag {
-    inline static bool registered =
-        impl::register_exception<Exception>(PyExc_Exception);
-
+struct Exception : public std::exception, impl::BertrandTag {
 protected:
     std::string what_msg;
     mutable std::string what_cache;
@@ -666,9 +503,6 @@ protected:
     }
 
 public:
-
-    // TODO: I should probably remove the skip and thread arguments, since I'm almost
-    // certainly not going to use them.
 
     #ifdef BERTRAND_NO_TRACEBACK
 
@@ -754,7 +588,7 @@ public:
         impl::StackTrace traceback;
 
         [[clang::noinline]] explicit Exception(
-            const std::string& message = "",
+            std::string message = "",
             size_t skip = 0,
             PyThreadState* thread = nullptr
         ) : what_msg((Interpreter::init(), message)),
@@ -762,7 +596,7 @@ public:
         {}
 
         [[clang::noinline]] explicit Exception(
-            const std::string& message,
+            std::string message,
             const cpptrace::stacktrace& trace,
             PyThreadState* thread = nullptr
         ) : what_msg((Interpreter::init(), message)),
@@ -856,39 +690,7 @@ public:
     [[noreturn, clang::noinline]] static void from_python(
         size_t skip = 0,
         PyThreadState* thread = nullptr
-    ) {
-        if (thread == nullptr) {
-            thread = PyThreadState_Get();
-        }
-
-        // interacting with the Python error state is rather clumsy and was recently
-        // changed in Python 3.12, so we need to handle both cases
-        PyObject* value = thread->current_exception;
-        if (value == nullptr) {
-            throw std::logic_error(
-                "could not convert Python exception into a C++ exception - "
-                "exception is not set."
-            );
-        }
-        PyObject* type = PyObject_Type(value);
-        PyObject* traceback = PyException_GetTraceback(value);
-        thread->current_exception = nullptr;
-
-        try {
-            // Re-throw the current exception as a registered bertrand exception type
-            auto it = impl::exception_map().find(type);
-            if (it != impl::exception_map().end()) {
-                it->second(type, value, traceback, ++skip, thread);
-            }
-
-            throw Exception(type, value, traceback, ++skip, thread);
-        } catch (...) {
-            Py_XDECREF(type);
-            Py_XDECREF(value);
-            Py_XDECREF(traceback);
-            throw;
-        }
-    }
+    );  // defined after Module<"bertrand.python">, since it requires global state
 
     /* Convert an arbitrary C++ error into an equivalent Python exception, so that it
     can be propagate back to the Python interpreter. */
@@ -907,54 +709,392 @@ public:
 };
 
 
-BERTRAND_EXCEPTION(ArithmeticError, Exception, PyExc_ArithmeticError)
-    BERTRAND_EXCEPTION(FloatingPointError, ArithmeticError, PyExc_FloatingPointError)
-    BERTRAND_EXCEPTION(OverflowError, ArithmeticError, PyExc_OverflowError)
-    BERTRAND_EXCEPTION(ZeroDivisionError, ArithmeticError, PyExc_ZeroDivisionError)
-BERTRAND_EXCEPTION(AssertionError, Exception, PyExc_AssertionError)
-BERTRAND_EXCEPTION(AttributeError, Exception, PyExc_AttributeError)
-BERTRAND_EXCEPTION(BufferError, Exception, PyExc_BufferError)
-BERTRAND_EXCEPTION(EOFError, Exception, PyExc_EOFError)
-BERTRAND_EXCEPTION(ImportError, Exception, PyExc_ImportError)
-    BERTRAND_EXCEPTION(ModuleNotFoundError, ImportError, PyExc_ModuleNotFoundError)
-BERTRAND_EXCEPTION(LookupError, Exception, PyExc_LookupError)
-    BERTRAND_EXCEPTION(IndexError, LookupError, PyExc_IndexError)
-    BERTRAND_EXCEPTION(KeyError, LookupError, PyExc_KeyError)
-BERTRAND_EXCEPTION(MemoryError, Exception, PyExc_MemoryError)
-BERTRAND_EXCEPTION(NameError, Exception, PyExc_NameError)
-    BERTRAND_EXCEPTION(UnboundLocalError, NameError, PyExc_UnboundLocalError)
-BERTRAND_EXCEPTION(OSError, Exception, PyExc_OSError)
-    BERTRAND_EXCEPTION(BlockingIOError, OSError, PyExc_BlockingIOError)
-    BERTRAND_EXCEPTION(ChildProcessError, OSError, PyExc_ChildProcessError)
-    BERTRAND_EXCEPTION(ConnectionError, OSError, PyExc_ConnectionError)
-        BERTRAND_EXCEPTION(BrokenPipeError, ConnectionError, PyExc_BrokenPipeError)
-        BERTRAND_EXCEPTION(ConnectionAbortedError, ConnectionError, PyExc_ConnectionAbortedError)
-        BERTRAND_EXCEPTION(ConnectionRefusedError, ConnectionError, PyExc_ConnectionRefusedError)
-        BERTRAND_EXCEPTION(ConnectionResetError, ConnectionError, PyExc_ConnectionResetError)
-    BERTRAND_EXCEPTION(FileExistsError, OSError, PyExc_FileExistsError)
-    BERTRAND_EXCEPTION(FileNotFoundError, OSError, PyExc_FileNotFoundError)
-    BERTRAND_EXCEPTION(InterruptedError, OSError, PyExc_InterruptedError)
-    BERTRAND_EXCEPTION(IsADirectoryError, OSError, PyExc_IsADirectoryError)
-    BERTRAND_EXCEPTION(NotADirectoryError, OSError, PyExc_NotADirectoryError)
-    BERTRAND_EXCEPTION(PermissionError, OSError, PyExc_PermissionError)
-    BERTRAND_EXCEPTION(ProcessLookupError, OSError, PyExc_ProcessLookupError)
-    BERTRAND_EXCEPTION(TimeoutError, OSError, PyExc_TimeoutError)
-BERTRAND_EXCEPTION(ReferenceError, Exception, PyExc_ReferenceError)
-BERTRAND_EXCEPTION(RuntimeError, Exception, PyExc_RuntimeError)
-    BERTRAND_EXCEPTION(NotImplementedError, RuntimeError, PyExc_NotImplementedError)
-    BERTRAND_EXCEPTION(RecursionError, RuntimeError, PyExc_RecursionError)
-BERTRAND_EXCEPTION(StopAsyncIteration, Exception, PyExc_StopAsyncIteration)
-BERTRAND_EXCEPTION(StopIteration, Exception, PyExc_StopIteration)
-BERTRAND_EXCEPTION(SyntaxError, Exception, PyExc_SyntaxError)
-    BERTRAND_EXCEPTION(IndentationError, SyntaxError, PyExc_IndentationError)
-        BERTRAND_EXCEPTION(TabError, IndentationError, PyExc_TabError)
-BERTRAND_EXCEPTION(SystemError, Exception, PyExc_SystemError)
-BERTRAND_EXCEPTION(TypeError, Exception, PyExc_TypeError)
-BERTRAND_EXCEPTION(ValueError, Exception, PyExc_ValueError)
-    BERTRAND_EXCEPTION(UnicodeError, ValueError, PyExc_UnicodeError)
-        BERTRAND_EXCEPTION(UnicodeDecodeError, UnicodeError, PyExc_UnicodeDecodeError)
-        BERTRAND_EXCEPTION(UnicodeEncodeError, UnicodeError, PyExc_UnicodeEncodeError)
-        BERTRAND_EXCEPTION(UnicodeTranslateError, UnicodeError, PyExc_UnicodeTranslateError)
+/* Helper for generating new exception types that are compatible with Python.  This
+automatically handles the preprocessor logic for the BERTRAND_NO_TRACEBACK flag,
+disables the Exception::from_python() handler, and ensures that stack traces always
+terminate at the exception constructor and no later. */
+template <typename CRTP, std::derived_from<Exception> Base>
+struct __exception__ : Base {
+
+    #ifdef BERTRAND_NO_TRACEBACK
+
+        const char* what() const noexcept override {
+            if (Base::what_cache.empty()) {
+                Base::what_cache =
+                    impl::demangle(typeid(CRTP).name()) + ": " + Base::message();
+            }
+            return Base::what_cache.c_str();
+        }
+
+    #else
+
+        [[clang::noinline]] explicit __exception__(
+            const std::string& message = "",
+            size_t skip = 0,
+            PyThreadState* thread = nullptr
+        ) : Base(message, Base::get_trace(skip), thread)
+        {}
+
+        [[clang::noinline]] explicit __exception__(
+            const std::string& message,
+            const cpptrace::stacktrace& trace,
+            PyThreadState* thread = nullptr
+        ) : Base(message, trace, thread)
+        {}
+
+        [[clang::noinline]] explicit __exception__(
+            PyObject* type,
+            PyObject* value,
+            PyObject* traceback,
+            size_t skip = 0,
+            PyThreadState* thread = nullptr
+        ) : Base(type, value, traceback, Base::get_trace(skip), thread)
+        {}
+
+        [[clang::noinline]] explicit __exception__(
+            PyObject* type,
+            PyObject* value,
+            PyObject* traceback,
+            const cpptrace::stacktrace& trace,
+            PyThreadState* thread = nullptr
+        ) : Base(type, value, traceback, trace, thread)
+        {}
+
+        const char* what() const noexcept override {
+            if (Base::what_cache.empty()) {
+                Base::what_cache =
+                    Base::traceback.to_string() + "\n" +
+                    impl::demangle(typeid(CRTP).name()) + ": " + Base::message();
+            }
+            return Base::what_cache.c_str();
+        }
+
+    #endif
+
+    void set_pyerr() const override;
+
+    static void from_python(
+        size_t skip = 0,
+        PyThreadState* thread = nullptr
+    ) = delete;
+
+};
+
+
+/* CPython exception types:
+ *      https://docs.python.org/3/c-api/exceptions.html#standard-exceptions
+ *
+ * Inheritance hierarchy:
+ *      https://docs.python.org/3/library/exceptions.html#exception-hierarchy
+ */
+
+
+#ifdef BERTRAND_NO_TRACEBACK
+    #define PYERR(TYPE) \
+        void set_pyerr() const override { \
+            PyErr_SetString(TYPE, message().c_str()); \
+        }
+#else
+    #define PYERR(TYPE) \
+        void set_pyerr() const override { \
+            traceback.restore(TYPE, message().c_str()); \
+        }
+#endif
+
+
+struct ArithmeticError : __exception__<ArithmeticError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_ArithmeticError)
+};
+
+
+struct FloatingPointError : __exception__<FloatingPointError, ArithmeticError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_FloatingPointError)
+};
+
+
+struct OverflowError : __exception__<OverflowError, ArithmeticError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_OverflowError)
+};
+
+
+struct ZeroDivisionError : __exception__<ZeroDivisionError, ArithmeticError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_ZeroDivisionError)
+};
+
+
+struct AssertionError : __exception__<AssertionError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_AssertionError)
+};
+
+
+struct AttributeError : __exception__<AttributeError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_AttributeError)
+};
+
+
+struct BufferError : __exception__<BufferError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_BufferError)
+};
+
+
+struct EOFError : __exception__<EOFError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_EOFError)
+};
+
+
+struct ImportError : __exception__<ImportError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_ImportError)
+};
+
+
+struct ModuleNotFoundError : __exception__<ModuleNotFoundError, ImportError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_ModuleNotFoundError)
+};
+
+
+struct LookupError : __exception__<LookupError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_LookupError)
+};
+
+
+struct IndexError : __exception__<IndexError, LookupError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_IndexError)
+};
+
+
+struct KeyError : __exception__<KeyError, LookupError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_KeyError)
+};
+
+
+struct MemoryError : __exception__<MemoryError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_MemoryError)
+};
+
+
+struct NameError : __exception__<NameError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_NameError)
+};
+
+
+struct UnboundLocalError : __exception__<UnboundLocalError, NameError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_UnboundLocalError)
+};
+
+
+struct OSError : __exception__<OSError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_OSError)
+};
+
+
+struct BlockingIOError : __exception__<BlockingIOError, OSError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_BlockingIOError)
+};
+
+
+struct ChildProcessError : __exception__<ChildProcessError, OSError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_ChildProcessError)
+};
+
+
+struct ConnectionError : __exception__<ConnectionError, OSError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_ConnectionError)
+};
+
+
+struct BrokenPipeError : __exception__<BrokenPipeError, ConnectionError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_BrokenPipeError)
+};
+
+
+struct ConnectionAbortedError : __exception__<ConnectionAbortedError, ConnectionError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_ConnectionAbortedError)
+};
+
+
+struct ConnectionRefusedError : __exception__<ConnectionRefusedError, ConnectionError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_ConnectionRefusedError)
+};
+
+
+struct ConnectionResetError : __exception__<ConnectionResetError, ConnectionError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_ConnectionResetError)
+};
+
+
+struct FileExistsError : __exception__<FileExistsError, OSError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_FileExistsError)
+};
+
+
+struct FileNotFoundError : __exception__<FileNotFoundError, OSError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_FileNotFoundError)
+};
+
+
+struct InterruptedError : __exception__<InterruptedError, OSError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_InterruptedError)
+};
+
+
+struct IsADirectoryError : __exception__<IsADirectoryError, OSError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_IsADirectoryError)
+};
+
+
+struct NotADirectoryError : __exception__<NotADirectoryError, OSError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_NotADirectoryError)
+};
+
+
+struct PermissionError : __exception__<PermissionError, OSError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_PermissionError)
+};
+
+
+struct ProcessLookupError : __exception__<ProcessLookupError, OSError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_ProcessLookupError)
+};
+
+
+struct TimeoutError : __exception__<TimeoutError, OSError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_TimeoutError)
+};
+
+
+struct ReferenceError : __exception__<ReferenceError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_ReferenceError)
+};
+
+
+struct RuntimeError : __exception__<RuntimeError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_RuntimeError)
+};
+
+
+struct NotImplementedError : __exception__<NotImplementedError, RuntimeError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_NotImplementedError)
+};
+
+
+struct RecursionError : __exception__<RecursionError, RuntimeError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_RecursionError)
+};
+
+
+struct StopAsyncIteration : __exception__<StopAsyncIteration, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_StopAsyncIteration)
+};
+
+
+struct StopIteration : __exception__<StopIteration, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_StopIteration)
+};
+
+
+struct SyntaxError : __exception__<SyntaxError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_SyntaxError)
+};
+
+
+struct IndentationError : __exception__<IndentationError, SyntaxError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_IndentationError)
+};
+
+
+struct TabError : __exception__<TabError, IndentationError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_TabError)
+};
+
+
+struct SystemError : __exception__<SystemError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_SystemError)
+};
+
+
+struct TypeError : __exception__<TypeError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_TypeError)
+};
+
+
+struct ValueError : __exception__<ValueError, Exception> {
+    using __exception__::__exception__;
+    PYERR(PyExc_ValueError)
+};
+
+
+struct UnicodeError : __exception__<UnicodeError, ValueError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_UnicodeError)
+};
+
+
+// TODO: UnicodeDecodeError needs a different set_pyerr() implementation, since
+// it requires extra arguments besides PyErr_SetString.
+
+
+struct UnicodeDecodeError : __exception__<UnicodeDecodeError, UnicodeError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_UnicodeDecodeError)
+};
+
+
+struct UnicodeEncodeError : __exception__<UnicodeEncodeError, UnicodeError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_UnicodeEncodeError)
+};
+
+
+struct UnicodeTranslateError : __exception__<UnicodeTranslateError, UnicodeError> {
+    using __exception__::__exception__;
+    PYERR(PyExc_UnicodeTranslateError)
+};
+
+
+#undef PYERR
 
 
 }  // namespace py

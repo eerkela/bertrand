@@ -19,7 +19,8 @@ namespace impl {
     the object in any other way will also modify it in-place within the container. */
     template <typename Container, typename Key>
         requires (__getitem__<Container, Key>::enable)
-    class Item : public __getitem__<Container, Key>::type {
+    struct Item : public __getitem__<Container, Key>::type {
+    private:
         using Base = __getitem__<Container, Key>::type;
 
         Container m_container;
@@ -115,7 +116,7 @@ namespace impl {
 
 
 /* A non-owning reference to a raw Python object. */
-class Handle : public impl::BertrandTag {
+struct Handle : public impl::BertrandTag {
 protected:
     PyObject* m_ptr;
 
@@ -327,7 +328,7 @@ public:
 
 
 /* An owning reference to a dynamically-typed Python object. */
-class Object : public Handle {
+struct Object : Handle {
 protected:
     struct borrowed_t {};
     struct stolen_t {};
@@ -670,6 +671,71 @@ struct __explicit_cast__<From, To> : Returns<To> {
         return static_cast<To>(static_cast<typename __as_object__<To>::type>(from));
     }
 };
+
+
+//////////////////////////
+////    SUBCLASSES    ////
+//////////////////////////
+
+
+
+// TODO: maybe I can implement a py::Inherits<CRTP, Bases...> type that is used to
+// collect all the necessary interfaces and expose the default constructors?  It would
+// subclass from Object as well as py::Interface<Bases>..., and 
+
+
+template <typename T>
+struct Interface : impl::BertrandTag {
+
+    // TODO: the object's whole C++ interface can be declared here, without affecting
+    // the binary layout of the object itself.  This allows me to potentially model
+    // multiple inheritance in the object wrappers, which would be reflected on both
+    // sides of the language divide.  When I encounter a Python type, I would iterate
+    // over its bases and insert them into the wrapper's Inherits<> base, and when I
+    // encounter a C++ type, I would iterate over its bases using the AST and insert
+    // them into the same Inherits<> base.  If I was very careful, I could then define
+    // using statements to model Python-style MRO or reflect corresponding using
+    // statements in the C++ AST, so that both sides have identical behavior.
+
+};
+
+
+
+// TODO: this doesn't work because the CRTP class doesn't inherit the default
+// constructor, although it's really slick in principle.
+
+
+template <typename CRTP, std::derived_from<Object>... Bases>
+struct Inherits : public Object, public Interface<CRTP>, public Interface<Bases>... {
+protected:
+
+    template <typename... Args>
+    Inherits(implicit_ctor<CRTP> c, Args&&... args) :
+        Object(c, std::forward<Args>(args)...)
+    {}
+
+    template <typename... Args>
+    Inherits(explicit_ctor<CRTP> c, Args&&... args) :
+        Object(c, std::forward<Args>(args)...)
+    {}
+
+public:
+
+    Inherits(Handle h, borrowed_t t) : Object(h, t) {}
+    Inherits(Handle h, stolen_t t) : Object(h, t) {}
+
+    template <typename... Args> requires (implicit_ctor<CRTP>::template enable<Args...>)
+    Inherits(Args&&... args) :
+        Object(implicit_ctor<CRTP>{}, std::forward<Args>(args)...)
+    {}
+
+    template <typename... Args> requires (explicit_ctor<CRTP>::template enable<Args...>)
+    explicit Inherits(Args&&... args) :
+        Object(explicit_ctor<CRTP>{}, std::forward<Args>(args)...)
+    {}
+
+};
+
 
 
 }  // namespace py

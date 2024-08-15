@@ -3,6 +3,9 @@ module;
 export module bertrand.python;
 
 
+export using ::PyObject;
+
+
 export namespace py {
     using py::Interpreter;
     using py::Arg;
@@ -261,6 +264,6 @@ export namespace std {
 }
 
 
-extern "C" PyObject* PyInit_python() {
-    return Module<"bertrand.python">::__python__::__export__();
-}
+// extern "C" PyObject* PyInit_python() {
+//     return Module<"bertrand.python">::__python__::__export__();
+// }
