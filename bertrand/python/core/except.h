@@ -665,45 +665,7 @@ protected:
         return result;
     }
 
-    /* A CRTP helper class that assists with defining new Exception types from C++. */
-    template <typename CRTP, typename = void>
-    struct def;
-
-    // TODO: both of these are going to have to implement logic to catch and throw
-    // exceptions across the language boundary, which can probably be defaulted through
-    // the CRTP pattern.  That would allow customization for each exception type.
-    // -> set_pyerr can be reimplemented here fairly easily, although it still needs
-    // to be virtual so that it can be called polymorphically from the base class.
-
-    // TODO: perhaps this is the sort of refactor that I do when std::stacktrace is
-    // implemented in clang?  That would be the final refactoring of the exception
-    // system, and would probably allow me to drop cpptrace as a dependency.
-
-    // TODO: perhaps the BERTRAND_NO_TRACEBACK macro can be centralized in the CRTP
-    // class, and everything can just call into it.
-
-    /* Specialization for a pure-Python exception, which converts it into an instance
-    of the enclosing type so that it can be caught from C++. */
-    template <typename CRTP>
-    struct def<CRTP, void> : public impl::BertrandTag {
-        // TODO: implement __import__ to get the Python exception type in C++.
-        // __export__ can be used to implement custom exception types in Python.
-    };
-
-    /* Specialization for a pure-C++ exception, which generates a Python `Exception`
-    subclass so that it can be caught from Python. */
-    template <typename CRTP, std::derived_from<std::exception> CppException>
-    struct def<CRTP, CppException> : public impl::BertrandTag {
-        // TODO: recreate the Type::__export__ logic here to create a subclass of
-        // Exception that can be caught from Python.  __export__ will be called when
-        // the associated module is imported, just like normal.
-    };
-
 public:
-
-    struct __python__ : public def<__python__> {
-        // TODO: work with the root Exception class to translate it into C++
-    };
 
     // TODO: I should probably remove the skip and thread arguments, since I'm almost
     // certainly not going to use them.

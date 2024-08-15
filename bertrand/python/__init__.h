@@ -1271,6 +1271,72 @@ inline void Function<Return(Target...)>::closure(std::optional<Tuple<Object>> cl
 #endif
 
 
+//////////////////////////////////////
+////    BERTRAND.PYTHON MODULE    ////
+//////////////////////////////////////
+
+
+template <>
+class Module<"bertrand.python"> : public Object, public impl::ModuleTag {
+public:
+
+    struct __python__ : ModuleTag::def<__python__, "bertrand.python"> {
+        // NOTE: the bertrand.python module is a special case, and uses per-module
+        // state to store global configuration, such the Python exception map, which
+        // translates Python exceptions into equivalent C++ exceptions.  Using
+        // per-module state is the correct way to handle this, since it allows multiple
+        // interpreters to provide their own exception maps, which can be modified
+        // whenever a new exception type is imported.
+
+        std::unordered_map<PyTypeObject*, std::function<void(*)(PyObject*)>> exception_map;
+
+        // TODO: an __export__ script that exposes the module's Python-level contents.
+
+    };
+
+};
+
+
+
+[[noreturn, clang::noinline]] void Exception::from_python(
+    size_t skip = 0,
+    PyThreadState* thread = nullptr
+) {
+    if (thread == nullptr) {
+        thread = PyThreadState_Get();
+    }
+
+    PyObject* value = thread->current_exception;
+    if (value == nullptr) {
+        throw std::logic_error(
+            "could not convert Python exception into a C++ exception - "
+            "exception is not set."
+        );
+    }
+    // PyObject* type = PyObject_Type(value);
+    // PyObject* traceback = PyException_GetTraceback(value);
+    thread->current_exception = nullptr;
+
+    try {
+        using ModType = Module<"bertrand.python">::__python__;
+        Module<"bertrand.python"> module;
+        ModType* contents = reinterpret_cast<ModType*>(ptr(module));
+
+        auto it = contents->exception_map.find(Py_TYPE(value));
+        if (it != contents->exception_map.end()) {
+            it->second(type, value, traceback, ++skip, thread);
+        }
+        throw Exception(type, value, traceback, ++skip, thread);
+    } catch (...) {
+        // Py_XDECREF(type);
+        Py_XDECREF(value);
+        // Py_XDECREF(traceback);
+        throw;
+    }
+}
+
+
+
 }  // namespace py
 
 

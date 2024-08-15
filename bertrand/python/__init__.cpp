@@ -255,8 +255,12 @@ export namespace py {
     using py::Ellipsis;
 }
 
-
 export namespace std {
     using std::hash;
     using std::equal_to;
+}
+
+
+extern "C" PyObject* PyInit_python() {
+    return Module<"bertrand.python">::__python__::__export__();
 }
