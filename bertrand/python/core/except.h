@@ -18,7 +18,7 @@ namespace impl {
     error tracebacks. */
     struct StackFrame : BertrandTag {
     private:
-        PyThreadState* thread;
+        PyThreadState* thread = PyThreadState_Get();
         mutable PyFrameObject* py_frame = nullptr;
         mutable std::string string;
 
@@ -77,29 +77,21 @@ namespace impl {
             const std::string& filename,
             const std::string& funcname,
             int lineno,
-            bool is_inline = false,
-            PyThreadState* tstate = nullptr
-        ) :
-            thread(tstate == nullptr ? PyThreadState_Get() : tstate),
-            filename(filename),
+            bool is_inline = false
+        ) : filename(filename),
             funcname(parse_function_name(funcname)),
             lineno(lineno),
             is_inline(is_inline)
         {}
 
-        StackFrame(
-            const cpptrace::stacktrace_frame& frame,
-            PyThreadState* tstate = nullptr
-        ) :
-            thread(tstate == nullptr ? PyThreadState_Get() : tstate),
+        StackFrame(const cpptrace::stacktrace_frame& frame) :
             filename(frame.filename),
             funcname(parse_function_name(frame.symbol)),
             lineno(frame.line.value_or(0)),
             is_inline(frame.is_inline)
         {}
 
-        StackFrame(PyFrameObject* frame = nullptr, PyThreadState* tstate = nullptr) :
-            thread(tstate == nullptr ? PyThreadState_Get() : tstate),
+        StackFrame(PyFrameObject* frame = nullptr) :
             py_frame(reinterpret_cast<PyFrameObject*>(Py_XNewRef(frame)))
         {
             if (py_frame != nullptr) {
@@ -246,7 +238,7 @@ namespace impl {
     private:
         mutable std::string string;
         mutable PyTracebackObject* py_traceback = nullptr;
-        PyThreadState* thread;
+        PyThreadState* thread = PyThreadState_Get();
 
         inline static const char* virtualenv = std::getenv("BERTRAND_HOME");
 
@@ -262,17 +254,14 @@ namespace impl {
         // stack is stored in proper execution order
         std::deque<StackFrame> stack;  // [head] least recent -> most recent [tail]
 
-        [[clang::noinline]] explicit StackTrace(
-            size_t skip = 0,
-            PyThreadState* tstate = nullptr
-        ) : StackTrace(cpptrace::generate_trace(++skip), tstate)
+        StackTrace(const std::deque<StackFrame>& stack) : stack(stack) {}
+        StackTrace(std::deque<StackFrame>&& stack) : stack(std::move(stack)) {}
+
+        [[clang::noinline]] explicit StackTrace(size_t skip = 0) :
+            StackTrace(cpptrace::generate_trace(++skip))
         {}
 
-        explicit StackTrace(
-            const cpptrace::stacktrace& stacktrace,
-            PyThreadState* tstate = nullptr
-        ) : thread(tstate == nullptr ? PyThreadState_Get() : tstate)
-        {
+        explicit StackTrace(const cpptrace::stacktrace& stacktrace) {
             for (auto&& frame : stacktrace) {
                 if (frame.symbol.find("py::Code::operator()") != std::string::npos) {
                     break;
@@ -284,10 +273,8 @@ namespace impl {
 
         explicit StackTrace(
             PyTracebackObject* traceback,
-            const cpptrace::stacktrace& stacktrace,
-            PyThreadState* tstate = nullptr
-        ) : thread(tstate == nullptr ? PyThreadState_Get() : tstate)
-        {
+            const cpptrace::stacktrace& stacktrace
+        ) {
             // Python tracebacks are stored least recent -> most recent, so we can
             // insert them in the same order.
             while (traceback != nullptr) {
@@ -307,20 +294,6 @@ namespace impl {
                 }
             }
         }
-
-        StackTrace(
-            std::deque<StackFrame>&& stack,
-            PyThreadState* tstate = nullptr
-        ) : thread(tstate == nullptr ? PyThreadState_Get() : tstate),
-            stack(std::move(stack))
-        {}
-
-        StackTrace(
-            const std::deque<StackFrame>& stack,
-            PyThreadState* tstate = nullptr
-        ) : thread(tstate == nullptr ? PyThreadState_Get() : tstate),
-            stack(stack)
-        {}
 
         StackTrace(const StackTrace& other) :
             string(other.string),
@@ -466,14 +439,12 @@ namespace impl {
 }
 
 
-/* Base exception class.  Appends a C++ stack trace that will be propagated up to
-Python for cross-language diagnostics. */
+/* Root exception class.  Appends a C++ stack trace that will be propagated up to
+Python, and allows translation of arbitrary exceptions across the language boundary. */
 struct Exception : public std::exception, impl::BertrandTag {
-protected:
-    std::string what_msg;
-    mutable std::string what_cache;
+private:
 
-    static std::string parse_value(PyObject* obj) {
+    static std::string exc_string(PyObject* obj) {
         PyObject* string = PyObject_Str(obj);
         if (string == nullptr) {
             throw std::runtime_error(
@@ -495,6 +466,10 @@ protected:
         return result;
     }
 
+protected:
+    std::string what_msg;
+    mutable std::string what_cache;
+
     /* Protected method gets a C++ stack trace to a particular context without going
     through inherited constructors. */
     static cpptrace::stacktrace get_trace(size_t skip) {
@@ -506,27 +481,28 @@ public:
 
     #ifdef BERTRAND_NO_TRACEBACK
 
-        explicit Exception(
-            const std::string& message = "",
-            size_t skip = 0,
-            PyThreadState* thread = nullptr
-        ) : what_msg(message)
+        explicit Exception(std::string&& message = "", size_t skip = 0) :
+            what_msg(std::move(message))
         {}
 
-        explicit Exception(
-            const std::string& message,
-            const cpptrace::stacktrace& trace,
-            PyThreadState* thread = nullptr
-        ) : what_msg(message)
+        explicit Exception(std::string&& message, const cpptrace::stacktrace& trace) :
+            what_msg(std::move(message))
+        {}
+
+        explicit Exception(const std::string& message, size_t skip = 0) :
+            what_msg(message)
+        {}
+
+        explicit Exception(const std::string& message, const cpptrace::stacktrace& trace) :
+            what_msg(message)
         {}
 
         explicit Exception(
             PyObject* type,
             PyObject* value,
             PyObject* traceback,
-            size_t skip = 0,
-            PyThreadState* thread = nullptr
-        ) : what_msg(value == nullptr ? std::string() : parse_value(value))
+            size_t skip = 0
+        ) : what_msg(value == nullptr ? std::string() : exc_string(value))
         {
             if (type == nullptr) {
                 throw std::logic_error(
@@ -540,9 +516,8 @@ public:
             PyObject* type,
             PyObject* value,
             PyObject* traceback,
-            const cpptrace::stacktrace& trace,
-            PyThreadState* thread = nullptr
-        ) : what_msg(value == nullptr ? std::string() : parse_value(value))
+            const cpptrace::stacktrace& trace
+        ) : what_msg(value == nullptr ? std::string() : exc_string(value))
         {
             if (type == nullptr) {
                 throw std::logic_error(
@@ -588,32 +563,42 @@ public:
         impl::StackTrace traceback;
 
         [[clang::noinline]] explicit Exception(
-            std::string message = "",
-            size_t skip = 0,
-            PyThreadState* thread = nullptr
-        ) : what_msg((Interpreter::init(), message)),
-            traceback(get_trace(skip), thread)
+            std::string&& message = "",
+            size_t skip = 0
+        ) : what_msg((Interpreter::init(), std::move(message))),
+            traceback(get_trace(skip))
         {}
 
         [[clang::noinline]] explicit Exception(
-            std::string message,
-            const cpptrace::stacktrace& trace,
-            PyThreadState* thread = nullptr
+            const std::string& message,
+            size_t skip = 0
         ) : what_msg((Interpreter::init(), message)),
-            traceback(trace, thread)
+            traceback(get_trace(skip))
+        {}
+
+        [[clang::noinline]] explicit Exception(
+            std::string&& message,
+            const cpptrace::stacktrace& trace
+        ) : what_msg((Interpreter::init(), std::move(message))),
+            traceback(trace)
+        {}
+
+        [[clang::noinline]] explicit Exception(
+            const std::string& message,
+            const cpptrace::stacktrace& trace
+        ) : what_msg((Interpreter::init(), message)),
+            traceback(trace)
         {}
 
         [[clang::noinline]] explicit Exception(
             PyObject* type,
             PyObject* value,
             PyObject* traceback,
-            size_t skip = 0,
-            PyThreadState* thread = nullptr
-        ) : what_msg(value == nullptr ? std::string() : parse_value(value)),
+            size_t skip = 0
+        ) : what_msg(value == nullptr ? std::string() : exc_string(value)),
             traceback(
                 reinterpret_cast<PyTracebackObject*>(traceback),
-                get_trace(skip),
-                thread
+                get_trace(skip)
             )
         {
             if (type == nullptr) {
@@ -628,13 +613,11 @@ public:
             PyObject* type,
             PyObject* value,
             PyObject* traceback,
-            const cpptrace::stacktrace& trace,
-            PyThreadState* thread = nullptr
-        ) : what_msg(value == nullptr ? std::string() : parse_value(value)),
+            const cpptrace::stacktrace& trace
+        ) : what_msg(value == nullptr ? std::string() : exc_string(value)),
             traceback(
                 reinterpret_cast<PyTracebackObject*>(traceback),
-                trace,
-                thread
+                trace
             )
         {
             if (type == nullptr) {
@@ -687,10 +670,7 @@ public:
 
     /* Retrieve an error from a Python context and re-throw it as a C++ error with a
     matching type.  Note that this is a void function that always throws. */
-    [[noreturn, clang::noinline]] static void from_python(
-        size_t skip = 0,
-        PyThreadState* thread = nullptr
-    );  // defined after Module<"bertrand.python">, since it requires global state
+    [[noreturn, clang::noinline]] static void from_python(size_t skip = 0);
 
     /* Convert an arbitrary C++ error into an equivalent Python exception, so that it
     can be propagate back to the Python interpreter. */
@@ -729,35 +709,43 @@ struct __exception__ : Base {
     #else
 
         [[clang::noinline]] explicit __exception__(
-            const std::string& message = "",
-            size_t skip = 0,
-            PyThreadState* thread = nullptr
-        ) : Base(message, Base::get_trace(skip), thread)
+            std::string&& message = "",
+            size_t skip = 0
+        ) : Base(std::move(message), Base::get_trace(skip))
         {}
 
         [[clang::noinline]] explicit __exception__(
             const std::string& message,
-            const cpptrace::stacktrace& trace,
-            PyThreadState* thread = nullptr
-        ) : Base(message, trace, thread)
+            size_t skip = 0
+        ) : Base(message, Base::get_trace(skip))
+        {}
+
+        [[clang::noinline]] explicit __exception__(
+            std::string&& message,
+            const cpptrace::stacktrace& trace
+        ) : Base(std::move(message), trace)
+        {}
+
+        [[clang::noinline]] explicit __exception__(
+            const std::string& message,
+            const cpptrace::stacktrace& trace
+        ) : Base(message, trace)
         {}
 
         [[clang::noinline]] explicit __exception__(
             PyObject* type,
             PyObject* value,
             PyObject* traceback,
-            size_t skip = 0,
-            PyThreadState* thread = nullptr
-        ) : Base(type, value, traceback, Base::get_trace(skip), thread)
+            size_t skip = 0
+        ) : Base(type, value, traceback, Base::get_trace(skip))
         {}
 
         [[clang::noinline]] explicit __exception__(
             PyObject* type,
             PyObject* value,
             PyObject* traceback,
-            const cpptrace::stacktrace& trace,
-            PyThreadState* thread = nullptr
-        ) : Base(type, value, traceback, trace, thread)
+            const cpptrace::stacktrace& trace
+        ) : Base(type, value, traceback, trace)
         {}
 
         const char* what() const noexcept override {
@@ -773,10 +761,7 @@ struct __exception__ : Base {
 
     void set_pyerr() const override;
 
-    static void from_python(
-        size_t skip = 0,
-        PyThreadState* thread = nullptr
-    ) = delete;
+    static void from_python(size_t skip = 0) = delete;
 
 };
 
@@ -1074,6 +1059,8 @@ struct UnicodeError : __exception__<UnicodeError, ValueError> {
 
 // TODO: UnicodeDecodeError needs a different set_pyerr() implementation, since
 // it requires extra arguments besides PyErr_SetString.
+// -> It would actually need different constructors as well, since the extra arguments
+// screw everything up.
 
 
 struct UnicodeDecodeError : __exception__<UnicodeDecodeError, UnicodeError> {

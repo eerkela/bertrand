@@ -190,9 +190,7 @@ namespace impl {
                 static void register_exception(
                     Module<ModName>& mod,
                     PyTypeObject* type,
-                    std::function<
-                        void(PyObject*, PyObject*, PyObject*, size_t, PyThreadState*)
-                    > callback
+                    std::function<void(PyObject*, PyObject*, PyObject*, size_t)> callback
                 );
 
             public:
@@ -498,10 +496,9 @@ namespace impl {
                                         PyObject* type,
                                         PyObject* value,
                                         PyObject* traceback,
-                                        size_t skip,
-                                        PyThreadState* thread
+                                        size_t skip
                                     ) {
-                                        throw Cls(type, value, traceback, ++skip, thread);
+                                        throw Cls(type, value, traceback, ++skip);
                                     }
                                 );
                             }

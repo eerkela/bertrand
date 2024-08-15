@@ -1084,18 +1084,19 @@ inline void setattr(const Handle& obj, const Str& name, const Object& value) {
 #ifdef BERTRAND_NO_TRACEBACK
 
     template <typename CRTP, std::derived_from<Exception> Base>
-    void bertrand_exception::set_pyerr() const override {
+    void __exception__::set_pyerr() const override {
         PyErr_SetString(ptr(Type<CRTP>()), Base::message().c_str());
     }
 
 #else
 
     template <typename CRTP, std::derived_from<Exception> Base>
-    void bertrand_exception::set_pyerr() const override {
+    void __exception__::set_pyerr() const override {
         Base::traceback.restore(ptr(Type<CRTP>()), Base::message().c_str());
     }
 
 #endif
+
 
 template <typename Func, typename... Defaults>
 Module& Module::def(const Str& name, const Str& doc, Func&& body, Defaults&&... defaults) {
@@ -1320,8 +1321,7 @@ public:
                 PyObject* /* exc_type */,
                 PyObject* /* exc_value */,
                 PyObject* /* exc_traceback */,
-                size_t /* skip */,
-                PyThreadState* /* thread */
+                size_t /* skip */
             )>
         >;
 
@@ -1393,7 +1393,7 @@ void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_exception(
     Module<ModName>& mod,
     PyTypeObject* type,
     std::function<
-        void(PyObject*, PyObject*, PyObject*, size_t, PyThreadState*)
+        void(PyObject*, PyObject*, PyObject*, size_t)
     > callback
 ) {
     using Mod = Module<"bertrand.python">::__python__;
@@ -1406,14 +1406,8 @@ void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_exception(
 }
 
 
-[[noreturn, clang::noinline]] void Exception::from_python(
-    size_t skip = 0,
-    PyThreadState* thread = nullptr
-) {
-    if (thread == nullptr) {
-        thread = PyThreadState_Get();
-    }
-
+[[noreturn, clang::noinline]] void Exception::from_python(size_t skip = 0) {
+    PyThreadState* thread = PyThreadState_Get();
     PyObject* value = thread->current_exception;
     if (value == nullptr) {
         throw std::logic_error(
@@ -1427,10 +1421,10 @@ void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_exception(
 
     try {
         using Mod = Module<"bertrand.python">::__python__;
-        Module<"bertrand.python"> module;
-        Mod* contents = reinterpret_cast<Mod*>(ptr(module));
-        auto it = contents->exception_map.find(type);
-        if (it != contents->exception_map.end()) {
+        Module<"bertrand.python"> python;
+        Mod* mod = reinterpret_cast<Mod*>(ptr(python));
+        auto it = mod->exception_map.find(type);
+        if (it != mod->exception_map.end()) {
             it->second(type, value, traceback, ++skip, thread);
         }
         throw Exception(type, value, traceback, ++skip, thread);
@@ -1440,7 +1434,6 @@ void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_exception(
         throw;
     }
 }
-
 
 
 }  // namespace py
