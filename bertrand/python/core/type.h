@@ -592,6 +592,11 @@ namespace impl {
 
         };
 
+        // TODO: wrapping a new exception type with a custom type would involve
+        // setting the wrapper type to void.  That would give you a new exception
+        // type that you could then use from Python.  That's how all non-builtin
+        // exception types would be implemented.
+
     };
 
 }
@@ -3187,6 +3192,97 @@ namespace impl {
     };
 
 }
+
+
+///////////////////////////////
+////    EXCEPTION TYPES    ////
+///////////////////////////////
+
+
+// TODO: there has to be some handling for a Wrapper type that derives from
+// std::exception.  In essence, that's the same as a C++ std::exception subclass as the
+// CppType, but a little more finnicky.  It probably has to be a separate overload of
+// the def helpers, which is a drag.
+
+
+#define BUILTIN_EXCEPTION_TYPE(CLS, PYTYPE)                                             \
+    template <>                                                                         \
+    struct Type<CLS> : Object, impl::TypeTag {                                          \
+        struct __python__ : TypeTag::def<__python__, CLS> {                             \
+            static Type __import__() {                                                  \
+                return reinterpret_borrow<Type>(PYTYPE);                                \
+            }                                                                           \
+        };                                                                              \
+                                                                                        \
+        Type(Handle h, borrowed_t t) : Object(h, t) {}                                  \
+        Type(Handle h, stolen_t t) : Object(h, t) {}                                    \
+                                                                                        \
+        template <typename... Args> requires (implicit_ctor<Type>::template enable<Args...>) \
+        Type(Args&&... args) : Object(                                                  \
+            implicit_ctor<Type>{},                                                      \
+            std::forward<Args>(args)...                                                 \
+        ) {}                                                                            \
+                                                                                        \
+        template <typename... Args> requires (explicit_ctor<Type>::template enable<Args...>) \
+        explicit Type(Args&&... args) : Object(                                         \
+            explicit_ctor<Type>{},                                                      \
+            std::forward<Args>(args)...                                                 \
+        ) {}                                                                            \
+    };
+
+
+BUILTIN_EXCEPTION_TYPE(Exception, PyExc_Exception)
+BUILTIN_EXCEPTION_TYPE(ArithmeticError, PyExc_ArithmeticError)
+    BUILTIN_EXCEPTION_TYPE(FloatingPointError, PyExc_FloatingPointError)
+    BUILTIN_EXCEPTION_TYPE(OverflowError, PyExc_OverflowError)
+    BUILTIN_EXCEPTION_TYPE(ZeroDivisionError, PyExc_ZeroDivisionError)
+BUILTIN_EXCEPTION_TYPE(AssertionError, PyExc_AssertionError)
+BUILTIN_EXCEPTION_TYPE(AttributeError, PyExc_AttributeError)
+BUILTIN_EXCEPTION_TYPE(BufferError, PyExc_BufferError)
+BUILTIN_EXCEPTION_TYPE(EOFError, PyExc_EOFError)
+BUILTIN_EXCEPTION_TYPE(ImportError, PyExc_ImportError)
+    BUILTIN_EXCEPTION_TYPE(ModuleNotFoundError, PyExc_ModuleNotFoundError)
+BUILTIN_EXCEPTION_TYPE(LookupError, PyExc_LookupError)
+    BUILTIN_EXCEPTION_TYPE(IndexError, PyExc_IndexError)
+    BUILTIN_EXCEPTION_TYPE(KeyError, PyExc_KeyError)
+BUILTIN_EXCEPTION_TYPE(MemoryError, PyExc_MemoryError)
+BUILTIN_EXCEPTION_TYPE(NameError, PyExc_NameError)
+    BUILTIN_EXCEPTION_TYPE(UnboundLocalError, PyExc_UnboundLocalError)
+BUILTIN_EXCEPTION_TYPE(OSError, PyExc_OSError)
+    BUILTIN_EXCEPTION_TYPE(BlockingIOError, PyExc_BlockingIOError)
+    BUILTIN_EXCEPTION_TYPE(ChildProcessError, PyExc_ChildProcessError)
+    BUILTIN_EXCEPTION_TYPE(ConnectionError, PyExc_ConnectionError)
+        BUILTIN_EXCEPTION_TYPE(BrokenPipeError, PyExc_BrokenPipeError)
+        BUILTIN_EXCEPTION_TYPE(ConnectionAbortedError, PyExc_ConnectionAbortedError)
+        BUILTIN_EXCEPTION_TYPE(ConnectionRefusedError, PyExc_ConnectionRefusedError)
+        BUILTIN_EXCEPTION_TYPE(ConnectionResetError, PyExc_ConnectionResetError)
+    BUILTIN_EXCEPTION_TYPE(FileExistsError, PyExc_FileExistsError)
+    BUILTIN_EXCEPTION_TYPE(FileNotFoundError, PyExc_FileNotFoundError)
+    BUILTIN_EXCEPTION_TYPE(InterruptedError, PyExc_InterruptedError)
+    BUILTIN_EXCEPTION_TYPE(IsADirectoryError, PyExc_IsADirectoryError)
+    BUILTIN_EXCEPTION_TYPE(NotADirectoryError, PyExc_NotADirectoryError)
+    BUILTIN_EXCEPTION_TYPE(PermissionError, PyExc_PermissionError)
+    BUILTIN_EXCEPTION_TYPE(ProcessLookupError, PyExc_ProcessLookupError)
+    BUILTIN_EXCEPTION_TYPE(TimeoutError, PyExc_TimeoutError)
+BUILTIN_EXCEPTION_TYPE(ReferenceError, PyExc_ReferenceError)
+BUILTIN_EXCEPTION_TYPE(RuntimeError, PyExc_RuntimeError)
+    BUILTIN_EXCEPTION_TYPE(NotImplementedError, PyExc_NotImplementedError)
+    BUILTIN_EXCEPTION_TYPE(RecursionError, PyExc_RecursionError)
+BUILTIN_EXCEPTION_TYPE(StopAsyncIteration, PyExc_StopAsyncIteration)
+BUILTIN_EXCEPTION_TYPE(StopIteration, PyExc_StopIteration)
+BUILTIN_EXCEPTION_TYPE(SyntaxError, PyExc_SyntaxError)
+    BUILTIN_EXCEPTION_TYPE(IndentationError, PyExc_IndentationError)
+        BUILTIN_EXCEPTION_TYPE(TabError, PyExc_TabError)
+BUILTIN_EXCEPTION_TYPE(SystemError, PyExc_SystemError)
+BUILTIN_EXCEPTION_TYPE(TypeError, PyExc_TypeError)
+BUILTIN_EXCEPTION_TYPE(ValueError, PyExc_ValueError)
+    BUILTIN_EXCEPTION_TYPE(UnicodeError, PyExc_UnicodeError)
+        BUILTIN_EXCEPTION_TYPE(UnicodeDecodeError, PyExc_UnicodeDecodeError)
+        BUILTIN_EXCEPTION_TYPE(UnicodeEncodeError, PyExc_UnicodeEncodeError)
+        BUILTIN_EXCEPTION_TYPE(UnicodeTranslateError, PyExc_UnicodeTranslateError)
+
+
+#undef BUILTIN_EXCEPTION_TYPE
 
 
 }  // namespace py
