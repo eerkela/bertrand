@@ -605,14 +605,6 @@ struct __explicit_init__<Type<Object>, Args...> : Returns<Type<Object>> {
 };
 
 
-template <typename Return>
-auto Type<Iterator<Return>>::__python__::__import__() {
-    return reinterpret_steal<Type<Iterator<Return>>>(
-        release(getattr<"Iterator">(Module<"collections.abc">()))
-    );
-}
-
-
 }  // namespace py
 
 

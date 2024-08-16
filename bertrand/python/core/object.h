@@ -1,5 +1,5 @@
-#ifndef BERTRAND_PYTHON_COMMON_OBJECT_H
-#define BERTRAND_PYTHON_COMMON_OBJECT_H
+#ifndef BERTRAND_PYTHON_CORE_OBJECT_H
+#define BERTRAND_PYTHON_CORE_OBJECT_H
 
 #include "declarations.h"
 #include "except.h"
@@ -11,6 +11,8 @@ namespace py {
 
 namespace impl {
 
+    struct SliceInitializer;
+
     /* A proxy for an item in a Python container that is controlled by the
     `__getitem__`, `__setitem__`, and `__delitem__` control structs.
 
@@ -19,7 +21,7 @@ namespace impl {
     the object in any other way will also modify it in-place within the container. */
     template <typename Container, typename Key>
         requires (__getitem__<Container, Key>::enable)
-    struct Item : public __getitem__<Container, Key>::type {
+    struct Item : __getitem__<Container, Key>::type {
     private:
         using Base = __getitem__<Container, Key>::type;
 

@@ -1,5 +1,5 @@
-#ifndef BERTRAND_PYTHON_COMMON_FUNC_H
-#define BERTRAND_PYTHON_COMMON_FUNC_H
+#ifndef BERTRAND_PYTHON_CORE_FUNC_H
+#define BERTRAND_PYTHON_CORE_FUNC_H
 
 #include "declarations.h"
 #include "except.h"
@@ -45,7 +45,7 @@ struct Arg : impl::ArgTag {
 private:
 
     template <bool positional, bool keyword>
-    struct Optional : public impl::ArgTag {
+    struct Optional : impl::ArgTag {
         using type = T;
         static constexpr StaticStr name = Name;
         static constexpr bool is_positional = positional;
@@ -57,7 +57,7 @@ private:
     };
 
     template <bool optional>
-    struct Positional : public impl::ArgTag {
+    struct Positional : impl::ArgTag {
         using type = T;
         using opt = Optional<true, false>;
         static constexpr StaticStr name = Name;
@@ -70,7 +70,7 @@ private:
     };
 
     template <bool optional>
-    struct Keyword : public impl::ArgTag {
+    struct Keyword : impl::ArgTag {
         using type = T;
         using opt = Optional<false, true>;
         static constexpr StaticStr name = Name;
@@ -82,7 +82,7 @@ private:
         T value;
     };
 
-    struct Args : public impl::ArgTag {
+    struct Args : impl::ArgTag {
         using type = std::conditional_t<
             std::is_rvalue_reference_v<T>,
             std::remove_reference_t<T>,
@@ -101,7 +101,7 @@ private:
         std::vector<type> value;
     };
 
-    struct Kwargs : public impl::ArgTag {
+    struct Kwargs : impl::ArgTag {
         using type = std::conditional_t<
             std::is_rvalue_reference_v<T>,
             std::remove_reference_t<T>,

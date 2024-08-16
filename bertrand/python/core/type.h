@@ -1,5 +1,5 @@
-#ifndef BERTRAND_PYTHON_COMMON_TYPE_H
-#define BERTRAND_PYTHON_COMMON_TYPE_H
+#ifndef BERTRAND_PYTHON_CORE_TYPE_H
+#define BERTRAND_PYTHON_CORE_TYPE_H
 
 #include "declarations.h"
 #include "except.h"
@@ -499,9 +499,9 @@ namespace impl {
         };
 
         /* Shared behavior for all Python types, be they wrappers around external C++
-        classes or pure Python.  Each type must minimally support these methods.
-        Everything else is an implementation detail for the type's Python
-        representation. */
+        classes or pure Python, possibly even implemented inline within the CRTP class
+        itself.  Each type must minimally support these methods.  Everything else is an
+        implementation detail. */
         template <typename CRTP, typename Wrapper, typename CppType>
         struct BaseDef : BertrandTag {
         protected:
@@ -517,23 +517,21 @@ namespace impl {
             The `bindings` argument is a helper that includes a number of convenience
             methods for exposing the type to Python.  The `__export__` script must end
             with a call to `bindings.finalize<Bases...>()`, which will build a
-            corresponding `PyType_Spec` that will be used to instantiate a unique heap
-            type for each module.  This is the correct way to expose types via
+            corresponding `PyType_Spec` that can be used to instantiate a unique heap
+            type for each module.  This is the correct way to expose types leveraging
             per-module state, which allows for multiple sub-interpreters to run in
-            parallel without interfering with one other.  It is automatically executed
-            by the import system whenever the enclosing module is loaded into a fresh
-            interpreter.  It will not be executed if the type has not been exported to
-            a module, which occurs in ModuleTag::def.
+            parallel without interfering with one other (and possibly without a central
+            GIL).  The bindings are automatically executed by the import system
+            whenever the enclosing module is loaded into a fresh interpreter.
 
             Any attributes added at this stage are guaranteed be unique for each
-            module, allowing for sub-interpreters with correct, per-module state.  It's
-            still up to the user to make sure that the data referenced by the bindings
-            does not cause race conditions with other modules, but the modules
-            themselves will not present a barrier in this regard.
+            module.  It's still up to the user to make sure that any data they
+            reference does not cause race conditions with other modules, but the
+            modules themselves will not impede this.
 
-            Note that this method does not need to actually attach the type to the
-            module; that is done elsewhere in the import process to allow for the
-            modeling of templates. */
+            Note that this method does not actually attach the type to the module -
+            that is done in the module's `__export__` script, which is semantically
+            identical to this method and even provides much of the same syntax. */
             template <StaticStr ModName>
             static Type<Wrapper> __export__(Bindings<ModName> bindings) {
                 // bindings.var<"foo">(value);
@@ -543,12 +541,13 @@ namespace impl {
             }
 
             /* Return a new reference to the type by importing its parent module and
-            unpacking this specific type.  This is called automatically by the default
-            constructor for `Type<Wrapper>`, and is the proper way to handle per-module
-            state, instead of using static type objects.  It will implicitly invoke the
-            `__export__()` method during the import process if the module was not
-            previously loaded into the interpreter, either via `PyImport_Import()` or
-            the `Module` constructor directly. */
+            unpacking this specific type.
+
+            This is called automatically by the default constructor for
+            `Type<Wrapper>`, and is the proper way to handle per-module state, instead
+            of using static type objects.  It will implicitly invoke the `__export__()`
+            method if the module was not previously loaded, either via a
+            `PyImport_Import()` API call or the simplified `Module` constructor. */
             static Type<Wrapper> __import__() {
                 throw NotImplementedError(
                     "the __import__() method must be defined for all Python types: "
@@ -565,12 +564,12 @@ namespace impl {
 
         template <typename CRTP, typename Wrapper, typename CppType>
         struct DetectForwardIterable : DetectHashable<CRTP, Wrapper, CppType> {};
-        template <typename CRTP, typename Wrapper, is_iterable CppType>
+        template <typename CRTP, typename Wrapper, iterable CppType>
         struct DetectForwardIterable<CRTP, Wrapper, CppType>;
 
         template <typename CRTP, typename Wrapper, typename CppType>
         struct DetectReverseIterable : DetectForwardIterable<CRTP, Wrapper, CppType> {};
-        template <typename CRTP, typename Wrapper, is_reverse_iterable CppType>
+        template <typename CRTP, typename Wrapper, reverse_iterable CppType>
         struct DetectReverseIterable<CRTP, Wrapper, CppType>;
 
         template <typename CRTP, typename Wrapper, typename CppType>
@@ -583,10 +582,10 @@ namespace impl {
         way of writing new Python types in C++.
 
         This class is only available to specializations of `py::Type<>`, each of which
-        should define a public `__python__` struct that inherits from it.  It uses CRTP
-        to automate the creation of Python types and their associated methods, slots,
-        and other attributes in a way that conforms to Python's best practices.  This
-        includes:
+        should define a public `__python__` struct that inherits from it via the CRTP
+        pattern.  It uses template metaprogramming to automate the creation of Python
+        types and their associated methods, slots, and other attributes in a way that
+        conforms to Python best practices.  This includes:
 
             -   The use of heap types over static types, which are closer to native
                 Python and can be mutated at runtime.
@@ -595,18 +594,20 @@ namespace impl {
             -   Cyclic GC support, which is necessary for types that contain Python
                 objects, as well as the heap type itself.
             -   Direct access to the wrapped C++ object, which can be a non-owning,
-                mutable or immutable reference, allowing for shared state across both
-                languages.
+                mutable or immutable reference, allowing for shared state across the
+                language boundary.
             -   Default implementations of common slots like `__repr__`, `__hash__`,
                 `__iter__`, and others, which can be detected via template
-                metaprogramming and overridden by the user if necessary.
+                metaprogramming and naturally overridden by the user if necessary.
             -   A shared metaclass, which demangles the C++ type name and delegates
-                `isinstance()` and `issubclass()` checks to the `py::__isinstance__`
-                and `py::__issubclass__` control structs, respectively.
+                `isinstance()` and `issubclass()` checks to the `py::__isinstance__<>`
+                and `py::__issubclass__<>` control structs, respectively.
             -   Support for C++ templates, which can be indexed in Python using the
                 metaclass's `__getitem__` slot.
             -   Method overloading, wherein each method is represented as an overload
                 set attached to the type object via the descriptor protocol.
+            -   Modeling for member and static methods and variables, which are
+                translated 1:1 into Python equivalents.
 
         Needless to say, these are all very complex and error-prone tasks that are best
         left to Bertrand's metaprogramming facilities.  By using this base class, the
@@ -625,12 +626,12 @@ namespace impl {
         library.
 
         Users of this type must at least implement the `__import__()` hook, which
-        returns a new reference to the type object.  If the type is implemented inline,
-        then they must also implement the `__export__()` hook, which is called to
-        initialize the type object and expose it to Python.  Everything else is an
-        implementation detail. */
+        returns a new reference to the type object, wherever it is defined.  If the
+        type is defined inline within this class, then the user must also implement the
+        `__export__()` hook, which is called to initialize the type and expose it to
+        Python.  Everything else is an implementation detail. */
         template <typename CRTP, typename Wrapper>
-        struct def<CRTP, Wrapper, void> : public BaseDef<CRTP, Wrapper, void> {
+        struct def<CRTP, Wrapper, void> : BaseDef<CRTP, Wrapper, void> {
         protected:
 
             template <StaticStr ModName>
@@ -639,9 +640,11 @@ namespace impl {
         public:
             static constexpr Origin __origin__ = Origin::PYTHON;
 
-            /* Default __export__ for pure-Python types forwards to __import__ in order
-            to simplify binding standard library types.  All other types should
-            implement __export__ like normal. */
+            /* Default __export__() script for pure-Python types.  Forwards to
+            __import__() in order to simplify binding standard library types as well as
+            references to C-style Python types that may be externally defined.
+            
+            Inline types should implement __export__() like normal. */
             template <StaticStr ModName>
             static Type<Wrapper> __export__(Bindings<ModName> bindings) {
                 return CRTP::__import__();
@@ -739,8 +742,8 @@ struct Type<Object> : Object, Interface<Type<Object>>, impl::TypeTag {
 };
 
 
-/* Allow py::Type<> to be templated on C++ types by redirecting to the equivalent
-Python type. */
+/* Allow py::Type<> to be templated on arbitrary C++ types by redirecting to its Python
+equivalent (py::Type<int>() == py::Type<py::Int>()). */
 template <typename T> requires (__as_object__<T>::enable)
 struct Type<T> : Type<typename __as_object__<T>::type> {};
 
@@ -750,9 +753,8 @@ template <typename T> requires (__as_object__<T>::enable)
 explicit Type(const T&) -> Type<typename __as_object__<T>::type>;
 
 
-/* All types are default-constructible by importing the associated Python module and
-accessing the type object.  This respects per-module state and ensures that the result
-always matches the type that is stored in the Python interpreter. */
+/* All types are default-constructible by invoking the `__import__()` method, which
+ensures that the result always matches the current state of the Python interpreter. */
 template <typename T>
 struct __init__<Type<T>> : Returns<Type<T>> {
     static auto operator()() {
@@ -762,7 +764,7 @@ struct __init__<Type<T>> : Returns<Type<T>> {
 
 
 /* Metaclasses are represented as types of types, and are constructible by recursively
-calling `Py_TYPE(cls)` until we reach a concrete type. */
+calling `Py_TYPE(cls)` on the inner type until we reach a concrete implementation. */
 template <typename T>
 struct __init__<Type<Type<T>>> : Returns<Type<Type<T>>> {
     static auto operator()() {
@@ -787,7 +789,7 @@ struct __explicit_init__<Type<typename __as_object__<T>::type>, T> :
 /// NOTE: additional metaclass constructors for py::Type are defined in common.h
 
 
-/* Calling a py::Type is the same as invoking the templated type's constructor. */
+/* Calling a py::Type is the same as invoking the inner type's constructor. */
 template <typename T, typename... Args> requires (std::constructible_from<T, Args...>)
 struct __call__<Type<T>, Args...> : Returns<T> {
     static auto operator()(const Type<T>& self, Args&&... args) {
@@ -921,14 +923,28 @@ struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
 };
 
 
+// TODO: if the type originates from C++, then I can also expose the additional
+// functionality offered by BertrandMeta.
+
+
 ////////////////////
 ////    META    ////
 ////////////////////
 
 
-/* An instance of Bertrand's metatype, which is used to represent C++ types that have
-been exposed to Python. */
-struct BertrandMeta : Object {
+template <>
+struct Type<BertrandMeta>;
+
+
+template <>
+struct Interface<BertrandMeta> {};
+template <>
+struct Interface<Type<BertrandMeta>> {};
+
+
+/* An instance of Bertrand's metatype, which is used to represent all C++ types that
+have been exposed to Python. */
+struct BertrandMeta : Object, Interface<BertrandMeta> {
 
     BertrandMeta(Handle h, borrowed_t t) : Object(h, t) {}
     BertrandMeta(Handle h, stolen_t t) : Object(h, t) {}
@@ -950,21 +966,21 @@ struct BertrandMeta : Object {
 
 /* Bertrand's metatype, which is used to expose C++ classes to Python. */
 template <>
-struct Type<BertrandMeta> : Object, impl::TypeTag {
-
-    /* The python representation of the metatype.  Whenever `TypeTag::def` is
-    instantiated with a C++ class, it will generate an instance of this type. */
-    struct __python__ : public TypeTag::def<__python__, BertrandMeta> {
+struct Type<BertrandMeta> : Object, Interface<Type<BertrandMeta>>, impl::TypeTag {
+    struct __python__ : TypeTag::def<__python__, BertrandMeta> {
         static constexpr StaticStr __doc__ =
-R"doc(A shared metaclass for all Bertrand-generated Python types.
+R"doc(A shared metaclass for all Bertrand extension types.
 
 Notes
 -----
 This metaclass identifies all types that originate from C++.  It is used to
 automatically demangle the type name and implement certain common behaviors that are
-shared across all Bertrand types, such as template subscripting via `__getitem__` and
-accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
+shared across all types, such as template subscripting via `__getitem__` and accurate
+`isinstance()` checks based on Bertrand's C++ control structures.)doc";
 
+        /* C++ needs a few extra hooks to accurately model C++ types in a way that
+        shares state.  The getters and setters decribed here are implemented according
+        to Python's `tp_getset` slot, and describe class-level computed properties. */
         struct Get {
             PyObject*(*func)(PyObject*, void*);
             void* closure;
@@ -976,6 +992,9 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         using Getters = std::unordered_map<std::string_view, Get>;
         using Setters = std::unordered_map<std::string_view, Set>;
 
+        /* The `instancecheck` and `subclasscheck` function pointers are used to back
+        the metaclass's Python-level `__instancecheck__()` and `__subclasscheck()__`
+        methods, and are automatically set during construction for each type. */
         PyTypeObject base;
         bool(*instancecheck)(__python__*, PyObject*);
         bool(*subclasscheck)(__python__*, PyObject*);
@@ -984,13 +1003,14 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         PyObject* demangled;
         PyObject* template_instantiations;
 
-        /* Get a new reference to the metatype from the root module. */
+        /* Get a new reference to the metatype from the global `bertrand.python`
+        module. */
         static Type __import__();  // TODO: defined in __init__.h alongside "bertrand.python" module {
-        //     return impl::get_type<BertrandMeta>(Module<"bertrand">());
+        //     return impl::get_type<BertrandMeta>(Module<"bertrand.python">());
         // }
 
         /* The metaclass can't use Bindings, since they depend on the metaclass to
-        function.  Otherwise, it uses the same export machinery as all other types. */
+        function.  The logic is fundamentally the same, however. */
         template <StaticStr ModName>
         static Type __export__(Module<ModName> module) {
             static PyType_Slot slots[] = {
@@ -1027,14 +1047,14 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
             return reinterpret_steal<Type>(cls);
         }
 
-        /* Create a trivial instance of the metaclass to serve as a public interface
-        for a class template hierarchy.  The interface is not usable on its own
-        except to provide access to its instantiations, type checks against them,
-        and a central point for documentation. */
+        /* Create a trivial instance of the metaclass to serve as a Python entry point
+        for a C++ template hierarchy.  The interface type is not usable on its own
+        except to provide access to its C++ instantiations, as well as efficient type
+        checks against them and a central point for documentation. */
         template <StaticStr Name, typename Cls, typename... Bases, StaticStr ModName>
         static BertrandMeta stub_type(Module<ModName>& parent) {
             static PyType_Slot slots[] = {
-                {Py_tp_doc, const_cast<char*>(__doc__.buffer)},  // TODO: incorrect.  The stub type is a separate type object from the metatype itself
+                {Py_tp_doc, const_cast<char*>(__doc__.buffer)},  // TODO: incorrect.  The stub type is separate from the metatype itself
                 {0, nullptr}
             };
             static PyType_Spec spec = {
@@ -1082,33 +1102,14 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
             return reinterpret_steal<BertrandMeta>(reinterpret_cast<PyObject*>(cls));
         };
 
-        /* Free the type name and any template instantiations when an instance of this
-        type falls out of scope. */
-        static void __dealloc__(__python__* cls) {
-            PyObject_GC_UnTrack(cls);
-            cls->getters.~Getters();
-            cls->setters.~Setters();
-            Py_XDECREF(cls->demangled);
-            Py_XDECREF(cls->template_instantiations);
-            PyTypeObject* type = Py_TYPE(cls);
-            type->tp_free(cls);
-            Py_DECREF(type);  // required for heap types
-        }
-
-        /* Track instances of this type with Python's cyclic garbage collector. */
-        static int __traverse__(__python__* cls, visitproc visit, void* arg) {
-            Py_VISIT(cls->demangled);
-            Py_VISIT(cls->template_instantiations);
-            Py_VISIT(Py_TYPE(cls));  // required for heap types
-            return 0;
-        }
-
-        /* `repr(cls)` demangles the C++ type name.  */
+        /* `repr(cls)` displays the demangled C++ name.  */
         static PyObject* __repr__(__python__* cls) {
             return Py_XNewRef(cls->demangled);
         }
 
-        /* `len(cls)` yields the number of template instantiations it is tracking. */
+        /* `len(cls)` yields the number of template instantiations registered to this
+        type.  This will always succeed: testing `if cls` in Python is sufficient to
+        determine whether it is a template interface that requires instantiation. */
         static Py_ssize_t __len__(__python__* cls) {
             return cls->template_instantiations ?
                 PyDict_Size(cls->template_instantiations) : 0;
@@ -1189,7 +1190,7 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
             }
         }
 
-        /* `cls.` allows class-level variables and properties with shared state. */
+        /* `cls.` allows access to class-level variables with shared state. */
         static PyObject* __getattr__(__python__* cls, PyObject* attr) {
             Py_ssize_t size;
             const char* name = PyUnicode_AsUTF8AndSize(attr, &size);
@@ -1213,8 +1214,7 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
             return nullptr;
         }
 
-        /* `cls. = ...` allows assignment to class-level variables and properties with
-        shared state. */
+        /* `cls. = ...` allows assignment to class-level variables with shared state. */
         static int __setattr__(__python__* cls, PyObject* attr, PyObject* value) {
             Py_ssize_t size;
             const char* name = PyUnicode_AsUTF8AndSize(attr, &size);
@@ -1240,7 +1240,7 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         }
 
         /* isinstance(obj, cls) forwards the behavior of the __isinstance__ control
-        struct and accounts for template instantiations. */
+        struct and accounts for possible template instantiations. */
         static PyObject* __instancecheck__(__python__* cls, PyObject* instance) {
             try {
                 return PyBool_FromLong(cls->instancecheck(cls, instance));
@@ -1251,7 +1251,7 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
         }
 
         /* issubclass(sub, cls) forwards the behavior of the __issubclass__ control
-        struct and accounts for template instantiations. */
+        struct and accounts for possible template instantiations. */
         static PyObject* __subclasscheck__(__python__* cls, PyObject* subclass) {
             try {
                 return PyBool_FromLong(cls->subclasscheck(cls, subclass));
@@ -1259,6 +1259,24 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
                 Exception::to_python();
                 return nullptr;
             }
+        }
+
+        static void __dealloc__(__python__* cls) {
+            PyObject_GC_UnTrack(cls);
+            cls->getters.~Getters();
+            cls->setters.~Setters();
+            Py_XDECREF(cls->demangled);
+            Py_XDECREF(cls->template_instantiations);
+            PyTypeObject* type = Py_TYPE(cls);
+            type->tp_free(cls);
+            Py_DECREF(type);  // required for heap types
+        }
+
+        static int __traverse__(__python__* cls, visitproc visit, void* arg) {
+            Py_VISIT(cls->demangled);
+            Py_VISIT(cls->template_instantiations);
+            Py_VISIT(Py_TYPE(cls));  // required for heap types
+            return 0;
         }
 
         /* Helper to ensure the demangled name is always consistent. */
@@ -1269,6 +1287,8 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
 
     private:
 
+        /* A candidate for the `instancecheck` function pointer to be used for stub
+        types. */
         static bool template_instancecheck(__python__* cls, PyObject* instance) {
             if (PyType_IsSubtype(
                 Py_TYPE(instance),
@@ -1293,6 +1313,8 @@ accurate `isinstance()` checks based on Bertrand's C++ control structures.)doc";
             return false;
         }
 
+        /* A candidate for the `subclasscheck` function pointer to be used for stub
+        types. */
         static bool template_subclasscheck(__python__* cls, PyObject* subclass) {
             if (PyType_Check(subclass)) {
                 if (PyType_IsSubtype(
@@ -2313,7 +2335,7 @@ namespace impl {
     template <typename CRTP, typename Wrapper>
     template <StaticStr ModName>
     struct TypeTag::def<CRTP, Wrapper, void>::Bindings :
-        public BaseDef<CRTP, Wrapper, void>::template Bindings<ModName>
+        BaseDef<CRTP, Wrapper, void>::template Bindings<ModName>
     {
         using PyMeta = typename Type<BertrandMeta>::__python__;
         using Base = BaseDef<CRTP, Wrapper, void>;
@@ -2353,7 +2375,7 @@ namespace impl {
         }
     };
 
-    template <typename CRTP, typename Wrapper, is_iterable CppType>
+    template <typename CRTP, typename Wrapper, iterable CppType>
     struct TypeTag::DetectForwardIterable<CRTP, Wrapper, CppType> :
         DetectHashable<CRTP, Wrapper, CppType>
     {
@@ -2439,7 +2461,7 @@ namespace impl {
         }
     };
 
-    template <typename CRTP, typename Wrapper, is_reverse_iterable CppType>
+    template <typename CRTP, typename Wrapper, reverse_iterable CppType>
     struct TypeTag::DetectReverseIterable<CRTP, Wrapper, CppType> :
         DetectForwardIterable<CRTP, Wrapper, CppType>
     {
@@ -2540,7 +2562,7 @@ namespace impl {
         using Variant = std::variant<CppType, CppType*, const CppType*>;
 
         template <StaticStr ModName>
-        struct Bindings : public BaseDef<CRTP, Wrapper, CppType>::template Bindings<ModName> {
+        struct Bindings : BaseDef<CRTP, Wrapper, CppType>::template Bindings<ModName> {
             using PyMeta = typename Type<BertrandMeta>::__python__;
             using Base = BaseDef<CRTP, Wrapper, CppType>;
             using Base::Base;
@@ -2943,25 +2965,25 @@ namespace impl {
                 Py_TPFLAGS_BASETYPE | Py_TPFLAGS_MANAGED_WEAKREF | Py_TPFLAGS_MANAGED_DICT
             ) {
                 auto result = Base::finalize(tp_flags);
-                if constexpr (impl::is_iterable<CppType>) {
+                if constexpr (impl::iterable<CppType>) {
                     register_iterator<Iterator<
                         decltype(std::ranges::begin(std::declval<CppType>())),
                         decltype(std::ranges::end(std::declval<CppType>()))
                     >>(result);
                 }
-                if constexpr (impl::is_iterable<const CppType>) {
+                if constexpr (impl::iterable<const CppType>) {
                     register_iterator<Iterator<
                         decltype(std::ranges::begin(std::declval<const CppType>())),
                         decltype(std::ranges::end(std::declval<const CppType>()))
                     >>(result);
                 }
-                if constexpr (impl::is_reverse_iterable<CppType>) {
+                if constexpr (impl::reverse_iterable<CppType>) {
                     register_iterator<Iterator<
                         decltype(std::ranges::rbegin(std::declval<CppType>())),
                         decltype(std::ranges::rend(std::declval<CppType>()))
                     >>(result);
                 }
-                if constexpr (impl::is_reverse_iterable<const CppType>) {
+                if constexpr (impl::reverse_iterable<const CppType>) {
                     register_iterator<Iterator<
                         decltype(std::ranges::rbegin(std::declval<const CppType>())),
                         decltype(std::ranges::rend(std::declval<const CppType>()))
@@ -3075,7 +3097,7 @@ namespace impl {
         with Python's cyclic garbage collector. */
         static int __traverse__(CRTP* self, visitproc visit, void* arg) {
             if constexpr (
-                impl::is_iterable<CppType> &&
+                impl::iterable<CppType> &&
                 std::derived_from<std::decay_t<impl::iter_type<CppType>>, Object>
             ) {
                 if (std::holds_alternative<CppType>(self->m_cpp)) {
@@ -3094,7 +3116,7 @@ namespace impl {
         destructor. */
         static int __clear__(CRTP* self) {
             if constexpr (
-                impl::is_iterable<CppType> &&
+                impl::iterable<CppType> &&
                 std::derived_from<std::decay_t<impl::iter_type<CppType>>, Object>
             ) {
                 if (std::holds_alternative<CppType>(self->m_cpp)) {
@@ -3343,4 +3365,4 @@ BUILTIN_EXCEPTION_TYPE(ValueError, PyExc_ValueError)
 }  // namespace py
 
 
-#endif  // BERTRAND_PYTHON_COMMON_TYPE_H
+#endif

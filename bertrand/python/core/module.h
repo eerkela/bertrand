@@ -1,5 +1,5 @@
-#ifndef BERTRAND_PYTHON_COMMON_MODULE_H
-#define BERTRAND_PYTHON_COMMON_MODULE_H
+#ifndef BERTRAND_PYTHON_CORE_MODULE_H
+#define BERTRAND_PYTHON_CORE_MODULE_H
 
 
 #include "declarations.h"
@@ -41,7 +41,7 @@ namespace impl {
         )->template _get_type<T>();
     }
 
-    struct ModuleTag : public BertrandTag {
+    struct ModuleTag : BertrandTag {
     protected:
         /* A CRTP base class that provides helpers for writing module initialization
         functions to provide entry points for the Python interpreter.  Every specialization
@@ -80,14 +80,14 @@ namespace impl {
             https://docs.python.org/3/howto/isolating-extensions.html
         */
         template <typename CRTP, StaticStr ModName>
-        struct def : public BertrandTag {
+        struct def : BertrandTag {
         protected:
             /* A helper that is passed to Module<"name">::__python__::__export__() in
             order to simplify the creation and population of a module's type object and
             contents.  The `__export__()` method should always return the result of
             this object's `finalize()` method, which returns a PyObject* that marks the
             module for multi-phase initialization within the Python interpreter. */
-            struct Bindings : public BertrandTag {
+            struct Bindings : BertrandTag {
             private:
                 using Meta = Type<BertrandMeta>::__python__;
                 inline static std::vector<PyMethodDef> tp_methods;
@@ -1014,4 +1014,4 @@ struct __init__<Type<Mod>>                                  : Returns<Type<Mod>>
 }  // namespace py
 
 
-#endif  // BERTRAND_PYTHON_COMMON_MODULE_H
+#endif

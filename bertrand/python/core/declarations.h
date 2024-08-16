@@ -1,5 +1,5 @@
-#ifndef BERTRAND_PYTHON_COMMON_DECLARATIONS_H
-#define BERTRAND_PYTHON_COMMON_DECLARATIONS_H
+#ifndef BERTRAND_PYTHON_CORE_DECLARATIONS_H
+#define BERTRAND_PYTHON_CORE_DECLARATIONS_H
 
 #include <algorithm>
 #include <cstddef>
@@ -62,19 +62,19 @@ using bertrand::StaticStr;
 namespace impl {
     struct BertrandTag {};
     struct TypeTag;
-    struct IterTag : public BertrandTag {};
-    struct ArgTag : public BertrandTag {};
-    struct FunctionTag : public BertrandTag {};
+    struct IterTag : BertrandTag {};
+    struct ArgTag : BertrandTag {};
+    struct FunctionTag : BertrandTag {};
     struct ModuleTag;
-    struct TupleTag : public BertrandTag {};
-    struct ListTag : public BertrandTag{};
-    struct SetTag : public BertrandTag {};
-    struct FrozenSetTag : public BertrandTag {};
-    struct KeyTag : public BertrandTag {};
-    struct ValueTag : public BertrandTag {};
-    struct ItemTag : public BertrandTag {};
-    struct DictTag : public BertrandTag {};
-    struct MappingProxyTag : public BertrandTag {};
+    struct TupleTag : BertrandTag {};
+    struct ListTag : BertrandTag{};
+    struct SetTag : BertrandTag {};
+    struct FrozenSetTag : BertrandTag {};
+    struct KeyTag : BertrandTag {};
+    struct ValueTag : BertrandTag {};
+    struct ItemTag : BertrandTag {};
+    struct DictTag : BertrandTag {};
+    struct MappingProxyTag : BertrandTag {};
 
     static std::string demangle(const char* name) {
         #if defined(__GNUC__) || defined(__clang__)
@@ -130,7 +130,7 @@ namespace impl {
 
 /* A static RAII guard that initializes the Python interpreter the first time a Python
 object is created and finalizes it when the program exits. */
-struct Interpreter : public impl::BertrandTag {
+struct Interpreter : impl::BertrandTag {
 
     /* Ensure that the interpreter is active within the given context.  This is
     called internally whenever a Python object is created from pure C++ inputs, and is
@@ -214,7 +214,7 @@ struct MappingProxy;
 
 
 /* Base class for disabled control structures. */
-struct Disable : public impl::BertrandTag {
+struct Disable : impl::BertrandTag {
     static constexpr bool enable = false;
 };
 
@@ -222,7 +222,7 @@ struct Disable : public impl::BertrandTag {
 /* Base class for enabled control structures.  Encodes the return type as a template
 parameter. */
 template <typename T>
-struct Returns : public impl::BertrandTag {
+struct Returns : impl::BertrandTag {
     static constexpr bool enable = true;
     using type = T;
 };
@@ -490,16 +490,12 @@ namespace impl {
     lookups.  Using this class ensures that only one string is allocated per attribute
     name, even if that name is repeated across multiple contexts. */
     template <StaticStr name>
-    struct TemplateString : public BertrandTag {
+    struct TemplateString : BertrandTag {
         inline static PyObject* ptr = (Interpreter::init(), PyUnicode_FromStringAndSize(
             name,
             name.size()
         ));  // NOTE: string will be garbage collected at shutdown
     };
-
-    template <typename Obj, typename Key> requires (__getitem__<Obj, Key>::enable)
-    struct Item;
-    struct SliceInitializer;
 
     template <typename T>
     using iter_type = decltype(*std::ranges::begin(std::declval<T>()));
@@ -518,11 +514,11 @@ namespace impl {
     concept is_generic = is_generic_helper<T>;
 
     template <typename T, typename = void>
-    constexpr bool is_module_helper = false;
+    constexpr bool has_interface_helper = false;
     template <typename T>
-    constexpr bool is_module_helper<T, std::void_t<typename T::__python__>> = true;
+    constexpr bool has_interface_helper<T, std::void_t<Interface<T>>> = true;
     template <typename T>
-    concept is_module = std::derived_from<T, ModuleTag> && is_module_helper<T>;
+    concept has_interface = has_interface_helper<T>;
 
     template <typename T, typename = void>
     constexpr bool has_type_helper = false;
@@ -532,15 +528,23 @@ namespace impl {
     concept has_type = has_type_helper<T>;
 
     template <typename T, typename = void>
-    constexpr bool has_interface_helper = false;
+    constexpr bool is_type_helper = false;
     template <typename T>
-    constexpr bool has_interface_helper<T, std::void_t<Interface<T>>> = true;
+    constexpr bool is_type_helper<T, std::void_t<typename T::__python__>> = true;
     template <typename T>
-    concept has_interface = has_interface_helper<T>;
+    concept is_type = std::derived_from<T, TypeTag> && is_type_helper<T>;
+
+    template <typename T, typename = void>
+    constexpr bool is_module_helper = false;
+    template <typename T>
+    constexpr bool is_module_helper<T, std::void_t<typename T::__python__>> = true;
+    template <typename T>
+    concept is_module = std::derived_from<T, ModuleTag> && is_module_helper<T>;
 
     template <typename T, StaticStr Name, typename... Args>
     concept attr_is_callable_with =
         __getattr__<T, Name>::enable &&
+        std::derived_from<typename __getattr__<T, Name>::type, FunctionTag> &&
         __getattr__<T, Name>::type::template invocable<Args...>;
 
     template <typename From, typename To>
@@ -554,23 +558,23 @@ namespace impl {
     };
 
     template <typename T>
-    concept is_iterable = requires(T t) {
+    concept iterable = requires(T t) {
         { std::ranges::begin(t) } -> std::input_or_output_iterator;
         { std::ranges::end(t) } -> std::input_or_output_iterator;
     };
 
     template <typename T, typename Value>
-    concept yields = is_iterable<T> && std::convertible_to<iter_type<T>, Value>;
+    concept yields = iterable<T> && std::convertible_to<iter_type<T>, Value>;
 
     template <typename T>
-    concept is_reverse_iterable = requires(T t) {
+    concept reverse_iterable = requires(T t) {
         { std::ranges::rbegin(t) } -> std::input_or_output_iterator;
         { std::ranges::rend(t) } -> std::input_or_output_iterator;
     };
 
     template <typename T, typename Value>
     concept yields_reverse =
-        is_reverse_iterable<T> && std::convertible_to<reverse_iter_type<T>, Value>;
+        reverse_iterable<T> && std::convertible_to<reverse_iter_type<T>, Value>;
 
     template <typename T>
     concept iterator_like = requires(T begin, T end) {
@@ -594,7 +598,7 @@ namespace impl {
     };
 
     template <typename T>
-    concept sequence_like = is_iterable<T> && has_size<T> && requires(T t) {
+    concept sequence_like = iterable<T> && has_size<T> && requires(T t) {
         { t[0] } -> std::convertible_to<iter_type<T>>;
     };
 
@@ -637,11 +641,11 @@ namespace impl {
     };
 
     template <typename T>
-    concept yields_pairs = is_iterable<T> && pair_like<iter_type<T>>;
+    concept yields_pairs = iterable<T> && pair_like<iter_type<T>>;
 
     template <typename T, typename First, typename Second>
     concept yields_pairs_with =
-        is_iterable<T> && pair_like_with<iter_type<T>, First, Second>;
+        iterable<T> && pair_like_with<iter_type<T>, First, Second>;
 
     template <typename T>
     concept hashable = requires(T t) {
@@ -1000,19 +1004,19 @@ namespace impl {
 
     template <typename T>
     concept has_keys = requires(T t) {
-        { t.keys() } -> is_iterable;
+        { t.keys() } -> iterable;
         { t.keys() } -> yields<typename std::decay_t<T>::key_type>;
     };
 
     template <typename T>
     concept has_values = requires(T t) {
-        { t.values() } -> is_iterable;
+        { t.values() } -> iterable;
         { t.values() } -> yields<typename std::decay_t<T>::mapped_type>;
     };
 
     template <typename T>
     concept has_items = requires(T t) {
-        { t.items() } -> is_iterable;
+        { t.items() } -> iterable;
         { t.items() } -> yields_pairs_with<
             typename std::decay_t<T>::key_type,
             typename std::decay_t<T>::mapped_type
@@ -1206,42 +1210,42 @@ namespace impl {
      */
 
     template <typename L, typename R>
-    struct lt_comparable : public BertrandTag {
+    struct lt_comparable : BertrandTag {
         static constexpr bool value = requires(L a, R b) {
             { a < b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct le_comparable : public BertrandTag {
+    struct le_comparable : BertrandTag {
         static constexpr bool value = requires(L a, R b) {
             { a <= b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct eq_comparable : public BertrandTag {
+    struct eq_comparable : BertrandTag {
         static constexpr bool value = requires(L a, R b) {
             { a == b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct ne_comparable : public BertrandTag {
+    struct ne_comparable : BertrandTag {
         static constexpr bool value = requires(L a, R b) {
             { a != b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct ge_comparable : public BertrandTag {
+    struct ge_comparable : BertrandTag {
         static constexpr bool value = requires(L a, R b) {
             { a >= b } -> std::convertible_to<bool>;
         };
     };
 
     template <typename L, typename R>
-    struct gt_comparable : public BertrandTag {
+    struct gt_comparable : BertrandTag {
         static constexpr bool value = requires(L a, R b) {
             { a > b } -> std::convertible_to<bool>;
         };
@@ -1252,10 +1256,10 @@ namespace impl {
         typename L,
         typename R
     >
-    struct Broadcast : public BertrandTag {
+    struct Broadcast : BertrandTag {
         template <typename T>
         struct deref { using type = T; };
-        template <is_iterable T>
+        template <iterable T>
         struct deref<T> { using type = iter_type<T>; };
 
         static constexpr bool value = Condition<
@@ -1271,7 +1275,7 @@ namespace impl {
         typename T3,
         typename T4
     >
-    struct Broadcast<Condition, std::pair<T1, T2>, std::pair<T3, T4>> : public BertrandTag {
+    struct Broadcast<Condition, std::pair<T1, T2>, std::pair<T3, T4>> : BertrandTag {
         static constexpr bool value =
             Broadcast<Condition, T1, std::pair<T3, T4>>::value &&
             Broadcast<Condition, T2, std::pair<T3, T4>>::value;
@@ -1283,7 +1287,7 @@ namespace impl {
         typename T1,
         typename T2
     >
-    struct Broadcast<Condition, L, std::pair<T1, T2>> : public BertrandTag {
+    struct Broadcast<Condition, L, std::pair<T1, T2>> : BertrandTag {
         static constexpr bool value =
             Broadcast<Condition, L, T1>::value && Broadcast<Condition, L, T2>::value;
     };
@@ -1294,7 +1298,7 @@ namespace impl {
         typename T2,
         typename R
     >
-    struct Broadcast<Condition, std::pair<T1, T2>, R> : public BertrandTag {
+    struct Broadcast<Condition, std::pair<T1, T2>, R> : BertrandTag {
         static constexpr bool value =
             Broadcast<Condition, T1, R>::value && Broadcast<Condition, T2, R>::value;
     };
@@ -1304,7 +1308,7 @@ namespace impl {
         typename... Ts1,
         typename... Ts2
     >
-    struct Broadcast<Condition, std::tuple<Ts1...>, std::tuple<Ts2...>> : public BertrandTag {
+    struct Broadcast<Condition, std::tuple<Ts1...>, std::tuple<Ts2...>> : BertrandTag {
         static constexpr bool value =
             (Broadcast<Condition, Ts1, std::tuple<Ts2...>>::value && ...);
     };
@@ -1314,7 +1318,7 @@ namespace impl {
         typename L,
         typename... Ts
     >
-    struct Broadcast<Condition, L, std::tuple<Ts...>> : public BertrandTag {
+    struct Broadcast<Condition, L, std::tuple<Ts...>> : BertrandTag {
         static constexpr bool value =
             (Broadcast<Condition, L, Ts>::value && ...);
     };
@@ -1324,7 +1328,7 @@ namespace impl {
         typename... Ts,
         typename R
     >
-    struct Broadcast<Condition, std::tuple<Ts...>, R> : public BertrandTag {
+    struct Broadcast<Condition, std::tuple<Ts...>, R> : BertrandTag {
         static constexpr bool value =
             (Broadcast<Condition, Ts, R>::value && ...);
     };
@@ -1336,7 +1340,7 @@ namespace impl {
 to invoke a Python-level `@property` deleter, `__delattr__()`, or `__delitem__()`
 method.  This is the closest equivalent to replicating Python's `del` keyword in the
 cases where it matters, and is not superceded by automatic reference counting. */
-struct del : public impl::BertrandTag {};
+struct del : impl::BertrandTag {};
 
 
 /* Retrieve the pointer backing a Python object. */

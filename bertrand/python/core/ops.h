@@ -1,5 +1,5 @@
-#ifndef BERTRAND_PYTHON_COMMON_OPS_H
-#define BERTRAND_PYTHON_COMMON_OPS_H
+#ifndef BERTRAND_PYTHON_CORE_OPS_H
+#define BERTRAND_PYTHON_CORE_OPS_H
 
 #include "declarations.h"
 #include "except.h"
@@ -647,7 +647,7 @@ public:
 
 /* Represents a positional parameter pack obtained by dereferencing a Python
 object. */
-template <std::derived_from<Object> T> requires (impl::is_iterable<T>)
+template <std::derived_from<Object> T> requires (impl::iterable<T>)
 struct ArgPack {
     T value;
 
@@ -663,14 +663,14 @@ struct ArgPack {
 };
 
 
-template <std::derived_from<Object> Container> requires (impl::is_iterable<Container>)
+template <std::derived_from<Object> Container> requires (impl::iterable<Container>)
 [[nodiscard]] auto operator*(const Container& self) {
     return ArgPack<Container>{self};
 }
 
 
 template <std::derived_from<Object> Container, std::ranges::view View>
-    requires (impl::is_iterable<Container>)
+    requires (impl::iterable<Container>)
 [[nodiscard]] auto operator->*(const Container& container, const View& view) {
     return std::views::all(container) | view;
 }
@@ -679,7 +679,7 @@ template <std::derived_from<Object> Container, std::ranges::view View>
 template <std::derived_from<Object> Container, typename Func>
     requires (
         !std::ranges::view<Func> &&
-        impl::is_iterable<Container> &&
+        impl::iterable<Container> &&
         std::is_invocable_v<Func, impl::iter_type<Container>>
     )
 [[nodiscard]] auto operator->*(const Container& container, Func func) {

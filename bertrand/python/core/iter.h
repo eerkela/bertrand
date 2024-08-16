@@ -1,5 +1,5 @@
-#ifndef BERTRAND_PYTHON_COMMON_ITER_H
-#define BERTRAND_PYTHON_COMMON_ITER_H
+#ifndef BERTRAND_PYTHON_CORE_ITER_H
+#define BERTRAND_PYTHON_CORE_ITER_H
 
 #include "declarations.h"
 #include "except.h"
@@ -13,6 +13,19 @@ namespace py {
 ////////////////////////
 ////    ITERATOR    ////
 ////////////////////////
+
+
+template <std::derived_from<Object> Return>
+struct Type<Iterator<Return>>;
+
+
+template <std::derived_from<Object> Return>
+struct Interface<Iterator<Return>> {};
+template <std::derived_from<Object> Return>
+struct Interface<Type<Iterator<Return>>> {
+    static py::Iterator<Return> __iter__(py::Iterator<Return>& iter);
+    static Return __next__(py::Iterator<Return>& iter);
+};
 
 
 /* A generic Python iterator with a static value type.
@@ -31,7 +44,7 @@ for internal use to back the default result of the `begin()` and `end()` operato
 no specialized C++ iterator can be found.  In that case, its value type is set to the
 `T` in an `__iter__<Container> : Returns<T> {};` specialization. */
 template <std::derived_from<Object> Return = Object>
-struct Iterator : Object, impl::IterTag {
+struct Iterator : Object, Interface<Iterator<Return>>, impl::IterTag {
 
     Iterator(Handle h, borrowed_t t) : Object(h, t) {}
     Iterator(Handle h, stolen_t t) : Object(h, t) {}
@@ -45,6 +58,49 @@ struct Iterator : Object, impl::IterTag {
     template <typename... Args> requires (explicit_ctor<Iterator>::template enable<Args...>)
     explicit Iterator(Args&&... args) : Object(
         explicit_ctor<Iterator>{},
+        std::forward<Args>(args)...
+    ) {}
+
+};
+
+
+/* The type of a generic Python iterator.  This is identical to the
+`collections.abc.Iterator` abstract base class, and will match any Python iterator
+regardless of return type. */
+template <typename Return>
+struct Type<Iterator<Return>> : Object, Interface<Type<Iterator<Return>>>, impl::TypeTag {
+    struct __python__ : TypeTag::def<__python__, py::Iterator<Return>> {
+        static Type __import__() {
+            PyObject* collections_abc = PyImport_Import(
+                impl::TemplateString<"collections.abc">::ptr
+            );
+            if (collections_abc == nullptr) {
+                Exception::from_python();
+            }
+            PyObject* iterator = PyObject_GetAttr(
+                collections_abc,
+                impl::TemplateString<"Iterator">::ptr
+            );
+            Py_DECREF(collections_abc);
+            if (iterator == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Type>(iterator);
+        }
+    };
+
+    Type(Handle h, borrowed_t t) : Object(h, t) {}
+    Type(Handle h, stolen_t t) : Object(h, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Type>::template enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Type>::template enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
         std::forward<Args>(args)...
     ) {}
 
@@ -156,60 +212,12 @@ struct __iter__<Iterator<T>> : Returns<T> {
 
 template <typename T, typename Return>
 struct __contains__<T, Iterator<Return>> : Returns<bool> {};
+
+
 template <typename Return>
 struct __getattr__<Iterator<Return>, "__iter__"> : Returns<Function<Iterator<Return>()>> {};
 template <typename Return>
 struct __getattr__<Iterator<Return>, "__next__"> : Returns<Function<Return()>> {};
-
-
-////////////////////
-////    TYPE    ////
-////////////////////
-
-
-/* The type of a generic Python iterator.  This is identical to the
-`collections.abc.Iterator` abstract base class, and will match any Python iterator
-regardless of return type. */
-template <typename Return>
-struct Type<Iterator<Return>> : Object, impl::TypeTag {
-
-    struct __python__ : public TypeTag::def<__python__, Iterator<Return>> {
-        static auto __import__();
-    };
-
-    Type(Handle h, borrowed_t t) : Object(h, t) {}
-    Type(Handle h, stolen_t t) : Object(h, t) {}
-
-    template <typename... Args> requires (implicit_ctor<Type>::template enable<Args...>)
-    Type(Args&&... args) : Object(
-        implicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Type>::template enable<Args...>)
-    explicit Type(Args&&... args) : Object(
-        explicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    static Iterator<Return> __iter__(Iterator<Return>& iter) {
-        return iter;
-    }
-
-    static Return __next__(Iterator<Return>& iter) {
-        PyObject* next = PyIter_Next(ptr(iter));
-        if (next == nullptr) {
-            if (PyErr_Occurred()) {
-                Exception::from_python();
-            }
-            throw StopIteration();
-        }
-        return reinterpret_steal<Return>(next);
-    }
-
-};
-
-
 template <typename Return>
 struct __getattr__<Type<Iterator<Return>>, "__iter__"> : Returns<Function<
     Iterator<Return>(Iterator<Return>&)
@@ -218,6 +226,29 @@ template <typename Return>
 struct __getattr__<Type<Iterator<Return>>, "__next__"> : Returns<Function<
     Return(Iterator<Return>&)
 >> {};
+
+
+template <std::derived_from<Object> Return>
+auto Interface<Type<py::Iterator<Return>>>::__iter__(py::Iterator<Return>& iter)
+    -> py::Iterator<Return>
+{
+    return iter;
+}
+
+
+template <std::derived_from<Object> Return>
+auto Interface<Type<py::Iterator<Return>>>::__next__(py::Iterator<Return>& iter)
+    -> Return
+{
+    PyObject* next = PyIter_Next(ptr(iter));
+    if (next == nullptr) {
+        if (PyErr_Occurred()) {
+            Exception::from_python();
+        }
+        throw StopIteration();
+    }
+    return reinterpret_steal<Return>(next);
+}
 
 
 /////////////////////////
