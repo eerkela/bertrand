@@ -7,14 +7,6 @@
 #include "object.h"
 
 
-// TODO: the only way to get multiple inheritance to work is to implement every class's
-// interface as a CRTP mixin so they all share a single object pointer.  That way,
-// you could always inherit from Object and then add in the other interfaces as needed.
-// Perhaps this can replace tag classes to some extent as well.
-
-// py::Interface<py::List<T>>.
-
-
 namespace py {
 
 
@@ -672,12 +664,46 @@ namespace impl {
 ////////////////////
 
 
-/* A reference to a Python type object.  Every subclass of `py::Object` has a
-corresponding specialization, which is used to replicate the python `type` statement in
-C++.  Specializations can use this opportunity to statically type the object's fields
-and correctly model static attributes/methods in C++. */
-template <typename T = Object>
-class Type;
+template <>
+struct Type<Handle>;
+template <>
+struct Type<Object>;
+
+
+template <>
+struct Interface<Type<Handle>> {};
+template <>
+struct Interface<Type<Object>> {};
+
+
+/* `Type<Handle>` is implemented for completeness, but is identical to `Type<Object>`
+(the default implementation). */
+template <>
+struct Type<Handle> : Object, Interface<Type<Handle>>, impl::TypeTag {
+    struct __python__ : TypeTag::def<__python__, Type> {
+        static Type __import__() {
+            return reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(
+                &PyBaseObject_Type
+            ));
+        }
+    };
+
+    Type(Handle h, borrowed_t t) : Object(h, t) {}
+    Type(Handle h, stolen_t t) : Object(h, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+};
 
 
 /* `Type<Object>` (the default specialization) refers to a dynamic type, which can be
@@ -686,8 +712,7 @@ types can always be implicitly converted to this type, but doing the opposite in
 runtime `issubclass()` check, and can potentially raise a `TypeError`, just like
 `py::Object`. */
 template <>
-struct Type<Object> : Object, impl::TypeTag {
-
+struct Type<Object> : Object, Interface<Type<Object>>, impl::TypeTag {
     struct __python__ : TypeTag::def<__python__, Type> {
         static Type __import__() {
             return reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(

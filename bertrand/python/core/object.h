@@ -115,8 +115,14 @@ namespace impl {
 }
 
 
+template <>
+struct Interface<Handle> {};
+template <>
+struct Interface<Object> {};
+
+
 /* A non-owning reference to a raw Python object. */
-struct Handle : public impl::BertrandTag {
+struct Handle : impl::BertrandTag, Interface<Handle> {
 protected:
     PyObject* m_ptr;
 
@@ -328,7 +334,7 @@ public:
 
 
 /* An owning reference to a dynamically-typed Python object. */
-struct Object : Handle {
+struct Object : Handle, Interface<Object> {
 protected:
     struct borrowed_t {};
     struct stolen_t {};

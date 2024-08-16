@@ -163,7 +163,7 @@ private:
 
 struct Handle;
 struct Object;
-template <typename>
+template <typename T = Object>
 struct Type;
 struct BertrandMeta;
 template <std::derived_from<Object> Return>
@@ -211,13 +211,6 @@ template <std::derived_from<Object> Map>
 struct ItemView;
 template <std::derived_from<Object> Map>
 struct MappingProxy;
-
-
-/* A simple tag struct that can be passed to an index or attribute assignment operator
-to invoke a Python-level `@property` deleter, `__delattr__()`, or `__delitem__()`
-method.  This is the closest equivalent to replicating Python's `del` keyword in the
-cases where it matters, and is not superceded by automatic reference counting. */
-struct del : public impl::BertrandTag {};
 
 
 /* Base class for disabled control structures. */
@@ -347,25 +340,140 @@ template <typename L, typename R>
 struct __ixor__                                             : Disable {};
 
 
-// TODO: maybe I can implement a py::Inherits<CRTP, Bases...> type that is used to
-// collect all the necessary interfaces and expose the default constructors?  It would
-// subclass from Object as well as py::Interface<Bases>..., and 
+/* A Python interface mixin which can be used to reflect multiple inheritance within
+the Object hierarchy.
 
+When mixed with an Object base class, this class allows its interface to be separated
+from the underlying PyObject* pointer, meaning several interfaces can be mixed together
+without affecting the object's binary layout.  Each interface can use
+`reinterpret_cast<Object>(*this)` to access the PyObject* pointer, and can further cast
+that pointer to the a specific C++ type if necessary to access fields at the C++ level.
 
+This class must be specialized for all types that wish to support multiple inheritance.
+Doing so is rather tricky due to the circular dependency between the Object and its
+Interface, so here's a simple example to illustrate how it's done:
+
+    // forward declarations for Object wrapper and its Type
+    struct Wrapper;
+    template <>
+    struct Type<Wrapper>;
+
+    template <>
+    struct Interface<Wrapper> : Interface<Base1>, Interface<Base2>, ... {
+        void foo();  // forward declarations for interface methods
+        int bar() const;
+        static std::string baz();
+    };
+
+    template <>
+    struct Interface<Type<Wrapper>> : Interface<Type<Base1>>, Interface<Type<Base2>>, ... {
+        static void foo(Wrapper& self);  // non-static methods gain a self parameter
+        static int bar(const Wrapper& self);
+        static std::string baz();  // static methods stay the same
+    };
+
+    // define the wrapper itself
+    struct Wrapper : Object, Interface<Wrapper> {
+        Wrapper(Handle h, borrowed_t t) : Object(h, t) {}
+        Wrapper(Handle h, stolen_t t) : Object(h, t) {}
+
+        template <typename... Args> requires (implicit_ctor<Wrapper>::enable<Args...>)
+        Wrapper(Args&&... args) : Object(
+            implicit_ctor<Wrapper>{},
+            std::forward<Args>(args)...
+        ) {}
+
+        template <typename... Args> requires (explicit_ctor<Wrapper>::enable<Args...>)
+        explicit Wrapper(Args&&... args) : Object(
+            explicit_ctor<Wrapper>{},
+            std::forward<Args>(args)...
+        ) {}
+    };
+
+    // define the wrapper's Python type
+    template <>
+    struct Type<Wrapper> : Object, Interface<Type<Wrapper>>, impl::TypeTag {
+        struct __python__ : TypeTag::def<__python__, Wrapper, SomeCppObj> {
+            static Type __export__(Bindings bindings) {
+                // export a C++ object's interface to Python.  The base classes
+                // reflect in Python the interface inheritance we defined here.
+                return bindings.template finalize<Base1, Base2, ...>();
+            }
+        };
+
+        // Alternatively, if the Wrapper represents a pure Python class:
+        struct __python__ : TypeTag::def<__python__, Wrapper> {
+            static Type __import__() {
+                // get a reference to the external Python class, perhaps by importing
+                // a module and getting a reference to the class object
+            }
+        };
+
+        Type(Handle h, borrowed_t t) : Object(h, t) {}
+        Type(Handle h, stolen_t t) : Object(h, t) {}
+
+        template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
+        Type(Args&&... args) : Object(
+            implicit_ctor<Type>{},
+            std::forward<Args>(args)...
+        ) {}
+
+        template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
+        explicit Type(Args&&... args) : Object(
+            explicit_ctor<Type>{},
+            std::forward<Args>(args)...
+        ) {}
+
+    };
+
+    // specialize the necessary control structures
+    template <>
+    struct __getattr__<Wrapper, "foo"> : Returns<Function<void()>> {};
+    template <>
+    struct __getattr__<Wrapper, "bar"> : Returns<Function<int()>> {};
+    template <>
+    struct __getattr__<Wrapper, "baz"> : Returns<Function<std::string()>> {};
+    template <>
+    struct __getattr__<Type<Wrapper>, "foo"> : Returns<Function<void(Wrapper&)>> {};
+    template <>
+    struct __getattr__<Type<Wrapper>, "bar"> : Returns<Function<int(const Wrapper&)>> {};
+    template <>
+    struct __getattr__<Type<Wrapper>, "baz"> : Returns<Function<std::string()>> {};
+    // ... for all supported C++ operators
+
+    // implement the interface methods
+    void Interface<Wrapper>::foo() {
+        print("Hello, world!");
+    }
+    int Interface<Wrapper>::bar() const {
+        return 42;
+    }
+    std::string Interface<Wrapper>::baz() {
+        return "static methods work too!";
+    }
+    void Interface<Type<Wrapper>>::foo(Wrapper& self) {
+        self.foo();
+    }
+    int Interface<Type<Wrapper>>::bar(const Wrapper& self) {
+        return self.bar();
+    }
+    std::string Interface<Type<Wrapper>>::baz() {
+        return Wrapper::baz();
+    }
+
+This pattern is fairly rigid, as the forward declarations are necessary to prevent
+circular dependencies from causing compilation errors.  It also requires that the
+same interface be defined for both the Object and its Type, as well as its Python
+representation, so that they can be treated symmetrically across all languages. 
+However, the upside is that once it has been set up, this block of code is fully
+self-contained, ensures that both the Python and C++ interfaces are kept in sync, and
+can represent complex inheritance hierarchies with ease.  By inheriting from
+interfaces, the C++ Object types can directly mirror any Python class hierarchy, even
+accounting for multiple inheritance.  In fact, with a few `using` declarations to
+resolve conflicts, the Object and its Type can even model Python-style MRO, or expose
+multiple overloads at the same time. */
 template <typename T>
-struct Interface : impl::BertrandTag {
-
-    // TODO: the object's whole C++ interface can be declared here, without affecting
-    // the binary layout of the object itself.  This allows me to potentially model
-    // multiple inheritance in the object wrappers, which would be reflected on both
-    // sides of the language divide.  When I encounter a Python type, I would iterate
-    // over its bases and insert them into the wrapper's Inherits<> base, and when I
-    // encounter a C++ type, I would iterate over its bases using the AST and insert
-    // them into the same Inherits<> base.  If I was very careful, I could then define
-    // using statements to model Python-style MRO or reflect corresponding using
-    // statements in the C++ AST, so that both sides have identical behavior.
-
-};
+struct Interface;
 
 
 namespace impl {
@@ -406,7 +514,6 @@ namespace impl {
     constexpr bool is_generic_helper = false;
     template <template <typename...> typename T, typename... Ts>
     constexpr bool is_generic_helper<T<Ts...>> = true;
-
     template <typename T>
     concept is_generic = is_generic_helper<T>;
 
@@ -414,18 +521,22 @@ namespace impl {
     constexpr bool is_module_helper = false;
     template <typename T>
     constexpr bool is_module_helper<T, std::void_t<typename T::__python__>> = true;
-
     template <typename T>
-    concept is_module =
-        std::derived_from<T, ModuleTag> && is_module_helper<T>;
+    concept is_module = std::derived_from<T, ModuleTag> && is_module_helper<T>;
 
     template <typename T, typename = void>
     constexpr bool has_type_helper = false;
     template <typename T>
     constexpr bool has_type_helper<T, std::void_t<Type<T>>> = true;
-
     template <typename T>
     concept has_type = has_type_helper<T>;
+
+    template <typename T, typename = void>
+    constexpr bool has_interface_helper = false;
+    template <typename T>
+    constexpr bool has_interface_helper<T, std::void_t<Interface<T>>> = true;
+    template <typename T>
+    concept has_interface = has_interface_helper<T>;
 
     template <typename T, StaticStr Name, typename... Args>
     concept attr_is_callable_with =
@@ -1219,6 +1330,13 @@ namespace impl {
     };
 
 }
+
+
+/* A simple tag struct that can be passed to an index or attribute assignment operator
+to invoke a Python-level `@property` deleter, `__delattr__()`, or `__delitem__()`
+method.  This is the closest equivalent to replicating Python's `del` keyword in the
+cases where it matters, and is not superceded by automatic reference counting. */
+struct del : public impl::BertrandTag {};
 
 
 /* Retrieve the pointer backing a Python object. */
