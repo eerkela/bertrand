@@ -1039,6 +1039,8 @@ namespace impl {
     template <typename T>
     concept originates_from_python =
         std::derived_from<std::remove_cvref_t<T>, Object> &&
+        has_type<std::remove_cvref_t<T>> &&
+        is_type<Type<std::remove_cvref_t<T>>> &&
         Type<std::remove_cvref_t<T>>::__python__::__origin__ == Origin::PYTHON;
 
     template <typename T>
@@ -1047,6 +1049,8 @@ namespace impl {
     template <typename T>
     concept originates_from_cpp =
         std::derived_from<std::remove_cvref_t<T>, Object> &&
+        has_type<std::remove_cvref_t<T>> &&
+        is_type<Type<std::remove_cvref_t<T>>> &&
         Type<std::remove_cvref_t<T>>::__python__::__origin__ == Origin::CPP;
 
     template <typename T>

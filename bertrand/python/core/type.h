@@ -3035,6 +3035,8 @@ namespace impl {
         };
 
     public:
+        using t_cpp = CppType;
+
         static constexpr Origin __origin__ = Origin::CPP;
         static constexpr StaticStr __doc__ = [] {
             return (
@@ -3047,6 +3049,24 @@ namespace impl {
 
         template <typename Begin, std::sentinel_for<Begin> End>
         using Iterator = TypeTag::Iterator<Begin, End>;
+
+        /* C++ constructor that forwards to the wrapped object's constructor.  This is
+        called from the Wrapper's C++ constructors to convert a C++ value into a Python
+        object outside the Python-level __new__/__init__ sequence.  It can be overridden
+        if the object type includes more members than just the wrapped C++ object, but
+        this will generally never occur.  Any required fields should be contained
+        within the C++ object itself. */
+        template <typename... Args>
+        static Wrapper __create__(Args&&... args) {
+            PyTypeObject* type = reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()));
+            Object self = reinterpret_steal<Object>(type->tp_alloc(type, 0));
+            if (ptr(self) == nullptr) {
+                Exception::from_python();
+            }
+            CRTP* obj = reinterpret_cast<CRTP*>(ptr(self));
+            new (&obj->m_cpp) CppType(std::forward<Args>(args)...);
+            return reinterpret_steal<Wrapper>(release(self));
+        }
 
         /* tp_repr demangles the exact C++ type name and includes memory address
         similar to Python. */
@@ -3072,11 +3092,6 @@ namespace impl {
                 Exception::to_python();
                 return nullptr;
             }
-        }
-
-        /* tp_str defaults to tp_repr. */
-        static PyObject* __str__(CRTP* self) {
-            return __repr__(self);
         }
 
         /* tp_dealloc calls the ordinary C++ destructor. */
@@ -3269,6 +3284,54 @@ namespace impl {
     };
 
 }
+
+
+/// NOTE: all types must define __as_object__ as they are generated, since it can't be
+/// deduced any other way.
+
+
+template <impl::originates_from_cpp Self, typename T>
+    requires (std::convertible_to<T, typename Type<Self>::__python__::t_cpp>)
+struct __init__<Self, T> : Returns<Self> {
+    static Self operator()(T&& value) {
+        return Type<Self>::__python__::__create__(std::forward<T>(value));
+    }
+};
+
+
+template <impl::originates_from_cpp Self, typename... Args>
+    requires (std::constructible_from<typename Type<Self>::__python__::t_cpp, Args...>)
+struct __explicit_init__<Self, Args...> : Returns<Self> {
+    static Self operator()(Args&&... args) {
+        return Type<Self>::__python__::__create__(std::forward<Args>(args)...);
+    }
+};
+
+
+template <impl::originates_from_cpp Self, typename T>
+    requires (std::convertible_to<typename Type<Self>::__python__::t_cpp, T>)
+struct __cast__<Self, T> : Returns<T> {
+    static T operator()(const Self& self) {
+        return py::unwrap(self);
+    }
+};
+
+
+template <impl::originates_from_cpp Self, typename T>
+    requires (impl::explicitly_convertible_to<typename Type<Self>::__python__::t_cpp, T>)
+struct __explicit_cast__<Self, T> : Returns<T> {
+    static T operator()(const Self& self) {
+        return static_cast<T>(py::unwrap(self));
+    }
+};
+
+
+// TODO: continue defining control structs for all of the rest of the basic behavior.
+// hashability
+// iteration
+// etc. for all possible iterators.  They can all use the default behavior, since
+// that automatically unpacks C++ objects.
+
 
 
 ///////////////////////////////
