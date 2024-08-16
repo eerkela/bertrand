@@ -2,14 +2,6 @@
 #define BERTRAND_PYTHON_COMMON_EXCEPT_H
 
 #include "declarations.h"
-#include "pyerrors.h"
-
-
-// TODO: UnicodeDecodeError requires extra arguments besides PyErr_SetString.  See
-// PyUnicodeDecodeError_Create() for details.
-
-
-// TODO: Type<> specializations will need to be written for all of these.
 
 
 namespace py {
@@ -260,10 +252,6 @@ namespace impl {
         StackTrace(const std::deque<StackFrame>& stack) : stack(stack) {}
         StackTrace(std::deque<StackFrame>&& stack) : stack(std::move(stack)) {}
 
-        [[clang::noinline]] explicit StackTrace(size_t skip = 0) :
-            StackTrace(cpptrace::generate_trace(++skip))
-        {}
-
         explicit StackTrace(const cpptrace::stacktrace& stacktrace) {
             for (auto&& frame : stacktrace) {
                 if (frame.symbol.find("py::Code::operator()") != std::string::npos) {
@@ -473,13 +461,6 @@ protected:
     std::string what_msg;
     mutable std::string what_cache;
 
-    /* Protected method gets a C++ stack trace to a particular context without going
-    through inherited constructors. */
-    static cpptrace::stacktrace get_trace(size_t skip) {
-        auto result = cpptrace::generate_trace(++skip);
-        return result;
-    }
-
 public:
 
     #ifdef BERTRAND_NO_TRACEBACK
@@ -569,14 +550,14 @@ public:
             std::string&& message = "",
             size_t skip = 0
         ) : what_msg((Interpreter::init(), std::move(message))),
-            traceback(get_trace(skip))
+            traceback(cpptrace::generate_trace(++skip))
         {}
 
         [[clang::noinline]] explicit Exception(
             const std::string& message,
             size_t skip = 0
         ) : what_msg((Interpreter::init(), message)),
-            traceback(get_trace(skip))
+            traceback(cpptrace::generate_trace(++skip))
         {}
 
         [[clang::noinline]] explicit Exception(
@@ -601,7 +582,7 @@ public:
         ) : what_msg(value == nullptr ? std::string() : exc_string(value)),
             traceback(
                 reinterpret_cast<PyTracebackObject*>(traceback),
-                get_trace(skip)
+                cpptrace::generate_trace(++skip)
             )
         {
             if (type == nullptr) {
@@ -714,13 +695,13 @@ struct __exception__ : Base {
         [[clang::noinline]] explicit __exception__(
             std::string&& message = "",
             size_t skip = 0
-        ) : Base(std::move(message), Base::get_trace(skip))
+        ) : Base(std::move(message), cpptrace::generate_trace(++skip))
         {}
 
         [[clang::noinline]] explicit __exception__(
             const std::string& message,
             size_t skip = 0
-        ) : Base(message, Base::get_trace(skip))
+        ) : Base(message, cpptrace::generate_trace(++skip))
         {}
 
         [[clang::noinline]] explicit __exception__(
@@ -740,7 +721,7 @@ struct __exception__ : Base {
             PyObject* value,
             PyObject* traceback,
             size_t skip = 0
-        ) : Base(type, value, traceback, Base::get_trace(skip))
+        ) : Base(type, value, traceback, cpptrace::generate_trace(++skip))
         {}
 
         [[clang::noinline]] explicit __exception__(
@@ -778,313 +759,613 @@ struct __exception__ : Base {
 
 
 #ifdef BERTRAND_NO_TRACEBACK
-    #define PYERR(TYPE) \
-        void set_pyerr() const override { \
-            PyErr_SetString(TYPE, message().c_str()); \
-        }
+    #define BUILTIN_EXCEPTION(CLS, BASE, PYTYPE) \
+        struct CLS : __exception__<CLS, BASE> { \
+            void set_pyerr() const override { \
+                PyErr_SetString(PYTYPE, message().c_str()); \
+            } \
+        };
 #else
-    #define PYERR(TYPE) \
-        void set_pyerr() const override { \
-            traceback.restore(TYPE, message().c_str()); \
-        }
+    #define BUILTIN_EXCEPTION(CLS, BASE, PYTYPE) \
+        struct CLS : __exception__<CLS, BASE> { \
+            using __exception__::__exception__; \
+            void set_pyerr() const override { \
+                traceback.restore(PYTYPE, message().c_str()); \
+            } \
+        };
 #endif
 
 
-struct ArithmeticError : __exception__<ArithmeticError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_ArithmeticError)
-};
-
-
-struct FloatingPointError : __exception__<FloatingPointError, ArithmeticError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_FloatingPointError)
-};
-
-
-struct OverflowError : __exception__<OverflowError, ArithmeticError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_OverflowError)
-};
-
-
-struct ZeroDivisionError : __exception__<ZeroDivisionError, ArithmeticError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_ZeroDivisionError)
-};
-
-
-struct AssertionError : __exception__<AssertionError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_AssertionError)
-};
-
-
-struct AttributeError : __exception__<AttributeError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_AttributeError)
-};
-
-
-struct BufferError : __exception__<BufferError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_BufferError)
-};
-
-
-struct EOFError : __exception__<EOFError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_EOFError)
-};
-
-
-struct ImportError : __exception__<ImportError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_ImportError)
-};
-
-
-struct ModuleNotFoundError : __exception__<ModuleNotFoundError, ImportError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_ModuleNotFoundError)
-};
-
-
-struct LookupError : __exception__<LookupError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_LookupError)
-};
-
-
-struct IndexError : __exception__<IndexError, LookupError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_IndexError)
-};
-
-
-struct KeyError : __exception__<KeyError, LookupError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_KeyError)
-};
-
-
-struct MemoryError : __exception__<MemoryError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_MemoryError)
-};
-
-
-struct NameError : __exception__<NameError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_NameError)
-};
-
-
-struct UnboundLocalError : __exception__<UnboundLocalError, NameError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_UnboundLocalError)
-};
-
-
-struct OSError : __exception__<OSError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_OSError)
-};
-
-
-struct BlockingIOError : __exception__<BlockingIOError, OSError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_BlockingIOError)
-};
-
-
-struct ChildProcessError : __exception__<ChildProcessError, OSError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_ChildProcessError)
-};
-
-
-struct ConnectionError : __exception__<ConnectionError, OSError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_ConnectionError)
-};
-
-
-struct BrokenPipeError : __exception__<BrokenPipeError, ConnectionError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_BrokenPipeError)
-};
-
-
-struct ConnectionAbortedError : __exception__<ConnectionAbortedError, ConnectionError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_ConnectionAbortedError)
-};
-
-
-struct ConnectionRefusedError : __exception__<ConnectionRefusedError, ConnectionError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_ConnectionRefusedError)
-};
-
-
-struct ConnectionResetError : __exception__<ConnectionResetError, ConnectionError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_ConnectionResetError)
-};
-
-
-struct FileExistsError : __exception__<FileExistsError, OSError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_FileExistsError)
-};
-
-
-struct FileNotFoundError : __exception__<FileNotFoundError, OSError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_FileNotFoundError)
-};
-
-
-struct InterruptedError : __exception__<InterruptedError, OSError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_InterruptedError)
-};
-
-
-struct IsADirectoryError : __exception__<IsADirectoryError, OSError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_IsADirectoryError)
-};
-
-
-struct NotADirectoryError : __exception__<NotADirectoryError, OSError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_NotADirectoryError)
-};
-
-
-struct PermissionError : __exception__<PermissionError, OSError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_PermissionError)
-};
-
-
-struct ProcessLookupError : __exception__<ProcessLookupError, OSError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_ProcessLookupError)
-};
-
-
-struct TimeoutError : __exception__<TimeoutError, OSError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_TimeoutError)
-};
-
-
-struct ReferenceError : __exception__<ReferenceError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_ReferenceError)
-};
-
-
-struct RuntimeError : __exception__<RuntimeError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_RuntimeError)
-};
-
-
-struct NotImplementedError : __exception__<NotImplementedError, RuntimeError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_NotImplementedError)
-};
-
-
-struct RecursionError : __exception__<RecursionError, RuntimeError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_RecursionError)
-};
-
-
-struct StopAsyncIteration : __exception__<StopAsyncIteration, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_StopAsyncIteration)
-};
-
-
-struct StopIteration : __exception__<StopIteration, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_StopIteration)
-};
-
-
-struct SyntaxError : __exception__<SyntaxError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_SyntaxError)
-};
-
-
-struct IndentationError : __exception__<IndentationError, SyntaxError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_IndentationError)
-};
-
-
-struct TabError : __exception__<TabError, IndentationError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_TabError)
-};
-
-
-struct SystemError : __exception__<SystemError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_SystemError)
-};
-
-
-struct TypeError : __exception__<TypeError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_TypeError)
-};
-
-
-struct ValueError : __exception__<ValueError, Exception> {
-    using __exception__::__exception__;
-    PYERR(PyExc_ValueError)
-};
-
-
-struct UnicodeError : __exception__<UnicodeError, ValueError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_UnicodeError)
-};
-
-
-// TODO: UnicodeDecodeError needs a different set_pyerr() implementation, since
-// it requires extra arguments besides PyErr_SetString.
-// -> It would actually need different constructors as well, since the extra arguments
-// screw everything up.
+BUILTIN_EXCEPTION(ArithmeticError, Exception, PyExc_ArithmeticError)
+    BUILTIN_EXCEPTION(FloatingPointError, ArithmeticError, PyExc_FloatingPointError)
+    BUILTIN_EXCEPTION(OverflowError, ArithmeticError, PyExc_OverflowError)
+    BUILTIN_EXCEPTION(ZeroDivisionError, ArithmeticError, PyExc_ZeroDivisionError)
+BUILTIN_EXCEPTION(AssertionError, Exception, PyExc_AssertionError)
+BUILTIN_EXCEPTION(AttributeError, Exception, PyExc_AttributeError)
+BUILTIN_EXCEPTION(BufferError, Exception, PyExc_BufferError)
+BUILTIN_EXCEPTION(EOFError, Exception, PyExc_EOFError)
+BUILTIN_EXCEPTION(ImportError, Exception, PyExc_ImportError)
+    BUILTIN_EXCEPTION(ModuleNotFoundError, ImportError, PyExc_ModuleNotFoundError)
+BUILTIN_EXCEPTION(LookupError, Exception, PyExc_LookupError)
+    BUILTIN_EXCEPTION(IndexError, LookupError, PyExc_IndexError)
+    BUILTIN_EXCEPTION(KeyError, LookupError, PyExc_KeyError)
+BUILTIN_EXCEPTION(MemoryError, Exception, PyExc_MemoryError)
+BUILTIN_EXCEPTION(NameError, Exception, PyExc_NameError)
+    BUILTIN_EXCEPTION(UnboundLocalError, NameError, PyExc_UnboundLocalError)
+BUILTIN_EXCEPTION(OSError, Exception, PyExc_OSError)
+    BUILTIN_EXCEPTION(BlockingIOError, OSError, PyExc_BlockingIOError)
+    BUILTIN_EXCEPTION(ChildProcessError, OSError, PyExc_ChildProcessError)
+    BUILTIN_EXCEPTION(ConnectionError, OSError, PyExc_ConnectionError)
+        BUILTIN_EXCEPTION(BrokenPipeError, ConnectionError, PyExc_BrokenPipeError)
+        BUILTIN_EXCEPTION(ConnectionAbortedError, ConnectionError, PyExc_ConnectionAbortedError)
+        BUILTIN_EXCEPTION(ConnectionRefusedError, ConnectionError, PyExc_ConnectionRefusedError)
+        BUILTIN_EXCEPTION(ConnectionResetError, ConnectionError, PyExc_ConnectionResetError)
+    BUILTIN_EXCEPTION(FileExistsError, OSError, PyExc_FileExistsError)
+    BUILTIN_EXCEPTION(FileNotFoundError, OSError, PyExc_FileNotFoundError)
+    BUILTIN_EXCEPTION(InterruptedError, OSError, PyExc_InterruptedError)
+    BUILTIN_EXCEPTION(IsADirectoryError, OSError, PyExc_IsADirectoryError)
+    BUILTIN_EXCEPTION(NotADirectoryError, OSError, PyExc_NotADirectoryError)
+    BUILTIN_EXCEPTION(PermissionError, OSError, PyExc_PermissionError)
+    BUILTIN_EXCEPTION(ProcessLookupError, OSError, PyExc_ProcessLookupError)
+    BUILTIN_EXCEPTION(TimeoutError, OSError, PyExc_TimeoutError)
+BUILTIN_EXCEPTION(ReferenceError, Exception, PyExc_ReferenceError)
+BUILTIN_EXCEPTION(RuntimeError, Exception, PyExc_RuntimeError)
+    BUILTIN_EXCEPTION(NotImplementedError, RuntimeError, PyExc_NotImplementedError)
+    BUILTIN_EXCEPTION(RecursionError, RuntimeError, PyExc_RecursionError)
+BUILTIN_EXCEPTION(StopAsyncIteration, Exception, PyExc_StopAsyncIteration)
+BUILTIN_EXCEPTION(StopIteration, Exception, PyExc_StopIteration)
+BUILTIN_EXCEPTION(SyntaxError, Exception, PyExc_SyntaxError)
+    BUILTIN_EXCEPTION(IndentationError, SyntaxError, PyExc_IndentationError)
+        BUILTIN_EXCEPTION(TabError, IndentationError, PyExc_TabError)
+BUILTIN_EXCEPTION(SystemError, Exception, PyExc_SystemError)
+BUILTIN_EXCEPTION(TypeError, Exception, PyExc_TypeError)
+BUILTIN_EXCEPTION(ValueError, Exception, PyExc_ValueError)
+    BUILTIN_EXCEPTION(UnicodeError, ValueError, PyExc_UnicodeError)
+        // BUILTIN_EXCEPTION(UnicodeDecodeError, UnicodeError, PyExc_UnicodeDecodeError)
+        // BUILTIN_EXCEPTION(UnicodeEncodeError, UnicodeError, PyExc_UnicodeEncodeError)
+        // BUILTIN_EXCEPTION(UnicodeTranslateError, UnicodeError, PyExc_UnicodeTranslateError)
 
 
 struct UnicodeDecodeError : __exception__<UnicodeDecodeError, UnicodeError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_UnicodeDecodeError)
+    using Base = __exception__<UnicodeDecodeError, UnicodeError>;
+
+protected:
+
+    static std::string generate_message(
+        const std::string& encoding,
+        const std::string& object,
+        Py_ssize_t start,
+        Py_ssize_t end,
+        const std::string& reason
+    ) {
+        return (
+            "'" + encoding + "' codec can't decode bytes in position " +
+            std::to_string(start) + "-" + std::to_string(end - 1) + ": " +
+            reason
+        );
+    }
+
+public:
+    std::string encoding;
+    std::string object;
+    Py_ssize_t start;
+    Py_ssize_t end;
+    std::string reason;
+
+    [[clang::noinline]] explicit UnicodeDecodeError(
+        const std::string& encoding,
+        const std::string& object,
+        Py_ssize_t start,
+        Py_ssize_t end,
+        const std::string& reason,
+        size_t skip = 0
+    ) : UnicodeDecodeError(
+            encoding,
+            object,
+            start,
+            end,
+            reason,
+            cpptrace::generate_trace(skip + 2)
+        )
+    {}
+
+    [[clang::noinline]] explicit UnicodeDecodeError(
+        const std::string& encoding,
+        const std::string& object,
+        Py_ssize_t start,
+        Py_ssize_t end,
+        const std::string& reason,
+        const cpptrace::stacktrace& trace
+    ) : Base(generate_message(encoding, object, start, end, reason), trace),
+        encoding(encoding),
+        object(object),
+        start(start),
+        end(end),
+        reason(reason)
+    {}
+
+    [[clang::noinline]] explicit UnicodeDecodeError(
+        PyObject* type,
+        PyObject* value,
+        PyObject* traceback,
+        size_t skip = 0
+    ) : UnicodeDecodeError(
+        type,
+        value,
+        traceback,
+        cpptrace::generate_trace(skip + 2)
+    ) {}
+
+    [[clang::noinline]] explicit UnicodeDecodeError(
+        PyObject* type,
+        PyObject* value,
+        PyObject* traceback,
+        const cpptrace::stacktrace& trace
+    ) : Base(type, value, traceback, trace),
+        encoding([value] {
+            PyObject* encoding = PyUnicodeDecodeError_GetEncoding(value);
+            if (encoding == nullptr) {
+                throw std::runtime_error(
+                    "could not extract encoding from UnicodeDecodeError"
+                );
+            }
+            Py_ssize_t size;
+            const char* data = PyUnicode_AsUTF8AndSize(encoding, &size);
+            if (data == nullptr) {
+                Py_DECREF(encoding);
+                throw std::runtime_error(
+                    "could not extract encoding from UnicodeDecodeError"
+                );
+            }
+            std::string result(data, size);
+            Py_DECREF(encoding);
+            return result;
+        }()),
+        object([value] {
+            PyObject* object = PyUnicodeDecodeError_GetObject(value);
+            if (object == nullptr) {
+                throw std::runtime_error(
+                    "could not extract object from UnicodeDecodeError"
+                );
+            }
+            Py_ssize_t size;
+            const char* data = PyUnicode_AsUTF8AndSize(object, &size);
+            if (data == nullptr) {
+                Py_DECREF(object);
+                throw std::runtime_error(
+                    "could not extract object from UnicodeDecodeError"
+                );
+            }
+            std::string result(data, size);
+            Py_DECREF(object);
+            return result;
+        }()),
+        start([value] {
+            Py_ssize_t start;
+            if (PyUnicodeDecodeError_GetStart(value, &start)) {
+                throw std::runtime_error(
+                    "could not extract start from UnicodeDecodeError"
+                );
+            }
+            return start;
+        }()),
+        end([value] {
+            Py_ssize_t end;
+            if (PyUnicodeDecodeError_GetEnd(value, &end)) {
+                throw std::runtime_error(
+                    "could not extract end from UnicodeDecodeError"
+                );
+            }
+            return end;
+        }()),
+        reason([value] {
+            PyObject* reason = PyUnicodeDecodeError_GetReason(value);
+            if (reason == nullptr) {
+                throw std::runtime_error(
+                    "could not extract reason from UnicodeDecodeError"
+                );
+            }
+            Py_ssize_t size;
+            const char* data = PyUnicode_AsUTF8AndSize(reason, &size);
+            if (data == nullptr) {
+                Py_DECREF(reason);
+                throw std::runtime_error(
+                    "could not extract reason from UnicodeDecodeError"
+                );
+            }
+            std::string result(data, size);
+            Py_DECREF(reason);
+            return result;
+        }())
+    {}
+
+    const char* what() const noexcept override {
+        if (what_cache.empty()) {
+            #ifndef BERTRAND_NO_TRACEBACK
+                what_cache += traceback.to_string() + "\n";
+            #endif
+            what_cache += "UnicodeDecodeError: " + message();
+        }
+        return what_cache.c_str();
+    }
+
+    void set_pyerr() const override {
+        PyErr_Clear();
+        PyObject* exc = PyUnicodeDecodeError_Create(
+            encoding.c_str(),
+            object.c_str(),
+            object.size(),
+            start,
+            end,
+            reason.c_str()
+        );
+        if (exc == nullptr) {
+            PyErr_SetString(PyExc_UnicodeError, message().c_str());
+        } else {
+            PyTracebackObject* tb = traceback.to_python();
+            if (tb != nullptr) {
+                PyException_SetTraceback(exc, reinterpret_cast<PyObject*>(tb));
+            }
+            PyThreadState* thread = PyThreadState_Get();
+            thread->current_exception = exc;
+        }
+    }
+
 };
 
 
 struct UnicodeEncodeError : __exception__<UnicodeEncodeError, UnicodeError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_UnicodeEncodeError)
+    using Base = __exception__<UnicodeEncodeError, UnicodeError>;
+
+protected:
+
+    static std::string generate_message(
+        const std::string& encoding,
+        const std::string& object,
+        Py_ssize_t start,
+        Py_ssize_t end,
+        const std::string& reason
+    ) {
+        return (
+            "'" + encoding + "' codec can't encode characters in position " +
+            std::to_string(start) + "-" + std::to_string(end - 1) + ": " +
+            reason
+        );
+    }
+
+public:
+    std::string encoding;
+    std::string object;
+    Py_ssize_t start = 0;
+    Py_ssize_t end = 0;
+    std::string reason;
+
+    [[clang::noinline]] explicit UnicodeEncodeError(
+        const std::string& encoding,
+        const std::string& object,
+        Py_ssize_t start,
+        Py_ssize_t end,
+        const std::string& reason,
+        size_t skip = 0
+    ) : UnicodeEncodeError(
+            encoding,
+            object,
+            start,
+            end,
+            reason,
+            cpptrace::generate_trace(skip + 2)
+        )
+    {}
+
+    [[clang::noinline]] explicit UnicodeEncodeError(
+        const std::string& encoding,
+        const std::string& object,
+        Py_ssize_t start,
+        Py_ssize_t end,
+        const std::string& reason,
+        const cpptrace::stacktrace& trace
+    ) : Base(generate_message(encoding, object, start, end, reason), trace),
+        encoding(encoding),
+        object(object),
+        start(start),
+        end(end),
+        reason(reason)
+    {}
+
+    [[clang::noinline]] explicit UnicodeEncodeError(
+        PyObject* type,
+        PyObject* value,
+        PyObject* traceback,
+        size_t skip = 0
+    ) : UnicodeEncodeError(
+        type,
+        value,
+        traceback,
+        cpptrace::generate_trace(skip + 2)
+    ) {}
+
+    [[clang::noinline]] explicit UnicodeEncodeError(
+        PyObject* type,
+        PyObject* value,
+        PyObject* traceback,
+        const cpptrace::stacktrace& trace
+    ) : Base(type, value, traceback, trace),
+        encoding([value] {
+            PyObject* encoding = PyUnicodeEncodeError_GetEncoding(value);
+            if (encoding == nullptr) {
+                throw std::runtime_error(
+                    "could not extract encoding from UnicodeEncodeError"
+                );
+            }
+            Py_ssize_t size;
+            const char* data = PyUnicode_AsUTF8AndSize(encoding, &size);
+            if (data == nullptr) {
+                Py_DECREF(encoding);
+                throw std::runtime_error(
+                    "could not extract encoding from UnicodeEncodeError"
+                );
+            }
+            std::string result(data, size);
+            Py_DECREF(encoding);
+            return result;
+        }()),
+        object([value] {
+            PyObject* object = PyUnicodeEncodeError_GetObject(value);
+            if (object == nullptr) {
+                throw std::runtime_error(
+                    "could not extract object from UnicodeEncodeError"
+                );
+            }
+            Py_ssize_t size;
+            const char* data = PyUnicode_AsUTF8AndSize(object, &size);
+            if (data == nullptr) {
+                Py_DECREF(object);
+                throw std::runtime_error(
+                    "could not extract object from UnicodeEncodeError"
+                );
+            }
+            std::string result(data, size);
+            Py_DECREF(object);
+            return result;
+        }()),
+        start([value] {
+            Py_ssize_t start;
+            if (PyUnicodeEncodeError_GetStart(value, &start)) {
+                throw std::runtime_error(
+                    "could not extract start from UnicodeEncodeError"
+                );
+            }
+            return start;
+        }()),
+        end([value] {
+            Py_ssize_t end;
+            if (PyUnicodeEncodeError_GetEnd(value, &end)) {
+                throw std::runtime_error(
+                    "could not extract end from UnicodeEncodeError"
+                );
+            }
+            return end;
+        }()),
+        reason([value] {
+            PyObject* reason = PyUnicodeEncodeError_GetReason(value);
+            if (reason == nullptr) {
+                throw std::runtime_error(
+                    "could not extract reason from UnicodeEncodeError"
+                );
+            }
+            Py_ssize_t size;
+            const char* data = PyUnicode_AsUTF8AndSize(reason, &size);
+            if (data == nullptr) {
+                Py_DECREF(reason);
+                throw std::runtime_error(
+                    "could not extract reason from UnicodeEncodeError"
+                );
+            }
+            std::string result(data, size);
+            Py_DECREF(reason);
+            return result;
+        }())
+    {}
+
+    const char* what() const noexcept override {
+        if (what_cache.empty()) {
+            #ifndef BERTRAND_NO_TRACEBACK
+                what_cache += traceback.to_string() + "\n";
+            #endif
+            what_cache += "UnicodeEncodeError: " + message();
+        }
+        return what_cache.c_str();
+    }
+
+    void set_pyerr() const override {
+        PyErr_Clear();
+        PyObject* exc = PyObject_CallFunction(
+            PyExc_UnicodeEncodeError,
+            "ssnns",
+            encoding.c_str(),
+            object.c_str(),
+            start,
+            end,
+            reason.c_str()
+        );
+        if (exc == nullptr) {
+            PyErr_SetString(PyExc_UnicodeError, message().c_str());
+        } else {
+            PyTracebackObject* tb = traceback.to_python();
+            if (tb != nullptr) {
+                PyException_SetTraceback(exc, reinterpret_cast<PyObject*>(tb));
+            }
+            PyThreadState* thread = PyThreadState_Get();
+            thread->current_exception = exc;
+        }
+    }
+
 };
 
 
 struct UnicodeTranslateError : __exception__<UnicodeTranslateError, UnicodeError> {
-    using __exception__::__exception__;
-    PYERR(PyExc_UnicodeTranslateError)
+    using Base = __exception__<UnicodeTranslateError, UnicodeError>;
+
+protected:
+
+    static std::string generate_message(
+        const std::string& object,
+        Py_ssize_t start,
+        Py_ssize_t end,
+        const std::string& reason
+    ) {
+        return (
+            "can't translate characters in position " + std::to_string(start) +
+            "-" + std::to_string(end - 1) + ": " + reason
+        );
+    }
+
+public:
+    std::string object;
+    Py_ssize_t start = 0;
+    Py_ssize_t end = 0;
+    std::string reason;
+
+    [[clang::noinline]] explicit UnicodeTranslateError(
+        const std::string& object,
+        Py_ssize_t start,
+        Py_ssize_t end,
+        const std::string& reason,
+        size_t skip = 0
+    ) : UnicodeTranslateError(
+            object,
+            start,
+            end,
+            reason,
+            cpptrace::generate_trace(skip + 2)
+        )
+    {}
+
+    [[clang::noinline]] explicit UnicodeTranslateError(
+        const std::string& object,
+        Py_ssize_t start,
+        Py_ssize_t end,
+        const std::string& reason,
+        const cpptrace::stacktrace& trace
+    ) : Base(generate_message(object, start, end, reason), trace),
+        object(object),
+        start(start),
+        end(end),
+        reason(reason)
+    {}
+
+    [[clang::noinline]] explicit UnicodeTranslateError(
+        PyObject* type,
+        PyObject* value,
+        PyObject* traceback,
+        size_t skip = 0
+    ) : UnicodeTranslateError(
+        type,
+        value,
+        traceback,
+        cpptrace::generate_trace(skip + 2)
+    ) {}
+
+    [[clang::noinline]] explicit UnicodeTranslateError(
+        PyObject* type,
+        PyObject* value,
+        PyObject* traceback,
+        const cpptrace::stacktrace& trace
+    ) : Base(type, value, traceback, trace),
+        object([value] {
+            PyObject* object = PyUnicodeTranslateError_GetObject(value);
+            if (object == nullptr) {
+                throw std::runtime_error(
+                    "could not extract object from UnicodeTranslateError"
+                );
+            }
+            Py_ssize_t size;
+            const char* data = PyUnicode_AsUTF8AndSize(object, &size);
+            if (data == nullptr) {
+                Py_DECREF(object);
+                throw std::runtime_error(
+                    "could not extract object from UnicodeTranslateError"
+                );
+            }
+            std::string result(data, size);
+            Py_DECREF(object);
+            return result;
+        }()),
+        start([value] {
+            Py_ssize_t start;
+            if (PyUnicodeTranslateError_GetStart(value, &start)) {
+                throw std::runtime_error(
+                    "could not extract start from UnicodeTranslateError"
+                );
+            }
+            return start;
+        }()),
+        end([value] {
+            Py_ssize_t end;
+            if (PyUnicodeTranslateError_GetEnd(value, &end)) {
+                throw std::runtime_error(
+                    "could not extract end from UnicodeTranslateError"
+                );
+            }
+            return end;
+        }()),
+        reason([value] {
+            PyObject* reason = PyUnicodeTranslateError_GetReason(value);
+            if (reason == nullptr) {
+                throw std::runtime_error(
+                    "could not extract reason from UnicodeTranslateError"
+                );
+            }
+            Py_ssize_t size;
+            const char* data = PyUnicode_AsUTF8AndSize(reason, &size);
+            if (data == nullptr) {
+                Py_DECREF(reason);
+                throw std::runtime_error(
+                    "could not extract reason from UnicodeTranslateError"
+                );
+            }
+            std::string result(data, size);
+            Py_DECREF(reason);
+            return result;
+        }())
+    {}
+
+    const char* what() const noexcept override {
+        if (what_cache.empty()) {
+            #ifndef BERTRAND_NO_TRACEBACK
+                what_cache += traceback.to_string() + "\n";
+            #endif
+            what_cache += "UnicodeTranslateError: " + message();
+        }
+        return what_cache.c_str();
+    }
+
+    void set_pyerr() const override {
+        PyErr_Clear();
+        PyObject* exc = PyObject_CallFunction(
+            PyExc_UnicodeTranslateError,
+            "snns",
+            object.c_str(),
+            start,
+            end,
+            reason.c_str()
+        );
+        if (exc == nullptr) {
+            PyErr_SetString(PyExc_UnicodeError, message().c_str());
+        } else {
+            PyTracebackObject* tb = traceback.to_python();
+            if (tb != nullptr) {
+                PyException_SetTraceback(exc, reinterpret_cast<PyObject*>(tb));
+            }
+            PyThreadState* thread = PyThreadState_Get();
+            thread->current_exception = exc;
+        }
+    }
+
 };
 
 
-#undef PYERR
+#undef BUILTIN_EXCEPTION
 
 
 }  // namespace py

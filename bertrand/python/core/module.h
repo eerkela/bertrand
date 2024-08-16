@@ -199,8 +199,7 @@ namespace impl {
                 Bindings(Bindings&&) = delete;
 
                 /* Expose an immutable variable to Python in a way that shares memory and
-                state.  Note that this adds a getset descriptor to the module's type, and
-                therefore can only be called during `__setup__()`. */
+                state. */
                 template <StaticStr Name, typename T>
                 void var(const T& value) {
                     if (context.contains(Name)) {
@@ -242,9 +241,52 @@ namespace impl {
                     skip = true;
                 }
 
+                /* Expose an immutable variable held in per-module state.  This is very
+                similar to exposing a global variable, but ensures that the value is
+                unique to each interpreter, rather than being shared between them. */
+                template <StaticStr Name, typename T>
+                void var(const T CRTP::*value) {
+                    if (context.contains(Name)) {
+                        throw AttributeError(
+                            "Module '" + ModName + "' already has an attribute named '" +
+                            Name + "'."
+                        );
+                    }
+                    context[Name] = {
+                        .is_var = true,
+                    };
+                    static bool skip = false;
+                    if (skip) {
+                        return;
+                    }
+                    static auto get = [](PyObject* self, void* value) -> PyObject* {
+                        try {
+                            return release(wrap(reinterpret_cast<const CRTP*>(self)->*value));
+                        } catch (...) {
+                            Exception::to_python();
+                            return nullptr;
+                        }
+                    };
+                    static auto set = [](PyObject* self, PyObject* new_val, void* value) -> int {
+                        PyErr_SetString(
+                            PyExc_TypeError,
+                            "variable '" + Name + "' of module '" + ModName +
+                            "' is immutable."
+                        );
+                        return -1;
+                    };
+                    tp_getset.push_back({
+                        Name,
+                        +get,
+                        +set,
+                        nullptr,
+                        const_cast<void*>(reinterpret_cast<const void*>(value))
+                    });
+                    skip = true;
+                }
+
                 /* Expose a mutable variable to Python in a way that shares memory and
-                state.  Note that this adds a getset descriptor to the module's type, and
-                therefore can only be called during `__setup__()`. */
+                state. */
                 template <StaticStr Name, typename T>
                 void var(T& value) {
                     if (context.contains(Name)) {
@@ -298,21 +340,72 @@ namespace impl {
                     skip = true;
                 }
 
-                // TODO: these helpers should also ensure that Type<> is specialized
-                // for the Cls and all of its bases, since it is used internally.
-                // Constraining the template will give much better LSP hints and
-                // compile errors.
-                // -> This requires another concept `has_type`, which uses SFINAE to
-                // check whether Type<T> is well-formed.  Since the default
-                // specialization is empty, this is sufficient.
+                /* Expose a mutable variable held in per-module state.  This is very
+                similar to exposing a global variable, but ensures that the value is
+                unique to each interpreter, rather than being shared between them. */
+                template <StaticStr Name, typename T>
+                void var(T CRTP::*value) {
+                    if (context.contains(Name)) {
+                        throw AttributeError(
+                            "Module '" + ModName + "' already has an attribute named '" +
+                            Name + "'."
+                        );
+                    }
+                    context[Name] = {
+                        .is_var = true,
+                    };
+                    static bool skip = false;
+                    if (skip) {
+                        return;
+                    }
+                    static auto get = [](PyObject* self, void* value) -> PyObject* {
+                        try {
+                            return release(wrap(reinterpret_cast<CRTP*>(self)->*value));
+                        } catch (...) {
+                            Exception::to_python();
+                            return nullptr;
+                        }
+                    };
+                    static auto set = [](PyObject* self, PyObject* new_val, void* value) -> int {
+                        if (new_val == nullptr) {
+                            PyErr_SetString(
+                                PyExc_TypeError,
+                                "variable '" + Name + "' of module '" + ModName +
+                                "' cannot be deleted."
+                            );
+                            return -1;
+                        }
+                        try {
+                            using Wrapper = __as_object__<T>::type;
+                            reinterpret_cast<CRTP*>(self)->*value = static_cast<Wrapper>(
+                                reinterpret_borrow<Object>(new_val)
+                            );
+                            return 0;
+                        } catch (...) {
+                            Exception::to_python();
+                            return -1;
+                        }
+                    };
+                    tp_getset.push_back({
+                        Name,
+                        +get,
+                        +set,
+                        nullptr,
+                        reinterpret_cast<void*>(value)
+                    });
+                    skip = true;
+                }
 
                 /* Expose a concrete py::Object type to Python. */
-                template <StaticStr Name, typename Cls, typename... Bases>
-                    requires (
-                        !impl::is_generic<Cls> &&
-                        std::derived_from<Cls, Object> &&
-                        (std::derived_from<Bases, Object> && ...)
-                    )
+                template <
+                    StaticStr Name,
+                    std::derived_from<Object> Cls,
+                    std::derived_from<Object>... Bases
+                > requires (
+                    !impl::is_generic<Cls> &&
+                    impl::has_type<Cls> &&
+                    (impl::has_type<Bases> && ...)
+                )
                 void type() {
                     if (context.contains(Name)) {
                         throw AttributeError(
@@ -350,13 +443,44 @@ namespace impl {
                     };
                 }
 
+                /* Expose a templated py::Object type to Python. */
+                template <StaticStr Name, template <typename...> typename Cls>
+                void type() {
+                    if (context.contains(Name)) {
+                        throw AttributeError(
+                            "Module '" + ModName + "' already has an attribute named '"
+                            + Name + "'."
+                        );
+                    }
+                    context[Name] = {
+                        .is_type = true,
+                        .is_template_interface = true,
+                        .callbacks = {
+                            [](Module<ModName>& mod) {
+                                BertrandMeta stub = Meta::stub_type<Name, Cls>(mod);
+
+                                if (PyModule_AddObjectRef(
+                                    ptr(mod),
+                                    Name,
+                                    ptr(stub)
+                                )) {
+                                    Exception::from_python();
+                                }
+                            }
+                        }
+                    };
+                }
+
                 /* Expose an instantiation of a templated py::Object type to Python. */
-                template <StaticStr Name, typename Cls, typename... Bases>
-                    requires (
-                        impl::is_generic<Cls> &&
-                        std::derived_from<Cls, Object> &&
-                        (std::derived_from<Bases, Object> && ...)
-                    )
+                template <
+                    StaticStr Name,
+                    std::derived_from<Object> Cls,
+                    std::derived_from<Object>... Bases
+                > requires (
+                    impl::is_generic<Cls> &&
+                    impl::has_type<Cls> &&
+                    (impl::has_type<Bases> && ...)
+                )
                 void type() {
                     auto it = context.find(Name);
                     if (it == context.end()) {
@@ -422,45 +546,12 @@ namespace impl {
                     });
                 }
 
-                /* Expose a templated py::Object type to Python. */
-                template <StaticStr Name, template <typename...> typename Cls, typename... Bases>
-                    requires (std::derived_from<Bases, Object> && ...)
-                void type() {
-                    if (context.contains(Name)) {
-                        throw AttributeError(
-                            "Module '" + ModName + "' already has an attribute named '"
-                            + Name + "'."
-                        );
-                    }
-                    context[Name] = {
-                        .is_type = true,
-                        .is_template_interface = true,
-                        .callbacks = {
-                            [](Module<ModName>& mod) {
-                                BertrandMeta stub = Meta::stub_type<
-                                    Name,
-                                    Cls,
-                                    Bases...
-                                >(mod);
-
-                                if (PyModule_AddObjectRef(
-                                    ptr(mod),
-                                    Name,
-                                    ptr(stub)
-                                )) {
-                                    Exception::from_python();
-                                }
-                            }
-                        }
-                    };
-                }
-
                 /* Expose a py::Exception type to Python. */
-                template <StaticStr Name, typename Cls, typename... Bases>
-                    requires (
-                        std::derived_from<Cls, Exception> &&
-                        (std::derived_from<Bases, Exception> && ...)
-                    )
+                template <
+                    StaticStr Name,
+                    std::derived_from<Exception> Cls,
+                    std::derived_from<Exception>... Bases
+                > requires (impl::has_type<Cls> && (impl::has_type<Bases> && ...))
                 void type() {
                     if (context.contains(Name)) {
                         throw AttributeError(

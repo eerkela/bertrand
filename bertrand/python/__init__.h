@@ -1329,7 +1329,7 @@ public:
         ExceptionMap exception_map;
 
         static Module<"bertrand.python"> __export__(Bindings bindings) {
-            // TODO: add bindings here, including one for the type_map itself.
+            bindings.var<"type_map">(&__python__::type_map);
 
             auto result = bindings.finalize();
 

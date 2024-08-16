@@ -220,18 +220,18 @@ cases where it matters, and is not superceded by automatic reference counting. *
 struct del : public impl::BertrandTag {};
 
 
+/* Base class for disabled control structures. */
+struct Disable : public impl::BertrandTag {
+    static constexpr bool enable = false;
+};
+
+
 /* Base class for enabled control structures.  Encodes the return type as a template
 parameter. */
 template <typename T>
 struct Returns : public impl::BertrandTag {
     static constexpr bool enable = true;
     using type = T;
-};
-
-
-/* Base class for disabled control structures. */
-struct Disable : public impl::BertrandTag {
-    static constexpr bool enable = false;
 };
 
 
@@ -346,8 +346,26 @@ struct __xor__                                              : Disable {};
 template <typename L, typename R>
 struct __ixor__                                             : Disable {};
 
-template <std::derived_from<Object> T>
-struct __as_object__<T>                                     : Returns<T> {};
+
+// TODO: maybe I can implement a py::Inherits<CRTP, Bases...> type that is used to
+// collect all the necessary interfaces and expose the default constructors?  It would
+// subclass from Object as well as py::Interface<Bases>..., and 
+
+
+template <typename T>
+struct Interface : impl::BertrandTag {
+
+    // TODO: the object's whole C++ interface can be declared here, without affecting
+    // the binary layout of the object itself.  This allows me to potentially model
+    // multiple inheritance in the object wrappers, which would be reflected on both
+    // sides of the language divide.  When I encounter a Python type, I would iterate
+    // over its bases and insert them into the wrapper's Inherits<> base, and when I
+    // encounter a C++ type, I would iterate over its bases using the AST and insert
+    // them into the same Inherits<> base.  If I was very careful, I could then define
+    // using statements to model Python-style MRO or reflect corresponding using
+    // statements in the C++ AST, so that both sides have identical behavior.
+
+};
 
 
 namespace impl {
@@ -395,14 +413,19 @@ namespace impl {
     template <typename T, typename = void>
     constexpr bool is_module_helper = false;
     template <typename T>
-    constexpr bool is_module_helper<T, std::void_t<typename T::__module__>> = true;
-
-    // TODO: is_module should just check for ModuleTag as a base, since all modules now
-    // must inherit from it to gain access to __module__ in the first place.
+    constexpr bool is_module_helper<T, std::void_t<typename T::__python__>> = true;
 
     template <typename T>
     concept is_module =
-        is_module_helper<T> && std::derived_from<typename T::__module__, ModuleTag>;
+        std::derived_from<T, ModuleTag> && is_module_helper<T>;
+
+    template <typename T, typename = void>
+    constexpr bool has_type_helper = false;
+    template <typename T>
+    constexpr bool has_type_helper<T, std::void_t<Type<T>>> = true;
+
+    template <typename T>
+    concept has_type = has_type_helper<T>;
 
     template <typename T, StaticStr Name, typename... Args>
     concept attr_is_callable_with =
@@ -506,7 +529,8 @@ namespace impl {
     concept yields_pairs = is_iterable<T> && pair_like<iter_type<T>>;
 
     template <typename T, typename First, typename Second>
-    concept yields_pairs_with = is_iterable<T> && pair_like_with<iter_type<T>, First, Second>;
+    concept yields_pairs_with =
+        is_iterable<T> && pair_like_with<iter_type<T>, First, Second>;
 
     template <typename T>
     concept hashable = requires(T t) {

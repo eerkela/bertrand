@@ -374,16 +374,16 @@ protected:
 public:
 
     /* Copy constructor.  Borrows a reference to an existing object. */
-    Object(const Object& other) : Handle(Py_XNewRef(py::ptr(other))) {}
+    Object(const Object& other) : Handle(Py_XNewRef(ptr(other))) {}
 
     /* Move constructor.  Steals a reference to a temporary object. */
-    Object(Object&& other) : Handle(py::release(other)) {}
+    Object(Object&& other) : Handle(release(other)) {}
 
     /* reinterpret_borrow() constructor.  Borrows a reference to a raw Python handle. */
-    Object(Handle h, borrowed_t) : Handle(Py_XNewRef(py::ptr(h))) {}
+    Object(Handle h, borrowed_t) : Handle(Py_XNewRef(ptr(h))) {}
 
     /* reinterpret_steal() constructor.  Steals a reference to a raw Python handle. */
-    Object(Handle h, stolen_t) : Handle(py::ptr(h)) {}
+    Object(Handle h, stolen_t) : Handle(ptr(h)) {}
 
     /* Universal implicit constructor.  Implemented via the __init__ control struct. */
     template <typename... Args> requires (implicit_ctor<Object>::enable<Args...>)
@@ -671,71 +671,6 @@ struct __explicit_cast__<From, To> : Returns<To> {
         return static_cast<To>(static_cast<typename __as_object__<To>::type>(from));
     }
 };
-
-
-//////////////////////////
-////    SUBCLASSES    ////
-//////////////////////////
-
-
-
-// TODO: maybe I can implement a py::Inherits<CRTP, Bases...> type that is used to
-// collect all the necessary interfaces and expose the default constructors?  It would
-// subclass from Object as well as py::Interface<Bases>..., and 
-
-
-template <typename T>
-struct Interface : impl::BertrandTag {
-
-    // TODO: the object's whole C++ interface can be declared here, without affecting
-    // the binary layout of the object itself.  This allows me to potentially model
-    // multiple inheritance in the object wrappers, which would be reflected on both
-    // sides of the language divide.  When I encounter a Python type, I would iterate
-    // over its bases and insert them into the wrapper's Inherits<> base, and when I
-    // encounter a C++ type, I would iterate over its bases using the AST and insert
-    // them into the same Inherits<> base.  If I was very careful, I could then define
-    // using statements to model Python-style MRO or reflect corresponding using
-    // statements in the C++ AST, so that both sides have identical behavior.
-
-};
-
-
-
-// TODO: this doesn't work because the CRTP class doesn't inherit the default
-// constructor, although it's really slick in principle.
-
-
-template <typename CRTP, std::derived_from<Object>... Bases>
-struct Inherits : public Object, public Interface<CRTP>, public Interface<Bases>... {
-protected:
-
-    template <typename... Args>
-    Inherits(implicit_ctor<CRTP> c, Args&&... args) :
-        Object(c, std::forward<Args>(args)...)
-    {}
-
-    template <typename... Args>
-    Inherits(explicit_ctor<CRTP> c, Args&&... args) :
-        Object(c, std::forward<Args>(args)...)
-    {}
-
-public:
-
-    Inherits(Handle h, borrowed_t t) : Object(h, t) {}
-    Inherits(Handle h, stolen_t t) : Object(h, t) {}
-
-    template <typename... Args> requires (implicit_ctor<CRTP>::template enable<Args...>)
-    Inherits(Args&&... args) :
-        Object(implicit_ctor<CRTP>{}, std::forward<Args>(args)...)
-    {}
-
-    template <typename... Args> requires (explicit_ctor<CRTP>::template enable<Args...>)
-    explicit Inherits(Args&&... args) :
-        Object(explicit_ctor<CRTP>{}, std::forward<Args>(args)...)
-    {}
-
-};
-
 
 
 }  // namespace py

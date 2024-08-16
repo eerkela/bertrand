@@ -13,25 +13,27 @@ namespace impl {
 }
 
 
+template <std::derived_from<Object> T>
+struct __as_object__<T>                                     : Returns<T> {
+    static decltype(auto) operator()(T&& value) { return std::forward<T>(value); }
+};
+
+
 /* Convert an arbitrary C++ value to an equivalent Python object if it isn't one
 already. */
 template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
-[[nodiscard]] auto as_object(T&& value) {
-    if constexpr (std::derived_from<T, Object>) {
-        return std::forward<T>(value);
+[[nodiscard]] decltype(auto) as_object(T&& value) {
+    using Obj = __as_object__<std::remove_cvref_t<T>>;
+    static_assert(
+        !std::same_as<typename Obj::type, Object>,
+        "C++ types cannot be converted to py::Object directly.  Check your "
+        "specialization of __as_object__ for this type and ensure the Return type "
+        "is set to a subclass of py::Object, not py::Object itself."
+    );
+    if constexpr (impl::has_call_operator<Obj>) {
+        return Obj{}(std::forward<T>(value));
     } else {
-        using U = __as_object__<std::remove_cvref_t<T>>;
-        static_assert(
-            !std::same_as<typename U::type, Object>,
-            "C++ types cannot be converted to py::Object directly.  Check your "
-            "specialization of __as_object__ for this type and ensure the Return type "
-            "is not py::Object."
-        );
-        if constexpr (impl::has_call_operator<U>) {
-            return U{}(std::forward<T>(value));
-        } else {
-            return typename U::type(std::forward<T>(value));
-        }
+        return typename Obj::type(std::forward<T>(value));
     }
 }
 
@@ -137,14 +139,15 @@ template <std::derived_from<Object> Base, std::derived_from<Object> Derived>
     if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>, const Derived&>) {
         return __issubclass__<Derived, Base>{}(obj);
 
-    } else if constexpr (impl::type_like<Derived>) {
-        return issubclass<Derived, Base>();
-
     } else if constexpr (impl::dynamic_type<Derived>) {
         return PyType_Check(ptr(obj)) && PyObject_IsSubclass(
             ptr(obj),
-            ptr(Type<Base>())  // TODO: 
+            ptr(Type<Base>())  // TODO: correct?
         );
+
+    } else if constexpr (impl::type_like<Derived>) {
+        return issubclass<Derived, Base>();
+
     } else {
         return false;
     }
