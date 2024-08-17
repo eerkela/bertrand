@@ -14,6 +14,15 @@
 // overload set.
 
 
+// TODO: the global type map might not map to strings holding the demangled name, but
+// the actual Python type object associated with that type.  I could then access the
+// demangled name from instances of BertrandMeta, which would correspond better to the
+// type maps present in template interfaces and modules.
+// -> What about standard library types?  The global type map would probably have to
+// store demangled names in addition to the Python type objects.  Or I can stick to
+// what I have and only store the string.
+
+
 namespace py {
 
 

@@ -5,6 +5,7 @@
 #include "except.h"
 #include "ops.h"
 #include "object.h"
+#include "pytypedefs.h"
 
 
 namespace py {
@@ -923,8 +924,17 @@ struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
 };
 
 
-// TODO: if the type originates from C++, then I can also expose the additional
-// functionality offered by BertrandMeta.
+/* Forward the BertrandMeta interface if the given type originates from C++. */
+template <impl::originates_from_cpp T>
+struct __len__<Type<T>> : Returns<size_t> {};
+template <impl::originates_from_cpp T>
+struct __iter__<Type<T>> : Returns<BertrandMeta> {};
+template <impl::originates_from_cpp T, typename U>
+struct __getitem__<Type<T>, Type<U>> : Returns<BertrandMeta> {};
+template <impl::originates_from_cpp T>
+struct __getitem__<Type<T>, Tuple<Type<Object>>> : Returns<BertrandMeta> {};
+// template <impl::originates_from_cpp T, typename... Ts>
+// struct __getitem__<Type<T>, Struct<Type<Ts...>>> : Returns<BertrandMeta> {};  // TODO: implement Struct
 
 
 ////////////////////
@@ -1017,13 +1027,13 @@ shared across all types, such as template subscripting via `__getitem__` and acc
                 {Py_tp_doc, const_cast<char*>(__doc__.buffer)},
                 {Py_tp_dealloc, reinterpret_cast<void*>(__dealloc__)},
                 {Py_tp_repr, reinterpret_cast<void*>(__repr__)},
-                {Py_tp_str, reinterpret_cast<void*>(__repr__)},
                 {Py_tp_getattro, reinterpret_cast<void*>(__getattr__)},
                 {Py_tp_setattro, reinterpret_cast<void*>(__setattr__)},
                 {Py_tp_iter, reinterpret_cast<void*>(__iter__)},
                 {Py_mp_length, reinterpret_cast<void*>(__len__)},
                 {Py_mp_subscript, reinterpret_cast<void*>(__getitem__)},
                 {Py_tp_methods, methods},
+                {Py_tp_getset, getset},
                 {0, nullptr}
             };
             static PyType_Spec spec = {
@@ -1051,10 +1061,23 @@ shared across all types, such as template subscripting via `__getitem__` and acc
         for a C++ template hierarchy.  The interface type is not usable on its own
         except to provide access to its C++ instantiations, as well as efficient type
         checks against them and a central point for documentation. */
-        template <StaticStr Name, typename Cls, typename... Bases, StaticStr ModName>
-        static BertrandMeta stub_type(Module<ModName>& parent) {
+        template <StaticStr Name, typename Cls, StaticStr ModName>
+        static BertrandMeta stub_type(Module<ModName>& module) {
+            static std::string docstring;
+            static bool doc_initialized = false;
+            if (!doc_initialized) {
+                docstring = "A public interface for the '" + ModName + "." + Name;
+                docstring += "' template hierarchy.\n\n";
+                docstring +=
+R"doc(This type cannot be used directly, but indexing it with one or more Python
+types allows access to individual instantiations with the same syntax as C++.
+Note that due to its dynamic nature, Python cannot create any new instantiations
+of a C++ template - this class merely navigates the existing instantiations at
+the C++ level and retrieves their corresponding Python types.)doc";
+                doc_initialized = true;
+            }
             static PyType_Slot slots[] = {
-                {Py_tp_doc, const_cast<char*>(__doc__.buffer)},  // TODO: incorrect.  The stub type is separate from the metatype itself
+                {Py_tp_doc, const_cast<char*>(docstring.c_str())},
                 {0, nullptr}
             };
             static PyType_Spec spec = {
@@ -1063,31 +1086,23 @@ shared across all types, such as template subscripting via `__getitem__` and acc
                 .itemsize = 0,
                 .flags =
                     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE |
-                    Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_IMMUTABLETYPE,
+                    Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_DISALLOW_INSTANTIATION |
+                    Py_TPFLAGS_IMMUTABLETYPE,
                 .slots = slots
             };
 
-            PyObject* bases = nullptr;
-            if constexpr (sizeof...(Bases)) {
-                bases = PyTuple_Pack(sizeof...(Bases), ptr(Type<Bases>())...);
-                if (bases == nullptr) {
-                    Exception::from_python();
-                }
-            }
-
             __python__* cls = reinterpret_cast<__python__*>(PyType_FromMetaclass(
                 reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>())),
-                ptr(parent),
+                ptr(module),
                 &spec,
-                bases
+                nullptr
             ));
-            Py_DECREF(bases);
             if (cls == nullptr) {
                 Exception::from_python();
             }
             cls->instancecheck = template_instancecheck;
             cls->subclasscheck = template_subclasscheck;
-            cls->demangled = nullptr;
+            cls->demangled = nullptr;  // prevent dangling pointers
             cls->template_instantiations = nullptr;
             new (&cls->getters) Getters();
             new (&cls->setters) Setters();
@@ -1190,6 +1205,68 @@ shared across all types, such as template subscripting via `__getitem__` and acc
                 Exception::to_python();
                 return nullptr;
             }
+        }
+
+        /* The metaclass's __doc__ string defaults to a getset descriptor that appends
+        the type's template instantiations to the normal `tp_doc` slot. */
+        static PyObject* doc(__python__* cls, void*) {
+            std::string doc = cls->base.tp_doc;
+            if (cls->template_instantiations) {
+                doc += "\n\n";
+                std::string header = "Instantations (" + std::to_string(PyDict_Size(
+                    cls->template_instantiations
+                )) + ")";
+                doc += header + "\n" + std::string(header.size() - 1, '-') + "\n";
+
+                std::string prefix = "    " + std::string(cls->base.tp_name) + "[";
+                PyObject* key;
+                PyObject* value;
+                Py_ssize_t pos = 0;
+                while (PyDict_Next(
+                    cls->template_instantiations,
+                    &pos,
+                    &key,
+                    &value
+                )) {
+                    std::string key_string = prefix;
+                    size_t i = 0;
+                    size_t size = PyTuple_GET_SIZE(key);
+                    while (i < size) {
+                        PyObject* item = PyTuple_GET_ITEM(key, i);
+                        int rc = PyObject_IsInstance(
+                            item,
+                            ptr(Type<BertrandMeta>())
+                        );
+                        if (rc < 0) {
+                            Exception::from_python();
+                        } else if (rc) {
+                            const char* demangled_key = PyUnicode_AsUTF8(
+                                reinterpret_cast<__python__*>(item)->demangled
+                            );
+                            if (demangled_key == nullptr) {
+                                Exception::from_python();
+                            }
+                            doc += demangled_key;
+                        } else {
+                            doc += reinterpret_cast<PyTypeObject*>(item)->tp_name;
+                        }
+                        if (++i < size) {
+                            doc += ", ";
+                        }
+                    }
+                    key_string += "]";
+
+                    const char* demangled_value = PyUnicode_AsUTF8(
+                        reinterpret_cast<__python__*>(value)->demangled
+                    );
+                    if (demangled_value == nullptr) {
+                        Exception::from_python();
+                    }
+
+                    doc += key_string + " -> " + demangled_value + "\n";
+                }
+            }
+            return PyUnicode_FromStringAndSize(doc.c_str(), doc.size());
         }
 
         /* `cls.` allows access to class-level variables with shared state. */
@@ -1393,6 +1470,17 @@ to test against this type.  It is equivalent to a C++ `py::issubclass()` call, w
 can be customize by specializing the `__issubclass__` control struct.)doc"
             },
             {nullptr, nullptr, 0, nullptr}
+        };
+
+        inline static PyGetSetDef getset[] = {
+            {
+                .name = "__doc__",
+                .get = (getter) doc,
+                .set = nullptr,
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {nullptr, nullptr, nullptr, nullptr, nullptr}
         };
 
     };
@@ -3139,13 +3227,14 @@ namespace impl {
                 (impl::has_type<Cls> && impl::is_type<Type<Cls>>) &&
                 ((impl::has_type<Bases> && impl::is_type<Type<Bases>>) && ...)
             )
-            void type() {
+            void type(std::string&& doc = "") {
                 if (Base::context.contains(Name)) {
                     throw AttributeError(
                         "Class '" + impl::demangle(typeid(Wrapper).name()) +
                         "' already has an attribute named '" + Name + "'."
                     );
                 }
+                static std::string docstring = std::move(doc);
                 Base::context[Name] = {
                     .is_type = true,
                     .callbacks = {
@@ -3521,9 +3610,6 @@ namespace impl {
             }
             return 0;
         }
-
-        // TODO: the only way to properly handle the call operator, init, etc. is to
-        // use overload sets, and register each one independently.
 
         /* TODO: implement the following slots using metaprogramming where possible:
         *
