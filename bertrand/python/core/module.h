@@ -215,15 +215,20 @@ namespace impl {
                     if (skip) {
                         return;
                     }
-                    static auto get = [](PyObject* self, void* value) -> PyObject* {
+                    static auto get = [](PyObject* self, void* closure) -> PyObject* {
                         try {
-                            return release(wrap(*reinterpret_cast<const T*>(value)));
+                            const T* value = reinterpret_cast<const T*>(closure);
+                            if constexpr (impl::python_like<T>) {
+                                return Py_NewRef(ptr(*value));
+                            } else {
+                                return release(wrap(*value));
+                            }
                         } catch (...) {
                             Exception::to_python();
                             return nullptr;
                         }
                     };
-                    static auto set = [](PyObject* self, PyObject* new_val, void* value) -> int {
+                    static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
                         PyErr_SetString(
                             PyExc_TypeError,
                             "variable '" + Name + "' of module '" + ModName +
@@ -259,15 +264,21 @@ namespace impl {
                     if (skip) {
                         return;
                     }
-                    static auto get = [](PyObject* self, void* value) -> PyObject* {
+                    static auto get = [](PyObject* self, void* closure) -> PyObject* {
                         try {
-                            return release(wrap(reinterpret_cast<const CRTP*>(self)->*value));
+                            CRTP* obj = reinterpret_cast<CRTP*>(self);
+                            auto value = reinterpret_cast<const T CRTP::*>(closure);
+                            if constexpr (impl::python_like<T>) {
+                                return Py_NewRef(ptr(obj->*value));
+                            } else {
+                                return release(wrap(obj->*value));
+                            }
                         } catch (...) {
                             Exception::to_python();
                             return nullptr;
                         }
                     };
-                    static auto set = [](PyObject* self, PyObject* new_val, void* value) -> int {
+                    static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
                         PyErr_SetString(
                             PyExc_TypeError,
                             "variable '" + Name + "' of module '" + ModName +
@@ -302,15 +313,20 @@ namespace impl {
                     if (skip) {
                         return;
                     }
-                    static auto get = [](PyObject* self, void* value) -> PyObject* {
+                    static auto get = [](PyObject* self, void* closure) -> PyObject* {
                         try {
-                            return release(wrap(*reinterpret_cast<T*>(value)));
+                            T* value = reinterpret_cast<T*>(closure);
+                            if constexpr (impl::python_like<T>) {
+                                return Py_NewRef(ptr(*value));
+                            } else {
+                                return release(wrap(*value));
+                            }
                         } catch (...) {
                             Exception::to_python();
                             return nullptr;
                         }
                     };
-                    static auto set = [](PyObject* self, PyObject* new_val, void* value) -> int {
+                    static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
                         if (new_val == nullptr) {
                             PyErr_SetString(
                                 PyExc_TypeError,
@@ -320,8 +336,7 @@ namespace impl {
                             return -1;
                         }
                         try {
-                            using Wrapper = __as_object__<T>::type;
-                            *reinterpret_cast<T*>(value) = static_cast<Wrapper>(
+                            *reinterpret_cast<T*>(closure) = static_cast<T>(
                                 reinterpret_borrow<Object>(new_val)
                             );
                             return 0;
@@ -358,15 +373,21 @@ namespace impl {
                     if (skip) {
                         return;
                     }
-                    static auto get = [](PyObject* self, void* value) -> PyObject* {
+                    static auto get = [](PyObject* self, void* closure) -> PyObject* {
                         try {
-                            return release(wrap(reinterpret_cast<CRTP*>(self)->*value));
+                            CRTP* obj = reinterpret_cast<CRTP*>(self);
+                            auto value = reinterpret_cast<T CRTP::*>(closure);
+                            if constexpr (impl::python_like<T>) {
+                                return Py_NewRef(ptr(obj->*value));
+                            } else {
+                                return release(wrap(obj->*value));
+                            }
                         } catch (...) {
                             Exception::to_python();
                             return nullptr;
                         }
                     };
-                    static auto set = [](PyObject* self, PyObject* new_val, void* value) -> int {
+                    static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
                         if (new_val == nullptr) {
                             PyErr_SetString(
                                 PyExc_TypeError,
@@ -376,8 +397,9 @@ namespace impl {
                             return -1;
                         }
                         try {
-                            using Wrapper = __as_object__<T>::type;
-                            reinterpret_cast<CRTP*>(self)->*value = static_cast<Wrapper>(
+                            CRTP* obj = reinterpret_cast<CRTP*>(self);
+                            auto value = reinterpret_cast<T CRTP::*>(closure);
+                            obj->*value = static_cast<T>(
                                 reinterpret_borrow<Object>(new_val)
                             );
                             return 0;

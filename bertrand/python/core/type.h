@@ -1431,8 +1431,8 @@ struct __isinstance__<T, BertrandMeta> : Returns<bool> {
     }
     static constexpr bool operator()(const T& obj, const BertrandMeta& cls) {
         if constexpr (impl::python_like<T>) {
-            using PyMeta = Type<BertrandMeta>::__python__;
-            PyMeta* meta = reinterpret_cast<PyMeta*>(ptr(cls));
+            using Meta = Type<BertrandMeta>::__python__;
+            Meta* meta = reinterpret_cast<Meta*>(ptr(cls));
             return meta->instancecheck(meta, ptr(obj));
         } else {
             return false;
@@ -1458,8 +1458,8 @@ struct __issubclass__<T, BertrandMeta> : Returns<bool> {
     }
     static bool operator()(const T& obj, const BertrandMeta& cls) {
         if constexpr (impl::python_like<T>) {
-            using PyMeta = Type<BertrandMeta>::__python__;
-            PyMeta* meta = reinterpret_cast<PyMeta*>(ptr(cls));
+            using Meta = Type<BertrandMeta>::__python__;
+            Meta* meta = reinterpret_cast<Meta*>(ptr(cls));
             return meta->subclasscheck(meta, ptr(obj));
         } else {
             return false;
@@ -1486,7 +1486,7 @@ namespace impl {
     template <StaticStr ModName>
     struct TypeTag::BaseDef<CRTP, Wrapper, CppType>::Bindings {
     private:
-        using PyMeta = Type<BertrandMeta>::__python__;
+        using Meta = Type<BertrandMeta>::__python__;
         inline static std::vector<PyMethodDef> tp_methods;
         inline static std::vector<PyGetSetDef> tp_getset;
         inline static std::vector<PyMemberDef> tp_members;
@@ -1665,7 +1665,7 @@ namespace impl {
         called whenever a Python-level `isinstance()` check is made against this class.
         It will delegate to an `__isinstance__<Object, Wrapper>` specialization if one
         exists.  Otherwise it will default to standard Python behavior. */
-        static bool instancecheck(PyMeta* cls, PyObject* instance) {
+        static bool instancecheck(Meta* cls, PyObject* instance) {
             if constexpr (std::is_invocable_v<
                 __isinstance__<Object, Wrapper>,
                 const Object&
@@ -1685,7 +1685,7 @@ namespace impl {
         called whenever a Python-level `issubclass()` check is made against this calss.
         It will delegate to an `__issubclass__<Object, Wrapper>` specialization if one
         exists.  Otherwise it will default to standard Python behavior. */
-        static bool subclasscheck(PyMeta* cls, PyObject* subclass) {
+        static bool subclasscheck(Meta* cls, PyObject* subclass) {
             if constexpr (std::is_invocable_v<
                 __issubclass__<Object, Wrapper>,
                 const Object&
@@ -1707,24 +1707,30 @@ namespace impl {
             }
         }
 
+        struct Context {
+            bool is_member_var = false;
+            bool is_class_var = false;
+            bool is_property = false;
+            bool is_class_property = false;
+            bool is_type = false;
+            bool is_template_interface = false;
+            bool is_method = false;
+            bool is_classmethod = false;
+            bool is_staticmethod = false;
+            std::vector<std::function<void(Type<Wrapper>&)>> callbacks;
+        };
+
     public:
         using t_cpp = CppType;
 
         Module<ModName> module;
-        PyObject* context;
-        PyMeta::Getters class_getters;
-        PyMeta::Setters class_setters;
+        std::unordered_map<std::string, Context> context;
+        Meta::Getters class_getters;
+        Meta::Setters class_setters;
 
-        Bindings(const Module<ModName>& mod) : module(mod), context(PyDict_New()) {
-            if (context == nullptr) {
-                Exception::from_python();
-            }
-        }
+        Bindings(const Module<ModName>& mod) : module(mod) {}
         Bindings(const Bindings&) = delete;
         Bindings(Bindings&&) = delete;
-        ~Bindings() noexcept {
-            Py_DECREF(context);
-        }
 
         /* Finalize a type definition and produce a corresponding type object.  This
         method should always be called in the return statement of an `__export__()`
@@ -2287,6 +2293,8 @@ namespace impl {
                 .flags = flags,
                 .slots = slots.data()
             };
+
+            // instantiate the type object
             PyObject* bases = nullptr;
             if constexpr (sizeof...(Bases)) {
                 bases = PyTuple_Pack(sizeof...(Bases), ptr(Type<Bases>())...);
@@ -2307,26 +2315,24 @@ namespace impl {
                 Exception::from_python();
             }
 
-            PyMeta* meta = reinterpret_cast<PyMeta*>(ptr(cls));
+            // initialize the metaclass fields
+            Meta* meta = reinterpret_cast<Meta*>(ptr(cls));
             meta->instancecheck = instancecheck;
             meta->subclasscheck = subclasscheck;
-            new (&meta->getters) PyMeta::Getters(std::move(class_getters));
-            new (&meta->setters) PyMeta::Setters(std::move(class_setters));
+            new (&meta->getters) Meta::Getters(std::move(class_getters));
+            new (&meta->setters) Meta::Setters(std::move(class_setters));
             meta->template_instantiations = nullptr;
             meta->demangled = meta->get_demangled_name();
             if (meta->demangled == nullptr) {
                 Exception::from_python();
             }
 
-            PyObject* key;
-            PyObject* value;
-            Py_ssize_t pos = 0;
-            while (PyDict_Next(context, &pos, &key, &value)) {
-                if (PyObject_SetAttr(ptr(cls), key, value)) {
-                    Exception::from_python();
+            // execute the callbacks to populate the type object
+            for (auto&& [name, ctx] : context) {
+                for (auto&& callback : ctx.callbacks) {
+                    callback(cls);
                 }
             }
-
             return cls;
         }
 
@@ -2337,7 +2343,7 @@ namespace impl {
     struct TypeTag::def<CRTP, Wrapper, void>::Bindings :
         BaseDef<CRTP, Wrapper, void>::template Bindings<ModName>
     {
-        using PyMeta = typename Type<BertrandMeta>::__python__;
+        using Meta = typename Type<BertrandMeta>::__python__;
         using Base = BaseDef<CRTP, Wrapper, void>;
         using Base::Base;
 
@@ -2563,7 +2569,7 @@ namespace impl {
 
         template <StaticStr ModName>
         struct Bindings : BaseDef<CRTP, Wrapper, CppType>::template Bindings<ModName> {
-            using PyMeta = typename Type<BertrandMeta>::__python__;
+            using Meta = typename Type<BertrandMeta>::__python__;
             using Base = BaseDef<CRTP, Wrapper, CppType>;
             using Base::Base;
 
@@ -2571,6 +2577,15 @@ namespace impl {
             which synchronizes its state. */
             template <StaticStr Name, typename T>
             static void var(const T CppType::*value) {
+                if (Base::context.contains(Name)) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                        "' already has an attribute named '" + Name + "'."
+                    );
+                }
+                Base::context[Name] = {
+                    .is_member_var = true,
+                };
                 static bool skip = false;
                 if (skip) {
                     return;
@@ -2579,17 +2594,25 @@ namespace impl {
                     try {
                         CRTP* obj = reinterpret_cast<CRTP*>(self);
                         auto member_ptr = reinterpret_cast<const T CppType::*>(closure);
-                        return release(wrap(std::visit(
+                        return std::visit(
                             Visitor{
                                 [member_ptr](const CppType& obj) {
-                                    return obj.*member_ptr;
+                                    if constexpr (impl::python_like<T>) {
+                                        return Py_NewRef(ptr(obj.*member_ptr));
+                                    } else {
+                                        return release(wrap(obj.*member_ptr));
+                                    }
                                 },
                                 [member_ptr](const CppType* obj) {
-                                    return obj->*member_ptr;
+                                    if constexpr (impl::python_like<T>) {
+                                        return Py_NewRef(ptr(obj->*member_ptr));
+                                    } else {
+                                        return release(wrap(obj->*member_ptr));
+                                    }
                                 }
                             },
                             obj->m_cpp
-                        )));
+                        );
                     } catch (...) {
                         Exception::to_python();
                         return nullptr;
@@ -2605,7 +2628,7 @@ namespace impl {
                     Name,
                     +get,  // converts a stateless lambda to a function pointer
                     +set,
-                    nullptr,  // doc
+                    nullptr,
                     const_cast<void*>(reinterpret_cast<const void*>(value))
                 });
                 skip = true;
@@ -2615,6 +2638,15 @@ namespace impl {
             synchronizes its state. */
             template <StaticStr Name, typename T>
             static void var(T CppType::*value) {
+                if (Base::context.contains(Name)) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                        "' already has an attribute named '" + Name + "'."
+                    );
+                }
+                Base::context[Name] = {
+                    .is_member_var = true,
+                };
                 static bool skip = false;
                 if (skip) {
                     return;
@@ -2623,20 +2655,32 @@ namespace impl {
                     try {
                         CRTP* obj = reinterpret_cast<CRTP*>(self);
                         auto member_ptr = reinterpret_cast<T CppType::*>(closure);
-                        return release(wrap(std::visit(
+                        return std::visit(
                             Visitor{
                                 [member_ptr](CppType& obj) {
-                                    return obj.*member_ptr;
+                                    if constexpr (impl::python_like<T>) {
+                                        return Py_NewRef(ptr(obj.*member_ptr));
+                                    } else {
+                                        return release(wrap(obj.*member_ptr));
+                                    }
                                 },
                                 [member_ptr](CppType* obj) {
-                                    return obj->*member_ptr;
+                                    if constexpr (impl::python_like<T>) {
+                                        return Py_NewRef(ptr(obj->*member_ptr));
+                                    } else {
+                                        return release(wrap(obj->*member_ptr));
+                                    }
                                 },
                                 [member_ptr](const CppType* obj) {
-                                    return obj->*member_ptr;
+                                    if constexpr (impl::python_like<T>) {
+                                        return Py_NewRef(ptr(obj->*member_ptr));
+                                    } else {
+                                        return release(wrap(obj->*member_ptr));
+                                    }
                                 }
                             },
                             obj->m_cpp
-                        )));
+                        );
                     } catch (...) {
                         Exception::to_python();
                         return nullptr;
@@ -2695,9 +2739,23 @@ namespace impl {
             slot of the metatype, which synchronizes its state. */
             template <StaticStr Name, typename T>
             void classvar(const T& value) {
+                if (Base::context.contains(Name)) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                        "' already has an attribute named '" + Name + "'."
+                    );
+                }
+                Base::context[Name] = {
+                    .is_class_var = true,
+                };
                 static auto get = [](PyObject* cls, void* closure) -> PyObject* {
                     try {
-                        return release(wrap(*reinterpret_cast<const T*>(closure)));
+                        const T* value = reinterpret_cast<const T*>(closure);
+                        if constexpr (impl::python_like<T>) {
+                            return Py_NewRef(ptr(*value));
+                        } else {
+                            return release(wrap(*value));
+                        }
                     } catch (...) {
                         Exception::to_python();
                         return nullptr;
@@ -2723,9 +2781,23 @@ namespace impl {
             `__setattr__()` slots of the metatype, which synchronizes its state.  */
             template <StaticStr Name, typename T>
             void classvar(T& value) {
+                if (Base::context.contains(Name)) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                        "' already has an attribute named '" + Name + "'."
+                    );
+                }
+                Base::context[Name] = {
+                    .is_class_var = true,
+                };
                 static auto get = [](PyObject* self, void* value) -> PyObject* {
                     try {
-                        return release(wrap(*reinterpret_cast<T*>(value)));
+                        T* value = reinterpret_cast<T*>(value);
+                        if constexpr (impl::python_like<T>) {
+                            return Py_NewRef(ptr(*value));
+                        } else {
+                            return release(wrap(*value));
+                        }
                     } catch (...) {
                         Exception::to_python();
                         return nullptr;
@@ -2740,8 +2812,9 @@ namespace impl {
                         return -1;
                     }
                     try {
-                        auto obj = reinterpret_borrow<Object>(new_val);
-                        *reinterpret_cast<T*>(value) = static_cast<Wrapper>(obj);
+                        *reinterpret_cast<T*>(value) = static_cast<T>(
+                            reinterpret_borrow<Object>(new_val)
+                        );
                         return 0;
                     } catch (...) {
                         Exception::to_python();
@@ -2755,6 +2828,15 @@ namespace impl {
             /* Expose a C++-style const getter to Python as a getset descriptor. */
             template <StaticStr Name, typename Return>
             static void property(Return(CppType::*getter)() const) {
+                if (Base::context.contains(Name)) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                        "' already has an attribute named '" + Name + "'."
+                    );
+                }
+                Base::context[Name] = {
+                    .is_property = true,
+                };
                 static bool skip = false;
                 if (skip) {
                     return;
@@ -2766,10 +2848,30 @@ namespace impl {
                         return release(wrap(std::visit(
                             Visitor{
                                 [member_ptr](const CppType& obj) {
-                                    return (obj.*member_ptr)();
+                                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                                        if constexpr (impl::python_like<Return>) {
+                                            return Py_NewRef(ptr((obj.*member_ptr)()));
+                                        } else {
+                                            return release(wrap((obj.*member_ptr)()));
+                                        }
+                                    } else {
+                                        return release(as_object(
+                                            (obj.*member_ptr)()
+                                        ));
+                                    }
                                 },
                                 [member_ptr](const CppType* obj) {
-                                    return (obj->*member_ptr)();
+                                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                                        if constexpr (impl::python_like<Return>) {
+                                            return Py_NewRef(ptr((obj->*member_ptr)()));
+                                        } else {
+                                            return release(wrap((obj->*member_ptr)()));
+                                        }
+                                    } else {
+                                        return release(as_object(
+                                            (obj->*member_ptr)()
+                                        ));
+                                    }
                                 }
                             },
                             obj->m_cpp
@@ -2796,6 +2898,15 @@ namespace impl {
                 Return(CppType::*getter)() const,
                 void(CppType::*setter)(Value&&)
             ) {
+                if (Base::context.contains(Name)) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                        "' already has an attribute named '" + Name + "'."
+                    );
+                }
+                Base::context[Name] = {
+                    .is_property = true,
+                };
                 static bool skip = false;
                 if (skip) {
                     return;
@@ -2807,17 +2918,59 @@ namespace impl {
                 static auto get = [](PyObject* self, void* closure) -> PyObject* {
                     try {
                         CRTP* obj = reinterpret_cast<CRTP*>(self);
-                        Closure* context = reinterpret_cast<Closure*>(closure);
+                        Closure* ctx = reinterpret_cast<Closure*>(closure);
                         return release(wrap(std::visit(
                             Visitor{
-                                [context](CppType& obj) {
-                                    return (obj.*(context->getter))();
+                                [ctx](CppType& obj) {
+                                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                                        if constexpr (impl::python_like<Return>) {
+                                            return Py_NewRef(ptr(
+                                                (obj.*(ctx->getter))()
+                                            ));
+                                        } else {
+                                            return release(wrap(
+                                                (obj.*(ctx->getter))()
+                                            ));
+                                        }
+                                    } else {
+                                        return release(as_object(
+                                            (obj.*(ctx->getter))()
+                                        ));
+                                    }
                                 },
-                                [context](CppType* obj) {
-                                    return (obj->*(context->getter))();
+                                [ctx](CppType* obj) {
+                                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                                        if constexpr (impl::python_like<Return>) {
+                                            return Py_NewRef(ptr(
+                                                (obj->*(ctx->getter))()
+                                            ));
+                                        } else {
+                                            return release(wrap(
+                                                (obj->*(ctx->getter))()
+                                            ));
+                                        }
+                                    } else {
+                                        return release(as_object(
+                                            (obj->*(ctx->getter))()
+                                        ));
+                                    }
                                 },
-                                [context](const CppType* obj) {
-                                    return (obj->*(context->getter))();
+                                [ctx](const CppType* obj) {
+                                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                                        if constexpr (impl::python_like<Return>) {
+                                            return Py_NewRef(ptr(
+                                                (obj->*(ctx->getter))()
+                                            ));
+                                        } else {
+                                            return release(wrap(
+                                                (obj->*(ctx->getter))()
+                                            ));
+                                        }
+                                    } else {
+                                        return release(as_object(
+                                            (obj->*(ctx->getter))()
+                                        ));
+                                    }
                                 }
                             },
                             obj->m_cpp
@@ -2837,16 +2990,16 @@ namespace impl {
                     }
                     try {
                         CRTP* obj = reinterpret_cast<CRTP*>(self);
-                        Closure* context = reinterpret_cast<Closure*>(closure);
+                        Closure* ctx = reinterpret_cast<Closure*>(closure);
                         std::visit(
                             Visitor{
-                                [context, new_val](CppType& obj) {
-                                    obj.*(context->setter)(static_cast<Value>(
+                                [ctx, new_val](CppType& obj) {
+                                    obj.*(ctx->setter)(static_cast<Value>(
                                         reinterpret_borrow<Object>(new_val)
                                     ));
                                 },
-                                [context, new_val](CppType* obj) {
-                                    obj->*(context->setter)(static_cast<Value>(
+                                [ctx, new_val](CppType* obj) {
+                                    obj->*(ctx->setter)(static_cast<Value>(
                                         reinterpret_borrow<Object>(new_val)
                                     ));
                                 },
@@ -2880,9 +3033,27 @@ namespace impl {
             slot of the metatype. */
             template <StaticStr Name, typename Return>
             void classproperty(Return(*getter)()) {
+                if (Base::context.contains(Name)) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                        "' already has an attribute named '" + Name + "'."
+                    );
+                }
+                Base::context[Name] = {
+                    .is_class_property = true,
+                };
                 static auto get = [](PyObject* cls, void* closure) -> PyObject* {
                     try {
-                        return release(wrap((reinterpret_cast<Return(*)()>(closure))()));
+                        Return(*func)() = reinterpret_cast<Return(*)()>(closure);
+                        if constexpr (std::is_lvalue_reference_v<Return>) {
+                            if constexpr (impl::python_like<Return>) {
+                                return Py_NewRef(ptr(func()));
+                            } else {
+                                return release(wrap(func()));
+                            }
+                        } else {
+                            return release(as_object(func()));
+                        }
                     } catch (...) {
                         Exception::to_python();
                         return nullptr;
@@ -2895,15 +3066,31 @@ namespace impl {
             `__getattr__()` and `__setattr__()` slots of the metatype. */
             template <StaticStr Name, typename Return, typename Value>
             void classproperty(Return(*getter)(), void(*setter)(Value&&)) {
+                if (Base::context.contains(Name)) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                        "' already has an attribute named '" + Name + "'."
+                    );
+                }
+                Base::context[Name] = {
+                    .is_class_property = true,
+                };
                 static struct Closure {
                     Return(*getter)();
                     void(*setter)(Value&&);
                 } closure = {getter, setter};
                 static auto get = [](PyObject* cls, void* closure) -> PyObject* {
                     try {
-                        return release(wrap(
-                            reinterpret_cast<Closure*>(closure)->getter()
-                        ));
+                        Closure* ctx = reinterpret_cast<Closure*>(closure);
+                        if constexpr (std::is_lvalue_reference_v<Return>) {
+                            if constexpr (impl::python_like<Return>) {
+                                return Py_NewRef(ptr(ctx->getter()));
+                            } else {
+                                return release(wrap(ctx->getter()));
+                            }
+                        } else {
+                            return release(as_object(ctx->getter()));
+                        }
                     } catch (...) {
                         Exception::to_python();
                         return nullptr;
@@ -2918,8 +3105,7 @@ namespace impl {
                         return -1;
                     }
                     try {
-                        Closure* context = reinterpret_cast<Closure*>(closure);
-                        context->setter(static_cast<Value>(
+                        reinterpret_cast<Closure*>(closure)->setter(static_cast<Value>(
                             reinterpret_borrow<Object>(new_val)
                         ));
                         return 0;
@@ -2930,6 +3116,53 @@ namespace impl {
                 };
                 Base::class_getters[Name] = {+get, reinterpret_cast<void*>(&closure)};
                 Base::class_setters[Name] = {+set, reinterpret_cast<void*>(&closure)};
+            }
+
+
+
+
+
+
+
+
+
+            /* Expose a nested C++ type to Python. */
+            template <
+                StaticStr Name,
+                std::derived_from<Object> Cls,
+                std::derived_from<Object>... Bases
+            > requires (
+                !impl::is_generic<Cls> &&
+                impl::has_type<Cls> &&
+                impl::is_type<Type<Cls>> &&
+                ((impl::has_type<Bases> && impl::is_type<Type<Cls>>) && ...)
+            )
+            void type() {
+                // TODO
+            }
+
+            /* Expose a templated C++ type to Python. */
+            template <
+                StaticStr Name,
+                template <typename...> typename Cls
+            >
+            void type() {
+                // TODO
+            }
+
+            /* Expose a template instantiation of a nested C++ type to Python. */
+            template <
+                StaticStr Name,
+                std::derived_from<Object> Cls,
+                std::derived_from<Object>... Bases
+            > requires (
+                impl::is_generic<Cls> &&
+                impl::has_type<Cls> &&
+                impl::is_type<Type<Cls>> &&
+                ((impl::has_type<Bases> && impl::is_type<Type<Cls>>) && ...)
+            )
+            void type() {
+                // TODO
             }
 
             /* Expose a C++ instance method to Python as an instance method, which can
