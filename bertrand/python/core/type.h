@@ -1087,6 +1087,8 @@ shared across all types, such as template subscripting via `__getitem__` and acc
             }
             cls->instancecheck = template_instancecheck;
             cls->subclasscheck = template_subclasscheck;
+            cls->demangled = nullptr;
+            cls->template_instantiations = nullptr;
             new (&cls->getters) Getters();
             new (&cls->setters) Setters();
             cls->demangled = cls->get_demangled_name();
@@ -3256,9 +3258,25 @@ namespace impl {
                     }
                     Type<Cls> cls = Type<Cls>::__python__::__export__(mod);
 
+                    // Insert the template interface into the type's __bases__
+                    PyTypeObject* pycls = reinterpret_cast<PyTypeObject*>(ptr(cls));
+                    PyObject* curr_bases = pycls->tp_bases;
+                    PyObject* add_base = PyTuple_Pack(1, ptr(existing));
+                    if (add_base == nullptr) {
+                        Exception::from_python();
+                    }
+                    PyObject* new_bases = PySequence_Concat(curr_bases, add_base);
+                    Py_DECREF(add_base);
+                    if (new_bases == nullptr) {
+                        Exception::from_python();
+                    }
+                    pycls->tp_bases = new_bases;
+                    Py_DECREF(curr_bases);
+                    PyType_Modified(pycls);
+
                     // insert into the template interface's __getitem__ dict
                     PyObject* key = PyTuple_Pack(
-                        sizeof...(Bases),
+                        sizeof...(Bases) + 1,
                         ptr(Type<Bases>())...
                     );
                     if (key == nullptr) {

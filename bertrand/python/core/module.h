@@ -534,6 +534,22 @@ namespace impl {
                         // call the type's __export__() method
                         Type<Cls> cls = Type<Cls>::__python__::__export__(mod);
 
+                        // Insert the template interface into the type's __bases__
+                        PyTypeObject* pycls = reinterpret_cast<PyTypeObject*>(ptr(cls));
+                        PyObject* curr_bases = pycls->tp_bases;
+                        PyObject* add_base = PyTuple_Pack(1, ptr(existing));
+                        if (add_base == nullptr) {
+                            Exception::from_python();
+                        }
+                        PyObject* new_bases = PySequence_Concat(curr_bases, add_base);
+                        Py_DECREF(add_base);
+                        if (new_bases == nullptr) {
+                            Exception::from_python();
+                        }
+                        pycls->tp_bases = new_bases;
+                        Py_DECREF(curr_bases);
+                        PyType_Modified(pycls);
+
                         // insert into the template interface's __getitem__ dict
                         PyObject* key = PyTuple_Pack(
                             sizeof...(Bases),
@@ -624,9 +640,9 @@ namespace impl {
                 // it is added, or append to it as needed.  Alternatively, I can use the same
                 // attach() method that I'm exposing to the public.
 
-                // TODO: submodule should return a new instance of bindings, so that it
-                // can be chained?  Only the parent module's finalize() method would
-                // need to be called.
+                // TODO: submodule will recursively execute another module's __export__
+                // method and attach the resulting module to the current one.  No need
+                // for any nested logic.
 
                 /* Add a submodule to this module in order to model nested namespaces at
                 the C++ level.  Note that a `py::Module` specialization with the
