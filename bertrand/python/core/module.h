@@ -425,8 +425,8 @@ namespace impl {
                     std::derived_from<Object>... Bases
                 > requires (
                     !impl::is_generic<Cls> &&
-                    impl::has_type<Cls> &&
-                    (impl::has_type<Bases> && ...)
+                    (impl::has_type<Cls> && impl::is_type<Type<Cls>>) &&
+                    ((impl::has_type<Bases> && impl::is_type<Type<Bases>>) && ...)
                 )
                 void type() {
                     if (context.contains(Name)) {
@@ -450,7 +450,7 @@ namespace impl {
                                 }
 
                                 // insert into this module's C++ type map for fast
-                                // lookup without going through the Python interpreter
+                                // lookup using C++ template syntax
                                 reinterpret_cast<CRTP*>(ptr(mod))->type_map[typeid(Cls)] =
                                     reinterpret_cast<PyTypeObject*>(ptr(cls));
 
@@ -500,8 +500,8 @@ namespace impl {
                     std::derived_from<Object>... Bases
                 > requires (
                     impl::is_generic<Cls> &&
-                    impl::has_type<Cls> &&
-                    (impl::has_type<Bases> && ...)
+                    (impl::has_type<Cls> && impl::is_type<Type<Cls>>) &&
+                    ((impl::has_type<Bases> && impl::is_type<Type<Bases>>) && ...)
                 )
                 void type() {
                     auto it = context.find(Name);
@@ -515,8 +515,8 @@ namespace impl {
                         );
                     } else if (!it->second.is_template_interface) {
                         throw AttributeError(
-                            "Module '" + ModName +
-                            "' already has an attribute named '" + Name + "'."
+                            "Module '" + ModName + "' already has an attribute named "
+                            "'" + Name + "'."
                         );
                     }
                     it->second.callbacks.push_back([](Module<ModName>& mod) {
@@ -555,7 +555,7 @@ namespace impl {
                         Py_DECREF(key);
 
                         // insert into this module's C++ type map for fast lookup
-                        // without going through the Python interpreter
+                        // using C++ template syntax
                         reinterpret_cast<CRTP*>(ptr(mod))->type_map[typeid(Cls)] =
                             reinterpret_cast<PyTypeObject*>(ptr(cls));
 
@@ -596,7 +596,7 @@ namespace impl {
                                 }
 
                                 // insert into this module's C++ type map for fast
-                                // lookup without going through the Python interpreter
+                                // lookup using C++ template syntax
                                 reinterpret_cast<CRTP*>(ptr(mod))->type_map[typeid(Cls)] =
                                     reinterpret_cast<PyTypeObject*>(ptr(cls));
 

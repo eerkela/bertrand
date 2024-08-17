@@ -2569,8 +2569,17 @@ namespace impl {
 
         template <StaticStr ModName>
         struct Bindings : BaseDef<CRTP, Wrapper, CppType>::template Bindings<ModName> {
+        private:
             using Meta = typename Type<BertrandMeta>::__python__;
             using Base = BaseDef<CRTP, Wrapper, CppType>;
+
+            /* Insert a Python type into the global `bertrand.python.type_map`
+            dictionary, so that it can be mapped to its C++ equivalent and used
+            when generating Python bindings. */
+            template <typename Cls>
+            static void register_type(Module<ModName>& mod, PyTypeObject* type);
+
+        public:
             using Base::Base;
 
             /* Expose an immutable member variable to Python as a getset descriptor,
@@ -3118,51 +3127,167 @@ namespace impl {
                 Base::class_setters[Name] = {+set, reinterpret_cast<void*>(&closure)};
             }
 
-
-
-
-
-
-
-
-
-            /* Expose a nested C++ type to Python. */
+            /* Expose a nested py::Object type to Python. */
             template <
                 StaticStr Name,
                 std::derived_from<Object> Cls,
                 std::derived_from<Object>... Bases
             > requires (
                 !impl::is_generic<Cls> &&
-                impl::has_type<Cls> &&
-                impl::is_type<Type<Cls>> &&
-                ((impl::has_type<Bases> && impl::is_type<Type<Cls>>) && ...)
+                (impl::has_type<Cls> && impl::is_type<Type<Cls>>) &&
+                ((impl::has_type<Bases> && impl::is_type<Type<Bases>>) && ...)
             )
             void type() {
-                // TODO
+                if (Base::context.contains(Name)) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                        "' already has an attribute named '" + Name + "'."
+                    );
+                }
+                Base::context[Name] = {
+                    .is_type = true,
+                    .callbacks = {
+                        [](Type<Wrapper>& type) {
+                            Module<ModName> mod = reinterpret_steal<Module<ModName>>(
+                                PyType_GetModule(ptr(type))
+                            );
+                            if (ptr(mod) == nullptr) {
+                                Exception::from_python();
+                            }
+                            Type<Cls> cls = Type<Cls>::__python__::__export__(mod);
+
+                            if (PyObject_SetAttr(ptr(type), Name, ptr(cls))) {
+                                Exception::from_python();
+                            }
+
+                            // insert into the module's C++ type map for fast lookup
+                            // using C++ template syntax
+                            using Mod = Module<ModName>::__python__;
+                            reinterpret_cast<Mod*>(ptr(mod))->type_map[typeid(Cls)] =
+                                reinterpret_cast<PyTypeObject*>(ptr(cls));
+
+                            // insert into the global type map for use when generating
+                            // C++ bindings from Python type hints
+                            register_type<Cls>(
+                                mod,
+                                reinterpret_cast<PyTypeObject*>(ptr(cls))
+                            );
+                        }
+                    }
+                };
             }
 
-            /* Expose a templated C++ type to Python. */
+            /* Expose a nested and templated py::Object type to Python. */
             template <
                 StaticStr Name,
                 template <typename...> typename Cls
             >
             void type() {
-                // TODO
+                if (Base::context.contains(Name)) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                        "' already has an attribute named '" + Name + "'."
+                    );
+                }
+                Base::context[Name] = {
+                    .is_type = true,
+                    .is_template_interface = true,
+                    .callbacks = {
+                        [](Type<Wrapper>& type) {
+                            Module<ModName> mod = reinterpret_steal<Module<ModName>>(
+                                PyType_GetModule(ptr(type))
+                            );
+                            if (ptr(mod) == nullptr) {
+                                Exception::from_python();
+                            }
+                            BertrandMeta stub = Meta::stub_type<Name, Cls>(mod);
+                            if (PyObject_SetAttr(ptr(type), Name, ptr(stub))) {
+                                Exception::from_python();
+                            }
+                        }
+                    }
+                };
             }
 
-            /* Expose a template instantiation of a nested C++ type to Python. */
+            /* Expose a template instantiation of a nested py::Object type to Python. */
             template <
                 StaticStr Name,
                 std::derived_from<Object> Cls,
                 std::derived_from<Object>... Bases
             > requires (
                 impl::is_generic<Cls> &&
-                impl::has_type<Cls> &&
-                impl::is_type<Type<Cls>> &&
-                ((impl::has_type<Bases> && impl::is_type<Type<Cls>>) && ...)
+                (impl::has_type<Cls> && impl::is_type<Type<Cls>>) &&
+                ((impl::has_type<Bases> && impl::is_type<Type<Bases>>) && ...)
             )
             void type() {
-                // TODO
+                auto it = Base::context.find(Name);
+                if (it == Base::context.end()) {
+                    throw TypeError(
+                        "No template interface found for type '" + Name + "' in "
+                        "class '" + impl::demangle(typeid(Wrapper).name()) + "' "
+                        "with specialization '" +
+                        impl::demangle(typeid(Cls).name()) + "'.  Did you "
+                        "forget to register the unspecialized template first?"
+                    );
+                } else if (!it->second.is_template_interface) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) + "' "
+                        "already has an attribute named '" + Name + "'."
+                    );
+                }
+                it->second.callbacks.push_back([](Type<Wrapper>& type) {
+                    // get the template interface with the same name
+                    BertrandMeta existing = reinterpret_steal<BertrandMeta>(
+                        PyObject_GetAttr(
+                            ptr(type),
+                            impl::TemplateString<Name>::ptr
+                        )
+                    );
+                    if (ptr(existing) == nullptr) {
+                        Exception::from_python();
+                    }
+
+                    // call the type's __export__() method
+                    Module<ModName> mod = reinterpret_steal<Module<ModName>>(
+                        PyType_GetModule(ptr(type))
+                    );
+                    if (ptr(mod) == nullptr) {
+                        Exception::from_python();
+                    }
+                    Type<Cls> cls = Type<Cls>::__python__::__export__(mod);
+
+                    // insert into the template interface's __getitem__ dict
+                    PyObject* key = PyTuple_Pack(
+                        sizeof...(Bases),
+                        ptr(Type<Bases>())...
+                    );
+                    if (key == nullptr) {
+                        Exception::from_python();
+                    }
+                    if (PyDict_SetItem(
+                        reinterpret_cast<typename Type<BertrandMeta>::__python__*>(
+                            ptr(existing)
+                        )->template_instantiations,
+                        key,
+                        ptr(cls)
+                    )) {
+                        Py_DECREF(key);
+                        Exception::from_python();
+                    }
+                    Py_DECREF(key);
+
+                    // insert into the module's C++ type map for fast lookup
+                    // using C++ template syntax
+                    reinterpret_cast<CRTP*>(ptr(mod))->type_map[typeid(Cls)] =
+                        reinterpret_cast<PyTypeObject*>(ptr(cls));
+
+                    // insert into the global type map for use when generating C++
+                    // bindings from Python type hints
+                    register_type<Cls>(
+                        mod,
+                        reinterpret_cast<PyTypeObject*>(ptr(cls))
+                    );
+                });
             }
 
             /* Expose a C++ instance method to Python as an instance method, which can
