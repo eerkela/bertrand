@@ -5,7 +5,6 @@
 #include "except.h"
 #include "ops.h"
 #include "object.h"
-#include "pytypedefs.h"
 
 
 namespace py {

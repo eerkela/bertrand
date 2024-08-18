@@ -1418,36 +1418,11 @@ void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_exception(
     // if directed.
     #ifndef BERTRAND_NO_TRACEBACK
         try {
-            PyTracebackObject* front = PyException_GetTraceback(value);
+            PyTracebackObject* front = impl::build_traceback(
+                cpptrace::generate_trace(1),
+                PyException_GetTraceback(value)
+            )
             if (front != nullptr) {
-                // cpptrace stores frames in most recent -> least recent order, so inserting
-                // into the singly-linked list will reverse the stack appropriately.
-                for (const auto& frame : cpptrace::generate_trace(1)) {
-                    // stop the traceback if we encounter a C++ frame in which a nested
-                    // Python script was executed.
-                    if (frame.symbol.find("py::Code::operator()") != std::string::npos) {
-                        break;
-
-                    // ignore frames that are not part of the user's code
-                    } else if (!impl::ignore_frame(frame)) {
-                        PyTracebackObject* tb = PyObject_GC_New(
-                            PyTracebackObject,
-                            &PyTraceBack_Type
-                        );
-                        if (tb == nullptr) {
-                            throw std::runtime_error(
-                                "could not create Python traceback object - failed to allocate "
-                                "PyTraceBackObject"
-                            );
-                        }
-                        tb->tb_next = front;
-                        tb->tb_frame = reinterpret_cast<PyFrameObject*>(release(Frame(frame)));
-                        tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
-                        tb->tb_lineno = PyFrame_GetLineNumber(tb->tb_frame);
-                        PyObject_GC_Track(tb);
-                        front = tb;
-                    }
-                }
                 PyException_SetTraceback(value, front);
                 Py_DECREF(front);
             }

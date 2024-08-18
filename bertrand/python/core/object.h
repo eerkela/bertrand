@@ -43,67 +43,10 @@ namespace impl {
 
         template <typename Value>
             requires (__setitem__<Container, Key, std::remove_cvref_t<Value>>::enable)
-        Item& operator=(Value&& value) {
-            using setitem = __setitem__<Container, Key, std::remove_cvref_t<Value>>;
-            using Return = typename setitem::type;
-            static_assert(
-                std::is_void_v<Return>,
-                "index assignment operator must return void.  Check your "
-                "specialization of __setitem__ for these types and ensure the Return "
-                "type is set to void."
-            );
-            Base::operator=(std::forward<Value>(value));
-            if constexpr (impl::has_call_operator<setitem>) {
-                setitem{}(m_container, m_key, value);
-
-            } else if constexpr (
-                impl::originates_from_cpp<Base> &&
-                impl::cpp_or_originates_from_cpp<Key> &&
-                impl::cpp_or_originates_from_cpp<std::remove_cvref_t<Value>>
-            ) {
-                static_assert(
-                    impl::supports_item_assignment<Base, Key, std::remove_cvref_t<Value>>,
-                    "__setitem__<Self, Key, Value> is enabled for operands whose C++ "
-                    "representations have no viable overload for `Self[Key] = Value`"
-                );
-                if constexpr (impl::python_like<std::remove_cvref_t<Value>>) {
-                    unwrap(*this) = unwrap(std::forward<Value>(value));
-                } else {
-                    unwrap(*this) = std::forward<Value>(value);
-                }
-
-            } else {
-                if (PyObject_SetItem(
-                    m_container.m_ptr,
-                    ptr(as_object(m_key)),
-                    ptr(*this)
-                )) {
-                    Exception::from_python();
-                }
-            }
-            return *this;
-        }
+        Item& operator=(Value&& value);  // defined in except.h
 
         template <typename = void> requires (__delitem__<Container, Key>::enable)
-        Item& operator=(del value) {
-            using delitem = __delitem__<Container, Key>;
-            using Return = typename delitem::type;
-            static_assert(
-                std::is_void_v<Return>,
-                "index deletion operator must return void.  Check your specialization "
-                "of __delitem__ for these types and ensure the Return type is set to "
-                "void."
-            );
-            if constexpr (impl::has_call_operator<delitem>) {
-                delitem{}(m_container, m_key);
-
-            } else {
-                if (PyObject_DelItem(m_container.m_ptr, ptr(as_object(m_key)))) {
-                    Exception::from_python();
-                }
-            }
-            return *this;
-        }
+        Item& operator=(del value);  // defined in except.h
 
         template <typename Value>
             requires (
@@ -151,57 +94,12 @@ public:
     container types, and the allowable key types can be specified via the __contains__
     control struct. */
     template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
-    [[nodiscard]] bool contains(this const Self& self, const Key& key) {
-        using Return = typename __contains__<Self, Key>::type;
-        static_assert(
-            std::same_as<Return, bool>,
-            "contains() operator must return a boolean value.  Check your "
-            "specialization of __contains__ for these types and ensure the Return "
-            "type is set to bool."
-        );
-        if constexpr (impl::has_call_operator<__contains__<Self, Key>>) {
-            return __contains__<Self, Key>{}(self, key);
-
-        } else if constexpr (
-            impl::originates_from_cpp<Self> &&
-            impl::cpp_or_originates_from_cpp<Key>
-        ) {
-            static_assert(
-                impl::has_contains<impl::cpp_type<Self>, impl::cpp_type<Key>>,
-                "__contains__<Self, Key> is enabled for operands whose C++ "
-                "representations have no viable overload for `Self.contains(Key)`"
-            );
-            return unwrap(self).contains(unwrap(key));
-
-        } else {
-            int result = PySequence_Contains(
-                self.m_ptr,
-                ptr(as_object(key))
-            );
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-        }
-    }
+    [[nodiscard]] bool contains(this const Self& self, const Key& key);  // defined in except.h
 
     /* Contextually convert an Object into a boolean value for use in if/else 
     statements, with the same semantics as in Python. */
     template <typename Self>
-    [[nodiscard]] explicit operator bool(this const Self& self) {
-        if constexpr (
-            impl::originates_from_cpp<Self> &&
-            impl::has_operator_bool<impl::cpp_type<Self>>
-        ) {
-            return static_cast<bool>(unwrap(self));
-        } else {
-            int result = PyObject_IsTrue(self.m_ptr);
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;   
-        }
-    }
+    [[nodiscard]] explicit operator bool(this const Self& self);  // defined in except.h
 
     /* Universal implicit conversion operator.  Implemented via the __cast__ control
     struct. */
@@ -269,47 +167,7 @@ public:
     /* Index operator.  Specific key and element types can be controlled via the
     __getitem__, __setitem__, and __delitem__ control structs. */
     template <typename Self, typename Key> requires (__getitem__<Self, Key>::enable)
-    auto operator[](this const Self& self, Key&& key) {
-        using Return = typename __getitem__<Self, std::decay_t<Key>>::type;
-        static_assert(
-            std::derived_from<Return, Object>,
-            "index operator must return a subclass of py::Object.  Check your "
-            "specialization of __getitem__ for these types and ensure the Return "
-            "type is set to a subclass of py::Object."
-        );
-        if constexpr (impl::has_call_operator<__getitem__<Self, std::decay_t<Key>>>) {
-            return impl::Item<Self, Key>(
-                __getitem__<Self, Key>{}(self, key),
-                self,
-                std::forward<Key>(key)
-            );
-
-        } else if constexpr (
-            impl::originates_from_cpp<Self> &&
-            impl::cpp_or_originates_from_cpp<std::decay_t<Key>>
-        ) {
-            static_assert(
-                impl::lookup_yields<impl::cpp_type<Self>, std::decay_t<Key>, Return>,
-                "__getitem__<Self, Args...> is enabled for operands whose C++ "
-                "representations have no viable overload for `Self[Key]`"
-            );
-            return unwrap(self)[std::forward<Key>(key)];
-
-        } else {
-            PyObject* result = PyObject_GetItem(
-                self.m_ptr,
-                ptr(as_object(key))
-            );
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-            return impl::Item<Self, std::decay_t<Key>>(
-                reinterpret_steal<Return>(result),
-                self,
-                std::forward<Key>(key)
-            );
-        }
-    }
+    auto operator[](this const Self& self, Key&& key);  // defined in except.h
 
     /* Slice operator.  This is just syntactic sugar for the index operator with a
     py::Slice operand, allowing users to specify slices using a condensed initializer
@@ -318,7 +176,7 @@ public:
     auto operator[](
         this const Self& self,
         const std::initializer_list<impl::SliceInitializer>& slice
-    );
+    );  // defined in core.h
 
 };
 
@@ -496,20 +354,7 @@ template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
 template <typename T>
 struct __isinstance__<T, Object> : Returns<bool> {
     static consteval bool operator()(const T& obj) { return std::derived_from<T, Object>; }
-    static constexpr bool operator()(const T& obj, const Object& cls) {
-        if constexpr (impl::python_like<T>) {
-            int result = PyObject_IsInstance(
-                ptr(obj),
-                ptr(cls)
-            );
-            if (result < 0) {
-                Exception::from_python();
-            }
-            return result;
-        } else {
-            return false;
-        }
-    }
+    static constexpr bool operator()(const T& obj, const Object& cls);  // defined in except.h
 };
 
 
@@ -523,16 +368,7 @@ struct __issubclass__<T, Object> : Returns<bool> {
             return impl::type_like<T>;
         }
     }
-    static bool operator()(const T& obj, const Object& cls) {
-        int result = PyObject_IsSubclass(
-            ptr(as_object(obj)),
-            ptr(cls)
-        );
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
+    static bool operator()(const T& obj, const Object& cls);  // defined in except.h
 };
 
 
@@ -561,26 +397,8 @@ struct __init__<Object, T> : Returns<Object> {
 subclasses by applying a runtime `isinstance()` check. */
 template <std::derived_from<Object> From, std::derived_from<From> To>
 struct __cast__<From, To> : Returns<To> {
-    static auto operator()(const From& from) {
-        if (isinstance<To>(from)) {
-            return reinterpret_borrow<To>(ptr(from));
-        } else {
-            throw TypeError(
-                "cannot convert Python object from type '" + repr(Type<From>()) +
-                 "' to type '" + repr(Type<To>()) + "'"
-            );
-        }
-    }
-    static auto operator()(From&& from) {
-        if (isinstance<To>(from)) {
-            return reinterpret_steal<To>(release(from));
-        } else {
-            throw TypeError(
-                "cannot convert Python object from type '" + repr(Type<From>()) +
-                 "' to type '" + repr(Type<To>()) + "'"
-            );
-        }
-    }
+    static auto operator()(const From& from);  // defined in except.h
+    static auto operator()(From&& from);  // defined in except.h
 };
 
 
@@ -600,21 +418,7 @@ struct __cast__<Object, To> : Returns<To> {
 calling `int(obj)` at the Python level. */
 template <std::derived_from<Object> From, std::integral To>
 struct __explicit_cast__<From, To> : Returns<To> {
-    static To operator()(const From& from) {
-        long long result = PyLong_AsLongLong(ptr(from));
-        if (result == -1 && PyErr_Occurred()) {
-            Exception::from_python();
-        } else if (
-            result < std::numeric_limits<To>::min() ||
-            result > std::numeric_limits<To>::max()
-        ) {
-            throw OverflowError(
-                "integer out of range for " + impl::demangle(typeid(To).name()) +
-                ": " + std::to_string(result)
-            );
-        }
-        return result;
-    }
+    static To operator()(const From& from);  // defined in except.h
 };
 
 
@@ -622,13 +426,7 @@ struct __explicit_cast__<From, To> : Returns<To> {
 number by calling `float(obj)` at the Python level. */
 template <std::derived_from<Object> From, std::floating_point To>
 struct __explicit_cast__<From, To> : Returns<To> {
-    static To operator()(const From& from) {
-        double result = PyFloat_AsDouble(ptr(from));
-        if (result == -1.0 && PyErr_Occurred()) {
-            Exception::from_python();
-        }
-        return result;
-    }
+    static To operator()(const From& from);  // defined in except.h
 };
 
 
@@ -637,13 +435,7 @@ by calling `complex(obj)` at the Python level. */
 template <std::derived_from<Object> From, impl::complex_like To>
     requires (impl::cpp_like<To>)
 struct __explicit_cast__<From, To> : Returns<To> {
-    static To operator()(const From& from) {
-        Py_complex result = PyComplex_AsCComplex(ptr(from));
-        if (result.real == -1.0 && PyErr_Occurred()) {
-            Exception::from_python();
-        }
-        return To(result.real, result.imag);
-    }
+    static To operator()(const From& from);  // defined in except.h
 };
 
 
@@ -651,21 +443,7 @@ struct __explicit_cast__<From, To> : Returns<To> {
 representation by calling `str(obj)` at the Python level. */
 template <std::derived_from<Object> From> 
 struct __explicit_cast__<From, std::string> : Returns<std::string> {
-    static auto operator()(const From& from) {
-        PyObject* str = PyObject_Str(ptr(from));
-        if (str == nullptr) {
-            Exception::from_python();
-        }
-        Py_ssize_t size;
-        const char* data = PyUnicode_AsUTF8AndSize(str, &size);
-        if (data == nullptr) {
-            Py_DECREF(str);
-            Exception::from_python();
-        }
-        std::string result(data, size);
-        Py_DECREF(str);
-        return result;
-    }
+    static auto operator()(const From& from);  // defined in except.h
 };
 
 

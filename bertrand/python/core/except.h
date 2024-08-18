@@ -15,7 +15,7 @@ namespace py {
 
 namespace impl {
 
-    std::string parse_function_name(const std::string& name) {
+    [[nodiscard]] inline std::string parse_function_name(const std::string& name) {
         /* NOTE: functions and classes that accept static strings as template
          * arguments are decomposed into numeric character arrays in the symbol name,
          * which need to be reconstructed here.  Here's an example:
@@ -191,14 +191,13 @@ struct __call__<Frame> : Returns<Object> {
 };
 
 
-[[nodiscard]] bool Interface<Frame>::has_code() const {
+[[nodiscard]] inline bool Interface<Frame>::has_code() const {
     return PyFrame_GetCode(
         reinterpret_cast<PyFrameObject*>(
             ptr(reinterpret_cast<const Object&>(*this))
         )
     ) != nullptr;
 }
-
 
 
 ///////////////////////////
@@ -210,20 +209,43 @@ namespace impl {
 
     inline const char* virtualenv = std::getenv("BERTRAND_HOME");
 
-    inline bool ignore_frame(const cpptrace::stacktrace_frame& frame) {
-        return (
-            frame.symbol.starts_with("__") ||
-            (virtualenv != nullptr && frame.filename.starts_with(virtualenv))
-        );
-    }
+    inline PyTracebackObject* build_traceback(
+        const cpptrace::stacktrace& trace,
+        PyTracebackObject* front = nullptr
+    ) {
+        for (auto&& frame : trace) {
+            // stop the traceback if we encounter a C++ frame in which a nested Python
+            // script was executed.
+            if (frame.symbol.find("py::Code::operator()") != std::string::npos) {
+                break;
 
-    inline void clear_traceback(PyTracebackObject* tb) {
-        if (tb == nullptr) {
-            return;
-        } else {
-            clear_traceback(tb->tb_next);
-            Py_DECREF(tb);
+            // ignore frames that are not part of the user's code
+            } else if (
+                frame.symbol.starts_with("__") ||
+                (virtualenv != nullptr && frame.filename.starts_with(virtualenv))
+            ) {
+                continue;
+
+            } else {
+                PyTracebackObject* tb = PyObject_GC_New(
+                    PyTracebackObject,
+                    &PyTraceBack_Type
+                );
+                if (tb == nullptr) {
+                    throw std::runtime_error(
+                        "could not create Python traceback object - failed to "
+                        "allocate PyTraceBackObject"
+                    );
+                }
+                tb->tb_next = front;
+                tb->tb_frame = reinterpret_cast<PyFrameObject*>(release(Frame(frame)));
+                tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
+                tb->tb_lineno = PyFrame_GetLineNumber(tb->tb_frame);
+                PyObject_GC_Track(tb);
+                front = tb;
+            }
         }
+        return front;
     }
 
 }
@@ -271,69 +293,35 @@ struct __init__<Traceback, cpptrace::stacktrace>            : Returns<Traceback>
         // Traceback objects are stored in a singly-linked list, with the most recent
         // frame at the end of the list and the least frame at the beginning.  As a
         // result, we need to build them from the inside out, starting with C++ frames.
-        PyTracebackObject* front = nullptr;
+        PyTracebackObject* front = impl::build_traceback(trace);
 
-        try {
-            // cpptrace stores frames in most recent -> least recent order, so inserting
-            // into the singly-linked list will reverse the stack appropriately.
-            for (auto&& frame : trace) {
-                // stop the traceback if we encounter a C++ frame in which a nested
-                // Python script was executed.
-                if (frame.symbol.find("py::Code::operator()") != std::string::npos) {
-                    break;
-
-                // ignore frames that are not part of the user's code
-                } else if (!impl::ignore_frame(frame)) {
-                    PyTracebackObject* tb = PyObject_GC_New(
-                        PyTracebackObject,
-                        &PyTraceBack_Type
-                    );
-                    if (tb == nullptr) {
-                        throw std::runtime_error(
-                            "could not create Python traceback object - failed to allocate "
-                            "PyTraceBackObject"
-                        );
-                    }
-                    tb->tb_next = front;
-                    tb->tb_frame = reinterpret_cast<PyFrameObject*>(release(Frame(frame)));
-                    tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
-                    tb->tb_lineno = PyFrame_GetLineNumber(tb->tb_frame);
-                    PyObject_GC_Track(tb);
-                    front = tb;
-                }
-            }
-
-            // continue with the Python frames, again starting with the most recent
-            PyFrameObject* frame = reinterpret_cast<PyFrameObject*>(
-                Py_XNewRef(PyEval_GetFrame())
+        // continue with the Python frames, again starting with the most recent
+        PyFrameObject* frame = reinterpret_cast<PyFrameObject*>(
+            Py_XNewRef(PyEval_GetFrame())
+        );
+        while (frame != nullptr) {
+            PyTracebackObject* tb = PyObject_GC_New(
+                PyTracebackObject,
+                &PyTraceBack_Type
             );
-            while (frame != nullptr) {
-                PyTracebackObject* tb = PyObject_GC_New(
-                    PyTracebackObject,
-                    &PyTraceBack_Type
+            if (tb == nullptr) {
+                Py_DECREF(frame);
+                Py_DECREF(front);
+                throw std::runtime_error(
+                    "could not create Python traceback object - failed to allocate "
+                    "PyTraceBackObject"
                 );
-                if (tb == nullptr) {
-                    Py_DECREF(frame);
-                    throw std::runtime_error(
-                        "could not create Python traceback object - failed to allocate "
-                        "PyTraceBackObject"
-                    );
-                }
-                tb->tb_next = front;
-                tb->tb_frame = frame;
-                tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
-                tb->tb_lineno = PyFrame_GetLineNumber(tb->tb_frame);
-                PyObject_GC_Track(tb);
-                front = tb;
-                frame = PyFrame_GetBack(frame);
             }
-
-            return reinterpret_steal<Traceback>(reinterpret_cast<PyObject*>(front));
-
-        } catch (...) {
-            Py_XDECREF(front);
-            throw;
+            tb->tb_next = front;
+            tb->tb_frame = frame;
+            tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
+            tb->tb_lineno = PyFrame_GetLineNumber(tb->tb_frame);
+            PyObject_GC_Track(tb);
+            front = tb;
+            frame = PyFrame_GetBack(frame);
         }
+
+        return reinterpret_steal<Traceback>(reinterpret_cast<PyObject*>(front));
     }
 };
 
@@ -609,7 +597,7 @@ struct __reversed__<Traceback>                              : Returns<Traceback>
 };
 
 
-[[nodiscard]] std::string Interface<Traceback>::to_string() const {
+[[nodiscard]] inline std::string Interface<Traceback>::to_string() const {
     std::string out = "Traceback (most recent call last):";
     PyTracebackObject* tb = reinterpret_cast<PyTracebackObject*>(
         ptr(reinterpret_cast<const Object&>(*this))
@@ -630,8 +618,8 @@ struct __reversed__<Traceback>                              : Returns<Traceback>
 /////////////////////////
 
 
-/// TODO: Exception::from_python() will need to append C++ frames to the head of the
-/// traceback.
+/// TODO: insert Type<Exception> and Interface<Type<Exception>>, as well as for all
+/// standard exceptions.
 
 
 /// TODO: OSError also accepts additional arguments, along with Unicode errors.
@@ -651,6 +639,16 @@ struct Exception : std::exception, Object, Interface<Exception> {
 protected:
     mutable std::string m_message;
     mutable std::string m_what;
+
+    template <std::derived_from<Exception> T, typename... Args>
+    Exception(implicit_ctor<T> ctor, Args&&... args) : Object(
+        ctor, std::forward<Args>(args)...
+    ) {}
+
+    template <std::derived_from<Exception> T, typename... Args>
+    Exception(explicit_ctor<T> ctor, Args&&... args) : Object(
+        ctor, std::forward<Args>(args)...
+    ) {}
 
 public:
 
@@ -719,11 +717,8 @@ public:
 };
 
 
-// TODO: standard exceptions need to pipe the type into this constructor.
-
-
 template <std::derived_from<Exception> Exc, typename Msg>
-    requires (impl::string_literal<Msg> || std::convertible_to<Msg, std::string>)
+    requires (std::convertible_to<std::decay_t<Msg>, std::string>)
 struct __explicit_init__<Exc, Msg>                          : Returns<Exc> {
     [[clang::noinline]] static auto operator()(const std::string& msg) {
         PyObject* result = PyObject_CallFunction(
@@ -738,47 +733,16 @@ struct __explicit_init__<Exc, Msg>                          : Returns<Exc> {
         // by default, the exception will have an empty traceback, so we need to
         // populate it with C++ frames if directed.
         #ifndef BERTRAND_NO_TRACEBACK
-            PyTracebackObject* front = nullptr;
             try {
-                // cpptrace stores frames in most recent -> least recent order, so
-                // inserting into the singly-linked list will reverse the stack
-                // appropriately.
-                for (auto&& frame : cpptrace::generate_trace(1)) {
-                    // stop the traceback if we encounter a C++ frame in which a nested
-                    // Python script was executed.
-                    if (frame.symbol.find("py::Code::operator()") != std::string::npos) {
-                        break;
-
-                    // ignore frames that are not part of the user's code
-                    } else if (!impl::ignore_frame(frame)) {
-                        PyTracebackObject* tb = PyObject_GC_New(
-                            PyTracebackObject,
-                            &PyTraceBack_Type
-                        );
-                        if (tb == nullptr) {
-                            throw std::runtime_error(
-                                "could not create Python traceback object - failed to "
-                                "allocate PyTraceBackObject"
-                            );
-                        }
-                        tb->tb_next = front;
-                        tb->tb_frame = reinterpret_cast<PyFrameObject*>(
-                            release(Frame(frame))
-                        );
-                        tb->tb_lasti =
-                            PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
-                        tb->tb_lineno = PyFrame_GetLineNumber(tb->tb_frame);
-                        PyObject_GC_Track(tb);
-                        front = tb;
-                    }
-                }
-                if (front != nullptr) {
-                    PyException_SetTraceback(result, reinterpret_cast<PyObject*>(front));
-                    Py_DECREF(front);
+                PyTracebackObject* trace = impl::build_traceback(
+                    cpptrace::generate_trace(1)
+                );
+                if (trace != nullptr) {
+                    PyException_SetTraceback(result, reinterpret_cast<PyObject*>(trace));
+                    Py_DECREF(trace);
                 }
             } catch (...) {
                 Py_DECREF(result);
-                Py_XDECREF(front);
                 throw;
             }
         #endif
@@ -796,7 +760,7 @@ struct __init__<Exc> : Returns<Exc> {
 };
 
 
-void Interface<Exception>::to_python() {
+inline void Interface<Exception>::to_python() {
     try {
         throw;
     } catch (const Exception& err) {
@@ -822,7 +786,13 @@ void Interface<Exception>::to_python() {
  */
 
 
-#define BUILTIN_EXCEPTION(CLS, BASE)                                                    \
+/// TODO: right now, this explicit init constructor is not considering
+/// BERTRAND_NO_TRACEBACK.  This might be an experiment to see whether I should just
+/// eliminate that option altogether.
+/// -> I should lift the BERTRAND_NO_TRACEBACK check out of this macro and redefine it
+
+
+#define BUILTIN_EXCEPTION(CLS, BASE, PYTYPE)                                            \
     struct CLS;                                                                         \
                                                                                         \
     template <>                                                                         \
@@ -843,54 +813,84 @@ void Interface<Exception>::to_python() {
             explicit_ctor<CLS>{},                                                       \
             std::forward<Args>(args)...                                                 \
         ) {}                                                                            \
+    };                                                                                  \
+                                                                                        \
+    template <typename Msg>                                                             \
+        requires (std::convertible_to<std::decay_t<Msg>, std::string>)                  \
+    struct __explicit_init__<CLS, Msg>                      : Returns<CLS> {            \
+        [[clang::noinline]] static auto operator()(const std::string& msg) {            \
+            PyObject* result = PyObject_CallFunction(                                   \
+                PYTYPE,  /* This is the only difference */                              \
+                "s",                                                                    \
+                msg.c_str()                                                             \
+            );                                                                          \
+            if (result == nullptr) {                                                    \
+                Exception::from_python();                                               \
+            }                                                                           \
+                                                                                        \
+            try {                                                                       \
+                PyTracebackObject* trace = impl::build_traceback(                       \
+                    cpptrace::generate_trace(1)                                         \
+                );                                                                      \
+                if (trace != nullptr) {                                                 \
+                    PyException_SetTraceback(result, reinterpret_cast<PyObject*>(trace)); \
+                    Py_DECREF(trace);                                                   \
+                }                                                                       \
+            } catch (...) {                                                             \
+                Py_DECREF(result);                                                      \
+                throw;                                                                  \
+            }                                                                           \
+                                                                                        \
+            return reinterpret_steal<CLS>(result);                                      \
+        }                                                                               \
     };
 
 
-BUILTIN_EXCEPTION(ArithmeticError, Exception)
-    BUILTIN_EXCEPTION(FloatingPointError, ArithmeticError)
-    BUILTIN_EXCEPTION(OverflowError, ArithmeticError)
-    BUILTIN_EXCEPTION(ZeroDivisionError, ArithmeticError)
-BUILTIN_EXCEPTION(AssertionError, Exception)
-BUILTIN_EXCEPTION(AttributeError, Exception)
-BUILTIN_EXCEPTION(BufferError, Exception)
-BUILTIN_EXCEPTION(EOFError, Exception)
-BUILTIN_EXCEPTION(ImportError, Exception)
-    BUILTIN_EXCEPTION(ModuleNotFoundError, ImportError)
-BUILTIN_EXCEPTION(LookupError, Exception)
-    BUILTIN_EXCEPTION(IndexError, LookupError)
-    BUILTIN_EXCEPTION(KeyError, LookupError)
-BUILTIN_EXCEPTION(MemoryError, Exception)
-BUILTIN_EXCEPTION(NameError, Exception)
-    BUILTIN_EXCEPTION(UnboundLocalError, NameError)
-BUILTIN_EXCEPTION(OSError, Exception)
-    BUILTIN_EXCEPTION(BlockingIOError, OSError)
-    BUILTIN_EXCEPTION(ChildProcessError, OSError)
-    BUILTIN_EXCEPTION(ConnectionError, OSError)
-        BUILTIN_EXCEPTION(BrokenPipeError, ConnectionError)
-        BUILTIN_EXCEPTION(ConnectionAbortedError, ConnectionError)
-        BUILTIN_EXCEPTION(ConnectionRefusedError, ConnectionError)
-        BUILTIN_EXCEPTION(ConnectionResetError, ConnectionError)
-    BUILTIN_EXCEPTION(FileExistsError, OSError)
-    BUILTIN_EXCEPTION(FileNotFoundError, OSError)
-    BUILTIN_EXCEPTION(InterruptedError, OSError)
-    BUILTIN_EXCEPTION(IsADirectoryError, OSError)
-    BUILTIN_EXCEPTION(NotADirectoryError, OSError)
-    BUILTIN_EXCEPTION(PermissionError, OSError)
-    BUILTIN_EXCEPTION(ProcessLookupError, OSError)
-    BUILTIN_EXCEPTION(TimeoutError, OSError)
-BUILTIN_EXCEPTION(ReferenceError, Exception)
-BUILTIN_EXCEPTION(RuntimeError, Exception)
-    BUILTIN_EXCEPTION(NotImplementedError, RuntimeError)
-    BUILTIN_EXCEPTION(RecursionError, RuntimeError)
-BUILTIN_EXCEPTION(StopAsyncIteration, Exception)
-BUILTIN_EXCEPTION(StopIteration, Exception)
-BUILTIN_EXCEPTION(SyntaxError, Exception)
-    BUILTIN_EXCEPTION(IndentationError, SyntaxError)
-        BUILTIN_EXCEPTION(TabError, IndentationError)
-BUILTIN_EXCEPTION(SystemError, Exception)
-BUILTIN_EXCEPTION(TypeError, Exception)
-BUILTIN_EXCEPTION(ValueError, Exception)
-    BUILTIN_EXCEPTION(UnicodeError, ValueError)
+BUILTIN_EXCEPTION(ArithmeticError, Exception, PyExc_ArithmeticError)
+    BUILTIN_EXCEPTION(FloatingPointError, ArithmeticError, PyExc_FloatingPointError)
+    BUILTIN_EXCEPTION(OverflowError, ArithmeticError, PyExc_OverflowError)
+    BUILTIN_EXCEPTION(ZeroDivisionError, ArithmeticError, PyExc_ZeroDivisionError)
+BUILTIN_EXCEPTION(AssertionError, Exception, PyExc_AssertionError)
+BUILTIN_EXCEPTION(AttributeError, Exception, PyExc_AttributeError)
+BUILTIN_EXCEPTION(BufferError, Exception, PyExc_BufferError)
+BUILTIN_EXCEPTION(EOFError, Exception, PyExc_EOFError)
+BUILTIN_EXCEPTION(ImportError, Exception, PyExc_ImportError)
+    BUILTIN_EXCEPTION(ModuleNotFoundError, ImportError, PyExc_ModuleNotFoundError)
+BUILTIN_EXCEPTION(LookupError, Exception, PyExc_LookupError)
+    BUILTIN_EXCEPTION(IndexError, LookupError, PyExc_IndexError)
+    BUILTIN_EXCEPTION(KeyError, LookupError, PyExc_KeyError)
+BUILTIN_EXCEPTION(MemoryError, Exception, PyExc_MemoryError)
+BUILTIN_EXCEPTION(NameError, Exception, PyExc_NameError)
+    BUILTIN_EXCEPTION(UnboundLocalError, NameError, PyExc_UnboundLocalError)
+BUILTIN_EXCEPTION(OSError, Exception, PyExc_OSError)
+    BUILTIN_EXCEPTION(BlockingIOError, OSError, PyExc_BlockingIOError)
+    BUILTIN_EXCEPTION(ChildProcessError, OSError, PyExc_ChildProcessError)
+    BUILTIN_EXCEPTION(ConnectionError, OSError, PyExc_ConnectionError)
+        BUILTIN_EXCEPTION(BrokenPipeError, ConnectionError, PyExc_BrokenPipeError)
+        BUILTIN_EXCEPTION(ConnectionAbortedError, ConnectionError, PyExc_ConnectionAbortedError)
+        BUILTIN_EXCEPTION(ConnectionRefusedError, ConnectionError, PyExc_ConnectionRefusedError)
+        BUILTIN_EXCEPTION(ConnectionResetError, ConnectionError, PyExc_ConnectionResetError)
+    BUILTIN_EXCEPTION(FileExistsError, OSError, PyExc_FileExistsError)
+    BUILTIN_EXCEPTION(FileNotFoundError, OSError, PyExc_FileNotFoundError)
+    BUILTIN_EXCEPTION(InterruptedError, OSError, PyExc_InterruptedError)
+    BUILTIN_EXCEPTION(IsADirectoryError, OSError, PyExc_IsADirectoryError)
+    BUILTIN_EXCEPTION(NotADirectoryError, OSError, PyExc_NotADirectoryError)
+    BUILTIN_EXCEPTION(PermissionError, OSError, PyExc_PermissionError)
+    BUILTIN_EXCEPTION(ProcessLookupError, OSError, PyExc_ProcessLookupError)
+    BUILTIN_EXCEPTION(TimeoutError, OSError, PyExc_TimeoutError)
+BUILTIN_EXCEPTION(ReferenceError, Exception, PyExc_ReferenceError)
+BUILTIN_EXCEPTION(RuntimeError, Exception, PyExc_RuntimeError)
+    BUILTIN_EXCEPTION(NotImplementedError, RuntimeError, PyExc_NotImplementedError)
+    BUILTIN_EXCEPTION(RecursionError, RuntimeError, PyExc_RecursionError)
+BUILTIN_EXCEPTION(StopAsyncIteration, Exception, PyExc_StopAsyncIteration)
+BUILTIN_EXCEPTION(StopIteration, Exception, PyExc_StopIteration)
+BUILTIN_EXCEPTION(SyntaxError, Exception, PyExc_SyntaxError)
+    BUILTIN_EXCEPTION(IndentationError, SyntaxError, PyExc_IndentationError)
+        BUILTIN_EXCEPTION(TabError, IndentationError, PyExc_TabError)
+BUILTIN_EXCEPTION(SystemError, Exception, PyExc_SystemError)
+BUILTIN_EXCEPTION(TypeError, Exception, PyExc_TypeError)
+BUILTIN_EXCEPTION(ValueError, Exception, PyExc_ValueError)
+    BUILTIN_EXCEPTION(UnicodeError, ValueError, PyExc_UnicodeError)
         // BUILTIN_EXCEPTION(UnicodeDecodeError, UnicodeError)
         // BUILTIN_EXCEPTION(UnicodeEncodeError, UnicodeError)
         // BUILTIN_EXCEPTION(UnicodeTranslateError, UnicodeError)
@@ -1443,6 +1443,287 @@ BUILTIN_EXCEPTION(ValueError, Exception)
 ////////////////////////////////////
 
 
+namespace impl {
+
+    template <typename Container, typename Key>
+        requires (__getitem__<Container, Key>::enable)
+    template <typename Value>
+        requires (__setitem__<Container, Key, std::remove_cvref_t<Value>>::enable)
+    Item<Container, Key>& Item<Container, Key>::operator=(Value&& value) {
+        using setitem = __setitem__<Container, Key, std::remove_cvref_t<Value>>;
+        using Return = typename setitem::type;
+        static_assert(
+            std::is_void_v<Return>,
+            "index assignment operator must return void.  Check your "
+            "specialization of __setitem__ for these types and ensure the Return "
+            "type is set to void."
+        );
+        Base::operator=(std::forward<Value>(value));
+        if constexpr (impl::has_call_operator<setitem>) {
+            setitem{}(m_container, m_key, value);
+
+        } else if constexpr (
+            impl::originates_from_cpp<Base> &&
+            impl::cpp_or_originates_from_cpp<Key> &&
+            impl::cpp_or_originates_from_cpp<std::remove_cvref_t<Value>>
+        ) {
+            static_assert(
+                impl::supports_item_assignment<Base, Key, std::remove_cvref_t<Value>>,
+                "__setitem__<Self, Key, Value> is enabled for operands whose C++ "
+                "representations have no viable overload for `Self[Key] = Value`"
+            );
+            if constexpr (impl::python_like<std::remove_cvref_t<Value>>) {
+                unwrap(*this) = unwrap(std::forward<Value>(value));
+            } else {
+                unwrap(*this) = std::forward<Value>(value);
+            }
+
+        } else {
+            if (PyObject_SetItem(
+                m_container.m_ptr,
+                ptr(as_object(m_key)),
+                ptr(*this)
+            )) {
+                Exception::from_python();
+            }
+        }
+        return *this;
+    }
+
+    template <typename Container, typename Key>
+        requires (__getitem__<Container, Key>::enable)
+    template <typename> requires (__delitem__<Container, Key>::enable)
+    Item<Container, Key>& Item<Container, Key>::operator=(del value) {
+        using delitem = __delitem__<Container, Key>;
+        using Return = typename delitem::type;
+        static_assert(
+            std::is_void_v<Return>,
+            "index deletion operator must return void.  Check your specialization "
+            "of __delitem__ for these types and ensure the Return type is set to "
+            "void."
+        );
+        if constexpr (impl::has_call_operator<delitem>) {
+            delitem{}(m_container, m_key);
+
+        } else {
+            if (PyObject_DelItem(m_container.m_ptr, ptr(as_object(m_key)))) {
+                Exception::from_python();
+            }
+        }
+        return *this;
+    }
+
+}
+
+
+template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
+[[nodiscard]] bool Handle::contains(this const Self& self, const Key& key) {
+    using Return = typename __contains__<Self, Key>::type;
+    static_assert(
+        std::same_as<Return, bool>,
+        "contains() operator must return a boolean value.  Check your "
+        "specialization of __contains__ for these types and ensure the Return "
+        "type is set to bool."
+    );
+    if constexpr (impl::has_call_operator<__contains__<Self, Key>>) {
+        return __contains__<Self, Key>{}(self, key);
+
+    } else if constexpr (
+        impl::originates_from_cpp<Self> &&
+        impl::cpp_or_originates_from_cpp<Key>
+    ) {
+        static_assert(
+            impl::has_contains<impl::cpp_type<Self>, impl::cpp_type<Key>>,
+            "__contains__<Self, Key> is enabled for operands whose C++ "
+            "representations have no viable overload for `Self.contains(Key)`"
+        );
+        return unwrap(self).contains(unwrap(key));
+
+    } else {
+        int result = PySequence_Contains(
+            self.m_ptr,
+            ptr(as_object(key))
+        );
+        if (result == -1) {
+            Exception::from_python();
+        }
+        return result;
+    }
+}
+
+
+template <typename Self>
+[[nodiscard]] Handle::operator bool(this const Self& self) {
+    if constexpr (
+        impl::originates_from_cpp<Self> &&
+        impl::has_operator_bool<impl::cpp_type<Self>>
+    ) {
+        return static_cast<bool>(unwrap(self));
+    } else {
+        int result = PyObject_IsTrue(self.m_ptr);
+        if (result == -1) {
+            Exception::from_python();
+        }
+        return result;   
+    }
+}
+
+
+template <typename Self, typename Key> requires (__getitem__<Self, Key>::enable)
+auto Handle::operator[](this const Self& self, Key&& key) {
+    using Return = typename __getitem__<Self, std::decay_t<Key>>::type;
+    static_assert(
+        std::derived_from<Return, Object>,
+        "index operator must return a subclass of py::Object.  Check your "
+        "specialization of __getitem__ for these types and ensure the Return "
+        "type is set to a subclass of py::Object."
+    );
+    if constexpr (impl::has_call_operator<__getitem__<Self, std::decay_t<Key>>>) {
+        return impl::Item<Self, Key>(
+            __getitem__<Self, Key>{}(self, key),
+            self,
+            std::forward<Key>(key)
+        );
+
+    } else if constexpr (
+        impl::originates_from_cpp<Self> &&
+        impl::cpp_or_originates_from_cpp<std::decay_t<Key>>
+    ) {
+        static_assert(
+            impl::lookup_yields<impl::cpp_type<Self>, std::decay_t<Key>, Return>,
+            "__getitem__<Self, Args...> is enabled for operands whose C++ "
+            "representations have no viable overload for `Self[Key]`"
+        );
+        return unwrap(self)[std::forward<Key>(key)];
+
+    } else {
+        PyObject* result = PyObject_GetItem(
+            self.m_ptr,
+            ptr(as_object(key))
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+        return impl::Item<Self, std::decay_t<Key>>(
+            reinterpret_steal<Return>(result),
+            self,
+            std::forward<Key>(key)
+        );
+    }
+}
+
+
+template <typename T>
+constexpr bool __isinstance__<T, Object>::operator()(const T& obj, const Object& cls) {
+    if constexpr (impl::python_like<T>) {
+        int result = PyObject_IsInstance(
+            ptr(obj),
+            ptr(cls)
+        );
+        if (result < 0) {
+            Exception::from_python();
+        }
+        return result;
+    } else {
+        return false;
+    }
+}
+
+
+template <typename T>
+bool __issubclass__<T, Object>::operator()(const T& obj, const Object& cls) {
+    int result = PyObject_IsSubclass(
+        ptr(as_object(obj)),
+        ptr(cls)
+    );
+    if (result == -1) {
+        Exception::from_python();
+    }
+    return result;
+}
+
+
+template <std::derived_from<Object> From, std::derived_from<From> To>
+auto __cast__<From, To>::operator()(const From& from) {
+    if (isinstance<To>(from)) {
+        return reinterpret_borrow<To>(ptr(from));
+    } else {
+        throw TypeError(
+            "cannot convert Python object from type '" + repr(Type<From>()) +
+            "' to type '" + repr(Type<To>()) + "'"
+        );
+    }
+}
+
+
+template <std::derived_from<Object> From, std::derived_from<From> To>
+auto __cast__<From, To>::operator()(From&& from) {
+    if (isinstance<To>(from)) {
+        return reinterpret_steal<To>(release(from));
+    } else {
+        throw TypeError(
+            "cannot convert Python object from type '" + repr(Type<From>()) +
+            "' to type '" + repr(Type<To>()) + "'"
+        );
+    }
+}
+
+
+template <std::derived_from<Object> From, std::integral To>
+To __explicit_cast__<From, To>::operator()(const From& from) {
+    long long result = PyLong_AsLongLong(ptr(from));
+    if (result == -1 && PyErr_Occurred()) {
+        Exception::from_python();
+    } else if (
+        result < std::numeric_limits<To>::min() ||
+        result > std::numeric_limits<To>::max()
+    ) {
+        throw OverflowError(
+            "integer out of range for " + impl::demangle(typeid(To).name()) +
+            ": " + std::to_string(result)
+        );
+    }
+    return result;
+}
+
+
+template <std::derived_from<Object> From, std::floating_point To>
+To __explicit_cast__<From, To>::operator()(const From& from) {
+    double result = PyFloat_AsDouble(ptr(from));
+    if (result == -1.0 && PyErr_Occurred()) {
+        Exception::from_python();
+    }
+    return result;
+}
+
+template <std::derived_from<Object> From, impl::complex_like To>
+    requires (impl::cpp_like<To>)
+To __explicit_cast__<From, To>::operator()(const From& from) {
+    Py_complex result = PyComplex_AsCComplex(ptr(from));
+    if (result.real == -1.0 && PyErr_Occurred()) {
+        Exception::from_python();
+    }
+    return To(result.real, result.imag);
+}
+
+
+template <std::derived_from<Object> From>
+auto __explicit_cast__<From, std::string>::operator()(const From& from) {
+    PyObject* str = PyObject_Str(ptr(from));
+    if (str == nullptr) {
+        Exception::from_python();
+    }
+    Py_ssize_t size;
+    const char* data = PyUnicode_AsUTF8AndSize(str, &size);
+    if (data == nullptr) {
+        Py_DECREF(str);
+        Exception::from_python();
+    }
+    std::string result(data, size);
+    Py_DECREF(str);
+    return result;
+}
+
 
 inline auto __init__<Frame>::operator()() {
     PyFrameObject* frame = PyEval_GetFrame();
@@ -1501,7 +1782,7 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 }
 
 
-[[nodiscard]] Frame Interface<Frame>::back() const {
+[[nodiscard]] inline Frame Interface<Frame>::back() const {
     PyFrameObject* result = PyFrame_GetBack(
         reinterpret_cast<PyFrameObject*>(
             ptr(reinterpret_cast<const Object&>(*this))
@@ -1514,7 +1795,7 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 }
 
 
-[[nodiscard]] std::string Interface<Frame>::to_string() const {
+[[nodiscard]] inline std::string Interface<Frame>::to_string() const {
     PyFrameObject* frame = reinterpret_cast<PyFrameObject*>(
         ptr(reinterpret_cast<const Object&>(*this))
     );
@@ -1557,7 +1838,7 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 }
 
 
-inline [[nodiscard]] auto __reversed__<Traceback>::operator*() const
+[[nodiscard]] inline auto __reversed__<Traceback>::operator*() const
     -> value_type
 {
     if (index < 0) {
@@ -1567,8 +1848,6 @@ inline [[nodiscard]] auto __reversed__<Traceback>::operator*() const
         reinterpret_cast<PyObject*>(frames[index]->tb_frame)
     );
 }
-
-
 
 
 }  // namespace py
