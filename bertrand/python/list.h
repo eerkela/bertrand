@@ -777,8 +777,8 @@ struct __iter__<Self>                                       : Returns<typename S
     Py_ssize_t index;
     PyObject* curr;
 
-    __iter__(const Self& container, int) :
-        container(container), size(PyList_GET_SIZE(ptr(container))),
+    __iter__(const Self& self, int) :
+        container(self), size(PyList_GET_SIZE(ptr(container))),
         index(0), curr(nullptr)
         
      {
@@ -787,8 +787,8 @@ struct __iter__<Self>                                       : Returns<typename S
         }
     }
 
-    __iter__(Self&& container, int) :
-        container(std::move(container)), size(PyList_GET_SIZE(ptr(this->container))),
+    __iter__(Self&& self, int) :
+        container(std::move(self)), size(PyList_GET_SIZE(ptr(container))),
         index(0), curr(nullptr)
     {
         if (index < size) {
@@ -796,13 +796,13 @@ struct __iter__<Self>                                       : Returns<typename S
         }
     }
 
-    __iter__(const Self& container) :
-        container(container), size(PyList_GET_SIZE(ptr(container))),
+    __iter__(const Self& self) :
+        container(self), size(PyList_GET_SIZE(ptr(container))),
         index(size), curr(nullptr)
     {}
 
-    __iter__(Self&& container) :
-        container(std::move(container)), size(PyList_GET_SIZE(ptr(this->container))),
+    __iter__(Self&& self) :
+        container(std::move(self)), size(PyList_GET_SIZE(ptr(container))),
         index(size), curr(nullptr)
     {}
 
@@ -841,10 +841,6 @@ struct __iter__<Self>                                       : Returns<typename S
 
     value_type operator*() const {
         return reinterpret_borrow<value_type>(curr);
-    }
-
-    pointer operator->() const {
-        return &(**this);
     }
 
     value_type operator[](difference_type n) const {
@@ -963,8 +959,8 @@ struct __reversed__<Self>                                   : Returns<typename S
     Py_ssize_t index;
     PyObject* curr;
 
-    __reversed__(const Self& container, int) :
-        container(container), size(PyList_GET_SIZE(ptr(container))),
+    __reversed__(const Self& self, int) :
+        container(self), size(PyList_GET_SIZE(ptr(container))),
         index(size - 1), curr(nullptr)
      {
         if (index > 0) {
@@ -972,8 +968,8 @@ struct __reversed__<Self>                                   : Returns<typename S
         }
     }
 
-    __reversed__(Self&& container, int) :
-        container(std::move(container)), size(PyList_GET_SIZE(ptr(this->container))),
+    __reversed__(Self&& self, int) :
+        container(std::move(self)), size(PyList_GET_SIZE(ptr(container))),
         index(size - 1), curr(nullptr)
     {
         if (index > 0) {
@@ -981,13 +977,13 @@ struct __reversed__<Self>                                   : Returns<typename S
         }
     }
 
-    __reversed__(const Self& container) :
-        container(container), size(PyList_GET_SIZE(ptr(container))),
+    __reversed__(const Self& self) :
+        container(self), size(PyList_GET_SIZE(ptr(container))),
         index(-1), curr(nullptr)
     {}
 
-    __reversed__(Self&& container) :
-        container(std::move(container)), size(PyList_GET_SIZE(ptr(this->container))),
+    __reversed__(Self&& self) :
+        container(std::move(self)), size(PyList_GET_SIZE(ptr(container))),
         index(-1), curr(nullptr)
     {}
 
@@ -1026,10 +1022,6 @@ struct __reversed__<Self>                                   : Returns<typename S
 
     value_type operator*() const {
         return reinterpret_borrow<value_type>(curr);
-    }
-
-    pointer operator->() const {
-        return &(**this);
     }
 
     value_type operator[](difference_type n) const {

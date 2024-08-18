@@ -2,8 +2,8 @@
 #define BERTRAND_PYTHON_CORE_OBJECT_H
 
 #include "declarations.h"
-#include "except.h"
-#include "ops.h"
+// #include "except.h"
+// #include "ops.h"
 
 
 namespace py {

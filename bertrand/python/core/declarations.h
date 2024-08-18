@@ -166,7 +166,7 @@ struct Object;
 template <typename T = Object>
 struct Type;
 struct BertrandMeta;
-template <std::derived_from<Object> Return>
+template <typename Return>
 struct Iterator;
 template <StaticStr Name, typename T>
 struct Arg;
@@ -193,23 +193,23 @@ struct Datetime;
 struct Timedelta;
 struct Timezone;
 struct Range;
-template <std::derived_from<Object> Val = Object>
+template <typename Val = Object>
 struct List;
-template <std::derived_from<Object> Val = Object>
+template <typename Val = Object>
 struct Tuple;
-template <std::derived_from<Object> Key = Object>
+template <typename Key = Object>
 struct Set;
-template <std::derived_from<Object> Key = Object>
+template <typename Key = Object>
 struct FrozenSet;
-template <std::derived_from<Object> Key = Object, std::derived_from<Object> Val = Object>
+template <typename Key = Object, typename Val = Object>
 struct Dict;
-template <std::derived_from<Object> Map>
+template <typename Map>
 struct KeyView;
-template <std::derived_from<Object> Map>
+template <typename Map>
 struct ValueView;
-template <std::derived_from<Object> Map>
+template <typename Map>
 struct ItemView;
-template <std::derived_from<Object> Map>
+template <typename Map>
 struct MappingProxy;
 
 

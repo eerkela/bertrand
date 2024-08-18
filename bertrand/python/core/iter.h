@@ -136,19 +136,19 @@ struct __iter__<Iterator<T>> : Returns<T> {
     Iterator<T> iter;
     T curr;
 
-    __iter__(const Iterator<T>& other) :
-        iter(iter), curr(reinterpret_steal<T>(nullptr))
+    __iter__(const Iterator<T>& self) :
+        iter(self), curr(reinterpret_steal<T>(nullptr))
     {}
 
-    __iter__(Iterator<T>&& iter) :
-        iter(std::move(iter)), curr(reinterpret_steal<T>(nullptr))
+    __iter__(Iterator<T>&& self) :
+        iter(std::move(self)), curr(reinterpret_steal<T>(nullptr))
     {}
 
-    __iter__(const Iterator<T>& iter, int) : __iter__(iter) {
+    __iter__(const Iterator<T>& self, int) : __iter__(self) {
         ++(*this);
     }
 
-    __iter__(Iterator<T>&& iter, int) : __iter__(std::move(iter)) {
+    __iter__(Iterator<T>&& self, int) : __iter__(std::move(self)) {
         ++(*this);
     }
 
@@ -181,10 +181,10 @@ struct __iter__<Iterator<T>> : Returns<T> {
         return *this;
     }
 
-    T& operator*() { return curr; }
-    T* operator->() { return &curr; }
-    const T& operator*() const { return curr; }
-    const T* operator->() const { return &curr; }
+    [[nodiscard]] T& operator*() { return curr; }
+    [[nodiscard]] T* operator->() { return &curr; }
+    [[nodiscard]] const T& operator*() const { return curr; }
+    [[nodiscard]] const T* operator->() const { return &curr; }
 
     __iter__& operator++() {
         PyObject* next = PyIter_Next(ptr(iter));
@@ -197,11 +197,11 @@ struct __iter__<Iterator<T>> : Returns<T> {
 
     /// NOTE: post-increment is not supported due to inaccurate copy semantics.
 
-    bool operator==(const __iter__& other) const {
+    [[nodiscard]] bool operator==(const __iter__& other) const {
         return ptr(curr) == ptr(other.curr);
     }
 
-    bool operator!=(const __iter__& other) const {
+    [[nodiscard]] bool operator!=(const __iter__& other) const {
         return ptr(curr) != ptr(other.curr);
     }
 

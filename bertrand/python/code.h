@@ -639,43 +639,6 @@ public:
 
 
 template <>
-struct __init__<Frame>                                      : Returns<Frame> {
-    static auto operator()() {
-        PyFrameObject* frame = PyEval_GetFrame();
-        if (frame == nullptr) {
-            throw RuntimeError("no frame is currently executing");
-        }
-        return reinterpret_borrow<Frame>((PyObject*)frame);
-    }
-};
-
-
-template <std::integral T>
-struct __init__<Frame, T>                                    : Returns<Frame> {
-    static auto operator()(int skip) {
-        // TODO: negative indexing should count from least recent frame?
-        if (skip < 0) {
-            throw ValueError("frame index cannot be negative");
-        }
-        PyFrameObject* frame = (PyFrameObject*)Py_XNewRef(PyEval_GetFrame());
-        if (frame == nullptr) {
-            throw RuntimeError("no frame is currently executing");
-        }
-        PyFrameObject* result = frame;
-        for (int i = 0; i < skip; ++i) {
-            PyFrameObject* temp = PyFrame_GetBack(result);
-            Py_DECREF(result);
-            if (temp == nullptr) {
-                throw IndexError("frame index out of range");
-            }
-            result = temp;
-        }
-        return reinterpret_steal<Frame>((PyObject*)result);
-    }
-};
-
-
-template <>
 struct __init__<Frame, cpptrace::stacktrace_frame, PyThreadState*> : Returns<Frame> {
     static auto operator()(
         const cpptrace::stacktrace_frame& frame,
