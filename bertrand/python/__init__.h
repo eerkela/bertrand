@@ -1317,12 +1317,7 @@ public:
         using TypeMap = Dict<Type<>, Str>;
         using ExceptionMap = std::unordered_map<
             PyTypeObject*,
-            std::function<void(
-                PyObject* /* exc_type */,
-                PyObject* /* exc_value */,
-                PyObject* /* exc_traceback */,
-                size_t /* skip */
-            )>
+            std::function<void(PyObject* /* exc_value */)>
         >;
 
         TypeMap type_map;
@@ -1388,13 +1383,15 @@ void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_type(
 }
 
 
+/// TODO: Note that I need to export all of the standard exception types to
+/// bertrand.python in order to populate the exception map.
+
+
 template <typename CRTP, StaticStr ModName>
 void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_exception(
     Module<ModName>& mod,
     PyTypeObject* type,
-    std::function<
-        void(PyObject*, PyObject*, PyObject*, size_t)
-    > callback
+    std::function<void(PyObject*)> callback
 ) {
     using Mod = Module<"bertrand.python">::__python__;
     if constexpr (ModName == "bertrand.python") {
@@ -1406,7 +1403,7 @@ void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_exception(
 }
 
 
-[[noreturn, clang::noinline]] void Exception::from_python(size_t skip = 0) {
+[[noreturn, clang::noinline]] void Interface<Exception>::from_python() {
     PyThreadState* thread = PyThreadState_Get();
     PyObject* value = thread->current_exception;
     if (value == nullptr) {
@@ -1415,24 +1412,62 @@ void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_exception(
             "exception is not set."
         );
     }
-    PyObject* type = Py_TYPE(value);
-    PyObject* traceback = PyException_GetTraceback(value);
     thread->current_exception = nullptr;
 
-    try {
-        using Mod = Module<"bertrand.python">::__python__;
-        Module<"bertrand.python"> python;
-        Mod* mod = reinterpret_cast<Mod*>(ptr(python));
-        auto it = mod->exception_map.find(type);
-        if (it != mod->exception_map.end()) {
-            it->second(type, value, traceback, ++skip, thread);
+    // append C++ frames to the head (least recent end) of the existing traceback
+    // if directed.
+    #ifndef BERTRAND_NO_TRACEBACK
+        try {
+            PyTracebackObject* front = PyException_GetTraceback(value);
+            if (front != nullptr) {
+                // cpptrace stores frames in most recent -> least recent order, so inserting
+                // into the singly-linked list will reverse the stack appropriately.
+                for (const auto& frame : cpptrace::generate_trace(1)) {
+                    // stop the traceback if we encounter a C++ frame in which a nested
+                    // Python script was executed.
+                    if (frame.symbol.find("py::Code::operator()") != std::string::npos) {
+                        break;
+
+                    // ignore frames that are not part of the user's code
+                    } else if (!impl::ignore_frame(frame)) {
+                        PyTracebackObject* tb = PyObject_GC_New(
+                            PyTracebackObject,
+                            &PyTraceBack_Type
+                        );
+                        if (tb == nullptr) {
+                            throw std::runtime_error(
+                                "could not create Python traceback object - failed to allocate "
+                                "PyTraceBackObject"
+                            );
+                        }
+                        tb->tb_next = front;
+                        tb->tb_frame = reinterpret_cast<PyFrameObject*>(release(Frame(frame)));
+                        tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
+                        tb->tb_lineno = PyFrame_GetLineNumber(tb->tb_frame);
+                        PyObject_GC_Track(tb);
+                        front = tb;
+                    }
+                }
+                PyException_SetTraceback(value, front);
+                Py_DECREF(front);
+            }
+        } catch (...) {
+            // if cpptrace somehow fails, ignore it and continue
         }
-        throw Exception(type, value, traceback, ++skip, thread);
-    } catch (...) {
-        Py_XDECREF(value);
-        Py_XDECREF(traceback);
-        throw;
+    #endif
+
+    // search the global exception map for the exception type, and invoke its callback,
+    // which will throw the appropriate C++ exception type
+    using Mod = Module<"bertrand.python">::__python__;
+    Module<"bertrand.python"> python;
+    Mod* mod = reinterpret_cast<Mod*>(ptr(python));
+    auto it = mod->exception_map.find(Py_TYPE(value));
+    if (it != mod->exception_map.end()) {
+        it->second(value);
     }
+
+    // otherwise, throw as a generic C++ exception
+    throw reinterpret_steal<Exception>(value);
 }
 
 

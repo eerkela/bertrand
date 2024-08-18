@@ -630,13 +630,8 @@ namespace impl {
                                 register_exception(
                                     mod,
                                     reinterpret_cast<PyTypeObject*>(ptr(cls)),
-                                    [](
-                                        PyObject* type,
-                                        PyObject* value,
-                                        PyObject* traceback,
-                                        size_t skip
-                                    ) {
-                                        throw Cls(type, value, traceback, ++skip);
+                                    [](PyObject* value) {
+                                        throw reinterpret_steal<Cls>(value);
                                     }
                                 );
                             }
