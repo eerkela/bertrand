@@ -652,11 +652,6 @@ namespace impl {
 
         };
 
-        // TODO: wrapping a new exception type with a custom type would involve
-        // setting the wrapper type to void.  That would give you a new exception
-        // type that you could then use from Python.  That's how all non-builtin
-        // exception types would be implemented.
-
     };
 
 }
@@ -2449,9 +2444,7 @@ namespace impl {
     };
 
     template <typename CRTP, typename Wrapper, hashable CppType>
-    struct TypeTag::DetectHashable<CRTP, Wrapper, CppType> :
-        BaseDef<CRTP, Wrapper, CppType>
-    {
+    struct TypeTag::DetectHashable<CRTP, Wrapper, CppType> {
         /* tp_hash delegates to `std::hash` if it exists. */
         static Py_hash_t __hash__(CRTP* self) {
             try {
@@ -2471,9 +2464,7 @@ namespace impl {
     };
 
     template <typename CRTP, typename Wrapper, iterable CppType>
-    struct TypeTag::DetectForwardIterable<CRTP, Wrapper, CppType> :
-        DetectHashable<CRTP, Wrapper, CppType>
-    {
+    struct TypeTag::DetectForwardIterable<CRTP, Wrapper, CppType> {
         /* tp_iter delegates to the type's begin() and end() iterators if they exist,
         and provides a thin Python wrapper around them that respects reference
         semantics and const-ness. */
@@ -2557,9 +2548,7 @@ namespace impl {
     };
 
     template <typename CRTP, typename Wrapper, reverse_iterable CppType>
-    struct TypeTag::DetectReverseIterable<CRTP, Wrapper, CppType> :
-        DetectForwardIterable<CRTP, Wrapper, CppType>
-    {
+    struct TypeTag::DetectReverseIterable<CRTP, Wrapper, CppType> {
         /* __reversed__ delegates to the type's rbegin() and rend() iterators if they
         exist, and provides a thin Python wrapper around them that respects reference
         semantics and const-ness. */
@@ -2643,16 +2632,20 @@ namespace impl {
     };
 
     template <typename CRTP, typename Wrapper, has_call_operator CppType>
-    struct TypeTag::DetectCallable<CRTP, Wrapper, CppType> :
-        DetectReverseIterable<CRTP, Wrapper, CppType>
-    {
+    struct TypeTag::DetectCallable<CRTP, Wrapper, CppType> {
         // TODO: insert a vectorcall-based __call__ method here, which invokes an
         // overload set.  Perhaps the overload set can be stored internally as a C++
         // field for maximum performance.  Same with __init__/__new__.
     };
 
     template <typename CRTP, typename Wrapper, typename CppType>
-    struct TypeTag::def : DetectCallable<CRTP, Wrapper, CppType> {
+    struct TypeTag::def :
+        BaseDef<CRTP, Wrapper, CppType>,
+        DetectHashable<CRTP, Wrapper, CppType>,
+        DetectForwardIterable<CRTP, Wrapper, CppType>,
+        DetectReverseIterable<CRTP, Wrapper, CppType>,
+        DetectCallable<CRTP, Wrapper, CppType>
+    {
     protected:
         using Variant = std::variant<CppType, CppType*, const CppType*>;
 
@@ -3747,13 +3740,13 @@ namespace impl {
 }
 
 
-/// NOTE: all types must define __as_object__ as they are generated, since it can't be
-/// deduced any other way.
+/// NOTE: all types must manually define __as_object__ as they are generated, since it
+/// can't be deduced any other way.
 
 
 template <impl::originates_from_cpp Self, typename T>
-    requires (std::convertible_to<T, typename Type<Self>::__python__::t_cpp>)
-struct __init__<Self, T> : Returns<Self> {
+    requires (std::convertible_to<T, impl::cpp_type<Self>>)
+struct __init__<Self, T>                                    : Returns<Self> {
     static Self operator()(T&& value) {
         return Type<Self>::__python__::__create__(std::forward<T>(value));
     }
@@ -3761,38 +3754,318 @@ struct __init__<Self, T> : Returns<Self> {
 
 
 template <impl::originates_from_cpp Self, typename... Args>
-    requires (std::constructible_from<typename Type<Self>::__python__::t_cpp, Args...>)
-struct __explicit_init__<Self, Args...> : Returns<Self> {
+    requires (std::constructible_from<impl::cpp_type<Self>, Args...>)
+struct __explicit_init__<Self, Args...>                     : Returns<Self> {
     static Self operator()(Args&&... args) {
         return Type<Self>::__python__::__create__(std::forward<Args>(args)...);
     }
 };
 
 
+/// TODO: these should be default implementations of __cast__ and __explicit_cast__
+
+
 template <impl::originates_from_cpp Self, typename T>
-    requires (std::convertible_to<typename Type<Self>::__python__::t_cpp, T>)
-struct __cast__<Self, T> : Returns<T> {
+    requires (std::convertible_to<impl::cpp_type<Self>, T>)
+struct __cast__<Self, T>                                    : Returns<T> {
     static T operator()(const Self& self) {
-        return py::unwrap(self);
+        return unwrap(self);
     }
 };
 
 
 template <impl::originates_from_cpp Self, typename T>
-    requires (impl::explicitly_convertible_to<typename Type<Self>::__python__::t_cpp, T>)
-struct __explicit_cast__<Self, T> : Returns<T> {
+    requires (impl::explicitly_convertible_to<impl::cpp_type<Self>, T>)
+struct __explicit_cast__<Self, T>                           : Returns<T> {
     static T operator()(const Self& self) {
-        return static_cast<T>(py::unwrap(self));
+        return static_cast<T>(unwrap(self));
     }
 };
 
 
-// TODO: continue defining control structs for all of the rest of the basic behavior.
-// hashability
-// iteration
-// etc. for all possible iterators.  They can all use the default behavior, since
-// that automatically unpacks C++ objects.
+template <impl::originates_from_cpp Self, typename... Args>
+    requires (std::is_invocable_v<impl::cpp_type<Self>, Args...>)
+struct __call__<Self, Args...> : Returns<std::invoke_result_t<impl::cpp_type<Self>, Args...>> {};
 
+
+/// TODO: __getattr__/__setattr__/__delattr__ must be defined for each type, and cannot
+/// be deduced here.
+
+
+template <impl::originates_from_cpp Self, typename Key>
+    requires (impl::supports_lookup<impl::cpp_type<Self>, Key>)
+struct __getitem__<Self, Key> : Returns<impl::lookup_type<impl::cpp_type<Self>, Key>> {};
+
+
+template <impl::originates_from_cpp Self, typename Key, typename Value>
+    requires (impl::supports_item_assignment<impl::cpp_type<Self>, Key, Value>)
+struct __setitem__<Self, Key, Value> : Returns<void> {};
+
+
+template <impl::originates_from_cpp Self>
+    requires (impl::has_size<impl::cpp_type<Self>>)
+struct __len__<Self> : Returns<size_t> {};
+
+
+template <impl::originates_from_cpp Self>
+    requires (impl::iterable<impl::cpp_type<Self>>)
+struct __iter__<Self> : Returns<impl::iter_type<impl::cpp_type<Self>>> {};
+
+
+template <impl::originates_from_cpp Self>
+    requires (impl::reverse_iterable<impl::cpp_type<Self>>)
+struct __reversed__<Self> : Returns<impl::reverse_iter_type<impl::cpp_type<Self>>> {};
+
+
+template <impl::originates_from_cpp Self, typename Key>
+    requires (impl::has_contains<impl::cpp_type<Self>, Key>)
+struct __contains__<Self, Key> : Returns<bool> {};
+
+
+template <impl::originates_from_cpp Self>
+    requires (impl::hashable<impl::cpp_type<Self>>)
+struct __hash__<Self> : Returns<size_t> {};
+
+
+template <impl::originates_from_cpp Self>
+    requires (impl::has_abs<impl::cpp_type<Self>>)
+struct __abs__<Self> : Returns<impl::abs_type<impl::cpp_type<Self>>> {};
+
+
+template <impl::originates_from_cpp Self>
+    requires (impl::has_pos<impl::cpp_type<Self>>)
+struct __pos__<Self> : Returns<impl::pos_type<impl::cpp_type<Self>>> {};
+
+
+template <impl::originates_from_cpp Self>
+    requires (impl::has_neg<impl::cpp_type<Self>>)
+struct __neg__<Self> : Returns<impl::neg_type<impl::cpp_type<Self>>> {};
+
+
+template <impl::originates_from_cpp Self>
+    requires (impl::has_preincrement<impl::cpp_type<Self>>)
+struct __increment__<Self> : Returns<impl::preincrement_type<impl::cpp_type<Self>>> {};
+
+
+template <impl::originates_from_cpp Self>
+    requires (impl::has_predecrement<impl::cpp_type<Self>>)
+struct __decrement__<Self> : Returns<impl::predecrement_type<impl::cpp_type<Self>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_lt<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __lt__<L, R> : Returns<impl::lt_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_le<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __le__<L, R> : Returns<impl::le_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_eq<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __eq__<L, R> : Returns<impl::eq_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_ne<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __ne__<L, R> : Returns<impl::ne_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_ge<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __ge__<L, R> : Returns<impl::ge_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_gt<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __gt__<L, R> : Returns<impl::gt_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_add<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __add__<L, R> : Returns<impl::add_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_iadd<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __iadd__<L, R> : Returns<impl::iadd_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_sub<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __sub__<L, R> : Returns<impl::sub_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_isub<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __isub__<L, R> : Returns<impl::isub_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_mul<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __mul__<L, R> : Returns<impl::mul_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_imul<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __imul__<L, R> : Returns<impl::imul_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_truediv<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __truediv__<L, R> : Returns<impl::truediv_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_itruediv<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __itruediv__<L, R> : Returns<impl::itruediv_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_mod<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __mod__<L, R> : Returns<impl::mod_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_imod<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __imod__<L, R> : Returns<impl::imod_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_pow<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __pow__<L, R> : Returns<impl::pow_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_lshift<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __lshift__<L, R> : Returns<impl::lshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_ilshift<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __ilshift__<L, R> : Returns<impl::ilshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_rshift<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __rshift__<L, R> : Returns<impl::rshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_irshift<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __irshift__<L, R> : Returns<impl::irshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_and<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __and__<L, R> : Returns<impl::and_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_iand<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __iand__<L, R> : Returns<impl::iand_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_or<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __or__<L, R> : Returns<impl::or_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_ior<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __ior__<L, R> : Returns<impl::ior_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_xor<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __xor__<L, R> : Returns<impl::xor_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
+
+
+template <typename L, typename R>
+    requires (
+        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        impl::has_ixor<impl::cpp_type<L>, impl::cpp_type<R>>
+    )
+struct __ixor__<L, R> : Returns<impl::ixor_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
 ///////////////////////////////
@@ -3800,10 +4073,10 @@ struct __explicit_cast__<Self, T> : Returns<T> {
 ///////////////////////////////
 
 
-// TODO: there has to be some handling for a Wrapper type that derives from
-// std::exception.  In essence, that's the same as a C++ std::exception subclass as the
-// CppType, but a little more finnicky.  It probably has to be a separate overload of
-// the def helpers, which is a drag.
+/// TODO: I also need to define types for Frame and Traceback as well.
+
+
+/// TODO: BUILTIN_EXCEPTION_TYPE should account for Interface<Type<Exception>>
 
 
 #define BUILTIN_EXCEPTION_TYPE(CLS, PYTYPE)                                             \
@@ -3878,9 +4151,9 @@ BUILTIN_EXCEPTION_TYPE(SystemError, PyExc_SystemError)
 BUILTIN_EXCEPTION_TYPE(TypeError, PyExc_TypeError)
 BUILTIN_EXCEPTION_TYPE(ValueError, PyExc_ValueError)
     BUILTIN_EXCEPTION_TYPE(UnicodeError, PyExc_UnicodeError)
-        BUILTIN_EXCEPTION_TYPE(UnicodeDecodeError, PyExc_UnicodeDecodeError)
-        BUILTIN_EXCEPTION_TYPE(UnicodeEncodeError, PyExc_UnicodeEncodeError)
-        BUILTIN_EXCEPTION_TYPE(UnicodeTranslateError, PyExc_UnicodeTranslateError)
+        // BUILTIN_EXCEPTION_TYPE(UnicodeDecodeError, PyExc_UnicodeDecodeError)
+        // BUILTIN_EXCEPTION_TYPE(UnicodeEncodeError, PyExc_UnicodeEncodeError)
+        // BUILTIN_EXCEPTION_TYPE(UnicodeTranslateError, PyExc_UnicodeTranslateError)
 
 
 #undef BUILTIN_EXCEPTION_TYPE

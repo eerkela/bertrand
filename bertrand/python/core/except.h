@@ -1826,9 +1826,7 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 }
 
 
-[[nodiscard]] inline auto __iter__<Traceback>::operator*() const
-    -> value_type
-{
+[[nodiscard]] inline auto __iter__<Traceback>::operator*() const -> value_type {
     if (curr == nullptr) {
         throw StopIteration();
     }
@@ -1838,9 +1836,7 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 }
 
 
-[[nodiscard]] inline auto __reversed__<Traceback>::operator*() const
-    -> value_type
-{
+[[nodiscard]] inline auto __reversed__<Traceback>::operator*() const -> value_type {
     if (index < 0) {
         throw StopIteration();
     }

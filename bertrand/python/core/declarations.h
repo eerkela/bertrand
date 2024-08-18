@@ -161,6 +161,12 @@ private:
 };
 
 
+/// NOTE: note that std::derived_from<Object> can't be used here because any type
+/// that's incomplete will fail to compile.  As such, I have to use static assertions
+/// within the classes instead, so that this whole Rube Goldberg machine doesn't fall
+/// apart.
+
+
 struct Handle;
 struct Object;
 template <typename T = Object>
@@ -657,6 +663,9 @@ namespace impl {
         { std::abs(t) };
     };
 
+    template <typename T>
+    using abs_type = decltype(std::abs(std::declval<T>()));
+
     template <typename T, typename Return>
     concept abs_returns = requires(T t) {
         { std::abs(t) } -> std::convertible_to<Return>;
@@ -666,6 +675,9 @@ namespace impl {
     concept has_invert = requires(T t) {
         { ~t };
     };
+
+    template <typename T>
+    using invert_type = decltype(~std::declval<T>());
 
     template <typename T, typename Return>
     concept invert_returns = requires(T t) {
@@ -677,6 +689,9 @@ namespace impl {
         { +t };
     };
 
+    template <typename T>
+    using pos_type = decltype(+std::declval<T>());
+
     template <typename T, typename Return>
     concept pos_returns = requires(T t) {
         { +t } -> std::convertible_to<Return>;
@@ -686,6 +701,9 @@ namespace impl {
     concept has_neg = requires(T t) {
         { -t };
     };
+
+    template <typename T>
+    using neg_type = decltype(-std::declval<T>());
 
     template <typename T, typename Return>
     concept neg_returns = requires(T t) {
@@ -698,9 +716,15 @@ namespace impl {
     };
 
     template <typename T>
+    using preincrement_type = decltype(++std::declval<T>());
+
+    template <typename T>
     concept has_postincrement = requires(T t) {
         { t++ } -> std::convertible_to<T>;
     };
+
+    template <typename T>
+    using postincrement_type = decltype(std::declval<T>()++);
 
     template <typename T>
     concept has_predecrement = requires(T t) {
@@ -708,14 +732,23 @@ namespace impl {
     };
 
     template <typename T>
+    using predecrement_type = decltype(--std::declval<T>());
+
+    template <typename T>
     concept has_postdecrement = requires(T t) {
         { t-- } -> std::convertible_to<T>;
     };
+
+    template <typename T>
+    using postdecrement_type = decltype(std::declval<T>()--);
 
     template <typename L, typename R>
     concept has_lt = requires(L l, R r) {
         { l < r };
     };
+
+    template <typename L, typename R>
+    using lt_type = decltype(std::declval<L>() < std::declval<R>());
 
     template <typename L, typename R, typename Return>
     concept lt_returns = requires(L l, R r) {
@@ -727,6 +760,9 @@ namespace impl {
         { l <= r };
     };
 
+    template <typename L, typename R>
+    using le_type = decltype(std::declval<L>() <= std::declval<R>());
+
     template <typename L, typename R, typename Return>
     concept le_returns = requires(L l, R r) {
         { l <= r } -> std::convertible_to<Return>;
@@ -736,6 +772,9 @@ namespace impl {
     concept has_eq = requires(L l, R r) {
         { l == r };
     };
+
+    template <typename L, typename R>
+    using eq_type = decltype(std::declval<L>() == std::declval<R>());
 
     template <typename L, typename R, typename Return>
     concept eq_returns = requires(L l, R r) {
@@ -747,6 +786,9 @@ namespace impl {
         { l != r };
     };
 
+    template <typename L, typename R>
+    using ne_type = decltype(std::declval<L>() != std::declval<R>());
+
     template <typename L, typename R, typename Return>
     concept ne_returns = requires(L l, R r) {
         { l != r } -> std::convertible_to<Return>;
@@ -756,6 +798,9 @@ namespace impl {
     concept has_ge = requires(L l, R r) {
         { l >= r };
     };
+
+    template <typename L, typename R>
+    using ge_type = decltype(std::declval<L>() >= std::declval<R>());
 
     template <typename L, typename R, typename Return>
     concept ge_returns = requires(L l, R r) {
@@ -767,6 +812,9 @@ namespace impl {
         { l > r };
     };
 
+    template <typename L, typename R>
+    using gt_type = decltype(std::declval<L>() > std::declval<R>());
+
     template <typename L, typename R, typename Return>
     concept gt_returns = requires(L l, R r) {
         { l > r } -> std::convertible_to<Return>;
@@ -776,6 +824,9 @@ namespace impl {
     concept has_add = requires(L l, R r) {
         { l + r };
     };
+
+    template <typename L, typename R>
+    using add_type = decltype(std::declval<L>() + std::declval<R>());
 
     template <typename L, typename R, typename Return>
     concept add_returns = requires(L l, R r) {
@@ -788,9 +839,15 @@ namespace impl {
     };
 
     template <typename L, typename R>
+    using iadd_type = decltype(std::declval<L&>() += std::declval<R>());
+
+    template <typename L, typename R>
     concept has_sub = requires(L l, R r) {
         { l - r };
     };
+
+    template <typename L, typename R>
+    using sub_type = decltype(std::declval<L>() - std::declval<R>());
 
     template <typename L, typename R, typename Return>
     concept sub_returns = requires(L l, R r) {
@@ -803,9 +860,15 @@ namespace impl {
     };
 
     template <typename L, typename R>
+    using isub_type = decltype(std::declval<L&>() -= std::declval<R>());
+
+    template <typename L, typename R>
     concept has_mul = requires(L l, R r) {
         { l * r };
     };
+
+    template <typename L, typename R>
+    using mul_type = decltype(std::declval<L>() * std::declval<R>());
 
     template <typename L, typename R, typename Return>
     concept mul_returns = requires(L l, R r) {
@@ -818,9 +881,15 @@ namespace impl {
     };
 
     template <typename L, typename R>
+    using imul_type = decltype(std::declval<L&>() *= std::declval<R>());
+
+    template <typename L, typename R>
     concept has_truediv = requires(L l, R r) {
         { l / r };
     };
+
+    template <typename L, typename R>
+    using truediv_type = decltype(std::declval<L>() / std::declval<R>());
 
     template <typename L, typename R, typename Return>
     concept truediv_returns = requires(L l, R r) {
@@ -833,9 +902,15 @@ namespace impl {
     };
 
     template <typename L, typename R>
+    using itruediv_type = decltype(std::declval<L&>() /= std::declval<R>());
+
+    template <typename L, typename R>
     concept has_mod = requires(L l, R r) {
         { l % r };
     };
+
+    template <typename L, typename R>
+    using mod_type = decltype(std::declval<L>() % std::declval<R>());
 
     template <typename L, typename R, typename Return>
     concept mod_returns = requires(L l, R r) {
@@ -848,9 +923,15 @@ namespace impl {
     };
 
     template <typename L, typename R>
+    using imod_type = decltype(std::declval<L&>() %= std::declval<R>());
+
+    template <typename L, typename R>
     concept has_pow = requires(L l, R r) {
         { std::pow(l, r) };
     };
+
+    template <typename L, typename R>
+    using pow_type = decltype(std::pow(std::declval<L>(), std::declval<R>()));
 
     template <typename L, typename R, typename Return>
     concept pow_returns = requires(L l, R r) {
@@ -861,6 +942,9 @@ namespace impl {
     concept has_lshift = requires(L l, R r) {
         { l << r };
     };
+
+    template <typename L, typename R>
+    using lshift_type = decltype(std::declval<L>() << std::declval<R>());
 
     template <typename L, typename R, typename Return>
     concept lshift_returns = requires(L l, R r) {
@@ -873,9 +957,15 @@ namespace impl {
     };
 
     template <typename L, typename R>
+    using ilshift_type = decltype(std::declval<L&>() <<= std::declval<R>());
+
+    template <typename L, typename R>
     concept has_rshift = requires(L l, R r) {
         { l >> r };
     };
+
+    template <typename L, typename R>
+    using rshift_type = decltype(std::declval<L>() >> std::declval<R>());
 
     template <typename L, typename R, typename Return>
     concept rhsift_returns = requires(L l, R r) {
@@ -888,9 +978,15 @@ namespace impl {
     };
 
     template <typename L, typename R>
+    using irshift_type = decltype(std::declval<L&>() >>= std::declval<R>());
+
+    template <typename L, typename R>
     concept has_and = requires(L l, R r) {
         { l & r };
     };
+
+    template <typename L, typename R>
+    using and_type = decltype(std::declval<L>() & std::declval<R>());
 
     template <typename L, typename R, typename Return>
     concept and_returns = requires(L l, R r) {
@@ -903,9 +999,15 @@ namespace impl {
     };
 
     template <typename L, typename R>
+    using iand_type = decltype(std::declval<L&>() &= std::declval<R>());
+
+    template <typename L, typename R>
     concept has_or = requires(L l, R r) {
         { l | r };
     };
+
+    template <typename L, typename R>
+    using or_type = decltype(std::declval<L>() | std::declval<R>());
 
     template <typename L, typename R, typename Return>
     concept or_returns = requires(L l, R r) {
@@ -918,9 +1020,15 @@ namespace impl {
     };
 
     template <typename L, typename R>
+    using ior_type = decltype(std::declval<L&>() |= std::declval<R>());
+
+    template <typename L, typename R>
     concept has_xor = requires(L l, R r) {
         { l ^ r };
     };
+
+    template <typename L, typename R>
+    using xor_type = decltype(std::declval<L>() ^ std::declval<R>());
 
     template <typename L, typename R, typename Return>
     concept xor_returns = requires(L l, R r) {
@@ -931,6 +1039,9 @@ namespace impl {
     concept has_ixor = requires(L& l, R r) {
         { l ^= r } -> std::convertible_to<L&>;
     };
+
+    template <typename L, typename R>
+    using ixor_type = decltype(std::declval<L&>() ^= std::declval<R>());
 
     template <typename T>
     concept has_concat = requires(const T& lhs, const T& rhs) {

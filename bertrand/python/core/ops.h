@@ -2,7 +2,10 @@
 #define BERTRAND_PYTHON_CORE_OPS_H
 
 #include "declarations.h"
+#include "object.h"
 #include "except.h"
+
+// TODO: define this file last?
 
 
 namespace py {
@@ -36,6 +39,11 @@ template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
         return typename Obj::type(std::forward<T>(value));
     }
 }
+
+
+/// TODO: __isinstance__ and __issubclass__ should test for inheritance from a Python
+/// object's `Interface<T>` type, not the type itself.  That allows it to correctly
+/// model multiple inheritance.
 
 
 // TODO: implement the extra overloads for Object, BertrandMeta, Type, and Tuple of

@@ -101,6 +101,9 @@ public:
     template <typename Self>
     [[nodiscard]] explicit operator bool(this const Self& self);  // defined in except.h
 
+    // TODO: operator bool, cast, explicit cast, etc. should delegate to a wrapped
+    // C++ object if it exists.
+
     /* Universal implicit conversion operator.  Implemented via the __cast__ control
     struct. */
     template <typename Self, typename T>
@@ -122,7 +125,7 @@ public:
     functions in C++. */
     template <typename Self, typename... Args>
         requires (__call__<std::remove_cvref_t<Self>, Args...>::enable)
-    auto operator()(this Self&& self, Args&&... args) {
+    decltype(auto) operator()(this Self&& self, Args&&... args) {
         using call = __call__<std::remove_cvref_t<Self>, Args...>;
         using Return = typename call::type;
         static_assert(
@@ -167,13 +170,13 @@ public:
     /* Index operator.  Specific key and element types can be controlled via the
     __getitem__, __setitem__, and __delitem__ control structs. */
     template <typename Self, typename Key> requires (__getitem__<Self, Key>::enable)
-    auto operator[](this const Self& self, Key&& key);  // defined in except.h
+    decltype(auto) operator[](this const Self& self, Key&& key);  // defined in except.h
 
     /* Slice operator.  This is just syntactic sugar for the index operator with a
     py::Slice operand, allowing users to specify slices using a condensed initializer
     list. */
     template <typename Self> requires (__getitem__<Self, Slice>::enable)
-    auto operator[](
+    decltype(auto) operator[](
         this const Self& self,
         const std::initializer_list<impl::SliceInitializer>& slice
     );  // defined in core.h

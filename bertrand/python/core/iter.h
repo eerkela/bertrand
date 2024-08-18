@@ -43,7 +43,7 @@ safety may be violated, and should therefore be used with caution.  It is mostly
 for internal use to back the default result of the `begin()` and `end()` operators when
 no specialized C++ iterator can be found.  In that case, its value type is set to the
 `T` in an `__iter__<Container> : Returns<T> {};` specialization. */
-template <std::derived_from<Object> Return = Object>
+template <typename Return = Object>
 struct Iterator : Object, Interface<Iterator<Return>>, impl::IterTag {
 
     Iterator(Handle h, borrowed_t t) : Object(h, t) {}
