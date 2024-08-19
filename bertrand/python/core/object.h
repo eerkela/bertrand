@@ -62,12 +62,12 @@ public:
     container types, and the allowable key types can be specified via the __contains__
     control struct. */
     template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
-    [[nodiscard]] bool contains(this const Self& self, const Key& key);  // defined in except.h
+    [[nodiscard]] bool contains(this const Self& self, const Key& key);  // defined in ops.h
 
     /* Contextually convert an Object into a boolean value for use in if/else 
     statements, with the same semantics as in Python. */
     template <typename Self>
-    [[nodiscard]] explicit operator bool(this const Self& self);  // defined in except.h
+    [[nodiscard]] explicit operator bool(this const Self& self);  // defined in ops.h
 
     /* Universal implicit conversion operator.  Implemented via the __cast__ control
     struct. */

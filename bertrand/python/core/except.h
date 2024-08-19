@@ -1366,62 +1366,6 @@ struct __explicit_init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reaso
 //////////////////////
 
 
-template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
-[[nodiscard]] bool Handle::contains(this const Self& self, const Key& key) {
-    using Return = typename __contains__<Self, Key>::type;
-    static_assert(
-        std::same_as<Return, bool>,
-        "contains() operator must return a boolean value.  Check your "
-        "specialization of __contains__ for these types and ensure the Return "
-        "type is set to bool."
-    );
-    if constexpr (impl::has_call_operator<__contains__<Self, Key>>) {
-        return __contains__<Self, Key>{}(self, key);
-
-    } else if constexpr (
-        impl::originates_from_cpp<Self> &&
-        impl::cpp_or_originates_from_cpp<Key>
-    ) {
-        static_assert(
-            impl::has_contains<impl::cpp_type<Self>, impl::cpp_type<Key>>,
-            "__contains__<Self, Key> is enabled for operands whose C++ "
-            "representations have no viable overload for `Self.contains(Key)`"
-        );
-        return unwrap(self).contains(unwrap(key));
-
-    } else {
-        int result = PySequence_Contains(
-            self.m_ptr,
-            ptr(as_object(key))
-        );
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-}
-
-
-/// TODO: should these operators go in ops.h?
-
-
-template <typename Self>
-[[nodiscard]] Handle::operator bool(this const Self& self) {
-    if constexpr (
-        impl::originates_from_cpp<Self> &&
-        impl::has_operator_bool<impl::cpp_type<Self>>
-    ) {
-        return static_cast<bool>(unwrap(self));
-    } else {
-        int result = PyObject_IsTrue(self.m_ptr);
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;   
-    }
-}
-
-
 template <typename T>
 constexpr bool __isinstance__<T, Object>::operator()(const T& obj, const Object& cls) {
     if constexpr (impl::python_like<T>) {
@@ -1604,7 +1548,6 @@ auto __init__<Code, Source>::operator()(const std::string& source) {
     }
     return reinterpret_steal<Code>(result);
 }
-
 
 
 /////////////////////

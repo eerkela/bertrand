@@ -3836,14 +3836,14 @@ struct __call__<Self, Args...> : Returns<std::invoke_result_t<impl::cpp_type<Sel
 /// be deduced here.
 
 
-template <impl::originates_from_cpp Self, typename Key>
-    requires (impl::supports_lookup<impl::cpp_type<Self>, Key>)
-struct __getitem__<Self, Key> : Returns<impl::lookup_type<impl::cpp_type<Self>, Key>> {};
+template <impl::originates_from_cpp Self, typename... Key>
+    requires (impl::supports_lookup<impl::cpp_type<Self>, Key...>)
+struct __getitem__<Self, Key...> : Returns<impl::lookup_type<impl::cpp_type<Self>, Key...>> {};
 
 
-template <impl::originates_from_cpp Self, typename Key, typename Value>
-    requires (impl::supports_item_assignment<impl::cpp_type<Self>, Key, Value>)
-struct __setitem__<Self, Key, Value> : Returns<void> {};
+template <impl::originates_from_cpp Self, typename Value, typename... Key>
+    requires (impl::supports_item_assignment<impl::cpp_type<Self>, Value, Key...>)
+struct __setitem__<Self, Value, Key...> : Returns<void> {};
 
 
 template <impl::originates_from_cpp Self>

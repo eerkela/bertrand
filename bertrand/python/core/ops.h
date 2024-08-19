@@ -5,6 +5,7 @@
 #include "object.h"
 #include "except.h"
 
+
 // TODO: define this file last?
 
 
@@ -128,6 +129,48 @@ namespace impl {
 }
 
 
+template <std::derived_from<Object> T>
+struct __as_object__<T>                                     : Returns<T> {
+    static decltype(auto) operator()(T&& value) { return std::forward<T>(value); }
+};
+
+
+/* Convert an arbitrary C++ value to an equivalent Python object if it isn't one
+already. */
+template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
+[[nodiscard]] decltype(auto) as_object(T&& value) {
+    using Obj = __as_object__<std::remove_cvref_t<T>>;
+    static_assert(
+        !std::same_as<typename Obj::type, Object>,
+        "C++ types cannot be converted to py::Object directly.  Check your "
+        "specialization of __as_object__ for this type and ensure the Return type "
+        "is set to a subclass of py::Object, not py::Object itself."
+    );
+    if constexpr (impl::has_call_operator<Obj>) {
+        return Obj{}(std::forward<T>(value));
+    } else {
+        return typename Obj::type(std::forward<T>(value));
+    }
+}
+
+
+template <typename Self>
+[[nodiscard]] Handle::operator bool(this const Self& self) {
+    if constexpr (
+        impl::originates_from_cpp<Self> &&
+        impl::has_operator_bool<impl::cpp_type<Self>>
+    ) {
+        return static_cast<bool>(unwrap(self));
+    } else {
+        int result = PyObject_IsTrue(self.m_ptr);
+        if (result == -1) {
+            Exception::from_python();
+        }
+        return result;   
+    }
+}
+
+
 template <typename Self, typename... Key> requires (__getitem__<Self, Key...>::enable)
 decltype(auto) Handle::operator[](this const Self& self, Key&&... key) {
     using Return = typename __getitem__<Self, std::decay_t<Key>...>::type;
@@ -187,6 +230,42 @@ decltype(auto) Handle::operator[](this const Self& self, Key&&... key) {
 }
 
 
+template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
+[[nodiscard]] bool Handle::contains(this const Self& self, const Key& key) {
+    using Return = typename __contains__<Self, Key>::type;
+    static_assert(
+        std::same_as<Return, bool>,
+        "contains() operator must return a boolean value.  Check your "
+        "specialization of __contains__ for these types and ensure the Return "
+        "type is set to bool."
+    );
+    if constexpr (impl::has_call_operator<__contains__<Self, Key>>) {
+        return __contains__<Self, Key>{}(self, key);
+
+    } else if constexpr (
+        impl::originates_from_cpp<Self> &&
+        impl::cpp_or_originates_from_cpp<Key>
+    ) {
+        static_assert(
+            impl::has_contains<impl::cpp_type<Self>, impl::cpp_type<Key>>,
+            "__contains__<Self, Key> is enabled for operands whose C++ "
+            "representations have no viable overload for `Self.contains(Key)`"
+        );
+        return unwrap(self).contains(unwrap(key));
+
+    } else {
+        int result = PySequence_Contains(
+            self.m_ptr,
+            ptr(as_object(key))
+        );
+        if (result == -1) {
+            Exception::from_python();
+        }
+        return result;
+    }
+}
+
+
 /* Represents a keyword parameter pack obtained by double-dereferencing a Python
 object. */
 template <std::derived_from<Object> T> requires (impl::mapping_like<T>)
@@ -202,8 +281,8 @@ private:
         impl::yields_pairs_with<T, key_type, mapped_type> ||
         impl::has_items<T> ||
         (impl::has_keys<T> && impl::has_values<T>) ||
-        (impl::yields<T, key_type> && impl::lookup_yields<T, key_type, mapped_type>) ||
-        (impl::has_keys<T> && impl::lookup_yields<T, key_type, mapped_type>);
+        (impl::yields<T, key_type> && impl::lookup_yields<T, mapped_type, key_type>) ||
+        (impl::has_keys<T> && impl::lookup_yields<T, mapped_type, key_type>);
 
     auto transform() const {
         if constexpr (impl::yields_pairs_with<T, key_type, mapped_type>) {
@@ -216,7 +295,7 @@ private:
             return std::ranges::views::zip(value.keys(), value.values());
 
         } else if constexpr (
-            impl::yields<T, key_type> && impl::lookup_yields<T, key_type, mapped_type>
+            impl::yields<T, key_type> && impl::lookup_yields<T, mapped_type, key_type>
         ) {
             return std::ranges::views::transform(value, [&](const key_type& key) {
                 return std::make_pair(key, value[key]);
@@ -298,31 +377,6 @@ template <std::derived_from<Object> Container, typename Func>
 }
 
 
-template <std::derived_from<Object> T>
-struct __as_object__<T>                                     : Returns<T> {
-    static decltype(auto) operator()(T&& value) { return std::forward<T>(value); }
-};
-
-
-/* Convert an arbitrary C++ value to an equivalent Python object if it isn't one
-already. */
-template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
-[[nodiscard]] decltype(auto) as_object(T&& value) {
-    using Obj = __as_object__<std::remove_cvref_t<T>>;
-    static_assert(
-        !std::same_as<typename Obj::type, Object>,
-        "C++ types cannot be converted to py::Object directly.  Check your "
-        "specialization of __as_object__ for this type and ensure the Return type "
-        "is set to a subclass of py::Object, not py::Object itself."
-    );
-    if constexpr (impl::has_call_operator<Obj>) {
-        return Obj{}(std::forward<T>(value));
-    } else {
-        return typename Obj::type(std::forward<T>(value));
-    }
-}
-
-
 /// TODO: __isinstance__ and __issubclass__ should test for inheritance from a Python
 /// object's `Interface<T>` type, not the type itself.  That allows it to correctly
 /// model multiple inheritance.
@@ -352,7 +406,6 @@ template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
 //      must be a single type or a dynamic object which can be narrowed to a single
 //      type, and base must be type-like, a union of types, or a dynamic object which
 //      can be narrowed to either of the above.
-
 
 
 /* Equivalent to Python `isinstance(obj, base)`, except that base is given as a

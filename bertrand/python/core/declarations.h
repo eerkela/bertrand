@@ -504,15 +504,6 @@ namespace impl {
     };
 
     template <typename T>
-    using iter_type = decltype(*std::ranges::begin(std::declval<T>()));
-
-    template <typename T>
-    using reverse_iter_type = decltype(*std::ranges::rbegin(std::declval<T>()));
-
-    template <typename T, typename Key>
-    using lookup_type = decltype(std::declval<T>()[std::declval<Key>()]);
-
-    template <typename T>
     constexpr bool is_generic_helper = false;
     template <template <typename...> typename T, typename... Ts>
     constexpr bool is_generic_helper<T<Ts...>> = true;
@@ -569,6 +560,9 @@ namespace impl {
         { std::ranges::end(t) } -> std::input_or_output_iterator;
     };
 
+    template <typename T>
+    using iter_type = decltype(*std::ranges::begin(std::declval<T>()));
+
     template <typename T, typename Value>
     concept yields = iterable<T> && std::convertible_to<iter_type<T>, Value>;
 
@@ -577,6 +571,9 @@ namespace impl {
         { std::ranges::rbegin(t) } -> std::input_or_output_iterator;
         { std::ranges::rend(t) } -> std::input_or_output_iterator;
     };
+
+    template <typename T>
+    using reverse_iter_type = decltype(*std::ranges::rbegin(std::declval<T>()));
 
     template <typename T, typename Value>
     concept yields_reverse =
@@ -616,7 +613,6 @@ namespace impl {
             std::convertible_to<typename std::decay_t<T>::mapped_type>;
     };
 
-    /// TODO: update this for multidimensional subscripting
     template <typename T, typename... Key>
     concept supports_lookup =
         !std::is_pointer_v<T> &&
@@ -625,13 +621,14 @@ namespace impl {
             { t[key...] };
         };
 
-    /// TODO: update this for multidimensional subscripting
+    template <typename T, typename... Key>
+    using lookup_type = decltype(std::declval<T>()[std::declval<Key>()...]);
+
     template <typename T, typename Value, typename... Key>
     concept lookup_yields = supports_lookup<T, Key...> && requires(T t, Key... key) {
         { t[key...] } -> std::convertible_to<Value>;
     };
 
-    /// TODO: update this for multidimensional subscripting
     template <typename T, typename Value, typename... Key>
     concept supports_item_assignment =
         !std::is_pointer_v<T> &&
