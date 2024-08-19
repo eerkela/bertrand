@@ -1446,6 +1446,39 @@ void impl::ModuleTag::def<CRTP, ModName>::Bindings::register_exception(
 }
 
 
+[[noreturn, clang::noinline]] void Interface<Type<Exception>>::from_python() {
+    PyThreadState* thread = PyThreadState_Get();
+    PyObject* value = thread->current_exception;
+    if (value == nullptr) {
+        throw std::logic_error(
+            "could not convert Python exception into a C++ exception - "
+            "exception is not set."
+        );
+    }
+    thread->current_exception = nullptr;
+    #ifndef BERTRAND_NO_TRACEBACK
+        try {
+            PyTracebackObject* front = impl::build_traceback(
+                cpptrace::generate_trace(1),
+                PyException_GetTraceback(value)
+            )
+            if (front != nullptr) {
+                PyException_SetTraceback(value, front);
+                Py_DECREF(front);
+            }
+        } catch (...) {}
+    #endif
+    using Mod = Module<"bertrand.python">::__python__;
+    Module<"bertrand.python"> python;
+    Mod* mod = reinterpret_cast<Mod*>(ptr(python));
+    auto it = mod->exception_map.find(Py_TYPE(value));
+    if (it != mod->exception_map.end()) {
+        it->second(value);
+    }
+    throw reinterpret_steal<Exception>(value);
+}
+
+
 }  // namespace py
 
 

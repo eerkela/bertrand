@@ -5,6 +5,7 @@
 #include "except.h"
 #include "ops.h"
 #include "object.h"
+#include "pytypedefs.h"
 
 
 namespace py {
@@ -4087,7 +4088,106 @@ struct __ixor__<L, R> : Returns<impl::ixor_type<impl::cpp_type<L>, impl::cpp_typ
 ///////////////////////////////
 
 
-/// TODO: I also need to define types for Frame and Traceback as well.
+template <>
+struct Type<Frame>;
+
+
+template <>
+struct Interface<Type<Frame>> {
+    [[nodiscard]] static bool has_code(const Frame& self);
+    [[nodiscard]] static std::string to_string(const Frame& self);
+    [[nodiscard]] static Frame back(const Frame& self);
+
+    /// TODO: these are forward declarations, along with their cousins in except.h
+    [[nodiscard]] static Code code(const Frame& self);
+    [[nodiscard]] static int line_number(const Frame& self);
+    [[nodiscard]] static Dict<Str, Object> builtins(const Frame& self);
+    [[nodiscard]] static Dict<Str, Object> globals(const Frame& self);
+    [[nodiscard]] static Dict<Str, Object> locals(const Frame& self);
+    [[nodiscard]] static std::optional<Object> generator(const Frame& self);
+    [[nodiscard]] static int last_instruction(const Frame& self);
+    [[nodiscard]] static Object get(const Frame& self, const Str& name);
+};
+
+
+template <>
+struct Type<Frame> : Object, Interface<Type<Frame>>, impl::TypeTag {
+    struct __python__ : TypeTag::def<__python__, Type> {
+        static Type __import__() {
+            return reinterpret_borrow<Type>(
+                reinterpret_cast<PyObject*>(&PyFrame_Type)
+            );
+        }
+    };
+
+    Type(Handle h, borrowed_t t) : Object(h, t) {}
+    Type(Handle h, stolen_t t) : Object(h, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+};
+
+
+[[nodiscard]] inline bool Interface<Type<Frame>>::has_code(const Frame& self) {
+    return self.has_code();
+}
+[[nodiscard]] inline std::string Interface<Type<Frame>>::to_string(const Frame& self) {
+    return self.to_string();
+}
+[[nodiscard]] inline Frame Interface<Type<Frame>>::back(const Frame& self) {
+    return self.back();
+}
+
+
+template <>
+struct Type<Traceback>;
+
+
+template <>
+struct Interface<Type<Traceback>> {
+    [[nodiscard]] static std::string to_string(const Traceback& self);
+};
+
+
+template <>
+struct Type<Traceback> : Object, Interface<Type<Traceback>>, impl::TypeTag {
+    struct __python__ : TypeTag::def<__python__, Type> {
+        static Type __import__() {
+            return reinterpret_borrow<Type>(
+                reinterpret_cast<PyObject*>(&PyTraceBack_Type)
+            );
+        }
+    };
+
+    Type(Handle h, borrowed_t t) : Object(h, t) {}
+    Type(Handle h, stolen_t t) : Object(h, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+};
+
+
+[[nodiscard]] inline std::string Interface<Type<Traceback>>::to_string(const Traceback& self) {
+    return self.to_string();
+}
 
 
 template <>
@@ -4095,8 +4195,8 @@ struct Type<Exception>;
 
 
 template <>
-struct Interface<Type<Exception>> : Interface<Type<Object>> {
-    [[noreturn, clang::noinline]] static void from_python();
+struct Interface<Type<Exception>> {
+    [[noreturn, clang::noinline]] static void from_python();  // defined in __init__.h
     static void to_python();
 };
 
@@ -4126,11 +4226,6 @@ struct Type<Exception> : Object, Interface<Type<Exception>>, impl::TypeTag {
 };
 
 
-[[noreturn, clang::noinline]] inline void Interface<Type<Exception>>::from_python() {
-    Exception::from_python();  // TODO: should provide a skip argument in this case?
-}
-
-
 inline void Interface<Type<Exception>>::to_python() {
     Exception::to_python();
 }
@@ -4154,13 +4249,15 @@ inline void Interface<Type<Exception>>::to_python() {
         Type(Handle h, borrowed_t t) : Object(h, t) {}                                  \
         Type(Handle h, stolen_t t) : Object(h, t) {}                                    \
                                                                                         \
-        template <typename... Args> requires (implicit_ctor<Type>::template enable<Args...>) \
+        template <typename... Args>                                                     \
+            requires (implicit_ctor<Type>::template enable<Args...>)                    \
         Type(Args&&... args) : Object(                                                  \
             implicit_ctor<Type>{},                                                      \
             std::forward<Args>(args)...                                                 \
         ) {}                                                                            \
                                                                                         \
-        template <typename... Args> requires (explicit_ctor<Type>::template enable<Args...>) \
+        template <typename... Args>                                                     \
+            requires (explicit_ctor<Type>::template enable<Args...>)                    \
         explicit Type(Args&&... args) : Object(                                         \
             explicit_ctor<Type>{},                                                      \
             std::forward<Args>(args)...                                                 \

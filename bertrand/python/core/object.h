@@ -86,7 +86,7 @@ struct Interface<Object> {};
 
 
 /* A non-owning reference to a raw Python object. */
-struct Handle : impl::BertrandTag, Interface<Handle> {
+struct Handle : Interface<Handle>, impl::BertrandTag {
 protected:
     PyObject* m_ptr;
 

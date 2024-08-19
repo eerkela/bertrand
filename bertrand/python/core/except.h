@@ -20,9 +20,9 @@ namespace impl {
          * arguments are decomposed into numeric character arrays in the symbol name,
          * which need to be reconstructed here.  Here's an example:
          *
-         *      // TODO: create a new example
+         *      // TODO: find a new example, probably using py::getattr<"append">(list)
          *
-         *      File "/home/eerkela/data/bertrand/bertrand/python/core/object.h",
+         *      File ".../bertrand/python/core/ops.h",
          *      line 268, in py::impl::Attr<bertrand::py::Object,
          *      bertrand::StaticStr<7ul>{char [8]{(char)95, (char)95, (char)103,
          *      (char)101, (char)116, (char)95, (char)95}}>::get_attr() const
@@ -64,9 +64,6 @@ namespace impl {
 }
 
 
-/// TODO: insert Type<Frame> and Interface<Type<Frame>>
-
-
 struct Frame;
 
 
@@ -76,7 +73,7 @@ struct Interface<Frame> {
     [[nodiscard]] std::string to_string() const;
     [[nodiscard]] Frame back() const;
 
-    /// TODO: these are forward declarations
+    /// TODO: these are forward declarations, along with their cousins in type.h
     [[nodiscard]] Code code() const;
     [[nodiscard]] int line_number() const;
     [[nodiscard]] Dict<Str, Object> builtins() const;
@@ -249,9 +246,6 @@ namespace impl {
     }
 
 }
-
-
-/// TODO: insert Type<Traceback> and Interface<Type<Traceback>>
 
 
 struct Traceback;
@@ -616,10 +610,6 @@ struct __reversed__<Traceback>                              : Returns<Traceback>
 /////////////////////////
 ////    EXCEPTION    ////
 /////////////////////////
-
-
-/// TODO: insert Type<Exception> and Interface<Type<Exception>>, as well as for all
-/// standard exceptions.
 
 
 namespace impl {
