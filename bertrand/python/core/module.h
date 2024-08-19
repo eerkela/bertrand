@@ -6,7 +6,6 @@
 #include "except.h"
 #include "ops.h"
 #include "object.h"
-#include "pytypedefs.h"
 #include "type.h"
 
 
@@ -21,6 +20,9 @@
 // -> What about standard library types?  The global type map would probably have to
 // store demangled names in addition to the Python type objects.  Or I can stick to
 // what I have and only store the string.
+
+// -> That would potentially allow me to merge it with the exception map, which would
+// be kind of nice.
 
 
 namespace py {

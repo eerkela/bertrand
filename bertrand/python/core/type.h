@@ -972,6 +972,14 @@ automatically demangle the type name and implement certain common behaviors that
 shared across all types, such as template subscripting via `__getitem__` and accurate
 `isinstance()` checks based on Bertrand's C++ control structures.)doc";
 
+        PyTypeObject base;
+
+        /* The `instancecheck` and `subclasscheck` function pointers are used to back
+        the metaclass's Python-level `__instancecheck__()` and `__subclasscheck()__`
+        methods, and are automatically set during construction for each type. */
+        bool(*instancecheck)(__python__*, PyObject*);
+        bool(*subclasscheck)(__python__*, PyObject*);
+
         /* C++ needs a few extra hooks to accurately model C++ types in a way that
         shares state.  The getters and setters decribed here are implemented according
         to Python's `tp_getset` slot, and describe class-level computed properties. */
@@ -985,17 +993,151 @@ shared across all types, such as template subscripting via `__getitem__` and acc
         };
         using Getters = std::unordered_map<std::string_view, Get>;
         using Setters = std::unordered_map<std::string_view, Set>;
-
-        /* The `instancecheck` and `subclasscheck` function pointers are used to back
-        the metaclass's Python-level `__instancecheck__()` and `__subclasscheck()__`
-        methods, and are automatically set during construction for each type. */
-        PyTypeObject base;
-        bool(*instancecheck)(__python__*, PyObject*);
-        bool(*subclasscheck)(__python__*, PyObject*);
         Getters getters;
         Setters setters;
+
+        /* The metaclass will demangle a C++ class's type name and track template
+        instantiations in an internal dictionary accessible through `__getitem__()`. */
         PyObject* demangled;
         PyObject* template_instantiations;
+
+        /// TODO: these will be exposed to Python, so maybe I need some property
+        /// descriptors that can intercept the assignment operator.  That would mean
+        /// assigning the slot to another function in Python will update the C++ side
+        /// slot as well.
+
+        /* The bindings will create thin wrappers around all of the slots that are
+        accessible from Python, which delegate to an internal `py::OverloadSet`.  This
+        allows overloads to be registered from either side of the language divide just
+        like any other bertrand function, without incurring any additional overhead. */
+        PyObject* tp_init;
+        PyObject* tp_new;
+        PyObject* tp_getattro;
+        PyObject* tp_setattro;
+        PyObject* tp_delattro;
+        PyObject* tp_repr;
+        PyObject* tp_hash;
+        PyObject* tp_call;
+        PyObject* tp_str;
+        PyObject* tp_lt;
+        PyObject* tp_le;
+        PyObject* tp_eq;
+        PyObject* tp_ne;
+        PyObject* tp_ge;
+        PyObject* tp_gt;
+        PyObject* tp_iter;
+        PyObject* tp_iternext;
+        PyObject* tp_reverse;
+        PyObject* tp_enter;
+        PyObject* tp_exit;
+        PyObject* tp_descr_get;
+        PyObject* tp_descr_set;
+        PyObject* tp_descr_delete;
+        PyObject* mp_length;
+        PyObject* mp_subscript;
+        PyObject* mp_ass_subscript;
+        PyObject* mp_del_subscript;
+        PyObject* sq_contains;
+        PyObject* am_await;
+        PyObject* am_aiter;
+        PyObject* am_anext;
+        PyObject* am_send;
+        PyObject* bf_getbuffer;
+        PyObject* bf_releasebuffer;
+        PyObject* nb_add;
+        PyObject* nb_inplace_add;
+        PyObject* nb_subtract;
+        PyObject* nb_inplace_subtract;
+        PyObject* nb_multiply;
+        PyObject* nb_inplace_multiply;
+        PyObject* nb_remainder;
+        PyObject* nb_inplace_remainder;
+        PyObject* nb_divmod;
+        PyObject* nb_power;
+        PyObject* nb_inplace_power;
+        PyObject* nb_negative;
+        PyObject* nb_positive;
+        PyObject* nb_absolute;
+        PyObject* nb_bool;
+        PyObject* nb_invert;
+        PyObject* nb_lshift;
+        PyObject* nb_inplace_lshift;
+        PyObject* nb_rshift;
+        PyObject* nb_inplace_rshift;
+        PyObject* nb_and;
+        PyObject* nb_inplace_and;
+        PyObject* nb_xor;
+        PyObject* nb_inplace_xor;
+        PyObject* nb_or;
+        PyObject* nb_inplace_or;
+        PyObject* nb_int;
+        PyObject* nb_float;
+        PyObject* nb_floor_divide;
+        PyObject* nb_inplace_floor_divide;
+        PyObject* nb_true_divide;
+        PyObject* nb_inplace_true_divide;
+        PyObject* nb_matrix_multiply;
+        PyObject* nb_inplace_matrix_multiply;
+
+        /* If no OverloadSet exists for a given slot, then we fall back to what Python
+        would have used as the default behavior had we not overridden the slot. */
+        initproc base_tp_init;
+        newfunc base_tp_new;
+        getattrofunc base_tp_getattro;
+        setattrofunc base_tp_setattro;
+        reprfunc base_tp_repr;
+        hashfunc base_tp_hash;
+        ternaryfunc base_tp_call;
+        reprfunc base_tp_str;
+        richcmpfunc base_tp_richcompare;
+        getiterfunc base_tp_iter;
+        iternextfunc base_tp_iternext;
+        descrgetfunc base_tp_descr_get;
+        descrsetfunc base_tp_descr_set;
+        lenfunc base_mp_length;
+        binaryfunc base_mp_subscript;
+        objobjargproc base_mp_ass_subscript;
+        objobjargproc base_sq_contains;
+        unaryfunc base_am_await;
+        unaryfunc base_am_aiter;
+        unaryfunc base_am_anext;
+        sendfunc base_am_send;
+        getbufferproc base_bf_getbuffer;
+        releasebufferproc base_bf_releasebuffer;
+        binaryfunc base_nb_add;
+        binaryfunc base_nb_inplace_add;
+        binaryfunc base_nb_subtract;
+        binaryfunc base_nb_inplace_subtract;
+        binaryfunc base_nb_multiply;
+        binaryfunc base_nb_inplace_multiply;
+        binaryfunc base_nb_remainder;
+        binaryfunc base_nb_inplace_remainder;
+        binaryfunc base_nb_divmod;
+        ternaryfunc base_nb_power;
+        ternaryfunc base_nb_inplace_power;
+        unaryfunc base_nb_negative;
+        unaryfunc base_nb_positive;
+        unaryfunc base_nb_absolute;
+        inquiry base_nb_bool;
+        unaryfunc base_nb_invert;
+        binaryfunc base_nb_lshift;
+        binaryfunc base_nb_inplace_lshift;
+        binaryfunc base_nb_rshift;
+        binaryfunc base_nb_inplace_rshift;
+        binaryfunc base_nb_and;
+        binaryfunc base_nb_inplace_and;
+        binaryfunc base_nb_xor;
+        binaryfunc base_nb_inplace_xor;
+        binaryfunc base_nb_or;
+        binaryfunc base_nb_inplace_or;
+        unaryfunc base_nb_int;
+        unaryfunc base_nb_float;
+        binaryfunc base_nb_floor_divide;
+        binaryfunc base_nb_inplace_floor_divide;
+        binaryfunc base_nb_true_divide;
+        binaryfunc base_nb_inplace_true_divide;
+        binaryfunc base_nb_matrix_multiply;
+        binaryfunc base_nb_inplace_matrix_multiply;
 
         /* Get a new reference to the metatype from the global `bertrand.python`
         module. */
@@ -1041,6 +1183,147 @@ shared across all types, such as template subscripting via `__getitem__` and acc
             return reinterpret_steal<Type>(cls);
         }
 
+        /* Initialize the metaclass's internal fields after calling the type's Python
+        __new__() hook.  Ordinarily, these are left uninitialized, which leads to
+        undefined behavior when accessed. */
+        void initialize() {
+            instancecheck = nullptr;
+            subclasscheck = nullptr;
+            new (&getters) Getters();
+            new (&setters) Setters();
+            std::string s = "<class '" + impl::demangle(base.tp_name) + "'>";
+            demangled = PyUnicode_FromStringAndSize(s.c_str(), s.size());
+            if (demangled == nullptr) {
+                Exception::from_python();
+            }
+            template_instantiations = nullptr;
+            tp_init = nullptr;
+            tp_new = nullptr;
+            tp_getattro = nullptr;
+            tp_setattro = nullptr;
+            tp_delattro = nullptr;
+            tp_repr = nullptr;
+            tp_hash = nullptr;
+            tp_call = nullptr;
+            tp_str = nullptr;
+            tp_lt = nullptr;
+            tp_le = nullptr;
+            tp_eq = nullptr;
+            tp_ne = nullptr;
+            tp_ge = nullptr;
+            tp_gt = nullptr;
+            tp_iter = nullptr;
+            tp_iternext = nullptr;
+            tp_reverse = nullptr;
+            tp_enter = nullptr;
+            tp_exit = nullptr;
+            tp_descr_get = nullptr;
+            tp_descr_set = nullptr;
+            tp_descr_delete = nullptr;
+            mp_length = nullptr;
+            mp_subscript = nullptr;
+            mp_ass_subscript = nullptr;
+            mp_del_subscript = nullptr;
+            sq_contains = nullptr;
+            am_await = nullptr;
+            am_aiter = nullptr;
+            am_anext = nullptr;
+            am_send = nullptr;
+            bf_getbuffer = nullptr;
+            bf_releasebuffer = nullptr;
+            nb_add = nullptr;
+            nb_inplace_add = nullptr;
+            nb_subtract = nullptr;
+            nb_inplace_subtract = nullptr;
+            nb_multiply = nullptr;
+            nb_inplace_multiply = nullptr;
+            nb_remainder = nullptr;
+            nb_inplace_remainder = nullptr;
+            nb_divmod = nullptr;
+            nb_power = nullptr;
+            nb_inplace_power = nullptr;
+            nb_negative = nullptr;
+            nb_positive = nullptr;
+            nb_absolute = nullptr;
+            nb_bool = nullptr;
+            nb_invert = nullptr;
+            nb_lshift = nullptr;
+            nb_inplace_lshift = nullptr;
+            nb_rshift = nullptr;
+            nb_inplace_rshift = nullptr;
+            nb_and = nullptr;
+            nb_inplace_and = nullptr;
+            nb_xor = nullptr;
+            nb_inplace_xor = nullptr;
+            nb_or = nullptr;
+            nb_inplace_or = nullptr;
+            nb_int = nullptr;
+            nb_float = nullptr;
+            nb_floor_divide = nullptr;
+            nb_inplace_floor_divide = nullptr;
+            nb_true_divide = nullptr;
+            nb_inplace_true_divide = nullptr;
+            nb_matrix_multiply = nullptr;
+            nb_inplace_matrix_multiply = nullptr;
+            base_tp_init = nullptr;
+            base_tp_new = nullptr;
+            base_tp_getattro = nullptr;
+            base_tp_setattro = nullptr;
+            base_tp_repr = nullptr;
+            base_tp_hash = nullptr;
+            base_tp_call = nullptr;
+            base_tp_str = nullptr;
+            base_tp_richcompare = nullptr;
+            base_tp_iter = nullptr;
+            base_tp_iternext = nullptr;
+            base_tp_descr_get = nullptr;
+            base_tp_descr_set = nullptr;
+            base_mp_length = nullptr;
+            base_mp_subscript = nullptr;
+            base_mp_ass_subscript = nullptr;
+            base_sq_contains = nullptr;
+            base_am_await = nullptr;
+            base_am_aiter = nullptr;
+            base_am_anext = nullptr;
+            base_am_send = nullptr;
+            base_bf_getbuffer = nullptr;
+            base_bf_releasebuffer = nullptr;
+            base_nb_add = nullptr;
+            base_nb_inplace_add = nullptr;
+            base_nb_subtract = nullptr;
+            base_nb_inplace_subtract = nullptr;
+            base_nb_multiply = nullptr;
+            base_nb_inplace_multiply = nullptr;
+            base_nb_remainder = nullptr;
+            base_nb_inplace_remainder = nullptr;
+            base_nb_divmod = nullptr;
+            base_nb_power = nullptr;
+            base_nb_inplace_power = nullptr;
+            base_nb_negative = nullptr;
+            base_nb_positive = nullptr;
+            base_nb_absolute = nullptr;
+            base_nb_bool = nullptr;
+            base_nb_invert = nullptr;
+            base_nb_lshift = nullptr;
+            base_nb_inplace_lshift = nullptr;
+            base_nb_rshift = nullptr;
+            base_nb_inplace_rshift = nullptr;
+            base_nb_and = nullptr;
+            base_nb_inplace_and = nullptr;
+            base_nb_xor = nullptr;
+            base_nb_inplace_xor = nullptr;
+            base_nb_or = nullptr;
+            base_nb_inplace_or = nullptr;
+            base_nb_int = nullptr;
+            base_nb_float = nullptr;
+            base_nb_floor_divide = nullptr;
+            base_nb_inplace_floor_divide = nullptr;
+            base_nb_true_divide = nullptr;
+            base_nb_inplace_true_divide = nullptr;
+            base_nb_matrix_multiply = nullptr;
+            base_nb_inplace_matrix_multiply = nullptr;
+        }
+
         /* Create a trivial instance of the metaclass to serve as a Python entry point
         for a C++ template hierarchy.  The interface type is not usable on its own
         except to provide access to its C++ instantiations, as well as efficient type
@@ -1084,23 +1367,20 @@ the C++ level and retrieves their corresponding Python types.)doc";
             if (cls == nullptr) {
                 Exception::from_python();
             }
-            cls->instancecheck = template_instancecheck;
-            cls->subclasscheck = template_subclasscheck;
-            cls->demangled = nullptr;  // prevent dangling pointers
-            cls->template_instantiations = nullptr;
-            new (&cls->getters) Getters();
-            new (&cls->setters) Setters();
-            cls->demangled = cls->get_demangled_name();
-            if (cls->demangled == nullptr) {
+            try {
+                cls->initialize();
+                cls->instancecheck = template_instancecheck;
+                cls->subclasscheck = template_subclasscheck;
+                cls->template_instantiations = PyDict_New();
+                if (cls->template_instantiations == nullptr) {
+                    Exception::from_python();
+                }
+                return reinterpret_steal<BertrandMeta>(reinterpret_cast<PyObject*>(cls));
+            } catch (...) {
                 Py_DECREF(cls);
-                Exception::from_python();
+                throw;
             }
-            cls->template_instantiations = PyDict_New();
-            if (cls->template_instantiations == nullptr) {
-                Py_DECREF(cls);
-                Exception::from_python();
-            }
-            return reinterpret_steal<BertrandMeta>(reinterpret_cast<PyObject*>(cls));
+            
         };
 
         /* `repr(cls)` displays the demangled C++ name.  */
@@ -1330,6 +1610,74 @@ the C++ level and retrieves their corresponding Python types.)doc";
             cls->setters.~Setters();
             Py_XDECREF(cls->demangled);
             Py_XDECREF(cls->template_instantiations);
+            Py_XDECREF(cls->tp_init);
+            Py_XDECREF(cls->tp_new);
+            Py_XDECREF(cls->tp_getattro);
+            Py_XDECREF(cls->tp_setattro);
+            Py_XDECREF(cls->tp_delattro);
+            Py_XDECREF(cls->tp_repr);
+            Py_XDECREF(cls->tp_hash);
+            Py_XDECREF(cls->tp_call);
+            Py_XDECREF(cls->tp_str);
+            Py_XDECREF(cls->tp_lt);
+            Py_XDECREF(cls->tp_le);
+            Py_XDECREF(cls->tp_eq);
+            Py_XDECREF(cls->tp_ne);
+            Py_XDECREF(cls->tp_ge);
+            Py_XDECREF(cls->tp_gt);
+            Py_XDECREF(cls->tp_iter);
+            Py_XDECREF(cls->tp_iternext);
+            Py_XDECREF(cls->tp_reverse);
+            Py_XDECREF(cls->tp_enter);
+            Py_XDECREF(cls->tp_exit);
+            Py_XDECREF(cls->tp_descr_get);
+            Py_XDECREF(cls->tp_descr_set);
+            Py_XDECREF(cls->tp_descr_delete);
+            Py_XDECREF(cls->mp_length);
+            Py_XDECREF(cls->mp_subscript);
+            Py_XDECREF(cls->mp_ass_subscript);
+            Py_XDECREF(cls->mp_del_subscript);
+            Py_XDECREF(cls->sq_contains);
+            Py_XDECREF(cls->am_await);
+            Py_XDECREF(cls->am_aiter);
+            Py_XDECREF(cls->am_anext);
+            Py_XDECREF(cls->am_send);
+            Py_XDECREF(cls->bf_getbuffer);
+            Py_XDECREF(cls->bf_releasebuffer);
+            Py_XDECREF(cls->nb_add);
+            Py_XDECREF(cls->nb_inplace_add);
+            Py_XDECREF(cls->nb_subtract);
+            Py_XDECREF(cls->nb_inplace_subtract);
+            Py_XDECREF(cls->nb_multiply);
+            Py_XDECREF(cls->nb_inplace_multiply);
+            Py_XDECREF(cls->nb_remainder);
+            Py_XDECREF(cls->nb_inplace_remainder);
+            Py_XDECREF(cls->nb_divmod);
+            Py_XDECREF(cls->nb_power);
+            Py_XDECREF(cls->nb_inplace_power);
+            Py_XDECREF(cls->nb_negative);
+            Py_XDECREF(cls->nb_positive);
+            Py_XDECREF(cls->nb_absolute);
+            Py_XDECREF(cls->nb_bool);
+            Py_XDECREF(cls->nb_invert);
+            Py_XDECREF(cls->nb_lshift);
+            Py_XDECREF(cls->nb_inplace_lshift);
+            Py_XDECREF(cls->nb_rshift);
+            Py_XDECREF(cls->nb_inplace_rshift);
+            Py_XDECREF(cls->nb_and);
+            Py_XDECREF(cls->nb_inplace_and);
+            Py_XDECREF(cls->nb_xor);
+            Py_XDECREF(cls->nb_inplace_xor);
+            Py_XDECREF(cls->nb_or);
+            Py_XDECREF(cls->nb_inplace_or);
+            Py_XDECREF(cls->nb_int);
+            Py_XDECREF(cls->nb_float);
+            Py_XDECREF(cls->nb_floor_divide);
+            Py_XDECREF(cls->nb_inplace_floor_divide);
+            Py_XDECREF(cls->nb_true_divide);
+            Py_XDECREF(cls->nb_inplace_true_divide);
+            Py_XDECREF(cls->nb_matrix_multiply);
+            Py_XDECREF(cls->nb_inplace_matrix_multiply);
             PyTypeObject* type = Py_TYPE(cls);
             type->tp_free(cls);
             Py_DECREF(type);  // required for heap types
@@ -1340,12 +1688,6 @@ the C++ level and retrieves their corresponding Python types.)doc";
             Py_VISIT(cls->template_instantiations);
             Py_VISIT(Py_TYPE(cls));  // required for heap types
             return 0;
-        }
-
-        /* Helper to ensure the demangled name is always consistent. */
-        PyObject* get_demangled_name() {
-            std::string s = "<class '" + impl::demangle(base.tp_name) + "'>";
-            return PyUnicode_FromStringAndSize(s.c_str(), s.size());
         }
 
     private:
@@ -1596,6 +1938,10 @@ struct __getitem__<Type<T>, Type<U>...>                     : Returns<BertrandMe
 
 namespace impl {
 
+    /// TODO: the tp_dealloc slot should have an extra layer of indirection so that
+    /// handrolled types don't have to consider it, and can freely call the parent
+    /// destructor without worrying about double-freeing memory.
+
     template <typename CRTP, typename Wrapper, typename CppType>
     template <StaticStr ModName>
     struct TypeTag::BaseDef<CRTP, Wrapper, CppType>::Bindings {
@@ -1605,10 +1951,115 @@ namespace impl {
         inline static std::vector<PyGetSetDef> tp_getset;
         inline static std::vector<PyMemberDef> tp_members;
 
-        static int setattro(CRTP* self, PyObject* attr, PyObject* value) {
+        /// TODO: these can't delegate to the base tp_new, etc. since those will point
+        /// back here recursively.
+        /// -> The only way to do that would be to also store the original slot values
+        /// in the metaclass, and delegate to them where appropriate.
+        /// -> What I have to do is initialize the type without any of these slots
+        /// filled in initially, then record their values into the metaclass, and then
+        /// replace them with the wrappers, which delegate to the PyObject* if present.
+        /// I should then be able to assign, delete, or overload the PyObject*
+        /// dynamically from Python or C++ and see the changes reflected in both
+        /// languages.
+
+        /// TODO: what do I do about the self argument in these wrappers?
+
+        static int tp_init(CRTP* self, PyObject* args, PyObject* kwds) {
+            Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+            if (meta->tp_init) {
+                PyObject* result = PyObject_CallFunctionObjArgs(
+                    meta->tp_init,
+                    self,
+                    args,
+                    kwds,
+                    nullptr
+                );
+                if (result == nullptr) {
+                    return -1;
+                }
+                Py_DECREF(result);
+                return 0;
+            } else if (meta->base_tp_init) {
+                return meta->base_tp_init(self, args, kwds);
+            } else {
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "cannot initialize object of type '%s'",
+                    repr(Type<Wrapper>()).c_str()
+                );
+                return -1;
+            }
+        }
+
+        static PyObject* tp_new(PyTypeObject* cls, PyObject* args, PyObject* kwds) {
+            Meta* meta = reinterpret_cast<Meta*>(cls);
+            if (meta->tp_new) {
+                PyObject* result = PyObject_CallFunctionObjArgs(
+                    meta->tp_new,
+                    cls,
+                    args,
+                    kwds,
+                    nullptr
+                );
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                return result;
+            } else if (meta->base_tp_new) {
+                return meta->base_tp_new(cls, args, kwds);
+            } else {
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "cannot create object of type '%s'",
+                    repr(Type<Wrapper>()).c_str()
+                );
+                return nullptr;
+            }
+        }
+
+        static PyObject* tp_getattro(CRTP* self, PyObject* attr) {
+            Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+            if (meta->tp_getattro) {
+                PyObject* result = PyObject_CallFunctionObjArgs(
+                    meta->tp_getattro,
+                    self,
+                    attr,
+                    nullptr
+                );
+                if (result == nullptr) {
+                    return nullptr;
+                }
+                return result;
+            } else if (meta->base_tp_getattro) {
+                return meta->base_tp_getattro(self, attr);
+            } else {
+                PyErr_Format(
+                    PyExc_AttributeError,
+                    "cannot get attribute '%U' from object of type '%s'",
+                    attr,
+                    repr(Type<Wrapper>()).c_str()
+                );
+                return nullptr;
+            }
+        }
+
+        static int tp_setattro(CRTP* self, PyObject* attr, PyObject* value) {
+            Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
             if (value == nullptr) {
-                if constexpr (dunder::has_delattr<CRTP>) {
-                    return CRTP::__delattr__(self, attr);
+                if (meta->tp_delattro) {
+                    PyObject* result = PyObject_CallFunctionObjArgs(
+                        meta->tp_delattro,
+                        self,
+                        attr,
+                        nullptr
+                    );
+                    if (result == nullptr) {
+                        return -1;
+                    }
+                    Py_DECREF(result);
+                    return 0;
+                } else if (meta->base_tp_setattro) {
+                    return meta->base_tp_setattro(self, attr);
                 } else {
                     PyErr_Format(
                         PyExc_AttributeError,
@@ -1618,9 +2069,23 @@ namespace impl {
                     );
                     return -1;
                 }
+
             } else {
-                if constexpr (dunder::has_setattr<CRTP>) {
-                    return CRTP::__setattr__(self, attr, value);
+                if (meta->tp_setattro) {
+                    PyObject* result = PyObject_CallFunctionObjArgs(
+                        meta->tp_setattro,
+                        self,
+                        attr,
+                        value,
+                        nullptr
+                    );
+                    if (result == nullptr) {
+                        return -1;
+                    }
+                    Py_DECREF(result);
+                    return 0;
+                } else if (meta->base_tp_setattro) {
+                    return meta->base_tp_setattro(self, attr, value);
                 } else {
                     PyErr_Format(
                         PyExc_AttributeError,
@@ -1633,10 +2098,23 @@ namespace impl {
             }
         }
 
-        static int setitem(CRTP* self, PyObject* key, PyObject* value) {
+        static int mp_ass_subscript(CRTP* self, PyObject* key, PyObject* value) {
+            Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
             if (value == nullptr) {
-                if constexpr (dunder::has_delitem<CRTP>) {
-                    return CRTP::__delitem__(self, key);
+                if (meta->mp_del_subscript) {
+                    PyObject* result = PyObject_CallFunctionObjArgs(
+                        meta->mp_del_subscript,
+                        self,
+                        key,
+                        nullptr
+                    );
+                    if (result == nullptr) {
+                        return -1;
+                    }
+                    Py_DECREF(result);
+                    return 0;
+                } else if (meta->base_mp_ass_subscript) {
+                    return meta->base_mp_ass_subscript(self, key, value);
                 } else {
                     PyErr_Format(
                         PyExc_TypeError,
@@ -1646,9 +2124,23 @@ namespace impl {
                     );
                     return -1;
                 }
+
             } else {
-                if constexpr (dunder::has_setitem<CRTP>) {
-                    return CRTP::__setitem__(self, key, value);
+                if (meta->mp_ass_subscript) {
+                    PyObject* result = PyObject_CallFunctionObjArgs(
+                        meta->mp_ass_subscript,
+                        self,
+                        key,
+                        value,
+                        nullptr
+                    );
+                    if (result == nullptr) {
+                        return -1;
+                    }
+                    Py_DECREF(result);
+                    return 0;
+                } else if (meta->base_mp_ass_subscript) {
+                    return meta->base_mp_ass_subscript(self, key, value);
                 } else {
                     PyErr_Format(
                         PyExc_TypeError,
@@ -2431,15 +2923,11 @@ namespace impl {
 
             // initialize the metaclass fields
             Meta* meta = reinterpret_cast<Meta*>(ptr(cls));
+            meta->initialize();
             meta->instancecheck = instancecheck;
             meta->subclasscheck = subclasscheck;
-            new (&meta->getters) Meta::Getters(std::move(class_getters));
-            new (&meta->setters) Meta::Setters(std::move(class_setters));
-            meta->template_instantiations = nullptr;
-            meta->demangled = meta->get_demangled_name();
-            if (meta->demangled == nullptr) {
-                Exception::from_python();
-            }
+            meta->getters = std::move(class_getters);
+            meta->setters = std::move(class_setters);
 
             // execute the callbacks to populate the type object
             for (auto&& [name, ctx] : context) {
@@ -2707,6 +3195,11 @@ namespace impl {
 
         public:
             using Base::Base;
+
+            /// TODO: all of these bindings could potentially be lifted to
+            /// BaseDef::Bindings and centralized there.  This class would just do
+            /// some extra introspection on the C++ type and call these helpers to
+            /// register the appropriate slots just like any other method.
 
             /* Expose an immutable member variable to Python as a getset descriptor,
             which synchronizes its state. */
