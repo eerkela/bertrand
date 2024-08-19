@@ -3,6 +3,7 @@
 
 #include "declarations.h"
 #include "object.h"
+#include "pyport.h"
 
 
 namespace py {
@@ -622,7 +623,14 @@ struct __reversed__<Traceback>                              : Returns<Traceback>
 /// standard exceptions.
 
 
-/// TODO: OSError also accepts additional arguments, along with Unicode errors.
+namespace impl {
+
+    // short-circuits type imports for standard library exceptions to avoid circular
+    // dependencies
+    template <typename Exc>
+    struct builtin_exception_map {};
+
+}
 
 
 struct Exception;
@@ -637,8 +645,8 @@ struct Interface<Exception> {
 
 struct Exception : std::exception, Object, Interface<Exception> {
 protected:
-    mutable std::string m_message;
-    mutable std::string m_what;
+    mutable std::optional<std::string> m_message;
+    mutable std::optional<std::string> m_what;
 
     template <std::derived_from<Exception> T, typename... Args>
     Exception(implicit_ctor<T> ctor, Args&&... args) : Object(
@@ -669,49 +677,58 @@ public:
 
     /* Returns the message that was supplied to construct this exception. */
     const char* message() const noexcept {
-        PyObject* args = PyException_GetArgs(ptr(*this));
-        if (args == nullptr) {
-            PyErr_Clear();
-            return "";
-        } else if (PyTuple_GET_SIZE(args) == 0) {
+        if (!m_message.has_value()) {
+            PyObject* args = PyException_GetArgs(ptr(*this));
+            if (args == nullptr) {
+                PyErr_Clear();
+                return "";
+            } else if (PyTuple_GET_SIZE(args) == 0) {
+                Py_DECREF(args);
+                return "";
+            }
+
+            PyObject* msg = PyTuple_GET_ITEM(args, 0);
+            if (msg == nullptr) {
+                return "";
+            }
+            Py_ssize_t len;
+            const char* result = PyUnicode_AsUTF8AndSize(msg, &len);
+            if (result == nullptr) {
+                PyErr_Clear();
+                Py_DECREF(args);
+                return "";
+            }
+            m_message = std::string(result, len);
+
             Py_DECREF(args);
-            return "";
         }
-        PyObject* msg = PyTuple_GET_ITEM(args, 0);
-        Py_DECREF(args);
-        if (msg == nullptr) {
-            return "";
-        }
-        const char* result = PyUnicode_AsUTF8(msg);
-        if (result == nullptr) {
-            PyErr_Clear();
-            return "";
-        }
-        return result;
+        return m_message.value().c_str();
     }
 
     /* Returns a Python-style traceback and error as a C++ string, which will be
     displayed in case of an uncaught error. */
     const char* what() const noexcept override {
-        if (m_what.empty()) {
+        if (!m_what.has_value()) {
             Traceback tb = reinterpret_steal<Traceback>(
                 PyException_GetTraceback(ptr(*this))
             );
             if (ptr(tb) != nullptr) {
-                m_what += tb.to_string() + "\n";
+                m_what = tb.to_string() + "\n";
+            } else {
+                m_what = "";
             }
-            m_what += Py_TYPE(ptr(*this))->tp_name;
-            m_what += ": ";
-            m_what += message();
+            m_what.value() += Py_TYPE(ptr(*this))->tp_name;
+            m_what.value() += ": ";
+            m_what.value() += message();
         }
-        return m_what.c_str();
+        return m_what.value().c_str();
     }
 
     /* Clear the error's message() and what() caches, forcing them to be recomputed
     the next time they are requested. */
     void flush() const noexcept {
-        m_message.clear();
-        m_what.clear();
+        m_message.reset();
+        m_what.reset();
     }
 
 };
@@ -721,11 +738,20 @@ template <std::derived_from<Exception> Exc, typename Msg>
     requires (std::convertible_to<std::decay_t<Msg>, std::string>)
 struct __explicit_init__<Exc, Msg>                          : Returns<Exc> {
     [[clang::noinline]] static auto operator()(const std::string& msg) {
-        PyObject* result = PyObject_CallFunction(
-            ptr(Type<Exc>()),
-            "s",
-            msg.c_str()
-        );
+        PyObject* result;
+        if constexpr (std::is_invocable_v<impl::builtin_exception_map<Exc>>) {
+            result = PyObject_CallFunction(
+                impl::builtin_exception_map<Exc>{}(),
+                "s",
+                msg.c_str()
+            );
+        } else {
+            result = PyObject_CallFunction(
+                ptr(Type<Exc>()),
+                "s",
+                msg.c_str()
+            );
+        }
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -786,14 +812,15 @@ inline void Interface<Exception>::to_python() {
  */
 
 
-/// TODO: right now, this explicit init constructor is not considering
-/// BERTRAND_NO_TRACEBACK.  This might be an experiment to see whether I should just
-/// eliminate that option altogether.
-/// -> I should lift the BERTRAND_NO_TRACEBACK check out of this macro and redefine it
-
-
 #define BUILTIN_EXCEPTION(CLS, BASE, PYTYPE)                                            \
     struct CLS;                                                                         \
+                                                                                        \
+    template <>                                                                         \
+    struct impl::builtin_exception_map<CLS> {                                           \
+        [[nodiscard]] static PyObject* operator()() {                                   \
+            return PYTYPE;                                                              \
+        }                                                                               \
+    };                                                                                  \
                                                                                         \
     template <>                                                                         \
     struct Interface<CLS> : Interface<BASE> {};                                         \
@@ -802,47 +829,19 @@ inline void Interface<Exception>::to_python() {
         CLS(Handle h, borrowed_t t) : Exception(h, t) {}                                \
         CLS(Handle h, stolen_t t) : Exception(h, t) {}                                  \
                                                                                         \
-        template <typename... Args> requires (implicit_ctor<CLS>::template enable<Args...>) \
+        template <typename... Args>                                                     \
+            requires (implicit_ctor<CLS>::template enable<Args...>)                     \
         [[clang::noinline]] CLS(Args&&... args) : Exception(                            \
             implicit_ctor<CLS>{},                                                       \
             std::forward<Args>(args)...                                                 \
         ) {}                                                                            \
                                                                                         \
-        template <typename... Args> requires (explicit_ctor<CLS>::template enable<Args...>) \
+        template <typename... Args>                                                     \
+            requires (explicit_ctor<CLS>::template enable<Args...>)                     \
         [[clang::noinline]] explicit CLS(Args&&... args) : Exception(                   \
             explicit_ctor<CLS>{},                                                       \
             std::forward<Args>(args)...                                                 \
         ) {}                                                                            \
-    };                                                                                  \
-                                                                                        \
-    template <typename Msg>                                                             \
-        requires (std::convertible_to<std::decay_t<Msg>, std::string>)                  \
-    struct __explicit_init__<CLS, Msg>                      : Returns<CLS> {            \
-        [[clang::noinline]] static auto operator()(const std::string& msg) {            \
-            PyObject* result = PyObject_CallFunction(                                   \
-                PYTYPE,  /* This is the only difference */                              \
-                "s",                                                                    \
-                msg.c_str()                                                             \
-            );                                                                          \
-            if (result == nullptr) {                                                    \
-                Exception::from_python();                                               \
-            }                                                                           \
-                                                                                        \
-            try {                                                                       \
-                PyTracebackObject* trace = impl::build_traceback(                       \
-                    cpptrace::generate_trace(1)                                         \
-                );                                                                      \
-                if (trace != nullptr) {                                                 \
-                    PyException_SetTraceback(result, reinterpret_cast<PyObject*>(trace)); \
-                    Py_DECREF(trace);                                                   \
-                }                                                                       \
-            } catch (...) {                                                             \
-                Py_DECREF(result);                                                      \
-                throw;                                                                  \
-            }                                                                           \
-                                                                                        \
-            return reinterpret_steal<CLS>(result);                                      \
-        }                                                                               \
     };
 
 
@@ -895,547 +894,674 @@ BUILTIN_EXCEPTION(ValueError, Exception, PyExc_ValueError)
         // BUILTIN_EXCEPTION(UnicodeEncodeError, UnicodeError)
         // BUILTIN_EXCEPTION(UnicodeTranslateError, UnicodeError)
 
-
-// struct UnicodeDecodeError : Exception, Interface<UnicodeDecodeError> {
-//     using Base = __exception__<UnicodeDecodeError, UnicodeError>;
-
-// protected:
-
-//     static std::string generate_message(
-//         const std::string& encoding,
-//         const std::string& object,
-//         Py_ssize_t start,
-//         Py_ssize_t end,
-//         const std::string& reason
-//     ) {
-//         return (
-//             "'" + encoding + "' codec can't decode bytes in position " +
-//             std::to_string(start) + "-" + std::to_string(end - 1) + ": " +
-//             reason
-//         );
-//     }
-
-// public:
-//     std::string encoding;
-//     std::string object;
-//     Py_ssize_t start;
-//     Py_ssize_t end;
-//     std::string reason;
-
-//     [[clang::noinline]] explicit UnicodeDecodeError(
-//         const std::string& encoding,
-//         const std::string& object,
-//         Py_ssize_t start,
-//         Py_ssize_t end,
-//         const std::string& reason,
-//         size_t skip = 0
-//     ) : UnicodeDecodeError(
-//             encoding,
-//             object,
-//             start,
-//             end,
-//             reason,
-//             cpptrace::generate_trace(skip + 2)
-//         )
-//     {}
-
-//     [[clang::noinline]] explicit UnicodeDecodeError(
-//         const std::string& encoding,
-//         const std::string& object,
-//         Py_ssize_t start,
-//         Py_ssize_t end,
-//         const std::string& reason,
-//         const cpptrace::stacktrace& trace
-//     ) : Base(generate_message(encoding, object, start, end, reason), trace),
-//         encoding(encoding),
-//         object(object),
-//         start(start),
-//         end(end),
-//         reason(reason)
-//     {}
-
-//     [[clang::noinline]] explicit UnicodeDecodeError(
-//         PyObject* type,
-//         PyObject* value,
-//         PyObject* traceback,
-//         size_t skip = 0
-//     ) : UnicodeDecodeError(
-//         type,
-//         value,
-//         traceback,
-//         cpptrace::generate_trace(skip + 2)
-//     ) {}
-
-//     [[clang::noinline]] explicit UnicodeDecodeError(
-//         PyObject* type,
-//         PyObject* value,
-//         PyObject* traceback,
-//         const cpptrace::stacktrace& trace
-//     ) : Base(type, value, traceback, trace),
-//         encoding([value] {
-//             PyObject* encoding = PyUnicodeDecodeError_GetEncoding(value);
-//             if (encoding == nullptr) {
-//                 throw std::runtime_error(
-//                     "could not extract encoding from UnicodeDecodeError"
-//                 );
-//             }
-//             Py_ssize_t size;
-//             const char* data = PyUnicode_AsUTF8AndSize(encoding, &size);
-//             if (data == nullptr) {
-//                 Py_DECREF(encoding);
-//                 throw std::runtime_error(
-//                     "could not extract encoding from UnicodeDecodeError"
-//                 );
-//             }
-//             std::string result(data, size);
-//             Py_DECREF(encoding);
-//             return result;
-//         }()),
-//         object([value] {
-//             PyObject* object = PyUnicodeDecodeError_GetObject(value);
-//             if (object == nullptr) {
-//                 throw std::runtime_error(
-//                     "could not extract object from UnicodeDecodeError"
-//                 );
-//             }
-//             Py_ssize_t size;
-//             const char* data = PyUnicode_AsUTF8AndSize(object, &size);
-//             if (data == nullptr) {
-//                 Py_DECREF(object);
-//                 throw std::runtime_error(
-//                     "could not extract object from UnicodeDecodeError"
-//                 );
-//             }
-//             std::string result(data, size);
-//             Py_DECREF(object);
-//             return result;
-//         }()),
-//         start([value] {
-//             Py_ssize_t start;
-//             if (PyUnicodeDecodeError_GetStart(value, &start)) {
-//                 throw std::runtime_error(
-//                     "could not extract start from UnicodeDecodeError"
-//                 );
-//             }
-//             return start;
-//         }()),
-//         end([value] {
-//             Py_ssize_t end;
-//             if (PyUnicodeDecodeError_GetEnd(value, &end)) {
-//                 throw std::runtime_error(
-//                     "could not extract end from UnicodeDecodeError"
-//                 );
-//             }
-//             return end;
-//         }()),
-//         reason([value] {
-//             PyObject* reason = PyUnicodeDecodeError_GetReason(value);
-//             if (reason == nullptr) {
-//                 throw std::runtime_error(
-//                     "could not extract reason from UnicodeDecodeError"
-//                 );
-//             }
-//             Py_ssize_t size;
-//             const char* data = PyUnicode_AsUTF8AndSize(reason, &size);
-//             if (data == nullptr) {
-//                 Py_DECREF(reason);
-//                 throw std::runtime_error(
-//                     "could not extract reason from UnicodeDecodeError"
-//                 );
-//             }
-//             std::string result(data, size);
-//             Py_DECREF(reason);
-//             return result;
-//         }())
-//     {}
-
-//     const char* what() const noexcept override {
-//         if (what_cache.empty()) {
-//             #ifndef BERTRAND_NO_TRACEBACK
-//                 what_cache += traceback.to_string() + "\n";
-//             #endif
-//             what_cache += "UnicodeDecodeError: " + message();
-//         }
-//         return what_cache.c_str();
-//     }
-
-//     void set_pyerr() const override {
-//         PyErr_Clear();
-//         PyObject* exc = PyUnicodeDecodeError_Create(
-//             encoding.c_str(),
-//             object.c_str(),
-//             object.size(),
-//             start,
-//             end,
-//             reason.c_str()
-//         );
-//         if (exc == nullptr) {
-//             PyErr_SetString(PyExc_UnicodeError, message().c_str());
-//         } else {
-//             PyTracebackObject* tb = traceback.to_python();
-//             if (tb != nullptr) {
-//                 PyException_SetTraceback(exc, reinterpret_cast<PyObject*>(tb));
-//             }
-//             PyThreadState* thread = PyThreadState_Get();
-//             thread->current_exception = exc;
-//         }
-//     }
-
-// };
-
-
-// struct UnicodeEncodeError : __exception__<UnicodeEncodeError, UnicodeError> {
-//     using Base = __exception__<UnicodeEncodeError, UnicodeError>;
-
-// protected:
-
-//     static std::string generate_message(
-//         const std::string& encoding,
-//         const std::string& object,
-//         Py_ssize_t start,
-//         Py_ssize_t end,
-//         const std::string& reason
-//     ) {
-//         return (
-//             "'" + encoding + "' codec can't encode characters in position " +
-//             std::to_string(start) + "-" + std::to_string(end - 1) + ": " +
-//             reason
-//         );
-//     }
-
-// public:
-//     std::string encoding;
-//     std::string object;
-//     Py_ssize_t start = 0;
-//     Py_ssize_t end = 0;
-//     std::string reason;
-
-//     [[clang::noinline]] explicit UnicodeEncodeError(
-//         const std::string& encoding,
-//         const std::string& object,
-//         Py_ssize_t start,
-//         Py_ssize_t end,
-//         const std::string& reason,
-//         size_t skip = 0
-//     ) : UnicodeEncodeError(
-//             encoding,
-//             object,
-//             start,
-//             end,
-//             reason,
-//             cpptrace::generate_trace(skip + 2)
-//         )
-//     {}
-
-//     [[clang::noinline]] explicit UnicodeEncodeError(
-//         const std::string& encoding,
-//         const std::string& object,
-//         Py_ssize_t start,
-//         Py_ssize_t end,
-//         const std::string& reason,
-//         const cpptrace::stacktrace& trace
-//     ) : Base(generate_message(encoding, object, start, end, reason), trace),
-//         encoding(encoding),
-//         object(object),
-//         start(start),
-//         end(end),
-//         reason(reason)
-//     {}
-
-//     [[clang::noinline]] explicit UnicodeEncodeError(
-//         PyObject* type,
-//         PyObject* value,
-//         PyObject* traceback,
-//         size_t skip = 0
-//     ) : UnicodeEncodeError(
-//         type,
-//         value,
-//         traceback,
-//         cpptrace::generate_trace(skip + 2)
-//     ) {}
-
-//     [[clang::noinline]] explicit UnicodeEncodeError(
-//         PyObject* type,
-//         PyObject* value,
-//         PyObject* traceback,
-//         const cpptrace::stacktrace& trace
-//     ) : Base(type, value, traceback, trace),
-//         encoding([value] {
-//             PyObject* encoding = PyUnicodeEncodeError_GetEncoding(value);
-//             if (encoding == nullptr) {
-//                 throw std::runtime_error(
-//                     "could not extract encoding from UnicodeEncodeError"
-//                 );
-//             }
-//             Py_ssize_t size;
-//             const char* data = PyUnicode_AsUTF8AndSize(encoding, &size);
-//             if (data == nullptr) {
-//                 Py_DECREF(encoding);
-//                 throw std::runtime_error(
-//                     "could not extract encoding from UnicodeEncodeError"
-//                 );
-//             }
-//             std::string result(data, size);
-//             Py_DECREF(encoding);
-//             return result;
-//         }()),
-//         object([value] {
-//             PyObject* object = PyUnicodeEncodeError_GetObject(value);
-//             if (object == nullptr) {
-//                 throw std::runtime_error(
-//                     "could not extract object from UnicodeEncodeError"
-//                 );
-//             }
-//             Py_ssize_t size;
-//             const char* data = PyUnicode_AsUTF8AndSize(object, &size);
-//             if (data == nullptr) {
-//                 Py_DECREF(object);
-//                 throw std::runtime_error(
-//                     "could not extract object from UnicodeEncodeError"
-//                 );
-//             }
-//             std::string result(data, size);
-//             Py_DECREF(object);
-//             return result;
-//         }()),
-//         start([value] {
-//             Py_ssize_t start;
-//             if (PyUnicodeEncodeError_GetStart(value, &start)) {
-//                 throw std::runtime_error(
-//                     "could not extract start from UnicodeEncodeError"
-//                 );
-//             }
-//             return start;
-//         }()),
-//         end([value] {
-//             Py_ssize_t end;
-//             if (PyUnicodeEncodeError_GetEnd(value, &end)) {
-//                 throw std::runtime_error(
-//                     "could not extract end from UnicodeEncodeError"
-//                 );
-//             }
-//             return end;
-//         }()),
-//         reason([value] {
-//             PyObject* reason = PyUnicodeEncodeError_GetReason(value);
-//             if (reason == nullptr) {
-//                 throw std::runtime_error(
-//                     "could not extract reason from UnicodeEncodeError"
-//                 );
-//             }
-//             Py_ssize_t size;
-//             const char* data = PyUnicode_AsUTF8AndSize(reason, &size);
-//             if (data == nullptr) {
-//                 Py_DECREF(reason);
-//                 throw std::runtime_error(
-//                     "could not extract reason from UnicodeEncodeError"
-//                 );
-//             }
-//             std::string result(data, size);
-//             Py_DECREF(reason);
-//             return result;
-//         }())
-//     {}
-
-//     const char* what() const noexcept override {
-//         if (what_cache.empty()) {
-//             #ifndef BERTRAND_NO_TRACEBACK
-//                 what_cache += traceback.to_string() + "\n";
-//             #endif
-//             what_cache += "UnicodeEncodeError: " + message();
-//         }
-//         return what_cache.c_str();
-//     }
-
-//     void set_pyerr() const override {
-//         PyErr_Clear();
-//         PyObject* exc = PyObject_CallFunction(
-//             PyExc_UnicodeEncodeError,
-//             "ssnns",
-//             encoding.c_str(),
-//             object.c_str(),
-//             start,
-//             end,
-//             reason.c_str()
-//         );
-//         if (exc == nullptr) {
-//             PyErr_SetString(PyExc_UnicodeError, message().c_str());
-//         } else {
-//             PyTracebackObject* tb = traceback.to_python();
-//             if (tb != nullptr) {
-//                 PyException_SetTraceback(exc, reinterpret_cast<PyObject*>(tb));
-//             }
-//             PyThreadState* thread = PyThreadState_Get();
-//             thread->current_exception = exc;
-//         }
-//     }
-
-// };
-
-
-// struct UnicodeTranslateError : __exception__<UnicodeTranslateError, UnicodeError> {
-//     using Base = __exception__<UnicodeTranslateError, UnicodeError>;
-
-// protected:
-
-//     static std::string generate_message(
-//         const std::string& object,
-//         Py_ssize_t start,
-//         Py_ssize_t end,
-//         const std::string& reason
-//     ) {
-//         return (
-//             "can't translate characters in position " + std::to_string(start) +
-//             "-" + std::to_string(end - 1) + ": " + reason
-//         );
-//     }
-
-// public:
-//     std::string object;
-//     Py_ssize_t start = 0;
-//     Py_ssize_t end = 0;
-//     std::string reason;
-
-//     [[clang::noinline]] explicit UnicodeTranslateError(
-//         const std::string& object,
-//         Py_ssize_t start,
-//         Py_ssize_t end,
-//         const std::string& reason,
-//         size_t skip = 0
-//     ) : UnicodeTranslateError(
-//             object,
-//             start,
-//             end,
-//             reason,
-//             cpptrace::generate_trace(skip + 2)
-//         )
-//     {}
-
-//     [[clang::noinline]] explicit UnicodeTranslateError(
-//         const std::string& object,
-//         Py_ssize_t start,
-//         Py_ssize_t end,
-//         const std::string& reason,
-//         const cpptrace::stacktrace& trace
-//     ) : Base(generate_message(object, start, end, reason), trace),
-//         object(object),
-//         start(start),
-//         end(end),
-//         reason(reason)
-//     {}
-
-//     [[clang::noinline]] explicit UnicodeTranslateError(
-//         PyObject* type,
-//         PyObject* value,
-//         PyObject* traceback,
-//         size_t skip = 0
-//     ) : UnicodeTranslateError(
-//         type,
-//         value,
-//         traceback,
-//         cpptrace::generate_trace(skip + 2)
-//     ) {}
-
-//     [[clang::noinline]] explicit UnicodeTranslateError(
-//         PyObject* type,
-//         PyObject* value,
-//         PyObject* traceback,
-//         const cpptrace::stacktrace& trace
-//     ) : Base(type, value, traceback, trace),
-//         object([value] {
-//             PyObject* object = PyUnicodeTranslateError_GetObject(value);
-//             if (object == nullptr) {
-//                 throw std::runtime_error(
-//                     "could not extract object from UnicodeTranslateError"
-//                 );
-//             }
-//             Py_ssize_t size;
-//             const char* data = PyUnicode_AsUTF8AndSize(object, &size);
-//             if (data == nullptr) {
-//                 Py_DECREF(object);
-//                 throw std::runtime_error(
-//                     "could not extract object from UnicodeTranslateError"
-//                 );
-//             }
-//             std::string result(data, size);
-//             Py_DECREF(object);
-//             return result;
-//         }()),
-//         start([value] {
-//             Py_ssize_t start;
-//             if (PyUnicodeTranslateError_GetStart(value, &start)) {
-//                 throw std::runtime_error(
-//                     "could not extract start from UnicodeTranslateError"
-//                 );
-//             }
-//             return start;
-//         }()),
-//         end([value] {
-//             Py_ssize_t end;
-//             if (PyUnicodeTranslateError_GetEnd(value, &end)) {
-//                 throw std::runtime_error(
-//                     "could not extract end from UnicodeTranslateError"
-//                 );
-//             }
-//             return end;
-//         }()),
-//         reason([value] {
-//             PyObject* reason = PyUnicodeTranslateError_GetReason(value);
-//             if (reason == nullptr) {
-//                 throw std::runtime_error(
-//                     "could not extract reason from UnicodeTranslateError"
-//                 );
-//             }
-//             Py_ssize_t size;
-//             const char* data = PyUnicode_AsUTF8AndSize(reason, &size);
-//             if (data == nullptr) {
-//                 Py_DECREF(reason);
-//                 throw std::runtime_error(
-//                     "could not extract reason from UnicodeTranslateError"
-//                 );
-//             }
-//             std::string result(data, size);
-//             Py_DECREF(reason);
-//             return result;
-//         }())
-//     {}
-
-//     const char* what() const noexcept override {
-//         if (what_cache.empty()) {
-//             #ifndef BERTRAND_NO_TRACEBACK
-//                 what_cache += traceback.to_string() + "\n";
-//             #endif
-//             what_cache += "UnicodeTranslateError: " + message();
-//         }
-//         return what_cache.c_str();
-//     }
-
-//     void set_pyerr() const override {
-//         PyErr_Clear();
-//         PyObject* exc = PyObject_CallFunction(
-//             PyExc_UnicodeTranslateError,
-//             "snns",
-//             object.c_str(),
-//             start,
-//             end,
-//             reason.c_str()
-//         );
-//         if (exc == nullptr) {
-//             PyErr_SetString(PyExc_UnicodeError, message().c_str());
-//         } else {
-//             PyTracebackObject* tb = traceback.to_python();
-//             if (tb != nullptr) {
-//                 PyException_SetTraceback(exc, reinterpret_cast<PyObject*>(tb));
-//             }
-//             PyThreadState* thread = PyThreadState_Get();
-//             thread->current_exception = exc;
-//         }
-//     }
-
-// };
-
-
 #undef BUILTIN_EXCEPTION
+
+
+struct UnicodeDecodeError;
+
+
+template <>
+struct impl::builtin_exception_map<UnicodeDecodeError> {
+    [[nodiscard]] static PyObject* operator()() {
+        return PyExc_UnicodeDecodeError;
+    }
+};
+
+
+template <>
+struct Interface<UnicodeDecodeError> : Interface<UnicodeError> {
+    __declspec(property(get=_encoding)) std::string encoding;
+    [[nodiscard]] std::string _encoding() const;
+
+    __declspec(property(get=_object)) std::string object;
+    [[nodiscard]] std::string _object() const;
+
+    __declspec(property(get=_start)) Py_ssize_t start;
+    [[nodiscard]] Py_ssize_t _start() const;
+
+    __declspec(property(get=_end)) Py_ssize_t end;
+    [[nodiscard]] Py_ssize_t _end() const;
+
+    __declspec(property(get=_reason)) std::string reason;
+    [[nodiscard]] std::string _reason() const;
+};
+
+
+struct UnicodeDecodeError : Exception, Interface<UnicodeDecodeError> {
+
+    UnicodeDecodeError(Handle h, borrowed_t t) : Exception(h, t) {}
+    UnicodeDecodeError(Handle h, stolen_t t) : Exception(h, t) {}
+
+    template <typename... Args>
+        requires (implicit_ctor<UnicodeDecodeError>::template enable<Args...>)
+    [[clang::noinline]] UnicodeDecodeError(Args&&... args) : Exception(
+        implicit_ctor<UnicodeDecodeError>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args>
+        requires (explicit_ctor<UnicodeDecodeError>::template enable<Args...>)
+    [[clang::noinline]] explicit UnicodeDecodeError(Args&&... args) : Exception(
+        explicit_ctor<UnicodeDecodeError>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    const char* message() const noexcept {
+        if (!m_message.has_value()) {
+            try {
+                m_message =
+                    "'" + encoding + "' codec can't decode bytes in position " +
+                    std::to_string(start) + "-" + std::to_string(end - 1) +
+                    ": " + reason;
+            } catch (...) {
+                return "";
+            }
+        }
+        return m_message.value().c_str();
+    }
+
+    const char* what() const noexcept override {
+        if (!m_what.has_value()) {
+            try {
+                std::string msg;
+                Traceback tb = reinterpret_steal<Traceback>(
+                    PyException_GetTraceback(ptr(*this))
+                );
+                if (ptr(tb) != nullptr) {
+                    msg = tb.to_string() + "\n";
+                } else {
+                    msg = "";
+                }
+                msg += Py_TYPE(ptr(*this))->tp_name;
+                msg += ": ";
+                msg += message();
+                m_what = msg;
+            } catch (...) {
+                return "";
+            }
+        }
+        return m_what.value().c_str();
+    }
+
+};
+
+
+template <>
+struct __init__<UnicodeDecodeError>                         : Disable {};
+template <typename Msg> requires (std::convertible_to<std::decay_t<Msg>, std::string>)
+struct __explicit_init__<UnicodeDecodeError, Msg>           : Disable {};
+
+
+template <
+    typename Encoding,
+    typename Obj,
+    std::convertible_to<Py_ssize_t> Start,
+    std::convertible_to<Py_ssize_t> End,
+    typename Reason
+>
+    requires (
+        std::convertible_to<std::decay_t<Encoding>, std::string> &&
+        std::convertible_to<std::decay_t<Obj>, std::string> &&
+        std::convertible_to<std::decay_t<Reason>, std::string>
+    )
+struct __explicit_init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> :
+    Returns<UnicodeDecodeError>
+{
+    [[clang::noinline]] static auto operator()(
+        const std::string& encoding,
+        const std::string& object,
+        Py_ssize_t start,
+        Py_ssize_t end,
+        const std::string& reason
+    ) {
+        PyObject* result = PyUnicodeDecodeError_Create(
+            encoding.c_str(),
+            object.c_str(),
+            object.size(),
+            start,
+            end,
+            reason.c_str()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+
+        #ifndef BERTRAND_NO_TRACEBACK
+            try {
+                PyTracebackObject* trace = impl::build_traceback(
+                    cpptrace::generate_trace(1)
+                );
+                if (trace != nullptr) {
+                    PyException_SetTraceback(result, reinterpret_cast<PyObject*>(trace));
+                    Py_DECREF(trace);
+                }
+            } catch (...) {
+                Py_DECREF(result);
+                throw;
+            }
+        #endif
+
+        return reinterpret_steal<UnicodeDecodeError>(result);
+    }
+};
+
+
+[[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_encoding() const {
+    PyObject* encoding = PyUnicodeDecodeError_GetEncoding(
+        ptr(reinterpret_cast<const Object&>(*this))
+    );
+    if (encoding == nullptr) {
+        Exception::from_python();
+    }
+    Py_ssize_t len;
+    const char* data = PyUnicode_AsUTF8AndSize(encoding, &len);
+    if (data == nullptr) {
+        Py_DECREF(encoding);
+        Exception::from_python();
+    }
+    std::string result(data, len);
+    Py_DECREF(encoding);
+    return result;
+}
+
+
+[[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_object() const {
+    PyObject* object = PyUnicodeDecodeError_GetObject(
+        ptr(reinterpret_cast<const Object&>(*this))
+    );
+    if (object == nullptr) {
+        Exception::from_python();
+    }
+    Py_ssize_t len;
+    char* data;
+    if (PyBytes_AsStringAndSize(object, &data, &len)) {
+        Py_DECREF(object);
+        Exception::from_python();
+    }
+    std::string result(data, len);
+    Py_DECREF(object);
+    return result;
+}
+
+
+[[nodiscard]] inline Py_ssize_t Interface<UnicodeDecodeError>::_start() const {
+    Py_ssize_t start;
+    if (PyUnicodeDecodeError_GetStart(
+        ptr(reinterpret_cast<const Object&>(*this)),
+        &start
+    )) {
+        Exception::from_python();
+    }
+    return start;
+}
+
+
+[[nodiscard]] inline Py_ssize_t Interface<UnicodeDecodeError>::_end() const {
+    Py_ssize_t end;
+    if (PyUnicodeDecodeError_GetEnd(
+        ptr(reinterpret_cast<const Object&>(*this)),
+        &end
+    )) {
+        Exception::from_python();
+    }
+    return end;
+}
+
+
+[[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_reason() const {
+    PyObject* reason = PyUnicodeDecodeError_GetReason(
+        ptr(reinterpret_cast<const Object&>(*this))
+    );
+    if (reason == nullptr) {
+        Exception::from_python();
+    }
+    Py_ssize_t len;
+    const char* data = PyUnicode_AsUTF8AndSize(reason, &len);
+    if (data == nullptr) {
+        Py_DECREF(reason);
+        Exception::from_python();
+    }
+    std::string result(data, len);
+    Py_DECREF(reason);
+    return result;
+}
+
+
+struct UnicodeEncodeError;
+
+
+template <>
+struct impl::builtin_exception_map<UnicodeEncodeError> {
+    [[nodiscard]] static PyObject* operator()() {
+        return PyExc_UnicodeEncodeError;
+    }
+};
+
+
+template <>
+struct Interface<UnicodeEncodeError> : Interface<UnicodeError> {
+    __declspec(property(get=_encoding)) std::string encoding;
+    [[nodiscard]] std::string _encoding() const;
+
+    __declspec(property(get=_object)) std::string object;
+    [[nodiscard]] std::string _object() const;
+
+    __declspec(property(get=_start)) Py_ssize_t start;
+    [[nodiscard]] Py_ssize_t _start() const;
+
+    __declspec(property(get=_end)) Py_ssize_t end;
+    [[nodiscard]] Py_ssize_t _end() const;
+
+    __declspec(property(get=_reason)) std::string reason;
+    [[nodiscard]] std::string _reason() const;
+};
+
+
+struct UnicodeEncodeError : Exception, Interface<UnicodeEncodeError> {
+
+    UnicodeEncodeError(Handle h, borrowed_t t) : Exception(h, t) {}
+    UnicodeEncodeError(Handle h, stolen_t t) : Exception(h, t) {}
+
+    template <typename... Args>
+        requires (implicit_ctor<UnicodeEncodeError>::template enable<Args...>)
+    [[clang::noinline]] UnicodeEncodeError(Args&&... args) : Exception(
+        implicit_ctor<UnicodeEncodeError>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args>
+        requires (explicit_ctor<UnicodeEncodeError>::template enable<Args...>)
+    [[clang::noinline]] explicit UnicodeEncodeError(Args&&... args) : Exception(
+        explicit_ctor<UnicodeEncodeError>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    const char* message() const noexcept {
+        if (!m_message.has_value()) {
+            try {
+                m_message =
+                    "'" + encoding + "' codec can't encode characters in position " +
+                    std::to_string(start) + "-" + std::to_string(end - 1) +
+                    ": " + reason;
+            } catch (...) {
+                return "";
+            }
+        }
+        return m_message.value().c_str();
+    }
+
+    const char* what() const noexcept override {
+        if (!m_what.has_value()) {
+            try {
+                std::string msg;
+                Traceback tb = reinterpret_steal<Traceback>(
+                    PyException_GetTraceback(ptr(*this))
+                );
+                if (ptr(tb) != nullptr) {
+                    msg = tb.to_string() + "\n";
+                } else {
+                    msg = "";
+                }
+                msg += Py_TYPE(ptr(*this))->tp_name;
+                msg += ": ";
+                msg += message();
+                m_what = msg;
+            } catch (...) {
+                return "";
+            }
+        }
+        return m_what.value().c_str();
+    }
+
+};
+
+
+template <>
+struct __init__<UnicodeEncodeError>                         : Disable {};
+template <typename Msg> requires (std::convertible_to<std::decay_t<Msg>, std::string>)
+struct __explicit_init__<UnicodeEncodeError, Msg>           : Disable {};
+
+
+template <
+    typename Encoding,
+    typename Obj,
+    std::convertible_to<Py_ssize_t> Start,
+    std::convertible_to<Py_ssize_t> End,
+    typename Reason
+>
+    requires (
+        std::convertible_to<std::decay_t<Encoding>, std::string> &&
+        std::convertible_to<std::decay_t<Obj>, std::string> &&
+        std::convertible_to<std::decay_t<Reason>, std::string>
+    )
+struct __explicit_init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> :
+    Returns<UnicodeEncodeError>
+{
+    [[clang::noinline]] static auto operator()(
+        const std::string& encoding,
+        const std::string& object,
+        Py_ssize_t start,
+        Py_ssize_t end,
+        const std::string& reason
+    ) {
+        PyObject* result = PyObject_CallFunction(
+            PyExc_UnicodeEncodeError,
+            "ssnns",
+            encoding.c_str(),
+            object.c_str(),
+            start,
+            end,
+            reason.c_str()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+
+        #ifndef BERTRAND_NO_TRACEBACK
+            try {
+                PyTracebackObject* trace = impl::build_traceback(
+                    cpptrace::generate_trace(1)
+                );
+                if (trace != nullptr) {
+                    PyException_SetTraceback(result, reinterpret_cast<PyObject*>(trace));
+                    Py_DECREF(trace);
+                }
+            } catch (...) {
+                Py_DECREF(result);
+                throw;
+            }
+        #endif
+
+        return reinterpret_steal<UnicodeEncodeError>(result);
+    }
+};
+
+
+[[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_encoding() const {
+    PyObject* encoding = PyUnicodeEncodeError_GetEncoding(
+        ptr(reinterpret_cast<const Object&>(*this))
+    );
+    if (encoding == nullptr) {
+        Exception::from_python();
+    }
+    Py_ssize_t len;
+    const char* data = PyUnicode_AsUTF8AndSize(encoding, &len);
+    if (data == nullptr) {
+        Py_DECREF(encoding);
+        Exception::from_python();
+    }
+    std::string result(data, len);
+    Py_DECREF(encoding);
+    return result;
+}
+
+
+[[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_object() const {
+    PyObject* object = PyUnicodeEncodeError_GetObject(
+        ptr(reinterpret_cast<const Object&>(*this))
+    );
+    if (object == nullptr) {
+        Exception::from_python();
+    }
+    Py_ssize_t len;
+    const char* data = PyUnicode_AsUTF8AndSize(object, &len);
+    if (data == nullptr) {
+        Py_DECREF(object);
+        Exception::from_python();
+    }
+    std::string result(data, len);
+    Py_DECREF(object);
+    return result;
+}
+
+
+[[nodiscard]] inline Py_ssize_t Interface<UnicodeEncodeError>::_start() const {
+    Py_ssize_t start;
+    if (PyUnicodeEncodeError_GetStart(
+        ptr(reinterpret_cast<const Object&>(*this)),
+        &start
+    )) {
+        Exception::from_python();
+    }
+    return start;
+}
+
+
+[[nodiscard]] inline Py_ssize_t Interface<UnicodeEncodeError>::_end() const {
+    Py_ssize_t end;
+    if (PyUnicodeEncodeError_GetEnd(
+        ptr(reinterpret_cast<const Object&>(*this)),
+        &end
+    )) {
+        Exception::from_python();
+    }
+    return end;
+}
+
+
+[[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_reason() const {
+    PyObject* reason = PyUnicodeEncodeError_GetReason(
+        ptr(reinterpret_cast<const Object&>(*this))
+    );
+    if (reason == nullptr) {
+        Exception::from_python();
+    }
+    Py_ssize_t len;
+    const char* data = PyUnicode_AsUTF8AndSize(reason, &len);
+    if (data == nullptr) {
+        Py_DECREF(reason);
+        Exception::from_python();
+    }
+    std::string result(data, len);
+    Py_DECREF(reason);
+    return result;
+}
+
+
+struct UnicodeTranslateError;
+
+
+template <>
+struct impl::builtin_exception_map<UnicodeTranslateError> {
+    [[nodiscard]] static PyObject* operator()() {
+        return PyExc_UnicodeTranslateError;
+    }
+};
+
+
+template <>
+struct Interface<UnicodeTranslateError> : Interface<UnicodeError> {
+    __declspec(property(get=_object)) std::string object;
+    [[nodiscard]] std::string _object() const;
+
+    __declspec(property(get=_start)) Py_ssize_t start;
+    [[nodiscard]] Py_ssize_t _start() const;
+
+    __declspec(property(get=_end)) Py_ssize_t end;
+    [[nodiscard]] Py_ssize_t _end() const;
+
+    __declspec(property(get=_reason)) std::string reason;
+    [[nodiscard]] std::string _reason() const;
+};
+
+
+struct UnicodeTranslateError : Exception, Interface<UnicodeTranslateError> {
+
+    UnicodeTranslateError(Handle h, borrowed_t t) : Exception(h, t) {}
+    UnicodeTranslateError(Handle h, stolen_t t) : Exception(h, t) {}
+
+    template <typename... Args>
+        requires (implicit_ctor<UnicodeTranslateError>::template enable<Args...>)
+    [[clang::noinline]] UnicodeTranslateError(Args&&... args) : Exception(
+        implicit_ctor<UnicodeTranslateError>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args>
+        requires (explicit_ctor<UnicodeTranslateError>::template enable<Args...>)
+    [[clang::noinline]] explicit UnicodeTranslateError(Args&&... args) : Exception(
+        explicit_ctor<UnicodeTranslateError>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    const char* message() const noexcept {
+        if (!m_message.has_value()) {
+            try {
+                m_message =
+                    "can't translate characters in position " + std::to_string(start) +
+                    "-" + std::to_string(end - 1) + ": " + reason;
+            } catch (...) {
+                return "";
+            }
+        }
+        return m_message.value().c_str();
+    }
+
+    const char* what() const noexcept override {
+        if (!m_what.has_value()) {
+            try {
+                std::string msg;
+                Traceback tb = reinterpret_steal<Traceback>(
+                    PyException_GetTraceback(ptr(*this))
+                );
+                if (ptr(tb) != nullptr) {
+                    msg = tb.to_string() + "\n";
+                } else {
+                    msg = "";
+                }
+                msg += Py_TYPE(ptr(*this))->tp_name;
+                msg += ": ";
+                msg += message();
+                m_what = msg;
+            } catch (...) {
+                return "";
+            }
+        }
+        return m_what.value().c_str();
+    }
+
+};
+
+
+template <>
+struct __init__<UnicodeTranslateError>                      : Disable {};
+template <typename Msg> requires (std::convertible_to<std::decay_t<Msg>, std::string>)
+struct __explicit_init__<UnicodeTranslateError, Msg>        : Disable {};
+
+
+template <
+    typename Encoding,
+    typename Obj,
+    std::convertible_to<Py_ssize_t> Start,
+    std::convertible_to<Py_ssize_t> End,
+    typename Reason
+>
+    requires (
+        std::convertible_to<std::decay_t<Encoding>, std::string> &&
+        std::convertible_to<std::decay_t<Obj>, std::string> &&
+        std::convertible_to<std::decay_t<Reason>, std::string>
+    )
+struct __explicit_init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reason> :
+    Returns<UnicodeTranslateError>
+{
+    [[clang::noinline]] static auto operator()(
+        const std::string& object,
+        Py_ssize_t start,
+        Py_ssize_t end,
+        const std::string& reason
+    ) {
+        PyObject* result = PyObject_CallFunction(
+            PyExc_UnicodeTranslateError,
+            "snns",
+            object.c_str(),
+            start,
+            end,
+            reason.c_str()
+        );
+        if (result == nullptr) {
+            Exception::from_python();
+        }
+
+        #ifndef BERTRAND_NO_TRACEBACK
+            try {
+                PyTracebackObject* trace = impl::build_traceback(
+                    cpptrace::generate_trace(1)
+                );
+                if (trace != nullptr) {
+                    PyException_SetTraceback(result, reinterpret_cast<PyObject*>(trace));
+                    Py_DECREF(trace);
+                }
+            } catch (...) {
+                Py_DECREF(result);
+                throw;
+            }
+        #endif
+
+        return reinterpret_steal<UnicodeTranslateError>(result);
+    }
+};
+
+
+[[nodiscard]] inline std::string Interface<UnicodeTranslateError>::_object() const {
+    PyObject* object = PyUnicodeTranslateError_GetObject(
+        ptr(reinterpret_cast<const Object&>(*this))
+    );
+    if (object == nullptr) {
+        Exception::from_python();
+    }
+    Py_ssize_t len;
+    const char* data = PyUnicode_AsUTF8AndSize(object, &len);
+    if (data == nullptr) {
+        Py_DECREF(object);
+        Exception::from_python();
+    }
+    std::string result(data, len);
+    Py_DECREF(object);
+    return result;
+}
+
+
+[[nodiscard]] inline Py_ssize_t Interface<UnicodeTranslateError>::_start() const {
+    Py_ssize_t start;
+    if (PyUnicodeTranslateError_GetStart(
+        ptr(reinterpret_cast<const Object&>(*this)),
+        &start
+    )) {
+        Exception::from_python();
+    }
+    return start;
+}
+
+
+[[nodiscard]] inline Py_ssize_t Interface<UnicodeTranslateError>::_end() const {
+    Py_ssize_t end;
+    if (PyUnicodeTranslateError_GetEnd(
+        ptr(reinterpret_cast<const Object&>(*this)),
+        &end
+    )) {
+        Exception::from_python();
+    }
+    return end;
+}
+
+
+[[nodiscard]] inline std::string Interface<UnicodeTranslateError>::_reason() const {
+    PyObject* reason = PyUnicodeTranslateError_GetReason(
+        ptr(reinterpret_cast<const Object&>(*this))
+    );
+    if (reason == nullptr) {
+        Exception::from_python();
+    }
+    Py_ssize_t len;
+    const char* data = PyUnicode_AsUTF8AndSize(reason, &len);
+    if (data == nullptr) {
+        Py_DECREF(reason);
+        Exception::from_python();
+    }
+    std::string result(data, len);
+    Py_DECREF(reason);
+    return result;
+}
 
 
 ////////////////////////////////////
@@ -1570,7 +1696,7 @@ template <typename Self>
 
 
 template <typename Self, typename Key> requires (__getitem__<Self, Key>::enable)
-auto Handle::operator[](this const Self& self, Key&& key) {
+decltype(auto) Handle::operator[](this const Self& self, Key&& key) {
     using Return = typename __getitem__<Self, std::decay_t<Key>>::type;
     static_assert(
         std::derived_from<Return, Object>,

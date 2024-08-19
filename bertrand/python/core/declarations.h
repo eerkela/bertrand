@@ -1458,25 +1458,6 @@ cases where it matters, and is not superceded by automatic reference counting. *
 struct del : impl::BertrandTag {};
 
 
-/* Retrieve the pointer backing a Python object. */
-[[nodiscard]] inline PyObject* ptr(Handle obj);
-
-
-/* Cause a Python object to relinquish ownership over its backing pointer, and then
-return the raw pointer. */
-[[nodiscard]] inline PyObject* release(Handle obj);
-
-
-/* Steal a reference to a raw Python handle. */
-template <std::derived_from<Object> T>
-[[nodiscard]] T reinterpret_steal(Handle obj);
-
-
-/* Borrow a reference to a raw Python handle. */
-template <std::derived_from<Object> T>
-[[nodiscard]] T reinterpret_borrow(Handle obj);
-
-
 /* Wrap a non-owning, mutable reference to a C++ object into a `py::Object` proxy that
 exposes it to Python.  Note that this only works if a corresponding `py::Object`
 subclass exists, which was declared using the `__python__` CRTP helper, and whose C++

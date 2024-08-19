@@ -2631,6 +2631,20 @@ namespace impl {
         }
     };
 
+    // TODO: reserve a C++ field in the metaclass for an overload set for each
+    // relevant slot.  This avoids any extra overhead from dynamic Python accesses.
+    // Then, expose the internal overload set as a `tp_members` field in the type,
+    // so that overloads can be accessed and navigated.  I'll then just special case
+    // the method<> helpers to recognize these reserved slots and populate them on
+    // the metaclass rather than inserting into the instance dict.
+    // -> What would be best is if all of these were implemented within the Bindings
+    // class itself, so that whenever a method<> is defined with these targets, a
+    // corresponding private method is added to the slots that delegates to the
+    // appropriate member in the metaclass.  That can be done instead of raw-dogging
+    // the slots directly in the type definition.  That might mean I can ignore CRTP
+    // inspection entirely, and just rely on the __export__ script to define the
+    // corresponding operators.
+
     template <typename CRTP, typename Wrapper, has_call_operator CppType>
     struct TypeTag::DetectCallable<CRTP, Wrapper, CppType> {
         // TODO: insert a vectorcall-based __call__ method here, which invokes an
@@ -3744,6 +3758,9 @@ namespace impl {
 /// can't be deduced any other way.
 
 
+/// TODO: what about isinstance/issubclass?
+
+
 template <impl::originates_from_cpp Self, typename T>
     requires (std::convertible_to<T, impl::cpp_type<Self>>)
 struct __init__<Self, T>                                    : Returns<Self> {
@@ -3760,9 +3777,6 @@ struct __explicit_init__<Self, Args...>                     : Returns<Self> {
         return Type<Self>::__python__::__create__(std::forward<Args>(args)...);
     }
 };
-
-
-/// TODO: these should be default implementations of __cast__ and __explicit_cast__
 
 
 template <impl::originates_from_cpp Self, typename T>
