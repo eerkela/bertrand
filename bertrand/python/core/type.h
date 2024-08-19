@@ -4090,12 +4090,61 @@ struct __ixor__<L, R> : Returns<impl::ixor_type<impl::cpp_type<L>, impl::cpp_typ
 /// TODO: I also need to define types for Frame and Traceback as well.
 
 
-/// TODO: BUILTIN_EXCEPTION_TYPE should account for Interface<Type<Exception>>
+template <>
+struct Type<Exception>;
 
 
-#define BUILTIN_EXCEPTION_TYPE(CLS, PYTYPE)                                             \
+template <>
+struct Interface<Type<Exception>> : Interface<Type<Object>> {
+    [[noreturn, clang::noinline]] static void from_python();
+    static void to_python();
+};
+
+
+template <>
+struct Type<Exception> : Object, Interface<Type<Exception>>, impl::TypeTag {
+    struct __python__ : TypeTag::def<__python__, Type> {
+        static Type __import__() {
+            return reinterpret_borrow<Type>(PyExc_Exception);
+        }
+    };
+
+    Type(Handle h, borrowed_t t) : Object(h, t) {}
+    Type(Handle h, stolen_t t) : Object(h, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+};
+
+
+[[noreturn, clang::noinline]] inline void Interface<Type<Exception>>::from_python() {
+    Exception::from_python();  // TODO: should provide a skip argument in this case?
+}
+
+
+inline void Interface<Type<Exception>>::to_python() {
+    Exception::to_python();
+}
+
+
+#define BUILTIN_EXCEPTION_TYPE(CLS, BASE, PYTYPE)                                       \
     template <>                                                                         \
-    struct Type<CLS> : Object, impl::TypeTag {                                          \
+    struct Type<CLS>;                                                                   \
+                                                                                        \
+    template <>                                                                         \
+    struct Interface<Type<CLS>> : Interface<Type<BASE>> {};                             \
+                                                                                        \
+    template <>                                                                         \
+    struct Type<CLS> : Object, Interface<Type<CLS>>, impl::TypeTag {                    \
         struct __python__ : TypeTag::def<__python__, CLS> {                             \
             static Type __import__() {                                                  \
                 return reinterpret_borrow<Type>(PYTYPE);                                \
@@ -4119,58 +4168,249 @@ struct __ixor__<L, R> : Returns<impl::ixor_type<impl::cpp_type<L>, impl::cpp_typ
     };
 
 
-BUILTIN_EXCEPTION_TYPE(Exception, PyExc_Exception)
-BUILTIN_EXCEPTION_TYPE(ArithmeticError, PyExc_ArithmeticError)
-    BUILTIN_EXCEPTION_TYPE(FloatingPointError, PyExc_FloatingPointError)
-    BUILTIN_EXCEPTION_TYPE(OverflowError, PyExc_OverflowError)
-    BUILTIN_EXCEPTION_TYPE(ZeroDivisionError, PyExc_ZeroDivisionError)
-BUILTIN_EXCEPTION_TYPE(AssertionError, PyExc_AssertionError)
-BUILTIN_EXCEPTION_TYPE(AttributeError, PyExc_AttributeError)
-BUILTIN_EXCEPTION_TYPE(BufferError, PyExc_BufferError)
-BUILTIN_EXCEPTION_TYPE(EOFError, PyExc_EOFError)
-BUILTIN_EXCEPTION_TYPE(ImportError, PyExc_ImportError)
-    BUILTIN_EXCEPTION_TYPE(ModuleNotFoundError, PyExc_ModuleNotFoundError)
-BUILTIN_EXCEPTION_TYPE(LookupError, PyExc_LookupError)
-    BUILTIN_EXCEPTION_TYPE(IndexError, PyExc_IndexError)
-    BUILTIN_EXCEPTION_TYPE(KeyError, PyExc_KeyError)
-BUILTIN_EXCEPTION_TYPE(MemoryError, PyExc_MemoryError)
-BUILTIN_EXCEPTION_TYPE(NameError, PyExc_NameError)
-    BUILTIN_EXCEPTION_TYPE(UnboundLocalError, PyExc_UnboundLocalError)
-BUILTIN_EXCEPTION_TYPE(OSError, PyExc_OSError)
-    BUILTIN_EXCEPTION_TYPE(BlockingIOError, PyExc_BlockingIOError)
-    BUILTIN_EXCEPTION_TYPE(ChildProcessError, PyExc_ChildProcessError)
-    BUILTIN_EXCEPTION_TYPE(ConnectionError, PyExc_ConnectionError)
-        BUILTIN_EXCEPTION_TYPE(BrokenPipeError, PyExc_BrokenPipeError)
-        BUILTIN_EXCEPTION_TYPE(ConnectionAbortedError, PyExc_ConnectionAbortedError)
-        BUILTIN_EXCEPTION_TYPE(ConnectionRefusedError, PyExc_ConnectionRefusedError)
-        BUILTIN_EXCEPTION_TYPE(ConnectionResetError, PyExc_ConnectionResetError)
-    BUILTIN_EXCEPTION_TYPE(FileExistsError, PyExc_FileExistsError)
-    BUILTIN_EXCEPTION_TYPE(FileNotFoundError, PyExc_FileNotFoundError)
-    BUILTIN_EXCEPTION_TYPE(InterruptedError, PyExc_InterruptedError)
-    BUILTIN_EXCEPTION_TYPE(IsADirectoryError, PyExc_IsADirectoryError)
-    BUILTIN_EXCEPTION_TYPE(NotADirectoryError, PyExc_NotADirectoryError)
-    BUILTIN_EXCEPTION_TYPE(PermissionError, PyExc_PermissionError)
-    BUILTIN_EXCEPTION_TYPE(ProcessLookupError, PyExc_ProcessLookupError)
-    BUILTIN_EXCEPTION_TYPE(TimeoutError, PyExc_TimeoutError)
-BUILTIN_EXCEPTION_TYPE(ReferenceError, PyExc_ReferenceError)
-BUILTIN_EXCEPTION_TYPE(RuntimeError, PyExc_RuntimeError)
-    BUILTIN_EXCEPTION_TYPE(NotImplementedError, PyExc_NotImplementedError)
-    BUILTIN_EXCEPTION_TYPE(RecursionError, PyExc_RecursionError)
-BUILTIN_EXCEPTION_TYPE(StopAsyncIteration, PyExc_StopAsyncIteration)
-BUILTIN_EXCEPTION_TYPE(StopIteration, PyExc_StopIteration)
-BUILTIN_EXCEPTION_TYPE(SyntaxError, PyExc_SyntaxError)
-    BUILTIN_EXCEPTION_TYPE(IndentationError, PyExc_IndentationError)
-        BUILTIN_EXCEPTION_TYPE(TabError, PyExc_TabError)
-BUILTIN_EXCEPTION_TYPE(SystemError, PyExc_SystemError)
-BUILTIN_EXCEPTION_TYPE(TypeError, PyExc_TypeError)
-BUILTIN_EXCEPTION_TYPE(ValueError, PyExc_ValueError)
-    BUILTIN_EXCEPTION_TYPE(UnicodeError, PyExc_UnicodeError)
+BUILTIN_EXCEPTION_TYPE(ArithmeticError, Exception, PyExc_ArithmeticError)
+    BUILTIN_EXCEPTION_TYPE(FloatingPointError, ArithmeticError, PyExc_FloatingPointError)
+    BUILTIN_EXCEPTION_TYPE(OverflowError, ArithmeticError, PyExc_OverflowError)
+    BUILTIN_EXCEPTION_TYPE(ZeroDivisionError, ArithmeticError, PyExc_ZeroDivisionError)
+BUILTIN_EXCEPTION_TYPE(AssertionError, Exception, PyExc_AssertionError)
+BUILTIN_EXCEPTION_TYPE(AttributeError, Exception, PyExc_AttributeError)
+BUILTIN_EXCEPTION_TYPE(BufferError, Exception, PyExc_BufferError)
+BUILTIN_EXCEPTION_TYPE(EOFError, Exception, PyExc_EOFError)
+BUILTIN_EXCEPTION_TYPE(ImportError, Exception, PyExc_ImportError)
+    BUILTIN_EXCEPTION_TYPE(ModuleNotFoundError, ImportError, PyExc_ModuleNotFoundError)
+BUILTIN_EXCEPTION_TYPE(LookupError, Exception, PyExc_LookupError)
+    BUILTIN_EXCEPTION_TYPE(IndexError, LookupError, PyExc_IndexError)
+    BUILTIN_EXCEPTION_TYPE(KeyError, LookupError, PyExc_KeyError)
+BUILTIN_EXCEPTION_TYPE(MemoryError, Exception, PyExc_MemoryError)
+BUILTIN_EXCEPTION_TYPE(NameError, Exception, PyExc_NameError)
+    BUILTIN_EXCEPTION_TYPE(UnboundLocalError, NameError, PyExc_UnboundLocalError)
+BUILTIN_EXCEPTION_TYPE(OSError, Exception, PyExc_OSError)
+    BUILTIN_EXCEPTION_TYPE(BlockingIOError, OSError, PyExc_BlockingIOError)
+    BUILTIN_EXCEPTION_TYPE(ChildProcessError, OSError, PyExc_ChildProcessError)
+    BUILTIN_EXCEPTION_TYPE(ConnectionError, OSError, PyExc_ConnectionError)
+        BUILTIN_EXCEPTION_TYPE(BrokenPipeError, ConnectionError, PyExc_BrokenPipeError)
+        BUILTIN_EXCEPTION_TYPE(ConnectionAbortedError, ConnectionError, PyExc_ConnectionAbortedError)
+        BUILTIN_EXCEPTION_TYPE(ConnectionRefusedError, ConnectionError, PyExc_ConnectionRefusedError)
+        BUILTIN_EXCEPTION_TYPE(ConnectionResetError, ConnectionError, PyExc_ConnectionResetError)
+    BUILTIN_EXCEPTION_TYPE(FileExistsError, OSError, PyExc_FileExistsError)
+    BUILTIN_EXCEPTION_TYPE(FileNotFoundError, OSError, PyExc_FileNotFoundError)
+    BUILTIN_EXCEPTION_TYPE(InterruptedError, OSError, PyExc_InterruptedError)
+    BUILTIN_EXCEPTION_TYPE(IsADirectoryError, OSError, PyExc_IsADirectoryError)
+    BUILTIN_EXCEPTION_TYPE(NotADirectoryError, OSError, PyExc_NotADirectoryError)
+    BUILTIN_EXCEPTION_TYPE(PermissionError, OSError, PyExc_PermissionError)
+    BUILTIN_EXCEPTION_TYPE(ProcessLookupError, OSError, PyExc_ProcessLookupError)
+    BUILTIN_EXCEPTION_TYPE(TimeoutError, OSError, PyExc_TimeoutError)
+BUILTIN_EXCEPTION_TYPE(ReferenceError, Exception, PyExc_ReferenceError)
+BUILTIN_EXCEPTION_TYPE(RuntimeError, Exception, PyExc_RuntimeError)
+    BUILTIN_EXCEPTION_TYPE(NotImplementedError, RuntimeError, PyExc_NotImplementedError)
+    BUILTIN_EXCEPTION_TYPE(RecursionError, RuntimeError, PyExc_RecursionError)
+BUILTIN_EXCEPTION_TYPE(StopAsyncIteration, Exception, PyExc_StopAsyncIteration)
+BUILTIN_EXCEPTION_TYPE(StopIteration, Exception, PyExc_StopIteration)
+BUILTIN_EXCEPTION_TYPE(SyntaxError, Exception, PyExc_SyntaxError)
+    BUILTIN_EXCEPTION_TYPE(IndentationError, SyntaxError, PyExc_IndentationError)
+        BUILTIN_EXCEPTION_TYPE(TabError, IndentationError, PyExc_TabError)
+BUILTIN_EXCEPTION_TYPE(SystemError, Exception, PyExc_SystemError)
+BUILTIN_EXCEPTION_TYPE(TypeError, Exception, PyExc_TypeError)
+BUILTIN_EXCEPTION_TYPE(ValueError, Exception, PyExc_ValueError)
+    BUILTIN_EXCEPTION_TYPE(UnicodeError, ValueError, PyExc_UnicodeError)
         // BUILTIN_EXCEPTION_TYPE(UnicodeDecodeError, PyExc_UnicodeDecodeError)
         // BUILTIN_EXCEPTION_TYPE(UnicodeEncodeError, PyExc_UnicodeEncodeError)
         // BUILTIN_EXCEPTION_TYPE(UnicodeTranslateError, PyExc_UnicodeTranslateError)
 
 
 #undef BUILTIN_EXCEPTION_TYPE
+
+
+template <>
+struct Type<UnicodeDecodeError>;
+
+
+template <>
+struct Interface<Type<UnicodeDecodeError>> : Interface<Type<UnicodeError>> {
+    [[nodiscard]] static std::string encoding(const UnicodeDecodeError& self);
+    [[nodiscard]] static std::string object(const UnicodeDecodeError& self);
+    [[nodiscard]] static Py_ssize_t start(const UnicodeDecodeError& self);
+    [[nodiscard]] static Py_ssize_t end(const UnicodeDecodeError& self);
+    [[nodiscard]] static std::string reason(const UnicodeDecodeError& self);
+};
+
+
+template <>
+struct Type<UnicodeDecodeError> : Object, Interface<Type<UnicodeDecodeError>>, impl::TypeTag {
+    struct __python__ : TypeTag::def<__python__, Type> {
+        static Type __import__() {
+            return reinterpret_borrow<Type>(PyExc_UnicodeDecodeError);
+        }
+    };
+
+    Type(Handle h, borrowed_t t) : Object(h, t) {}
+    Type(Handle h, stolen_t t) : Object(h, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+};
+
+
+[[nodiscard]] inline std::string Interface<Type<UnicodeDecodeError>>::encoding(
+    const UnicodeDecodeError& self
+) {
+    return self.encoding;
+}
+[[nodiscard]] inline std::string Interface<Type<UnicodeDecodeError>>::object(
+    const UnicodeDecodeError& self
+) {
+    return self.object;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<UnicodeDecodeError>>::start(
+    const UnicodeDecodeError& self
+) {
+    return self.start;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<UnicodeDecodeError>>::end(
+    const UnicodeDecodeError& self
+) {
+    return self.end;
+}
+[[nodiscard]] inline std::string Interface<Type<UnicodeDecodeError>>::reason(
+    const UnicodeDecodeError& self
+) {
+    return self.reason;
+}
+
+
+template <>
+struct Type<UnicodeEncodeError>;
+
+
+template <>
+struct Interface<Type<UnicodeEncodeError>> : Interface<Type<UnicodeError>> {
+    [[nodiscard]] static std::string encoding(const UnicodeEncodeError& self);
+    [[nodiscard]] static std::string object(const UnicodeEncodeError& self);
+    [[nodiscard]] static Py_ssize_t start(const UnicodeEncodeError& self);
+    [[nodiscard]] static Py_ssize_t end(const UnicodeEncodeError& self);
+    [[nodiscard]] static std::string reason(const UnicodeEncodeError& self);
+};
+
+
+template <>
+struct Type<UnicodeEncodeError> : Object, Interface<Type<UnicodeEncodeError>>, impl::TypeTag {
+    struct __python__ : TypeTag::def<__python__, Type> {
+        static Type __import__() {
+            return reinterpret_borrow<Type>(PyExc_UnicodeEncodeError);
+        }
+    };
+
+    Type(Handle h, borrowed_t t) : Object(h, t) {}
+    Type(Handle h, stolen_t t) : Object(h, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+};
+
+
+[[nodiscard]] inline std::string Interface<Type<UnicodeEncodeError>>::encoding(
+    const UnicodeEncodeError& self
+) {
+    return self.encoding;
+}
+[[nodiscard]] inline std::string Interface<Type<UnicodeEncodeError>>::object(
+    const UnicodeEncodeError& self
+) {
+    return self.object;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<UnicodeEncodeError>>::start(
+    const UnicodeEncodeError& self
+) {
+    return self.start;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<UnicodeEncodeError>>::end(
+    const UnicodeEncodeError& self
+) {
+    return self.end;
+}
+[[nodiscard]] inline std::string Interface<Type<UnicodeEncodeError>>::reason(
+    const UnicodeEncodeError& self
+) {
+    return self.reason;
+}
+
+
+template <>
+struct Type<UnicodeTranslateError>;
+
+
+template <>
+struct Interface<Type<UnicodeTranslateError>> : Interface<Type<UnicodeError>> {
+    [[nodiscard]] static std::string object(const UnicodeTranslateError& self);
+    [[nodiscard]] static Py_ssize_t start(const UnicodeTranslateError& self);
+    [[nodiscard]] static Py_ssize_t end(const UnicodeTranslateError& self);
+    [[nodiscard]] static std::string reason(const UnicodeTranslateError& self);
+};
+
+
+template <>
+struct Type<UnicodeTranslateError> : Object, Interface<Type<UnicodeTranslateError>>, impl::TypeTag {
+    struct __python__ : TypeTag::def<__python__, Type> {
+        static Type __import__() {
+            return reinterpret_borrow<Type>(PyExc_UnicodeTranslateError);
+        }
+    };
+
+    Type(Handle h, borrowed_t t) : Object(h, t) {}
+    Type(Handle h, stolen_t t) : Object(h, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+};
+
+
+[[nodiscard]] inline std::string Interface<Type<UnicodeTranslateError>>::object(
+    const UnicodeTranslateError& self
+) {
+    return self.object;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<UnicodeTranslateError>>::start(
+    const UnicodeTranslateError& self
+) {
+    return self.start;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<UnicodeTranslateError>>::end(
+    const UnicodeTranslateError& self
+) {
+    return self.end;
+}
+[[nodiscard]] inline std::string Interface<Type<UnicodeTranslateError>>::reason(
+    const UnicodeTranslateError& self
+) {
+    return self.reason;
+}
 
 
 }  // namespace py

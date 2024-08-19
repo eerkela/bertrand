@@ -3,7 +3,6 @@
 
 #include "declarations.h"
 #include "object.h"
-#include "pyport.h"
 
 
 namespace py {
@@ -624,12 +623,10 @@ struct __reversed__<Traceback>                              : Returns<Traceback>
 
 
 namespace impl {
-
     // short-circuits type imports for standard library exceptions to avoid circular
     // dependencies
     template <typename Exc>
     struct builtin_exception_map {};
-
 }
 
 
