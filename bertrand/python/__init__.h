@@ -1079,23 +1079,193 @@ inline void setattr(const Handle& obj, const Str& name, const Object& value) {
 ////////////////////////////////////
 
 
-// TODO: ensure that placing set_pyerr() here doesn't cause any problems.
-
-#ifdef BERTRAND_NO_TRACEBACK
-
-    template <typename CRTP, std::derived_from<Exception> Base>
-    void __exception__::set_pyerr() const override {
-        PyErr_SetString(ptr(Type<CRTP>()), Base::message().c_str());
+[[clang::noinline]] inline Dict<Str, Object> __call__<Code>::operator()(const Code& code) {
+    py::Dict<Str, Object> context;
+    PyObject* result = PyEval_EvalCode(ptr(code), ptr(context), ptr(context));
+    if (result == nullptr) {
+        Exception::from_python(1);  /// TODO: skip argument needs to work
     }
+    Py_DECREF(result);  // always None
+    return context;
+}
 
-#else
 
-    template <typename CRTP, std::derived_from<Exception> Base>
-    void __exception__::set_pyerr() const override {
-        Base::traceback.restore(ptr(Type<CRTP>()), Base::message().c_str());
+template <std::convertible_to<Dict<Str, Object>> Context>
+[[clang::noinline]] Dict<Str, Object>& operator()(
+    const Code& code,
+    Dict<Str, Object>& context
+) {
+    PyObject* result = PyEval_EvalCode(ptr(code), ptr(context), ptr(context));
+    if (result == nullptr) {
+        Exception::from_python(1);  /// TODO: skip argument needs to work
     }
+    Py_DECREF(result);  // always None
+    return context;
+}
 
-#endif
+
+template <std::convertible_to<Dict<Str, Object>> Context>
+[[clang::noinline]] Dict<Str, Object> operator()(
+    const Code& code,
+    Dict<Str, Object>&& context
+) {
+    PyObject* result = PyEval_EvalCode(ptr(code), ptr(context), ptr(context));
+    if (result == nullptr) {
+        Exception::from_python(1);  /// TODO: skip argument needs to work
+    }
+    Py_DECREF(result);  // always None
+    return context;
+}
+
+
+/* Get the name of the file from which the code was compiled. */
+[[nodiscard]] inline Str Interface<Code>::_filename() const {
+    return reinterpret_borrow<Str>(reinterpret_cast<PyCodeObject*>(
+        ptr(reinterpret_cast<const Object&>(*this))
+    )->co_filename);
+}
+[[nodiscard]] inline Str Interface<Type<Code>>::filename(const Code& self) {
+    return self.filename;
+}
+
+
+/* Get the function's base name. */
+[[nodiscard]] inline Str Interface<Code>::_name() const {
+    return reinterpret_borrow<Str>(reinterpret_cast<PyCodeObject*>(
+        ptr(reinterpret_cast<const Object&>(*this))
+    )->co_name);
+}
+[[nodiscard]] inline Str Interface<Type<Code>>::name(const Code& self) {
+    return self.name;
+}
+
+
+/* Get the function's qualified name. */
+[[nodiscard]] inline Str Interface<Code>::_qualname() const {
+    return reinterpret_borrow<Str>(reinterpret_cast<PyCodeObject*>(
+        ptr(reinterpret_cast<const Object&>(*this))
+    )->co_qualname);
+}
+[[nodiscard]] inline Str Interface<Type<Code>>::qualname(const Code& self) {
+    return self.qualname;
+}
+
+
+/* Get a tuple containing the names of the local variables in the function, starting
+with parameter names. */
+[[nodiscard]] inline Tuple<Str> Interface<Code>::_varnames() const {
+    return getattr<"co_varnames">(reinterpret_cast<const Object&>(*this));
+}
+[[nodiscard]] inline Tuple<Str> Interface<Type<Code>>::varnames(const Code& self) {
+    return self.varnames;
+}
+
+
+/* Get a tuple containing the names of local variables that are referenced by nested
+functions within this function (i.e. those that are stored in a PyCell). */
+[[nodiscard]] inline Tuple<Str> Interface<Code>::_cellvars() const {
+    return getattr<"co_cellvars">(reinterpret_cast<const Object&>(*this));
+}
+[[nodiscard]] inline Tuple<Str> Interface<Type<Code>>::cellvars(const Code& self) {
+    return self.cellvars;
+}
+
+
+/* Get a tuple containing the names of free variables in the function (i.e. those that
+are not stored in a PyCell). */
+[[nodiscard]] inline Tuple<Str> Interface<Code>::_freevars() const {
+    return getattr<"co_freevars">(reinterpret_cast<const Object&>(*this));
+}
+[[nodiscard]] inline Tuple<Str> Interface<Type<Code>>::freevars(const Code& self) {
+    return self.freevars;
+}
+
+
+/* Get the bytecode buffer representing the sequence of instructions in the function. */
+[[nodiscard]] inline Bytes Interface<Code>::_bytecode() const {
+    return getattr<"co_code">(reinterpret_cast<const Object&>(*this));
+}
+[[nodiscard]] inline Bytes Interface<Type<Code>>::bytecode(const Code& self) {
+    return self.bytecode;
+}
+
+
+/* Get a tuple containing the literals used by the bytecode in the function. */
+[[nodiscard]] inline Tuple<Object> Interface<Code>::_consts() const {
+    return reinterpret_borrow<Tuple<Object>>(reinterpret_cast<PyCodeObject*>(
+        ptr(reinterpret_cast<const Object&>(*this))
+    )->co_consts);
+}
+[[nodiscard]] inline Tuple<Object> Interface<Type<Code>>::consts(const Code& self) {
+    return self.consts;
+}
+
+
+/* Get a tuple containing the names used by the bytecode in the function. */
+[[nodiscard]] inline Tuple<Str> Interface<Code>::_names() const {
+    return reinterpret_borrow<Tuple<Str>>(reinterpret_cast<PyCodeObject*>(
+        ptr(reinterpret_cast<const Object&>(*this))
+    )->co_names);
+}
+[[nodiscard]] inline Tuple<Str> Interface<Type<Code>>::names(const Code& self) {
+    return self.names;
+}
+
+
+/* Get a variable from the frame's context. */
+[[nodiscard]] inline Object Interface<Frame>::get(const Str& name) const {
+    PyObject* result = PyFrame_GetVar(
+        reinterpret_cast<PyFrameObject*>(
+            ptr(reinterpret_cast<const Object&>(*this))
+        ),
+        ptr(name)
+    );
+    if (result == nullptr) {
+        Exception::from_python();
+    }
+    return reinterpret_steal<Object>(result);
+}
+[[nodiscard]] inline Object Interface<Type<Frame>>::get(
+    const Frame& self,
+    const Str& name
+) {
+    return self.get(name);
+}
+
+
+/* Get the builtins dictionary from a Python frame. */
+[[nodiscard]] inline Dict<Str, Object> Interface<Frame>::_builtins() const {
+    return reinterpret_steal<Dict<Str, Object>>(PyFrame_GetBuiltins(
+        ptr(reinterpret_cast<const Object&>(*this))
+    ));
+}
+[[nodiscard]] inline Dict<Str, Object> Interface<Type<Frame>>::builtins(const Frame& self) {
+    return self.builtins;
+}
+
+
+/* Get the globals dictionary from a Python frame. */
+[[nodiscard]] inline Dict<Str, Object> Interface<Frame>::_globals() const {
+    return reinterpret_steal<Dict<Str, Object>>(PyFrame_GetGlobals(
+        ptr(reinterpret_cast<const Object&>(*this))
+    ));
+}
+[[nodiscard]] inline Dict<Str, Object> Interface<Type<Frame>>::globals(const Frame& self) {
+    return self.globals;
+}
+
+
+/* Get the locals dictionary from a Python frame. */
+[[nodiscard]] inline Dict<Str, Object> Interface<Frame>::_locals() const {
+    PyObject* locals = PyFrame_GetLocals(ptr(reinterpret_cast<const Object&>(*this)));
+    if (locals == nullptr) {
+        return {};
+    }
+    return reinterpret_steal<Dict<Str, Object>>(locals);
+}
+[[nodiscard]] inline Dict<Str, Object> Interface<Type<Frame>>::locals(const Frame& self) {
+    return self.locals;
+}
 
 
 template <typename Func, typename... Defaults>

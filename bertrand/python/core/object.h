@@ -412,19 +412,19 @@ struct __init__<Object, T> : Returns<Object> {
 };
 
 
-/// NOTE: additional delegating constructors for py::Object are defined in common.h
+/// NOTE: additional delegating constructors for Python objects are defined in core.h
 
 
-/* Implicitly convert a py::Object (or any of its subclasses) into one of its
-subclasses by applying a runtime `isinstance()` check. */
-template <std::derived_from<Object> From, std::derived_from<From> To>
+/* Implicitly convert a Python object into one of its subclasses by applying a runtime
+`isinstance()` check. */
+template <std::derived_from<Handle> From, std::derived_from<From> To>
 struct __cast__<From, To> : Returns<To> {
     static auto operator()(const From& from);  // defined in except.h
     static auto operator()(From&& from);  // defined in except.h
 };
 
 
-/* Implicitly convert a py::Object into any C++ type by checking for an equivalent
+/* Implicitly convert a Python object into any C++ type by checking for an equivalent
 Python type via __as_object__, implicitly converting to that type, and then implicitly
 converting to the C++ type in a 2-step process. */
 template <typename To>
@@ -436,43 +436,43 @@ struct __cast__<Object, To> : Returns<To> {
 };
 
 
-/* Explicitly convert a py::Object (or any of its subclasses) into a C++ integer by
-calling `int(obj)` at the Python level. */
-template <std::derived_from<Object> From, std::integral To>
+/* Explicitly convert a Python object into a C++ integer by calling `int(obj)` at the
+Python level. */
+template <std::derived_from<Handle> From, std::integral To>
 struct __explicit_cast__<From, To> : Returns<To> {
     static To operator()(const From& from);  // defined in except.h
 };
 
 
-/* Explicitly convert a py::Object (or any of its subclasses) into a C++ floating-point
-number by calling `float(obj)` at the Python level. */
-template <std::derived_from<Object> From, std::floating_point To>
+/* Explicitly convert a Python object into a C++ floating-point number by calling
+`float(obj)` at the Python level. */
+template <std::derived_from<Handle> From, std::floating_point To>
 struct __explicit_cast__<From, To> : Returns<To> {
     static To operator()(const From& from);  // defined in except.h
 };
 
 
-/* Explicitly convert a py::Object (or any of its subclasses) into a C++ complex number
-by calling `complex(obj)` at the Python level. */
-template <std::derived_from<Object> From, impl::complex_like To>
+/* Explicitly convert a Python object into a C++ complex number by calling
+`complex(obj)` at the Python level. */
+template <std::derived_from<Handle> From, impl::complex_like To>
     requires (impl::cpp_like<To>)
 struct __explicit_cast__<From, To> : Returns<To> {
     static To operator()(const From& from);  // defined in except.h
 };
 
 
-/* Explicitly convert a py::Object (or any of its subclasses) into a C++ sd::string
-representation by calling `str(obj)` at the Python level. */
-template <std::derived_from<Object> From> 
+/* Explicitly convert a Python object into a C++ sd::string representation by calling
+`str(obj)` at the Python level. */
+template <std::derived_from<Handle> From> 
 struct __explicit_cast__<From, std::string> : Returns<std::string> {
     static auto operator()(const From& from);  // defined in except.h
 };
 
 
-/* Explicitly convert a py::Object (or any of its subclasses) into any C++ type by
-checking for an equivalent Python type via __as_object__, explicitly converting to that
-type, and then explicitly converting to the C++ type in a 2-step process. */
-template <std::derived_from<Object> From, typename To>
+/* Explicitly convert a Python object into any C++ type by checking for an equivalent
+Python type via __as_object__, explicitly converting to that type, and then explicitly
+converting to the C++ type in a 2-step process. */
+template <std::derived_from<Handle> From, typename To>
     requires (!impl::bertrand_like<To> && __as_object__<To>::enable)
 struct __explicit_cast__<From, To> : Returns<To> {
     static auto operator()(const From& from) {

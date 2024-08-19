@@ -3,198 +3,10 @@
 
 #include "declarations.h"
 #include "object.h"
+#include "code.h"
 
 
 namespace py {
-
-
-///////////////////////////
-////    STACK FRAME    ////
-///////////////////////////
-
-
-namespace impl {
-
-    [[nodiscard]] inline std::string parse_function_name(const std::string& name) {
-        /* NOTE: functions and classes that accept static strings as template
-         * arguments are decomposed into numeric character arrays in the symbol name,
-         * which need to be reconstructed here.  Here's an example:
-         *
-         *      // TODO: find a new example, probably using py::getattr<"append">(list)
-         *
-         *      File ".../bertrand/python/core/ops.h",
-         *      line 268, in py::impl::Attr<bertrand::py::Object,
-         *      bertrand::StaticStr<7ul>{char [8]{(char)95, (char)95, (char)103,
-         *      (char)101, (char)116, (char)95, (char)95}}>::get_attr() const
-         *
-         * Our goal is to replace the `bertrand::StaticStr<7ul>{char [8]{...}}`
-         * bit with the text it represents, in this case the string `"__get__"`.
-         */
-        size_t pos = name.find("bertrand::StaticStr<");
-        if (pos == std::string::npos) {
-            return name;
-        }
-        std::string result;
-        size_t last = 0;
-        while (pos != std::string::npos) {
-            result += name.substr(last, pos - last) + '"';
-            pos = name.find("]{", pos) + 2;
-            size_t end = name.find("}}", pos);
-
-            // extract the first number
-            pos += 6;  // skip "(char)"
-            while (pos < end) {
-                size_t next = std::min(end, name.find(',', pos));
-                result += static_cast<char>(std::stoi(
-                    name.substr(pos, next - pos))
-                );
-                if (next == end) {
-                    pos = end + 2;  // skip "}}"
-                } else {
-                    pos = next + 8;  // skip ", (char)"
-                }
-            }
-            result += '"';
-            last = pos;
-            pos = name.find("bertrand::StaticStr<", pos);
-        }
-        return result + name.substr(last);
-    }
-
-}
-
-
-struct Frame;
-
-
-template <>
-struct Interface<Frame> {
-    [[nodiscard]] bool has_code() const;
-    [[nodiscard]] std::string to_string() const;
-    [[nodiscard]] Frame back() const;
-
-    /// TODO: these are forward declarations, along with their cousins in type.h
-    [[nodiscard]] Code code() const;
-    [[nodiscard]] int line_number() const;
-    [[nodiscard]] Dict<Str, Object> builtins() const;
-    [[nodiscard]] Dict<Str, Object> globals() const;
-    [[nodiscard]] Dict<Str, Object> locals() const;
-    [[nodiscard]] std::optional<Object> generator() const;
-    [[nodiscard]] int last_instruction() const;
-    [[nodiscard]] Object get(const Str& name) const;
-};
-
-
-/* A CPython interpreter frame, which can be introspected or arranged into coherent
-cross-language tracebacks. */
-struct Frame : Object, Interface<Frame> {
-
-    Frame(Handle h, borrowed_t t) : Object(h, t) {}
-    Frame(Handle h, stolen_t t) : Object(h, t) {}
-
-    template <typename... Args> requires (implicit_ctor<Frame>::template enable<Args...>)
-    Frame(Args&&... args) : Object(
-        implicit_ctor<Frame>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Frame>::template enable<Args...>)
-    explicit Frame(Args&&... args) : Object(
-        explicit_ctor<Frame>{},
-        std::forward<Args>(args)...
-    ) {}
-
-};
-
-
-/* Default initializing a Frame object retrieves the currently-executing Python frame,
-if one exists.  Note that this frame is guaranteed to have a valid Python bytecode
-object, unlike the C++ frames of a Traceback object. */
-template <>
-struct __init__<Frame> : Returns<Frame> {
-    static auto operator()();
-};
-
-
-/* Converting a `cpptrace::stacktrace_frame` into a Python frame object will synthesize
-an interpreter frame with an empty bytecode object. */
-template <>
-struct __init__<Frame, cpptrace::stacktrace_frame>          : Returns<Frame> {
-    static auto operator()(const cpptrace::stacktrace_frame& frame) {
-        PyObject* globals = PyDict_New();
-        if (globals == nullptr) {
-            throw std::runtime_error(
-                "could not convert stack frame into Python frame object - "
-                "failed to create globals dictionary"
-            );
-        }
-
-        std::string funcname = impl::parse_function_name(frame.symbol);
-        unsigned int line = frame.line.value_or(0);
-        if (frame.is_inline) {
-            funcname = "[inline] " + funcname;
-        }
-        PyCodeObject* code = PyCode_NewEmpty(
-            frame.filename.c_str(),
-            funcname.c_str(),
-            line
-        );
-        if (code == nullptr) {
-            Py_DECREF(globals);
-            throw std::runtime_error(
-                "could not convert stack frame into Python frame object - "
-                "failed to create code object"
-            );
-        }
-
-        PyFrameObject* result = PyFrame_New(
-            PyThreadState_Get(),
-            code,
-            globals,
-            nullptr
-        );
-        Py_DECREF(globals);
-        Py_DECREF(code);
-        if (result == nullptr) {
-            throw std::runtime_error(
-                "could not convert stack frame into Python frame object - "
-                "failed to initialize empty interpreter frame"
-            );
-        }
-        result->f_lineno = line;
-        return reinterpret_steal<Frame>(reinterpret_cast<PyObject*>(result));
-    }
-};
-
-
-/* Providing an explicit integer will skip that number of frames from either the least
-recent Python frame (if positive or zero) or the most recent (if negative).  Like the
-default constructor, this always retrieves a frame with a valid Python bytecode object,
-unlike the C++ frames of a Traceback object. */
-template <std::convertible_to<int> T>
-struct __explicit_init__<Frame, T>                          : Returns<Frame> {
-    static Frame operator()(int skip);
-};
-
-
-/* Execute the bytecode object stored within a Python frame using its current context.
-This is the main entry point for the Python interpreter, and causes the program to run
-until it either terminates or encounters an error.  The return value is the result of
-the last evaluated expression, which can be the return value of a function, the yield
-value of a generator, etc. */
-template <>
-struct __call__<Frame> : Returns<Object> {
-    static auto operator()(const Frame& frame);
-};
-
-
-[[nodiscard]] inline bool Interface<Frame>::has_code() const {
-    return PyFrame_GetCode(
-        reinterpret_cast<PyFrameObject*>(
-            ptr(reinterpret_cast<const Object&>(*this))
-        )
-    ) != nullptr;
-}
 
 
 ///////////////////////////
@@ -591,22 +403,6 @@ struct __reversed__<Traceback>                              : Returns<Traceback>
 };
 
 
-[[nodiscard]] inline std::string Interface<Traceback>::to_string() const {
-    std::string out = "Traceback (most recent call last):";
-    PyTracebackObject* tb = reinterpret_cast<PyTracebackObject*>(
-        ptr(reinterpret_cast<const Object&>(*this))
-    );
-    while (tb != nullptr) {
-        out += "\n  ";
-        out += reinterpret_borrow<Frame>(
-            reinterpret_cast<PyObject*>(tb->tb_frame)
-        ).to_string();
-        tb = tb->tb_next;
-    }
-    return out;
-}
-
-
 /////////////////////////
 ////    EXCEPTION    ////
 /////////////////////////
@@ -696,17 +492,22 @@ public:
     displayed in case of an uncaught error. */
     const char* what() const noexcept override {
         if (!m_what.has_value()) {
+            std::string msg;
             Traceback tb = reinterpret_steal<Traceback>(
                 PyException_GetTraceback(ptr(*this))
             );
             if (ptr(tb) != nullptr) {
-                m_what = tb.to_string() + "\n";
+                msg = tb.to_string() + "\n";
             } else {
-                m_what = "";
+                msg = "";
             }
-            m_what.value() += Py_TYPE(ptr(*this))->tp_name;
-            m_what.value() += ": ";
-            m_what.value() += message();
+            msg += Py_TYPE(ptr(*this))->tp_name;
+            std::string this_message = message();
+            if (!this_message.empty()) {
+                msg += ": ";
+                msg += this_message;
+            }
+            m_what = msg;
         }
         return m_what.value().c_str();
     }
@@ -960,8 +761,11 @@ struct UnicodeDecodeError : Exception, Interface<UnicodeDecodeError> {
                     msg = "";
                 }
                 msg += Py_TYPE(ptr(*this))->tp_name;
-                msg += ": ";
-                msg += message();
+                std::string this_message = message();
+                if (!this_message.empty()) {
+                    msg += ": ";
+                    msg += this_message;
+                }
                 m_what = msg;
             } catch (...) {
                 return "";
@@ -1190,8 +994,11 @@ struct UnicodeEncodeError : Exception, Interface<UnicodeEncodeError> {
                     msg = "";
                 }
                 msg += Py_TYPE(ptr(*this))->tp_name;
-                msg += ": ";
-                msg += message();
+                std::string this_message = message();
+                if (!this_message.empty()) {
+                    msg += ": ";
+                    msg += this_message;
+                }
                 m_what = msg;
             } catch (...) {
                 return "";
@@ -1417,8 +1224,11 @@ struct UnicodeTranslateError : Exception, Interface<UnicodeTranslateError> {
                     msg = "";
                 }
                 msg += Py_TYPE(ptr(*this))->tp_name;
-                msg += ": ";
-                msg += message();
+                std::string this_message = message();
+                if (!this_message.empty()) {
+                    msg += ": ";
+                    msg += this_message;
+                }
                 m_what = msg;
             } catch (...) {
                 return "";
@@ -1551,9 +1361,9 @@ struct __explicit_init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reaso
 }
 
 
-////////////////////////////////////
-////    FORWARD DECLARATIONS    ////
-////////////////////////////////////
+//////////////////////
+////    OBJECT    ////
+//////////////////////
 
 
 namespace impl {
@@ -1756,7 +1566,7 @@ bool __issubclass__<T, Object>::operator()(const T& obj, const Object& cls) {
 }
 
 
-template <std::derived_from<Object> From, std::derived_from<From> To>
+template <std::derived_from<Handle> From, std::derived_from<From> To>
 auto __cast__<From, To>::operator()(const From& from) {
     if (isinstance<To>(from)) {
         return reinterpret_borrow<To>(ptr(from));
@@ -1769,7 +1579,7 @@ auto __cast__<From, To>::operator()(const From& from) {
 }
 
 
-template <std::derived_from<Object> From, std::derived_from<From> To>
+template <std::derived_from<Handle> From, std::derived_from<From> To>
 auto __cast__<From, To>::operator()(From&& from) {
     if (isinstance<To>(from)) {
         return reinterpret_steal<To>(release(from));
@@ -1782,7 +1592,7 @@ auto __cast__<From, To>::operator()(From&& from) {
 }
 
 
-template <std::derived_from<Object> From, std::integral To>
+template <std::derived_from<Handle> From, std::integral To>
 To __explicit_cast__<From, To>::operator()(const From& from) {
     long long result = PyLong_AsLongLong(ptr(from));
     if (result == -1 && PyErr_Occurred()) {
@@ -1800,7 +1610,7 @@ To __explicit_cast__<From, To>::operator()(const From& from) {
 }
 
 
-template <std::derived_from<Object> From, std::floating_point To>
+template <std::derived_from<Handle> From, std::floating_point To>
 To __explicit_cast__<From, To>::operator()(const From& from) {
     double result = PyFloat_AsDouble(ptr(from));
     if (result == -1.0 && PyErr_Occurred()) {
@@ -1809,7 +1619,7 @@ To __explicit_cast__<From, To>::operator()(const From& from) {
     return result;
 }
 
-template <std::derived_from<Object> From, impl::complex_like To>
+template <std::derived_from<Handle> From, impl::complex_like To>
     requires (impl::cpp_like<To>)
 To __explicit_cast__<From, To>::operator()(const From& from) {
     Py_complex result = PyComplex_AsCComplex(ptr(from));
@@ -1820,7 +1630,7 @@ To __explicit_cast__<From, To>::operator()(const From& from) {
 }
 
 
-template <std::derived_from<Object> From>
+template <std::derived_from<Handle> From>
 auto __explicit_cast__<From, std::string>::operator()(const From& from) {
     PyObject* str = PyObject_Str(ptr(from));
     if (str == nullptr) {
@@ -1836,6 +1646,84 @@ auto __explicit_cast__<From, std::string>::operator()(const From& from) {
     Py_DECREF(str);
     return result;
 }
+
+
+////////////////////
+////    CODE    ////
+////////////////////
+
+
+template <typename Source>
+    requires (std::convertible_to<std::decay_t<Source>, std::string>)
+auto __init__<Code, Source>::operator()(const std::string& source) {
+    std::string line;
+    std::string parsed;
+    std::istringstream stream(source);
+    size_t min_indent = std::numeric_limits<size_t>::max();
+
+    // find minimum indentation
+    while (std::getline(stream, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        size_t indent = line.find_first_not_of(" \t");
+        if (indent != std::string::npos) {
+            min_indent = std::min(min_indent, indent);
+        }
+    }
+
+    // dedent if necessary
+    if (min_indent != std::numeric_limits<size_t>::max()) {
+        std::string temp;
+        std::istringstream stream2(source);
+        while (std::getline(stream2, line)) {
+            if (line.empty() || line.find_first_not_of(" \t") == std::string::npos) {
+                temp += '\n';
+            } else {
+                temp += line.substr(min_indent) + '\n';
+            }
+        }
+        parsed = temp;
+    } else {
+        parsed = source;
+    }
+
+    PyObject* result = Py_CompileString(
+        parsed.c_str(),
+        "<embedded Python script>",
+        Py_file_input
+    );
+    if (result == nullptr) {
+        Exception::from_python();
+    }
+    return reinterpret_steal<Code>(result);
+}
+
+
+
+/* Parse and compile a source file into a Python code object. */
+[[nodiscard]] inline Code Interface<Code>::compile(const std::string& path) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        throw FileNotFoundError(std::string("'") + path + "'");
+    }
+    std::istreambuf_iterator<char> begin(file), end;
+    PyObject* result = Py_CompileString(
+        std::string(begin, end).c_str(),
+        path.c_str(),
+        Py_file_input
+    );
+    if (result == nullptr) {
+        Exception::from_python();
+    }
+    return reinterpret_steal<Code>(result);
+}
+
+
+
+/////////////////////
+////    FRAME    ////
+/////////////////////
 
 
 inline auto __init__<Frame>::operator()() {
@@ -1895,19 +1783,6 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 }
 
 
-[[nodiscard]] inline Frame Interface<Frame>::back() const {
-    PyFrameObject* result = PyFrame_GetBack(
-        reinterpret_cast<PyFrameObject*>(
-            ptr(reinterpret_cast<const Object&>(*this))
-        )
-    );
-    if (result == nullptr) {
-        Exception::from_python();
-    }
-    return reinterpret_steal<Frame>(reinterpret_cast<PyObject*>(result));
-}
-
-
 [[nodiscard]] inline std::string Interface<Frame>::to_string() const {
     PyFrameObject* frame = reinterpret_cast<PyFrameObject*>(
         ptr(reinterpret_cast<const Object&>(*this))
@@ -1939,6 +1814,72 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 }
 
 
+[[nodiscard]] inline std::optional<Code> Interface<Frame>::_code() const {
+    PyCodeObject* code = PyFrame_GetCode(
+        reinterpret_cast<PyFrameObject*>(
+            ptr(reinterpret_cast<const Object&>(*this))
+        )
+    );
+    if (code == nullptr) {
+        return std::nullopt;
+    }
+    return reinterpret_steal<Code>(reinterpret_cast<PyObject*>(code));
+}
+
+
+[[nodiscard]] inline std::optional<Frame> Interface<Frame>::_back() const {
+    PyFrameObject* result = PyFrame_GetBack(
+        reinterpret_cast<PyFrameObject*>(
+            ptr(reinterpret_cast<const Object&>(*this))
+        )
+    );
+    if (result == nullptr) {
+        return std::nullopt;
+    }
+    return reinterpret_steal<Frame>(reinterpret_cast<PyObject*>(result));
+}
+
+
+[[nodiscard]] inline size_t Interface<Frame>::_line_number() const {
+    return PyFrame_GetLineNumber(
+        reinterpret_cast<PyFrameObject*>(
+            ptr(reinterpret_cast<const Object&>(*this))
+        )
+    );
+}
+
+
+[[nodiscard]] inline size_t Interface<Frame>::_last_instruction() const {
+    int result = PyFrame_GetLasti(
+        reinterpret_cast<PyFrameObject*>(
+            ptr(reinterpret_cast<const Object&>(*this))
+        )
+    );
+    if (result < 0) {
+        throw RuntimeError("frame is not currently executing");
+    }
+    return result;
+}
+
+
+[[nodiscard]] inline std::optional<Object> Interface<Frame>::_generator() const {
+    PyObject* result = PyFrame_GetGenerator(
+        reinterpret_cast<PyFrameObject*>(
+            ptr(reinterpret_cast<const Object&>(*this))
+        )
+    );
+    if (result == nullptr) {
+        return std::nullopt;
+    }
+    return reinterpret_steal<Object>(result);
+}
+
+
+/////////////////////////
+////    TRACEBACK    ////
+/////////////////////////
+
+
 [[nodiscard]] inline auto __iter__<Traceback>::operator*() const -> value_type {
     if (curr == nullptr) {
         throw StopIteration();
@@ -1956,6 +1897,22 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
     return reinterpret_borrow<Frame>(
         reinterpret_cast<PyObject*>(frames[index]->tb_frame)
     );
+}
+
+
+[[nodiscard]] inline std::string Interface<Traceback>::to_string() const {
+    std::string out = "Traceback (most recent call last):";
+    PyTracebackObject* tb = reinterpret_cast<PyTracebackObject*>(
+        ptr(reinterpret_cast<const Object&>(*this))
+    );
+    while (tb != nullptr) {
+        out += "\n  ";
+        out += reinterpret_borrow<Frame>(
+            reinterpret_cast<PyObject*>(tb->tb_frame)
+        ).to_string();
+        tb = tb->tb_next;
+    }
+    return out;
 }
 
 

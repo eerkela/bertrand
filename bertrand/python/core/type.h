@@ -2,10 +2,9 @@
 #define BERTRAND_PYTHON_CORE_TYPE_H
 
 #include "declarations.h"
-#include "except.h"
-#include "ops.h"
 #include "object.h"
-#include "pytypedefs.h"
+#include "code.h"
+#include "except.h"
 
 
 namespace py {
@@ -4083,9 +4082,95 @@ template <typename L, typename R>
 struct __ixor__<L, R> : Returns<impl::ixor_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
 
 
-///////////////////////////////
-////    EXCEPTION TYPES    ////
-///////////////////////////////
+////////////////////
+////    CODE    ////
+////////////////////
+
+
+template <>
+struct Type<Code>;
+
+
+template <>
+struct Interface<Type<Code>> {
+    [[nodiscard]] static Code compile(const std::string& source);
+    [[nodiscard]] static Py_ssize_t line_number(const Code& self) noexcept;
+    [[nodiscard]] static Py_ssize_t argcount(const Code& self) noexcept;
+    [[nodiscard]] static Py_ssize_t posonlyargcount(const Code& self) noexcept;
+    [[nodiscard]] static Py_ssize_t kwonlyargcount(const Code& self) noexcept;
+    [[nodiscard]] static Py_ssize_t nlocals(const Code& self) noexcept;
+    [[nodiscard]] static Py_ssize_t stacksize(const Code& self) noexcept;
+    [[nodiscard]] static int flags(const Code& self) noexcept;
+
+    /// NOTE: these are defined in __init__.h
+    [[nodiscard]] static Str filename(const Code& self);
+    [[nodiscard]] static Str name(const Code& self);
+    [[nodiscard]] static Str qualname(const Code& self);
+    [[nodiscard]] static Tuple<Str> varnames(const Code& self);
+    [[nodiscard]] static Tuple<Str> cellvars(const Code& self);
+    [[nodiscard]] static Tuple<Str> freevars(const Code& self);
+    [[nodiscard]] static Bytes bytecode(const Code& self);
+    [[nodiscard]] static Tuple<Object> consts(const Code& self);
+    [[nodiscard]] static Tuple<Str> names(const Code& self);
+};
+
+
+template <>
+struct Type<Code> : Object, Interface<Type<Code>>, impl::TypeTag {
+    struct __python__ : TypeTag::def<__python__, Type> {
+        static Type __import__() {
+            return reinterpret_borrow<Type>(
+                reinterpret_cast<PyObject*>(&PyCode_Type)
+            );
+        }
+    };
+
+    Type(Handle h, borrowed_t t) : Object(h, t) {}
+    Type(Handle h, stolen_t t) : Object(h, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+};
+
+
+[[nodiscard]] inline Code Interface<Type<Code>>::compile(const std::string& source) {
+    return Code::compile(source);
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::line_number(const Code& self) noexcept {
+    return self.line_number;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::argcount(const Code& self) noexcept {
+    return self.argcount;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::posonlyargcount(const Code& self) noexcept {
+    return self.posonlyargcount;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::kwonlyargcount(const Code& self) noexcept {
+    return self.kwonlyargcount;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::nlocals(const Code& self) noexcept {
+    return self.nlocals;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::stacksize(const Code& self) noexcept {
+    return self.stacksize;
+}
+[[nodiscard]] inline int Interface<Type<Code>>::flags(const Code& self) noexcept {
+    return self.flags;
+}
+
+
+/////////////////////
+////    FRAME    ////
+/////////////////////
 
 
 template <>
@@ -4094,19 +4179,18 @@ struct Type<Frame>;
 
 template <>
 struct Interface<Type<Frame>> {
-    [[nodiscard]] static bool has_code(const Frame& self);
     [[nodiscard]] static std::string to_string(const Frame& self);
-    [[nodiscard]] static Frame back(const Frame& self);
+    [[nodiscard]] static std::optional<Code> code(const Frame& self);
+    [[nodiscard]] static std::optional<Frame> back(const Frame& self);
+    [[nodiscard]] static size_t line_number(const Frame& self);
+    [[nodiscard]] static size_t last_instruction(const Frame& self);
+    [[nodiscard]] static std::optional<Object> generator(const Frame& self);
 
-    /// TODO: these are forward declarations, along with their cousins in except.h
-    [[nodiscard]] static Code code(const Frame& self);
-    [[nodiscard]] static int line_number(const Frame& self);
+    /// NOTE: these are defined in __init__.h
+    [[nodiscard]] static Object get(const Frame& self, const Str& name);
     [[nodiscard]] static Dict<Str, Object> builtins(const Frame& self);
     [[nodiscard]] static Dict<Str, Object> globals(const Frame& self);
     [[nodiscard]] static Dict<Str, Object> locals(const Frame& self);
-    [[nodiscard]] static std::optional<Object> generator(const Frame& self);
-    [[nodiscard]] static int last_instruction(const Frame& self);
-    [[nodiscard]] static Object get(const Frame& self, const Str& name);
 };
 
 
@@ -4137,15 +4221,29 @@ struct Type<Frame> : Object, Interface<Type<Frame>>, impl::TypeTag {
 };
 
 
-[[nodiscard]] inline bool Interface<Type<Frame>>::has_code(const Frame& self) {
-    return self.has_code();
-}
 [[nodiscard]] inline std::string Interface<Type<Frame>>::to_string(const Frame& self) {
     return self.to_string();
 }
-[[nodiscard]] inline Frame Interface<Type<Frame>>::back(const Frame& self) {
-    return self.back();
+[[nodiscard]] inline std::optional<Code> Interface<Type<Frame>>::code(const Frame& self) {
+    return self.code;
 }
+[[nodiscard]] inline std::optional<Frame> Interface<Type<Frame>>::back(const Frame& self) {
+    return self.back;
+}
+[[nodiscard]] inline size_t Interface<Type<Frame>>::line_number(const Frame& self) {
+    return self.line_number;
+}
+[[nodiscard]] inline size_t Interface<Type<Frame>>::last_instruction(const Frame& self) {
+    return self.last_instruction;
+}
+[[nodiscard]] inline std::optional<Object> Interface<Type<Frame>>::generator(const Frame& self) {
+    return self.generator;
+}
+
+
+/////////////////////////
+////    TRACEBACK    ////
+/////////////////////////
 
 
 template <>
@@ -4188,6 +4286,11 @@ struct Type<Traceback> : Object, Interface<Type<Traceback>>, impl::TypeTag {
 [[nodiscard]] inline std::string Interface<Type<Traceback>>::to_string(const Traceback& self) {
     return self.to_string();
 }
+
+
+///////////////////////////////
+////    EXCEPTION TYPES    ////
+///////////////////////////////
 
 
 template <>

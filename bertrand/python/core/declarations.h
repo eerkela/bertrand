@@ -169,6 +169,8 @@ private:
 
 struct Handle;
 struct Object;
+struct Code;
+struct Frame;
 template <typename T = Object>
 struct Type;
 struct BertrandMeta;
@@ -184,8 +186,6 @@ struct NoneType;
 struct NotImplementedType;
 struct EllipsisType;
 struct Slice;
-struct Code;
-struct Frame;
 struct Bool;
 struct Int;
 struct Float;
