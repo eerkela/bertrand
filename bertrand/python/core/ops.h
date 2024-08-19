@@ -13,6 +13,288 @@ namespace py {
 
 namespace impl {
     static PyObject* one = (Interpreter::init(), PyLong_FromLong(1));  // immortal
+
+
+    /// TODO: See if there's a way to merge this with the __getitem__ control structure
+    /// similar to __iter__?
+
+    /* A proxy for an item in a Python container that is controlled by the
+    `__getitem__`, `__setitem__`, and `__delitem__` control structs.
+
+    This is a simple extension of an Object type that intercepts `operator=` and
+    assigns the new value back to the container using the appropriate API.  Mutating
+    the object in any other way will also modify it in-place within the container. */
+    template <typename Container, typename... Key>
+        requires (__getitem__<Container, Key...>::enable)
+    struct Item : __getitem__<Container, Key...>::type {
+    private:
+        using Base = __getitem__<Container, Key...>::type;
+        using M_Key = std::conditional_t<
+            (sizeof...(Key) > 1),
+            std::tuple<Key...>,
+            std::tuple_element_t<0, std::tuple<Key...>>
+        >;
+
+        Container m_container;
+        M_Key m_key;
+
+    public:
+
+        Item(Base&& item, Container container, Key&&... key) :
+            Base(std::move(item)), m_container(container),
+            m_key(std::forward<Key>(key)...)
+        {}
+        Item(const Item& other) :
+            Base(other), m_container(other.m_container), m_key(other.m_key)
+        {}
+        Item(Item&& other) :
+            Base(std::move(other)), m_container(std::move(other.m_container)),
+            m_key(std::move(other.m_key))
+        {}
+
+        template <typename Value>
+            requires (__setitem__<Container, std::remove_cvref_t<Value>, Key...>::enable)
+        Item& operator=(Value&& value) {
+            using setitem = __setitem__<Container, std::remove_cvref_t<Value>, Key...>;
+            using Return = typename setitem::type;
+            static_assert(
+                std::is_void_v<Return>,
+                "index assignment operator must return void.  Check your "
+                "specialization of __setitem__ for these types and ensure the Return "
+                "type is set to void."
+            );
+            Base::operator=(std::forward<Value>(value));
+            if constexpr (impl::has_call_operator<setitem>) {
+                setitem{}(m_container, m_key, value);
+
+            } else if constexpr (
+                impl::originates_from_cpp<Base> &&
+                (impl::cpp_or_originates_from_cpp<Key> && ...) &&
+                impl::cpp_or_originates_from_cpp<std::remove_cvref_t<Value>>
+            ) {
+                static_assert(
+                    impl::supports_item_assignment<Base, std::remove_cvref_t<Value>, Key...>,
+                    "__setitem__<Self, Value, Key...> is enabled for operands whose C++ "
+                    "representations have no viable overload for `Self[Key...] = Value`"
+                );
+                if constexpr (impl::python_like<std::remove_cvref_t<Value>>) {
+                    unwrap(*this) = unwrap(std::forward<Value>(value));
+                } else {
+                    unwrap(*this) = std::forward<Value>(value);
+                }
+
+            } else {
+                if (PyObject_SetItem(
+                    m_container.m_ptr,
+                    ptr(as_object(m_key)),
+                    ptr(*this)
+                )) {
+                    Exception::from_python();
+                }
+            }
+            return *this;
+        }
+
+        template <typename = void> requires (__delitem__<Container, Key...>::enable)
+        Item& operator=(del value) {
+            using delitem = __delitem__<Container, Key...>;
+            using Return = typename delitem::type;
+            static_assert(
+                std::is_void_v<Return>,
+                "index deletion operator must return void.  Check your specialization "
+                "of __delitem__ for these types and ensure the Return type is set to "
+                "void."
+            );
+            if constexpr (impl::has_call_operator<delitem>) {
+                delitem{}(m_container, m_key);
+
+            } else {
+                if (PyObject_DelItem(m_container.m_ptr, ptr(as_object(m_key)))) {
+                    Exception::from_python();
+                }
+            }
+            return *this;
+        }
+
+        template <typename Value>
+            requires (
+                !__setitem__<Container, std::remove_cvref_t<Value>, Key...>::enable &&
+                !__delitem__<Container, Key...>::enable
+            )
+        Item& operator=(Value&& other) = delete;
+
+    };
+
+}
+
+
+template <typename Self, typename... Key> requires (__getitem__<Self, Key...>::enable)
+decltype(auto) Handle::operator[](this const Self& self, Key&&... key) {
+    using Return = typename __getitem__<Self, std::decay_t<Key>...>::type;
+    static_assert(
+        std::derived_from<Return, Object>,
+        "index operator must return a subclass of py::Object.  Check your "
+        "specialization of __getitem__ for these types and ensure the Return "
+        "type is set to a subclass of py::Object."
+    );
+    if constexpr (impl::has_call_operator<__getitem__<Self, std::decay_t<Key>...>>) {
+        return impl::Item<Self, std::decay_t<Key>...>(
+            __getitem__<Self, std::decay_t<Key>...>{}(self, key...),
+            self,
+            std::forward<Key>(key)...
+        );
+
+    } else if constexpr (
+        impl::originates_from_cpp<Self> &&
+        (impl::cpp_or_originates_from_cpp<std::decay_t<Key>> && ...)
+    ) {
+        static_assert(
+            impl::lookup_yields<impl::cpp_type<Self>, Return, std::decay_t<Key>...>,
+            "__getitem__<Self, Key...> is enabled for operands whose C++ "
+            "representations have no viable overload for `Self[Key...]`"
+        );
+        return unwrap(self)[std::forward<Key>(key)...];
+
+    } else {
+        if constexpr (sizeof...(Key) > 1) {
+            PyObject* tuple = PyTuple_Pack(sizeof...(Key), ptr(as_object(key))...);
+            if (tuple == nullptr) {
+                Exception::from_python();
+            }
+            PyObject* result = PyObject_GetItem(self.m_ptr, tuple);
+            Py_DECREF(tuple);
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return impl::Item<Self, std::decay_t<Key>...>(
+                reinterpret_steal<Return>(result),
+                self,
+                std::forward<Key>(key)...
+            );
+
+        } else {
+            PyObject* result = PyObject_GetItem(self.m_ptr, ptr(as_object(key))...);
+            if (result == nullptr) {
+                Exception::from_python();
+            }
+            return impl::Item<Self, std::decay_t<Key>...>(
+                reinterpret_steal<Return>(result),
+                self,
+                std::forward<Key>(key)...
+            );
+        }
+    }
+}
+
+
+/* Represents a keyword parameter pack obtained by double-dereferencing a Python
+object. */
+template <std::derived_from<Object> T> requires (impl::mapping_like<T>)
+struct KwargPack {
+    using key_type = T::key_type;
+    using mapped_type = T::mapped_type;
+
+    T value;
+
+private:
+
+    static constexpr bool can_iterate =
+        impl::yields_pairs_with<T, key_type, mapped_type> ||
+        impl::has_items<T> ||
+        (impl::has_keys<T> && impl::has_values<T>) ||
+        (impl::yields<T, key_type> && impl::lookup_yields<T, key_type, mapped_type>) ||
+        (impl::has_keys<T> && impl::lookup_yields<T, key_type, mapped_type>);
+
+    auto transform() const {
+        if constexpr (impl::yields_pairs_with<T, key_type, mapped_type>) {
+            return value;
+
+        } else if constexpr (impl::has_items<T>) {
+            return value.items();
+
+        } else if constexpr (impl::has_keys<T> && impl::has_values<T>) {
+            return std::ranges::views::zip(value.keys(), value.values());
+
+        } else if constexpr (
+            impl::yields<T, key_type> && impl::lookup_yields<T, key_type, mapped_type>
+        ) {
+            return std::ranges::views::transform(value, [&](const key_type& key) {
+                return std::make_pair(key, value[key]);
+            });
+
+        } else {
+            return std::ranges::views::transform(value.keys(), [&](const key_type& key) {
+                return std::make_pair(key, value[key]);
+            });
+        }
+    }
+
+public:
+
+    template <typename U = T> requires (can_iterate)
+    auto begin() const { return std::ranges::begin(transform()); }
+    template <typename U = T> requires (can_iterate)
+    auto cbegin() const { return begin(); }
+    template <typename U = T> requires (can_iterate)
+    auto end() const { return std::ranges::end(transform()); }
+    template <typename U = T> requires (can_iterate)
+    auto cend() const { return end(); }
+
+};
+
+
+/* Represents a positional parameter pack obtained by dereferencing a Python
+object. */
+template <std::derived_from<Object> T> requires (impl::iterable<T>)
+struct ArgPack {
+    T value;
+
+    auto begin() const { return std::ranges::begin(value); }
+    auto cbegin() const { return begin(); }
+    auto end() const { return std::ranges::end(value); }
+    auto cend() const { return end(); }
+
+    template <typename U = T> requires (impl::mapping_like<U>)
+    auto operator*() const {
+        return KwargPack<U>{value};
+    }        
+};
+
+
+template <std::derived_from<Object> Container> requires (impl::iterable<Container>)
+[[nodiscard]] auto operator*(const Container& self) {
+    return ArgPack<Container>{self};
+}
+
+
+template <std::derived_from<Object> Container, std::ranges::view View>
+    requires (impl::iterable<Container>)
+[[nodiscard]] auto operator->*(const Container& container, const View& view) {
+    return std::views::all(container) | view;
+}
+
+
+template <std::derived_from<Object> Container, typename Func>
+    requires (
+        !std::ranges::view<Func> &&
+        impl::iterable<Container> &&
+        std::is_invocable_v<Func, impl::iter_type<Container>>
+    )
+[[nodiscard]] auto operator->*(const Container& container, Func func) {
+    using Return = std::invoke_result_t<Func, impl::iter_type<Container>>;
+    if constexpr (impl::is_optional<Return>) {
+        return (
+            std::views::all(container) |
+            std::views::transform(func) |
+            std::views::filter([](const Return& value) {
+                return value.has_value();
+            }) | std::views::transform([](const Return& value) {
+            return value.value();
+            })
+        );
+    } else {
+        return std::views::all(container) | std::views::transform(func);
+    }
 }
 
 
@@ -594,117 +876,6 @@ L& ifloordiv(L& lhs, const R& rhs) {
         }
     }
     return lhs;
-}
-
-
-/* Represents a keyword parameter pack obtained by double-dereferencing a Python
-object. */
-template <std::derived_from<Object> T> requires (impl::mapping_like<T>)
-struct KwargPack {
-    using key_type = T::key_type;
-    using mapped_type = T::mapped_type;
-
-    T value;
-
-private:
-
-    static constexpr bool can_iterate =
-        impl::yields_pairs_with<T, key_type, mapped_type> ||
-        impl::has_items<T> ||
-        (impl::has_keys<T> && impl::has_values<T>) ||
-        (impl::yields<T, key_type> && impl::lookup_yields<T, key_type, mapped_type>) ||
-        (impl::has_keys<T> && impl::lookup_yields<T, key_type, mapped_type>);
-
-    auto transform() const {
-        if constexpr (impl::yields_pairs_with<T, key_type, mapped_type>) {
-            return value;
-
-        } else if constexpr (impl::has_items<T>) {
-            return value.items();
-
-        } else if constexpr (impl::has_keys<T> && impl::has_values<T>) {
-            return std::ranges::views::zip(value.keys(), value.values());
-
-        } else if constexpr (
-            impl::yields<T, key_type> && impl::lookup_yields<T, key_type, mapped_type>
-        ) {
-            return std::ranges::views::transform(value, [&](const key_type& key) {
-                return std::make_pair(key, value[key]);
-            });
-
-        } else {
-            return std::ranges::views::transform(value.keys(), [&](const key_type& key) {
-                return std::make_pair(key, value[key]);
-            });
-        }
-    }
-
-public:
-
-    template <typename U = T> requires (can_iterate)
-    auto begin() const { return std::ranges::begin(transform()); }
-    template <typename U = T> requires (can_iterate)
-    auto cbegin() const { return begin(); }
-    template <typename U = T> requires (can_iterate)
-    auto end() const { return std::ranges::end(transform()); }
-    template <typename U = T> requires (can_iterate)
-    auto cend() const { return end(); }
-
-};
-
-
-/* Represents a positional parameter pack obtained by dereferencing a Python
-object. */
-template <std::derived_from<Object> T> requires (impl::iterable<T>)
-struct ArgPack {
-    T value;
-
-    auto begin() const { return std::ranges::begin(value); }
-    auto cbegin() const { return begin(); }
-    auto end() const { return std::ranges::end(value); }
-    auto cend() const { return end(); }
-
-    template <typename U = T> requires (impl::mapping_like<U>)
-    auto operator*() const {
-        return KwargPack<U>{value};
-    }        
-};
-
-
-template <std::derived_from<Object> Container> requires (impl::iterable<Container>)
-[[nodiscard]] auto operator*(const Container& self) {
-    return ArgPack<Container>{self};
-}
-
-
-template <std::derived_from<Object> Container, std::ranges::view View>
-    requires (impl::iterable<Container>)
-[[nodiscard]] auto operator->*(const Container& container, const View& view) {
-    return std::views::all(container) | view;
-}
-
-
-template <std::derived_from<Object> Container, typename Func>
-    requires (
-        !std::ranges::view<Func> &&
-        impl::iterable<Container> &&
-        std::is_invocable_v<Func, impl::iter_type<Container>>
-    )
-[[nodiscard]] auto operator->*(const Container& container, Func func) {
-    using Return = std::invoke_result_t<Func, impl::iter_type<Container>>;
-    if constexpr (impl::is_optional<Return>) {
-        return (
-            std::views::all(container) |
-            std::views::transform(func) |
-            std::views::filter([](const Return& value) {
-                return value.has_value();
-            }) | std::views::transform([](const Return& value) {
-            return value.value();
-            })
-        );
-    } else {
-        return std::views::all(container) | std::views::transform(func);
-    }
 }
 
 

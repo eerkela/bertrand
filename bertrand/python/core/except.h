@@ -1366,79 +1366,6 @@ struct __explicit_init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reaso
 //////////////////////
 
 
-namespace impl {
-
-    template <typename Container, typename Key>
-        requires (__getitem__<Container, Key>::enable)
-    template <typename Value>
-        requires (__setitem__<Container, Key, std::remove_cvref_t<Value>>::enable)
-    Item<Container, Key>& Item<Container, Key>::operator=(Value&& value) {
-        using setitem = __setitem__<Container, Key, std::remove_cvref_t<Value>>;
-        using Return = typename setitem::type;
-        static_assert(
-            std::is_void_v<Return>,
-            "index assignment operator must return void.  Check your "
-            "specialization of __setitem__ for these types and ensure the Return "
-            "type is set to void."
-        );
-        Base::operator=(std::forward<Value>(value));
-        if constexpr (impl::has_call_operator<setitem>) {
-            setitem{}(m_container, m_key, value);
-
-        } else if constexpr (
-            impl::originates_from_cpp<Base> &&
-            impl::cpp_or_originates_from_cpp<Key> &&
-            impl::cpp_or_originates_from_cpp<std::remove_cvref_t<Value>>
-        ) {
-            static_assert(
-                impl::supports_item_assignment<Base, Key, std::remove_cvref_t<Value>>,
-                "__setitem__<Self, Key, Value> is enabled for operands whose C++ "
-                "representations have no viable overload for `Self[Key] = Value`"
-            );
-            if constexpr (impl::python_like<std::remove_cvref_t<Value>>) {
-                unwrap(*this) = unwrap(std::forward<Value>(value));
-            } else {
-                unwrap(*this) = std::forward<Value>(value);
-            }
-
-        } else {
-            if (PyObject_SetItem(
-                m_container.m_ptr,
-                ptr(as_object(m_key)),
-                ptr(*this)
-            )) {
-                Exception::from_python();
-            }
-        }
-        return *this;
-    }
-
-    template <typename Container, typename Key>
-        requires (__getitem__<Container, Key>::enable)
-    template <typename> requires (__delitem__<Container, Key>::enable)
-    Item<Container, Key>& Item<Container, Key>::operator=(del value) {
-        using delitem = __delitem__<Container, Key>;
-        using Return = typename delitem::type;
-        static_assert(
-            std::is_void_v<Return>,
-            "index deletion operator must return void.  Check your specialization "
-            "of __delitem__ for these types and ensure the Return type is set to "
-            "void."
-        );
-        if constexpr (impl::has_call_operator<delitem>) {
-            delitem{}(m_container, m_key);
-
-        } else {
-            if (PyObject_DelItem(m_container.m_ptr, ptr(as_object(m_key)))) {
-                Exception::from_python();
-            }
-        }
-        return *this;
-    }
-
-}
-
-
 template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
 [[nodiscard]] bool Handle::contains(this const Self& self, const Key& key) {
     using Return = typename __contains__<Self, Key>::type;
@@ -1475,6 +1402,9 @@ template <typename Self, typename Key> requires (__contains__<Self, Key>::enable
 }
 
 
+/// TODO: should these operators go in ops.h?
+
+
 template <typename Self>
 [[nodiscard]] Handle::operator bool(this const Self& self) {
     if constexpr (
@@ -1488,50 +1418,6 @@ template <typename Self>
             Exception::from_python();
         }
         return result;   
-    }
-}
-
-
-template <typename Self, typename Key> requires (__getitem__<Self, Key>::enable)
-decltype(auto) Handle::operator[](this const Self& self, Key&& key) {
-    using Return = typename __getitem__<Self, std::decay_t<Key>>::type;
-    static_assert(
-        std::derived_from<Return, Object>,
-        "index operator must return a subclass of py::Object.  Check your "
-        "specialization of __getitem__ for these types and ensure the Return "
-        "type is set to a subclass of py::Object."
-    );
-    if constexpr (impl::has_call_operator<__getitem__<Self, std::decay_t<Key>>>) {
-        return impl::Item<Self, Key>(
-            __getitem__<Self, Key>{}(self, key),
-            self,
-            std::forward<Key>(key)
-        );
-
-    } else if constexpr (
-        impl::originates_from_cpp<Self> &&
-        impl::cpp_or_originates_from_cpp<std::decay_t<Key>>
-    ) {
-        static_assert(
-            impl::lookup_yields<impl::cpp_type<Self>, std::decay_t<Key>, Return>,
-            "__getitem__<Self, Args...> is enabled for operands whose C++ "
-            "representations have no viable overload for `Self[Key]`"
-        );
-        return unwrap(self)[std::forward<Key>(key)];
-
-    } else {
-        PyObject* result = PyObject_GetItem(
-            self.m_ptr,
-            ptr(as_object(key))
-        );
-        if (result == nullptr) {
-            Exception::from_python();
-        }
-        return impl::Item<Self, std::decay_t<Key>>(
-            reinterpret_steal<Return>(result),
-            self,
-            std::forward<Key>(key)
-        );
     }
 }
 

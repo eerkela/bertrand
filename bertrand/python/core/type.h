@@ -918,17 +918,7 @@ struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
 };
 
 
-/* Forward the BertrandMeta interface if the given type originates from C++. */
-template <impl::originates_from_cpp T>
-struct __len__<Type<T>> : Returns<size_t> {};
-template <impl::originates_from_cpp T>
-struct __iter__<Type<T>> : Returns<BertrandMeta> {};
-template <impl::originates_from_cpp T, typename U>
-struct __getitem__<Type<T>, Type<U>> : Returns<BertrandMeta> {};
-template <impl::originates_from_cpp T>
-struct __getitem__<Type<T>, Tuple<Type<Object>>> : Returns<BertrandMeta> {};
-// template <impl::originates_from_cpp T, typename... Ts>
-// struct __getitem__<Type<T>, Struct<Type<Ts...>>> : Returns<BertrandMeta> {};  // TODO: implement Struct
+/// NOTE: forward the BertrandMeta interface below if the type originates from C++.
 
 
 ////////////////////
@@ -1553,15 +1543,55 @@ struct __issubclass__<T, BertrandMeta> : Returns<bool> {
 
 
 template <>
-struct __len__<BertrandMeta> : Returns<size_t> {};
+struct __len__<BertrandMeta>                                : Returns<size_t> {};
 template <>
-struct __iter__<BertrandMeta> : Returns<BertrandMeta> {};
-template <typename T>
-struct __getitem__<BertrandMeta, Type<T>> : Returns<BertrandMeta> {};
-template <>
-struct __getitem__<BertrandMeta, Tuple<Type<Object>>> : Returns<BertrandMeta> {};
-// template <typename... Ts>
-// struct __getitem__<BertrandMeta, Struct<Type<Ts>...>> : Returns<BertrandMeta> {};  // TODO: implement Struct
+struct __iter__<BertrandMeta>                               : Returns<BertrandMeta> {};
+template <typename... T>
+struct __getitem__<BertrandMeta, Type<T>...>                : Returns<BertrandMeta> {
+    static auto operator()(const BertrandMeta& cls, const Type<T>&... key) {
+        using Meta = Type<BertrandMeta>::__python__;
+        Meta* meta = reinterpret_cast<Meta*>(ptr(cls));
+        if (meta->template_instantiations == nullptr) {
+            throw TypeError("class has no template instantiations");
+        }
+        PyObject* tuple = PyTuple_Pack(sizeof...(T), ptr(key)...);
+        if (tuple == nullptr) {
+            Exception::from_python();
+        }
+        PyObject* value = PyDict_GetItem(meta->template_instantiations, tuple);
+        Py_DECREF(tuple);
+        if (value == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<BertrandMeta>(value);
+    }
+};
+
+
+template <impl::originates_from_cpp T>
+struct __len__<Type<T>>                                     : Returns<size_t> {};
+template <impl::originates_from_cpp T>
+struct __iter__<Type<T>>                                    : Returns<BertrandMeta> {};
+template <impl::originates_from_cpp T, typename... U>
+struct __getitem__<Type<T>, Type<U>...>                     : Returns<BertrandMeta> {
+    static auto operator()(const Type<T>& cls, const Type<U>&... key) {
+        using Meta = Type<BertrandMeta>::__python__;
+        Meta* meta = reinterpret_cast<Meta*>(ptr(cls));
+        if (meta->template_instantiations == nullptr) {
+            throw TypeError("class has no template instantiations");
+        }
+        PyObject* tuple = PyTuple_Pack(sizeof...(U), ptr(key)...);
+        if (tuple == nullptr) {
+            Exception::from_python();
+        }
+        PyObject* value = PyDict_GetItem(meta->template_instantiations, tuple);
+        Py_DECREF(tuple);
+        if (value == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<BertrandMeta>(value);
+    }
+};
 
 
 namespace impl {

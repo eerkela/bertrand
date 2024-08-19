@@ -256,11 +256,11 @@ template <typename Self, StaticStr Name, typename Value>
 struct __setattr__                                          : Disable {};
 template <typename Self, StaticStr Name>
 struct __delattr__                                          : Disable {};
-template <typename Self, typename Key>
+template <typename Self, typename... Key>
 struct __getitem__                                          : Disable {};
-template <typename Self, typename Key, typename Value>
+template <typename Self, typename Value, typename... Key>
 struct __setitem__                                          : Disable {};
-template <typename Self, typename Key>
+template <typename Self, typename... Key>
 struct __delitem__                                          : Disable {};
 template <typename Self>
 struct __len__                                              : Disable {};
@@ -616,22 +616,28 @@ namespace impl {
             std::convertible_to<typename std::decay_t<T>::mapped_type>;
     };
 
-    template <typename T, typename Key>
-    concept supports_lookup = !std::is_pointer_v<T> && !std::integral<std::decay_t<T>> &&
-        requires(T t, Key key) {
-            { t[key] };
+    /// TODO: update this for multidimensional subscripting
+    template <typename T, typename... Key>
+    concept supports_lookup =
+        !std::is_pointer_v<T> &&
+        !std::integral<std::decay_t<T>> &&
+        requires(T t, Key... key) {
+            { t[key...] };
         };
 
-    template <typename T, typename Key, typename Value>
-    concept lookup_yields = supports_lookup<T, Key> && requires(T t, Key key) {
-        { t[key] } -> std::convertible_to<Value>;
+    /// TODO: update this for multidimensional subscripting
+    template <typename T, typename Value, typename... Key>
+    concept lookup_yields = supports_lookup<T, Key...> && requires(T t, Key... key) {
+        { t[key...] } -> std::convertible_to<Value>;
     };
 
-    template <typename T, typename Key, typename Value>
+    /// TODO: update this for multidimensional subscripting
+    template <typename T, typename Value, typename... Key>
     concept supports_item_assignment =
-        !std::is_pointer_v<T> && !std::integral<std::decay_t<T>> &&
-        requires(T t, Key key, Value value) {
-            { t[key] = value };
+        !std::is_pointer_v<T> &&
+        !std::integral<std::decay_t<T>> &&
+        requires(T t, Key... key, Value value) {
+            { t[key...] = value };
         };
 
     template <typename T>

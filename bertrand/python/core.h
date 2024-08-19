@@ -2,14 +2,15 @@
 #define BERTRAND_PYTHON_COMMON_H
 
 #include "core/declarations.h"
-#include "core/except.h"
-#include "core/ops.h"
 #include "core/object.h"
+#include "core/code.h"
+#include "core/except.h"
 #include "core/type.h"
-#include "core/iter.h"
 #include "core/func.h"
 #include "core/module.h"
-#include "core/control.h"
+// #include "core/iter.h"  // TODO: merge with ops.h
+#include "core/ops.h"
+// #include "core/control.h"  // TODO: separate and lift internal types up here
 
 
 namespace py {
@@ -458,15 +459,6 @@ struct __gt__<L, R> : Returns<bool> {};
 template <impl::slice_like L, std::derived_from<Slice> R>
     requires (!std::derived_from<L, Slice>)
 struct __gt__<L, R> : Returns<bool> {};
-
-
-template <typename Self> requires (__getitem__<Self, Slice>::enable)
-auto Handle::operator[](
-    this const Self& self,
-    const std::initializer_list<impl::SliceInitializer>& slice
-) {
-    return self[Slice(slice)];
-}
 
 
 ////////////////////////////////

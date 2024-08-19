@@ -54,25 +54,27 @@ struct Interface<Code> {
 };
 
 
-/* Represents a compiled Python code object, enabling seamless embedding of Python as a
-scripting language within C++.
+/* Represents a compiled Python code object, allowing the creation of inline Python
+scripts that can be executed from C++.
 
-This class is extremely powerful, and is best explained by example:
+This class is best explained by example:
 
-    // in source.py
+    // source.py
     import numpy as np
     print(np.arange(10))
 
-    // in main.cpp
-    static const py::Code script("source.py");
-    script();  // prints [0 1 2 3 4 5 6 7 8 9]
+    // main.cpp
+    int main() {
+        static const py::Code script = py::Code::compile("source.py");
+        script();  // prints [0 1 2 3 4 5 6 7 8 9]
+    }
 
 .. note::
 
     Note that the script in this example is stored in a separate file, which can
-    contain arbitrary Python source code.  The file is read and compiled into an
-    interactive code object with static storage duration, which is cached for the
-    duration of the program.
+    contain arbitrary Python source code.  The file is read and compiled into a
+    bytecode object with static storage duration, which persists for the duration of
+    the program.
 
 This creates an embedded Python script that can be executed like a normal function.
 Here, the script is stateless, and can be executed without context.  Most of the time,
@@ -81,15 +83,13 @@ namespace.  For instance:
 
     static const py::Code script = R"(
         print("Hello, " + name + "!")  # name is not defined in this context
-    )"_python;
+    )";
 
 .. note::
 
-    Note the user-defined `_python` literal used to create the script.  This is
-    equivalent to calling the `Code` constructor on a separate file, but allows the
-    script to be written directly within the C++ source code.  The same effect can be
-    achieved via the `Code::compile()` helper method if the `py::literals` namespace is
-    not available. 
+    Note the implicit conversion from string to `py::Code`.  This will compile the
+    string verbatim, with the only preprocessing being dedentation to align the code
+    with the left margin, ignoring blank lines and comments.
 
 If we try to execute this script without a context, we'll get a ``NameError`` just
 like normal Python:
@@ -103,26 +103,32 @@ its global namespace.
 
 This uses the ordinary py::Dict constructors, which can take arbitrary C++ objects and
 pass them seamlessly to Python.  If we want to do the opposite and extract data from
-the script back to C++, then we can use its return value, which is another dictionary
-containing the context after execution.  For instance:
+the script back to C++, then we can inspect its return value, which is another
+dictionary containing the context after execution.  For instance:
 
-    py::Dict context = R"(
+    py::Dict context = py::Code{R"(
         x = 1
         y = 2
         z = 3
-    )"_python();
+    )"}();
 
     py::print(context);  // prints {"x": 1, "y": 2, "z": 3}
+
+.. note::
+
+    Note that one-off scripts can be executed immediately after construction for
+    brevity.  Using static storage allows the script to be compiled once and then
+    reused multiple times, without the overhead of recompilation.
 
 Combining these features allows us to create a two-way data pipeline between C++ and
 Python:
 
-    py::Int z = R"(
+    py::Int z = py::Code{R"(
         def func(x, y):
             return x + y
 
         z = func(a, b)
-    )"_python({{"a", 1}, {"b", 2}})["z"];
+    )"}({{"a", 1}, {"b", 2}})["z"];
 
     py::print(z);  // prints 3
 
@@ -139,12 +145,12 @@ shared context, without ever leaving the Python interpreter.  For instance:
     static const py::Code script1 = R"(
         x = 1
         y = 2
-    )"_python;
+    )";
 
     static const py::Code script2 = R"(
         z = x + y
         del x, y
-    )"_python;
+    )";
 
     py::Dict context;
     script1(context);
@@ -155,20 +161,20 @@ Users can, of course, inspect or modify the context between scripts, either to e
 results or pass new data into the next script in the chain.  This makes it possible to
 create arbitrarily complex, mixed-language workflows with minimal fuss.
 
-    py::Dict context = R"(
+    py::Dict context = py::Code{R"(
         spam = 0
         eggs = 1
-    )"_python();
+    )"}();
 
     context["ham"] = std::vector<int>{1, 1, 2, 3, 5, 8, 13, 21, 34, 55};
 
-    std::vector<int> fibonacci = R"(
+    std::vector<int> fibonacci = py::Code{R"(
         result = []
         for x in ham:
             spam, eggs = (spam + eggs, spam)
             assert(x == spam)
             result.append(eggs)
-    )"_python(context)["result"];
+    )"}(context)["result"];
 
     py::print(fibonacci);  // prints [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
 
@@ -179,12 +185,11 @@ what can be done inside them.  This includes importing modules, defining classes
 functions to be exported back to C++, interacting with the file system, third-party
 libraries, client code, and more.  Similarly, it is executed just like normal Python
 bytecode, and should not suffer any significant performance penalties beyond copying
-data into or out of the context.  This is especially true for static code objects,
-which are compiled once and then cached for repeated use.
+data into or out of the context.
 
     static const py::Code script = R"(
         print(x)
-    )"_python;
+    )";
 
     script({{"x", "hello"}});
     script({{"x", "from"}});

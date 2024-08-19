@@ -28,57 +28,6 @@ template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_borrow(Handle obj);
 
 
-namespace impl {
-
-    struct SliceInitializer;
-
-    /* A proxy for an item in a Python container that is controlled by the
-    `__getitem__`, `__setitem__`, and `__delitem__` control structs.
-
-    This is a simple extension of an Object type that intercepts `operator=` and
-    assigns the new value back to the container using the appropriate API.  Mutating
-    the object in any other way will also modify it in-place within the container. */
-    template <typename Container, typename Key>
-        requires (__getitem__<Container, Key>::enable)
-    struct Item : __getitem__<Container, Key>::type {
-    private:
-        using Base = __getitem__<Container, Key>::type;
-
-        Container m_container;
-        Key m_key;
-
-    public:
-
-        Item(Base&& item, Container container, Key key) :
-            Base(std::move(item)), m_container(container), m_key(key)
-        {}
-        Item(const Item& other) :
-            Base(other), m_container(other.m_container), m_key(other.m_key)
-        {}
-        Item(Item&& other) :
-            Base(std::move(other)), m_container(std::move(other.m_container)),
-            m_key(std::move(other.m_key))
-        {}
-
-        template <typename Value>
-            requires (__setitem__<Container, Key, std::remove_cvref_t<Value>>::enable)
-        Item& operator=(Value&& value);  // defined in except.h
-
-        template <typename = void> requires (__delitem__<Container, Key>::enable)
-        Item& operator=(del value);  // defined in except.h
-
-        template <typename Value>
-            requires (
-                !__setitem__<Container, Key, std::remove_cvref_t<Value>>::enable &&
-                !__delitem__<Container, Key>::enable
-            )
-        Item& operator=(Value&& other) = delete;
-
-    };
-
-}
-
-
 template <>
 struct Interface<Handle> {};
 template <>
@@ -119,9 +68,6 @@ public:
     statements, with the same semantics as in Python. */
     template <typename Self>
     [[nodiscard]] explicit operator bool(this const Self& self);  // defined in except.h
-
-    // TODO: operator bool, cast, explicit cast, etc. should delegate to a wrapped
-    // C++ object if it exists.
 
     /* Universal implicit conversion operator.  Implemented via the __cast__ control
     struct. */
@@ -188,17 +134,9 @@ public:
 
     /* Index operator.  Specific key and element types can be controlled via the
     __getitem__, __setitem__, and __delitem__ control structs. */
-    template <typename Self, typename Key> requires (__getitem__<Self, Key>::enable)
-    decltype(auto) operator[](this const Self& self, Key&& key);  // defined in except.h
-
-    /* Slice operator.  This is just syntactic sugar for the index operator with a
-    py::Slice operand, allowing users to specify slices using a condensed initializer
-    list. */
-    template <typename Self> requires (__getitem__<Self, Slice>::enable)
-    decltype(auto) operator[](
-        this const Self& self,
-        const std::initializer_list<impl::SliceInitializer>& slice
-    );  // defined in core.h
+    template <typename Self, typename... Key>
+        requires (__getitem__<Self, Key...>::enable)
+    decltype(auto) operator[](this const Self& self, Key&&... key);  // defined in ops.h
 
 };
 

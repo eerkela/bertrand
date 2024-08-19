@@ -128,15 +128,6 @@
 
 namespace py {
 
-namespace literals {
-    using namespace pybind11::literals;
-
-    inline Code operator ""_python(const char* source, size_t size) {
-        return Code::compile(std::string_view(source, size));
-    }
-
-}
-
 
 //////////////////////////////
 ////    STATIC MEMBERS    ////
