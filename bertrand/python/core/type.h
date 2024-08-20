@@ -5,444 +5,13 @@
 #include "object.h"
 #include "code.h"
 #include "except.h"
+#include "pytypedefs.h"
 
 
 namespace py {
 
 
 namespace impl {
-
-    namespace dunder {
-
-        template <typename CRTP>
-        concept has_dealloc = requires() {
-            { CRTP::__dealloc__ } -> std::convertible_to<void(*)(CRTP*)>;
-        };
-
-        template <typename CRTP>
-        concept has_vectorcall = requires() {
-            { &CRTP::__vectorcall__ } -> std::convertible_to<
-                PyObject*(*)(CRTP*, PyObject* const*, size_t, PyObject*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_await = requires() {
-            { CRTP::__await__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
-        };
-
-        template <typename CRTP>
-        concept has_aiter = requires() {
-            { CRTP::__aiter__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
-        };
-
-        template <typename CRTP>
-        concept has_anext = requires() {
-            { CRTP::__anext__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
-        };
-
-        template <typename CRTP>
-        concept has_asend = requires() {
-            { CRTP::__asend__ } -> std::convertible_to<
-                PyObject*(*)(CRTP*, PyObject*, PyObject**)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_repr = requires() {
-            { CRTP::__repr__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
-        };
-
-        template <typename CRTP>
-        concept has_add = requires() {
-            { CRTP::__add__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_subtract = requires() {
-            { CRTP::__sub__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_multiply = requires() {
-            { CRTP::__mul__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_remainder = requires() {
-            { CRTP::__mod__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_divmod = requires() {
-            { CRTP::__divmod__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_power = requires() {
-            { CRTP::__pow__ } -> std::convertible_to<
-                PyObject*(*)(PyObject*, PyObject*, PyObject*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_negative = requires() {
-            { CRTP::__neg__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_positive = requires() {
-            { CRTP::__pos__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_absolute = requires() {
-            { CRTP::__abs__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_bool = requires() {
-            { CRTP::__bool__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_invert = requires() {
-            { CRTP::__invert__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_lshift = requires() {
-            { CRTP::__lshift__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_rshift = requires() {
-            { CRTP::__rshift__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_and = requires() {
-            { CRTP::__and__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_xor = requires() {
-            { CRTP::__xor__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_or = requires() {
-            { CRTP::__or__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_int = requires() {
-            { CRTP::__int__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_float = requires() {
-            { CRTP::__float__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_inplace_add = requires() {
-            { CRTP::__iadd__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_inplace_subtract = requires() {
-            { CRTP::__isub__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_inplace_multiply = requires() {
-            { CRTP::__imul__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_inplace_remainder = requires() {
-            { CRTP::__imod__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_inplace_power = requires() {
-            { CRTP::__ipow__ } -> std::convertible_to<
-                PyObject*(*)(PyObject*, PyObject*, PyObject*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_inplace_lshift = requires() {
-            { CRTP::__ilshift__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_inplace_rshift = requires() {
-            { CRTP::__irshift__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_inplace_and = requires() {
-            { CRTP::__iand__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_inplace_xor = requires() {
-            { CRTP::__ixor__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_inplace_or = requires() {
-            { CRTP::__ior__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_floor_divide = requires() {
-            { CRTP::__floordiv__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_true_divide = requires() {
-            { CRTP::__truediv__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_inplace_floor_divide = requires() {
-            { CRTP::__ifloordiv__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_inplace_true_divide = requires() {
-            { CRTP::__itruediv__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_index = requires() {
-            { CRTP::__index__ } -> std::convertible_to<PyObject*(*)(PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_matrix_multiply = requires() {
-            { CRTP::__matmul__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_inplace_matrix_multiply = requires() {
-            { CRTP::__imatmul__ } -> std::convertible_to<PyObject*(*)(PyObject*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_len = requires() {
-            { CRTP::__len__ } -> std::convertible_to<Py_ssize_t(*)(CRTP*)>;
-        };
-
-        template <typename CRTP>
-        concept has_contains = requires() {
-            { CRTP::__contains__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_getitem = requires() {
-            { CRTP::__getitem__ } -> std::convertible_to<PyObject*(*)(CRTP*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_setitem = requires() {
-            { CRTP::__setitem__ } -> std::convertible_to<
-                int(*)(CRTP*, PyObject*, PyObject*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_delitem = requires() {
-            { CRTP::__delitem__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_hash = requires() {
-            { CRTP::__hash__ } -> std::convertible_to<Py_hash_t(*)(CRTP*)>;
-        };
-
-        template <typename CRTP>
-        concept has_call = requires() {
-            { CRTP::__call__ } -> std::convertible_to<
-                PyObject*(*)(CRTP*, PyObject*, PyObject*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_str = requires() {
-            { CRTP::__str__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
-        };
-
-        template <typename CRTP>
-        concept has_getattr = requires() {
-            { CRTP::__getattr__ } -> std::convertible_to<PyObject*(*)(CRTP*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_setattr = requires() {
-            { CRTP::__setattr__ } -> std::convertible_to<
-                int(*)(CRTP*, PyObject*, PyObject*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_delattr = requires() {
-            { CRTP::__delattr__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_buffer = requires() {
-            { CRTP::__buffer__ } -> std::convertible_to<
-                int(*)(PyObject*, Py_buffer*, int)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_release_buffer = requires() {
-            { CRTP::__release_buffer__ } -> std::convertible_to<
-                void(*)(PyObject*, Py_buffer*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_doc = requires() {
-            { CRTP::__doc__ } -> std::convertible_to<const char*>;
-        };
-
-        template <typename CRTP>
-        concept has_traverse = requires() {
-            { CRTP::__traverse__ } -> std::convertible_to<
-                int(*)(CRTP*, visitproc, void*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_clear = requires() {
-            { CRTP::__clear__ } -> std::convertible_to<int(*)(CRTP*)>;
-        };
-
-        template <typename CRTP>
-        concept has_lt = requires() {
-            { CRTP::__lt__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_le = requires() {
-            { CRTP::__le__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_eq = requires() {
-            { CRTP::__eq__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_ne = requires() {
-            { CRTP::__ne__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_ge = requires() {
-            { CRTP::__ge__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_gt = requires() {
-            { CRTP::__gt__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_iter = requires() {
-            { CRTP::__iter__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
-        };
-
-        template <typename CRTP>
-        concept has_next = requires() {
-            { CRTP::__next__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
-        };
-
-        /// NOTE: tp_methods, tp_members, tp_getset are handled via static vectors
-
-        template <typename CRTP>
-        concept has_get = requires() {
-            { CRTP::__get__ } -> std::convertible_to<
-                PyObject*(*)(CRTP*, PyObject*, PyObject*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_set = requires() {
-            { CRTP::__set__ } -> std::convertible_to<
-                int(*)(CRTP*, PyObject*, PyObject*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_delete = requires() {
-            { CRTP::__delete__ } -> std::convertible_to<int(*)(CRTP*, PyObject*)>;
-        };
-
-        template <typename CRTP>
-        concept has_init = requires() {
-            { CRTP::__init__ } -> std::convertible_to<
-                int(*)(CRTP*, PyObject*, PyObject*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_new = requires() {
-            { CRTP::__new__ } -> std::convertible_to<
-                PyObject*(*)(CRTP*, PyObject*, PyObject*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_instancecheck = requires() {
-            { CRTP::__instancecheck__ } -> std::convertible_to<
-                PyObject*(*)(CRTP*, PyObject*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_subclasscheck = requires() {
-            { CRTP::__subclasscheck__ } -> std::convertible_to<
-                PyObject*(*)(CRTP*, PyObject*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_enter = requires() {
-            { CRTP::__enter__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
-        };
-
-        template <typename CRTP>
-        concept has_exit = requires() {
-            { CRTP::__exit__ } -> std::convertible_to<
-                PyObject*(*)(CRTP*, PyObject*, PyObject*, PyObject*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_aenter = requires() {
-            { CRTP::__aenter__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
-        };
-
-        template <typename CRTP>
-        concept has_aexit = requires() {
-            { CRTP::__aexit__ } -> std::convertible_to<
-                PyObject*(*)(CRTP*, PyObject*, PyObject*, PyObject*)
-            >;
-        };
-
-        template <typename CRTP>
-        concept has_reversed = requires() {
-            { CRTP::__reversed__ } -> std::convertible_to<PyObject*(*)(CRTP*)>;
-        };
-
-    }
 
     /* Marks a py::Object subclass as a type object, and exposes several helpers to
     make writing custom types as easy as possible.  Every specialization of `Type<>`
@@ -1012,6 +581,13 @@ the candidate type is implemented in C++.)doc";
         internal dictionary accessible through `__getitem__()`. */
         PyObject* demangled;
         PyObject* templates;
+        __python__* parent;  // backreference to the public template interface, or null
+        /// NOTE: by following the parent pointer, we can look up an instantiation's
+        /// exact type in the global C++ registry, then check against its parent and
+        /// again for the class itself in order to do an efficient type check.  That
+        /// would involve a single import and 2 PyType_IsSubtype() calls, which is
+        /// as good as this gets.  Built-in classes would be faster thanks to specific
+        /// API functions, and types which need more specific checks would be slower.
 
         /* Python typically uses C slots to implement its object model, which are
         usually defined statically and are therefore unable to support advanced C++
@@ -1191,7 +767,6 @@ the candidate type is implemented in C++.)doc";
         unaryfunc am_await;
         unaryfunc am_aiter;
         unaryfunc am_anext;
-        sendfunc am_send;
         getbufferproc bf_getbuffer;
         releasebufferproc bf_releasebuffer;
         binaryfunc nb_add;
@@ -1226,6 +801,7 @@ the candidate type is implemented in C++.)doc";
         binaryfunc nb_inplace_floor_divide;
         binaryfunc nb_true_divide;
         binaryfunc nb_inplace_true_divide;
+        unaryfunc nb_index;
         binaryfunc nb_matrix_multiply;
         binaryfunc nb_inplace_matrix_multiply;
 
@@ -1779,6 +1355,7 @@ the candidate type is implemented in C++.)doc";
             nb_inplace_floor_divide = nullptr;
             nb_true_divide = nullptr;
             nb_inplace_true_divide = nullptr;
+            nb_index = nullptr;
             nb_matrix_multiply = nullptr;
             nb_inplace_matrix_multiply = nullptr;
         }
@@ -2005,6 +1582,12 @@ the C++ level and retrieves their corresponding Python types.)doc";
             }
             return PyUnicode_FromStringAndSize(doc.c_str(), doc.size());
         }
+
+        /// TODO: reserving getattr/setattr for class variables interferes with the
+        /// type creation process.  If the attribute name doesn't appear in the
+        /// class variable dictionary, it should forward to the standard Python
+        /// behavior of inserting into and retrieving from the class dictionary.
+        /// -> perhaps not for template interfaces, however, which should be immutable.
 
         /* `cls.` allows access to class-level variables with shared state. */
         static PyObject* class_getattr(__python__* cls, PyObject* attr) {
@@ -3597,6 +3180,11 @@ struct __getitem__<Type<T>, Type<U>...>                     : Returns<BertrandMe
 };
 
 
+////////////////////////
+////    BINDINGS    ////
+////////////////////////
+
+
 namespace impl {
 
     template <typename CRTP, typename Wrapper, typename CppType>
@@ -3608,285 +3196,1799 @@ namespace impl {
         inline static std::vector<PyGetSetDef> tp_getset;
         inline static std::vector<PyMemberDef> tp_members;
 
-        /// TODO: these can't delegate to the base tp_new, etc. since those will point
-        /// back here recursively.
-        /// -> The only way to do that would be to also store the original slot values
-        /// in the metaclass, and delegate to them where appropriate.
-        /// -> What I have to do is initialize the type without any of these slots
-        /// filled in initially, then record their values into the metaclass, and then
-        /// replace them with the wrappers, which delegate to the PyObject* if present.
-        /// I should then be able to assign, delete, or overload the PyObject*
-        /// dynamically from Python or C++ and see the changes reflected in both
-        /// languages.
-        /// -> All of this extra logic is centralized in BaseDef::Bindings::finalize().
+        /// TODO: this requires some support when implementing overload sets and
+        /// functions in general.  First of all, a function should be able to be
+        /// templated with a member function pointer, which indicates the requirement
+        /// of a `self` parameter when it is invoked.  This `self` parameter will
+        /// either be stored as the first argument if the descriptor protocol was not
+        /// invoked, or as an implicit `args[-1]` index with
+        /// `Py_VECTORCALL_ARGUMENTS_OFFSET` otherwise.  All functions can check for a
+        /// member function pointer at compile time and insert this logic into its base
+        /// call operator to make this symmetrical.  CTAD can then be used to deduce
+        /// it in the method<"name">(&Class::method) call.  That gives the best of all
+        /// worlds.
 
-        /// TODO: what do I do about the self argument in these wrappers?
-        /// -> Invoke the descriptor protocol when accessing the slot.
-
-        static int tp_init(CRTP* self, PyObject* args, PyObject* kwds) {
-            Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
-            if (meta->tp_init) {
-                PyObject* result = PyObject_CallFunctionObjArgs(
-                    meta->tp_init,
-                    self,
-                    args,
-                    kwds,
-                    nullptr
-                );
-                if (result == nullptr) {
-                    return -1;
-                }
-                Py_DECREF(result);
-                return 0;
-            } else if (meta->tp_init) {
-                return meta->tp_init(self, args, kwds);
-            } else {
-                PyErr_Format(
-                    PyExc_TypeError,
-                    "cannot initialize object of type '%s'",
-                    repr(Type<Wrapper>()).c_str()
-                );
-                return -1;
+        /* Allocate a vectorcall argument array with an implicit self argument. */
+        static std::tuple<PyObject* const*, Py_ssize_t, PyObject*> vectorcall_args(
+            PyObject* self,
+            PyObject* args,
+            PyObject* kwargs
+        ) {
+            // allocate dynamic array with `self` as first argument
+            Py_ssize_t args_size = 0;
+            Py_ssize_t kwargs_size = 0;
+            if (args) {
+                args_size = PyTuple_GET_SIZE(args);
             }
+            if (kwargs) {
+                kwargs_size = PyDict_Size(kwargs);
+            }
+            PyObject** forward = new PyObject*[1 + args_size + kwargs_size];
+            forward[0] = self;
+
+            // insert positional args
+            Py_ssize_t i = 1;
+            Py_ssize_t stop = args_size + 1;
+            for (; i < stop; ++i) {
+                forward[i] = PyTuple_GET_ITEM(args, i - 1);
+            }
+
+            // insert keyword args
+            PyObject* kwnames = nullptr;
+            if (kwargs) {
+                kwnames = PyTuple_New(kwargs_size);
+                if (kwnames == nullptr) {
+                    delete[] forward;
+                    return {nullptr, 0, nullptr};
+                }
+                PyObject* key;
+                PyObject* value;
+                Py_ssize_t pos = 0;
+                while (PyDict_Next(kwargs, &pos, &key, &value)) {
+                    PyTuple_SET_ITEM(kwnames, pos, key);
+                    forward[i++] = value;
+                }
+            }
+
+            return {forward, i, kwnames};
         }
 
-        static PyObject* tp_new(PyTypeObject* cls, PyObject* args, PyObject* kwds) {
-            Meta* meta = reinterpret_cast<Meta*>(cls);
-            if (meta->tp_new) {
-                PyObject* result = PyObject_CallFunctionObjArgs(
-                    meta->tp_new,
-                    cls,
-                    args,
-                    kwds,
-                    nullptr
-                );
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                return result;
-            } else if (meta->base_tp_new) {
-                return meta->base_tp_new(cls, args, kwds);
-            } else {
-                PyErr_Format(
-                    PyExc_TypeError,
-                    "cannot create object of type '%s'",
-                    repr(Type<Wrapper>()).c_str()
-                );
-                return nullptr;
+        /* Allocate a vectorcall argument array *without* a self argument. */
+        static std::tuple<PyObject* const*, Py_ssize_t, PyObject*> vectorcall_args(
+            PyObject* args,
+            PyObject* kwargs
+        ) {
+            // allocate dynamic array
+            Py_ssize_t args_size = 0;
+            Py_ssize_t kwargs_size = 0;
+            if (args) {
+                args_size = PyTuple_GET_SIZE(args);
             }
+            if (kwargs) {
+                kwargs_size = PyDict_Size(kwargs);
+            }
+            PyObject** forward = new PyObject*[args_size + kwargs_size];
+
+            // insert positional args
+            Py_ssize_t i = 0;
+            for (; i < args_size; ++i) {
+                forward[i] = PyTuple_GET_ITEM(args, i);
+            }
+
+            // insert keyword args
+            PyObject* kwnames = nullptr;
+            if (kwargs) {
+                kwnames = PyTuple_New(kwargs_size);
+                if (kwnames == nullptr) {
+                    delete[] forward;
+                    return {nullptr, 0, nullptr};
+                }
+                PyObject* key;
+                PyObject* value;
+                Py_ssize_t pos = 0;
+                while (PyDict_Next(kwargs, &pos, &key, &value)) {
+                    PyTuple_SET_ITEM(kwnames, pos, key);
+                    forward[i++] = value;
+                }
+            }
+
+            return {forward, i, kwnames};
         }
 
-        static PyObject* tp_getattro(CRTP* self, PyObject* attr) {
-            Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
-            if (meta->tp_getattro) {
-                PyObject* result = PyObject_CallFunctionObjArgs(
-                    meta->tp_getattro,
-                    self,
-                    attr,
-                    nullptr
-                );
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                return result;
-            } else if (meta->base_tp_getattro) {
-                return meta->base_tp_getattro(self, attr);
-            } else {
-                PyErr_Format(
-                    PyExc_AttributeError,
-                    "cannot get attribute '%U' from object of type '%s'",
-                    attr,
-                    repr(Type<Wrapper>()).c_str()
-                );
-                return nullptr;
-            }
-        }
+        /* A collection of wrappers to insert into a type's slots in order to forward
+        to the internal overload sets. */
+        struct Slots {
 
-        static int tp_setattro(CRTP* self, PyObject* attr, PyObject* value) {
-            Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
-            if (value == nullptr) {
-                if (meta->tp_delattro) {
-                    PyObject* result = PyObject_CallFunctionObjArgs(
-                        meta->tp_delattro,
-                        self,
-                        attr,
+            static PyObject* tp_repr(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__repr__) {
+                    PyObject* const forward[] = {self};
+                    return PyObject_Vectorcall(
+                        meta->__repr__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                    if (result == nullptr) {
-                        return -1;
-                    }
-                    Py_DECREF(result);
-                    return 0;
-                } else if (meta->base_tp_setattro) {
-                    return meta->base_tp_setattro(self, attr);
+                } else if (meta->tp_repr) {
+                    return meta->tp_repr(self);
                 } else {
                     PyErr_Format(
                         PyExc_AttributeError,
-                        "cannot delete attribute '%U' from object of type '%s'",
-                        attr,
-                        repr(Type<Wrapper>()).c_str()
+                        "cannot get attribute '__repr__' from object of type "
+                        "'%U'",
+                        meta->demangled
                     );
-                    return -1;
-                }
-
-            } else {
-                if (meta->tp_setattro) {
-                    PyObject* result = PyObject_CallFunctionObjArgs(
-                        meta->tp_setattro,
-                        self,
-                        attr,
-                        value,
-                        nullptr
-                    );
-                    if (result == nullptr) {
-                        return -1;
-                    }
-                    Py_DECREF(result);
-                    return 0;
-                } else if (meta->base_tp_setattro) {
-                    return meta->base_tp_setattro(self, attr, value);
-                } else {
-                    PyErr_Format(
-                        PyExc_AttributeError,
-                        "cannot set attribute '%U' on object of type '%s'",
-                        attr,
-                        repr(Type<Wrapper>()).c_str()
-                    );
-                    return -1;
+                    return nullptr;
                 }
             }
-        }
 
-        static int mp_ass_subscript(CRTP* self, PyObject* key, PyObject* value) {
-            Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
-            if (value == nullptr) {
-                if (meta->mp_del_subscript) {
-                    PyObject* result = PyObject_CallFunctionObjArgs(
-                        meta->mp_del_subscript,
-                        self,
-                        key,
+            static Py_hash_t tp_hash(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__hash__) {
+                    PyObject* const forward[] = {self};
+                    PyObject* result = PyObject_Vectorcall(
+                        meta->__hash__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
                     if (result == nullptr) {
                         return -1;
                     }
+                    long long hash = PyLong_AsLongLong(result);
                     Py_DECREF(result);
-                    return 0;
-                } else if (meta->base_mp_ass_subscript) {
-                    return meta->base_mp_ass_subscript(self, key, value);
+                    return hash;
+                } else if (meta->tp_hash) {
+                    return meta->tp_hash(self);
                 } else {
                     PyErr_Format(
                         PyExc_TypeError,
-                        "cannot delete item '%U' from object of type '%s'",
-                        key,
-                        repr(Type<Wrapper>()).c_str()
+                        "unhashable type: '%U'",
+                        meta->demangled
                     );
                     return -1;
                 }
+            }
 
-            } else {
-                if (meta->mp_ass_subscript) {
-                    PyObject* result = PyObject_CallFunctionObjArgs(
-                        meta->mp_ass_subscript,
-                        self,
-                        key,
-                        value,
+            /// TODO: this might be able to use the __vectorcalloffset__ member to
+            /// simplify the logic and make it even more efficient.
+
+            static PyObject* tp_call(CRTP* self, PyObject* args, PyObject* kwargs) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__call__) {
+                    auto [forward, size, kwnames] = vectorcall_args(self, args, kwargs);
+                    PyObject* result = PyObject_Vectorcall(
+                        meta->__call__,
+                        forward,
+                        size | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        kwnames
+                    );
+                    delete[] forward;
+                    Py_XDECREF(kwnames);
+                    return result;
+                } else if (meta->tp_call) {
+                    return meta->tp_call(self, args, kwargs);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "'%U' object is not callable",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static PyObject* tp_str(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__str__) {
+                    PyObject* const forward[] = {self};
+                    return PyObject_Vectorcall(
+                        meta->__str__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
+                } else if (meta->tp_str) {
+                    return meta->tp_str(self);
+                } else {
+                    PyErr_Format(
+                        PyExc_AttributeError,
+                        "cannot get attribute '__str__' from object of type "
+                        "'%U'",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static PyObject* tp_getattro(CRTP* self, PyObject* attr) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__getattribute__) {
+                    PyObject* const forward[] = {self, attr};
+                    return PyObject_Vectorcall(
+                        meta->__getattribute__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->tp_getattro) {
+                    return meta->tp_getattro(self, attr);
+                } else {
+                    PyErr_Format(
+                        PyExc_AttributeError,
+                        "cannot get attribute '%U' from object of type '%U'",
+                        attr,
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static int tp_setattro(CRTP* self, PyObject* attr, PyObject* value) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (value == nullptr) {
+                    if (meta->__delattr__) {
+                        PyObject* const forward[] = {self, attr};
+                        PyObject* result = PyObject_Vectorcall(
+                            meta->__delattr__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                        if (result == nullptr) {
+                            return -1;
+                        }
+                        Py_DECREF(result);
+                        return 0;
+                    } else if (meta->tp_setattro) {
+                        return meta->tp_setattro(self, attr, value);
+                    } else {
+                        PyErr_Format(
+                            PyExc_AttributeError,
+                            "cannot delete attribute '%U' from object of type "
+                            "'%U'",
+                            attr,
+                            meta->demangled
+                        );
+                        return -1;
+                    }
+                } else {
+                    if (meta->__setattr__) {
+                        PyObject* const forward[] = {self, attr, value};
+                        PyObject* result = PyObject_Vectorcall(
+                            meta->__setattr__,
+                            forward,
+                            2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                        if (result == nullptr) {
+                            return -1;
+                        }
+                        Py_DECREF(result);
+                        return 0;
+                    } else if (meta->tp_setattro) {
+                        return meta->tp_setattro(self, attr, value);
+                    } else {
+                        PyErr_Format(
+                            PyExc_AttributeError,
+                            "cannot set attribute '%U' on object of type '%U'",
+                            attr,
+                            meta->demangled
+                        );
+                        return -1;
+                    }
+                }
+            }
+
+            static PyObject* tp_richcompare(CRTP* self, PyObject* other, int op) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                switch (op) {
+                    case Py_LT:
+                        if (meta->__lt__) {
+                            PyObject* const forward[] = {self, other};
+                            return PyObject_Vectorcall(
+                                meta->__lt__,
+                                forward,
+                                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                                nullptr
+                            );
+                        } else if (meta->tp_richcompare) {
+                            return meta->tp_richcompare(self, other, op);
+                        } else {
+                            PyErr_Format(
+                                PyExc_TypeError,
+                                "'<' not supported between instances of '%U' "
+                                "and '%s'",
+                                meta->demangled,
+                                Py_TYPE(other)->tp_name
+                            );
+                            return nullptr;
+                        }
+                    case Py_LE:
+                        if (meta->__le__) {
+                            PyObject* const forward[] = {self, other};
+                            return PyObject_Vectorcall(
+                                meta->__le__,
+                                forward,
+                                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                                nullptr
+                            );
+                        } else if (meta->tp_richcompare) {
+                            return meta->tp_richcompare(self, other, op);
+                        } else {
+                            PyErr_Format(
+                                PyExc_TypeError,
+                                "'<=' not supported between instances of '%U' "
+                                "and '%s'",
+                                meta->demangled,
+                                Py_TYPE(other)->tp_name
+                            );
+                            return nullptr;
+                        }
+                    case Py_EQ:
+                        if (meta->__eq__) {
+                            PyObject* const forward[] = {self, other};
+                            return PyObject_Vectorcall(
+                                meta->__eq__,
+                                forward,
+                                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                                nullptr
+                            );
+                        } else if (meta->tp_richcompare) {
+                            return meta->tp_richcompare(self, other, op);
+                        } else {
+                            PyErr_Format(
+                                PyExc_TypeError,
+                                "'==' not supported between instances of '%U' "
+                                "and '%s'",
+                                meta->demangled,
+                                Py_TYPE(other)->tp_name
+                            );
+                            return nullptr;
+                        }
+                    case Py_NE:
+                        if (meta->__ne__) {
+                            PyObject* const forward[] = {self, other};
+                            return PyObject_Vectorcall(
+                                meta->__ne__,
+                                forward,
+                                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                                nullptr
+                            );
+                        } else if (meta->tp_richcompare) {
+                            return meta->tp_richcompare(self, other, op);
+                        } else {
+                            PyErr_Format(
+                                PyExc_TypeError,
+                                "'!=' not supported between instances of '%U' "
+                                "and '%s'",
+                                meta->demangled,
+                                Py_TYPE(other)->tp_name
+                            );
+                            return nullptr;
+                        }
+                    case Py_GE:
+                        if (meta->__ge__) {
+                            PyObject* const forward[] = {self, other};
+                            return PyObject_Vectorcall(
+                                meta->__ge__,
+                                forward,
+                                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                                nullptr
+                            );
+                        } else if (meta->tp_richcompare) {
+                            return meta->tp_richcompare(self, other, op);
+                        } else {
+                            PyErr_Format(
+                                PyExc_TypeError,
+                                "'>=' not supported between instances of '%U' "
+                                "and '%s'",
+                                meta->demangled,
+                                Py_TYPE(other)->tp_name
+                            );
+                            return nullptr;
+                        }
+                    case Py_GT:
+                        if (meta->__gt__) {
+                            PyObject* const forward[] = {self, other};
+                            return PyObject_Vectorcall(
+                                meta->__gt__,
+                                forward,
+                                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                                nullptr
+                            );
+                        } else if (meta->tp_richcompare) {
+                            return meta->tp_richcompare(self, other, op);
+                        } else {
+                            PyErr_Format(
+                                PyExc_TypeError,
+                                "'>' not supported between instances of '%U' "
+                                "and '%s'",
+                                meta->demangled,
+                                Py_TYPE(other)->tp_name
+                            );
+                            return nullptr;
+                        }
+                    default:
+                        PyErr_Format(
+                            PyExc_SystemError,
+                            "invalid rich comparison operator"
+                        );
+                        return nullptr;
+                }
+            }
+
+            static PyObject* tp_iter(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__iter__) {
+                    PyObject* const forward[] = {self};
+                    return PyObject_Vectorcall(
+                        meta->__iter__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->tp_iter) {
+                    return meta->tp_iter(self);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "'%U' object is not iterable",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static PyObject* tp_iternext(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__next__) {
+                    PyObject* const forward[] = {self};
+                    return PyObject_Vectorcall(
+                        meta->__next__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->tp_iternext) {
+                    return meta->tp_iternext(self);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "'%U' object is not an iterator",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static PyObject* tp_descr_get(CRTP* self, PyObject* obj, PyObject* type) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__get__) {
+                    PyObject* const forward[] = {self, obj, type};
+                    return PyObject_Vectorcall(
+                        meta->__get__,
+                        forward,
+                        2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->tp_descr_get) {
+                    return meta->tp_descr_get(self, obj, type);
+                } else {
+                    PyErr_Format(
+                        PyExc_AttributeError,
+                        "cannot get attribute '%U' from object of type '%U'",
+                        meta->demangled,
+                        Py_TYPE(obj)->tp_name
+                    );
+                    return nullptr;
+                }
+            }
+
+            static PyObject* tp_descr_set(CRTP* self, PyObject* obj, PyObject* value) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (value == nullptr) {
+                    if (meta->__delete__) {
+                        PyObject* const forward[] = {self, obj};
+                        PyObject* result = PyObject_Vectorcall(
+                            meta->__delete__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                        if (result == nullptr) {
+                            return nullptr;
+                        }
+                        Py_DECREF(result);
+                        return 0;
+                    } else if (meta->tp_descr_set) {
+                        return meta->tp_descr_set(self, obj, value);
+                    } else {
+                        PyErr_Format(
+                            PyExc_AttributeError,
+                            "cannot delete attribute '%U' from object of type "
+                            "'%U'",
+                            meta->demangled,
+                            Py_TYPE(obj)->tp_name
+                        );
+                        return nullptr;
+                    }
+                } else {
+                    if (meta->__set__) {
+                        PyObject* const forward[] = {self, obj, value};
+                        PyObject* result = PyObject_Vectorcall(
+                            meta->__set__,
+                            forward,
+                            2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                        if (result == nullptr) {
+                            return nullptr;
+                        }
+                        Py_DECREF(result);
+                        return 0;
+                    } else if (meta->tp_descr_set) {
+                        return meta->tp_descr_set(self, obj, value);
+                    } else {
+                        PyErr_Format(
+                            PyExc_AttributeError,
+                            "cannot set attribute '%U' on object of type '%U'",
+                            meta->demangled,
+                            Py_TYPE(obj)->tp_name
+                        );
+                        return nullptr;
+                    }
+                }
+            }
+
+            static int tp_init(CRTP* self, PyObject* args, PyObject* kwargs) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__init__) {
+                    auto [forward, size, kwnames] = vectorcall_args(self, args, kwargs);
+                    PyObject* result = PyObject_Vectorcall(
+                        meta->__init__,
+                        forward,
+                        size | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        kwnames
+                    );
+                    delete[] forward;
+                    Py_XDECREF(kwnames);
                     if (result == nullptr) {
                         return -1;
                     }
                     Py_DECREF(result);
                     return 0;
-                } else if (meta->base_mp_ass_subscript) {
-                    return meta->base_mp_ass_subscript(self, key, value);
+                } else if (meta->tp_init) {
+                    return meta->tp_init(self, args, kwargs);
                 } else {
                     PyErr_Format(
                         PyExc_TypeError,
-                        "cannot set item '%U' on object of type '%s'",
-                        key,
-                        repr(Type<Wrapper>()).c_str()
+                        "cannot initialize object of type '%U'",
+                        meta->demangled
                     );
                     return -1;
                 }
             }
-        }
 
-        static PyObject* richcompare(CRTP* self, PyObject* other, int op) {
-            switch (op) {
-                case Py_LT:
-                    if constexpr (dunder::has_lt<CRTP>) {
-                        return CRTP::__lt__(self, other);
-                    } else {
-                        Py_RETURN_NOTIMPLEMENTED;
-                    }
-                case Py_LE:
-                    if constexpr (dunder::has_le<CRTP>) {
-                        return CRTP::__le__(self, other);
-                    } else {
-                        Py_RETURN_NOTIMPLEMENTED;
-                    }
-                case Py_EQ:
-                    if constexpr (dunder::has_eq<CRTP>) {
-                        return CRTP::__eq__(self, other);
-                    } else {
-                        Py_RETURN_NOTIMPLEMENTED;
-                    }
-                case Py_NE:
-                    if constexpr (dunder::has_ne<CRTP>) {
-                        return CRTP::__ne__(self, other);
-                    } else {
-                        Py_RETURN_NOTIMPLEMENTED;
-                    }
-                case Py_GE:
-                    if constexpr (dunder::has_ge<CRTP>) {
-                        return CRTP::__ge__(self, other);
-                    } else {
-                        Py_RETURN_NOTIMPLEMENTED;
-                    }
-                case Py_GT:
-                    if constexpr (dunder::has_gt<CRTP>) {
-                        return CRTP::__gt__(self, other);
-                    } else {
-                        Py_RETURN_NOTIMPLEMENTED;
-                    }
-                default:
+            static PyObject* tp_new(Meta* meta, PyObject* args, PyObject* kwargs) {
+                if (meta->__new__) {
+                    auto [forward, size, kwnames] = vectorcall_args(args, kwargs);
+                    PyObject* result = PyObject_Vectorcall(
+                        meta->__new__,
+                        forward,
+                        size,  // no self argument
+                        kwnames
+                    );
+                    delete[] forward;
+                    Py_XDECREF(kwnames);
+                    return result;
+                } else if (meta->tp_new) {
+                    return meta->tp_new(
+                        reinterpret_cast<PyTypeObject*>(meta),
+                        args,
+                        kwargs
+                    );
+                } else {
                     PyErr_Format(
-                        PyExc_SystemError,
-                        "unrecognized rich comparison code: %d",
-                        op
+                        PyExc_TypeError,
+                        "cannot create object of type '%U'",
+                        meta->demangled
                     );
                     return nullptr;
+                }
             }
-        }
 
-        static int descr_set(CRTP* self, PyObject* obj, PyObject* value) {
-            if (value == nullptr) {
-                if constexpr (dunder::has_delete<CRTP>) {
-                    return CRTP::__delete__(self, obj);
-                } else {
-                    PyErr_Format(
-                        PyExc_AttributeError,
-                        "cannot delete descriptor '%U' from object of type '%s'",
-                        obj,
-                        repr(Type<Wrapper>()).c_str()
+            static Py_ssize_t mp_length(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->mp_length) {
+                    PyObject* const forward[] = {self};
+                    PyObject* result = PyObject_Vectorcall(
+                        meta->mp_length,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
                     );
-                    return -1;
-                }
-            } else {
-                if constexpr (dunder::has_set<CRTP>) {
-                    return CRTP::__set__(self, obj, value);
+                    if (result == nullptr) {
+                        return -1;
+                    }
+                    Py_ssize_t length = PyLong_AsSsize_t(result);
+                    Py_DECREF(result);
+                    return length;
+                } else if (meta->mp_length) {
+                    return meta->mp_length(self);
                 } else {
                     PyErr_Format(
-                        PyExc_AttributeError,
-                        "cannot set descriptor '%U' on object of type '%s'",
-                        obj,
-                        repr(Type<Wrapper>()).c_str()
+                        PyExc_TypeError,
+                        "object of type '%U' has no len()",
+                        meta->demangled
                     );
                     return -1;
                 }
             }
-        }
+
+            static PyObject* mp_subscript(CRTP* self, PyObject* key) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->mp_subscript) {
+                    PyObject* const forward[] = {self, key};
+                    return PyObject_Vectorcall(
+                        meta->mp_subscript,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->mp_subscript) {
+                    return meta->mp_subscript(self, key);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "'%U' object is not subscriptable",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static int mp_ass_subscript(CRTP* self, PyObject* key, PyObject* value) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (value == nullptr) {
+                    if (meta->__delitem__) {
+                        PyObject* const forward[] = {self, key};
+                        PyObject* result = PyObject_Vectorcall(
+                            meta->__delitem__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                        if (result == nullptr) {
+                            return -1;
+                        }
+                        Py_DECREF(result);
+                        return 0;
+                    } else if (meta->mp_ass_subscript) {
+                        return meta->mp_ass_subscript(self, key, value);
+                    } else {
+                        PyErr_Format(
+                            PyExc_TypeError,
+                            "'%U' object does not support item assignment",
+                            meta->demangled
+                        );
+                        return -1;
+                    }
+                } else {
+                    if (meta->__setitem__) {
+                        PyObject* const forward[] = {self, key, value};
+                        PyObject* result = PyObject_Vectorcall(
+                            meta->__setitem__,
+                            forward,
+                            2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                        if (result == nullptr) {
+                            return -1;
+                        }
+                        Py_DECREF(result);
+                        return 0;
+                    } else if (meta->mp_ass_subscript) {
+                        return meta->mp_ass_subscript(self, key, value);
+                    } else {
+                        PyErr_Format(
+                            PyExc_TypeError,
+                            "'%U' object does not support item assignment",
+                            meta->demangled
+                        );
+                        return -1;
+                    }
+                }
+            }
+
+            static int sq_contains(CRTP* self, PyObject* key) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__contains__) {
+                    PyObject* const forward[] = {self, key};
+                    PyObject* result = PyObject_Vectorcall(
+                        meta->__contains__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                    if (result == nullptr) {
+                        return -1;
+                    }
+                    int cond = PyObject_IsTrue(result);
+                    Py_DECREF(result);
+                    return cond;
+                } else if (meta->sq_contains) {
+                    return meta->sq_contains(self, key);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "argument of type '%U' is not iterable",
+                        meta->demangled
+                    );
+                    return -1;
+                }
+            }
+
+            static PyObject* am_await(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__await__) {
+                    PyObject* const forward[] = {self};
+                    return PyObject_Vectorcall(
+                        meta->__await__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->am_await) {
+                    return meta->am_await(self);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "'%U' object cann't be used in 'await' expression",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static PyObject* am_aiter(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__aiter__) {
+                    PyObject* const forward[] = {self};
+                    return PyObject_Vectorcall(
+                        meta->__aiter__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->am_aiter) {
+                    return meta->am_aiter(self);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "'%U' object is not an async iterable",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static PyObject* am_anext(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__anext__) {
+                    PyObject* const forward[] = {self};
+                    return PyObject_Vectorcall(
+                        meta->__anext__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->am_anext) {
+                    return meta->am_anext(self);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "'%U' object is not an async iterator",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static int bf_getbuffer(CRTP* self, Py_buffer* view, int flags) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__buffer__) {
+                    /// TODO: this gets really complicated, and will require a deeper
+                    /// dive to implement according to Python semantics
+                } else if (meta->bf_getbuffer) {
+                    return meta->bf_getbuffer(self, view, flags);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "'%U' object does not support buffer protocol",
+                        meta->demangled
+                    );
+                    return -1;
+                }
+            }
+
+            static int bf_releasebuffer(CRTP* self, Py_buffer* view) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__buffer__) {
+                    /// TODO: this gets really complicated, and will require a deeper
+                    /// dive to implement according to Python semantics
+                } else if (meta->bf_releasebuffer) {
+                    return meta->bf_releasebuffer(self, view);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "'%U' object does not support buffer protocol",
+                        meta->demangled
+                    );
+                    return -1;
+                }
+            }
+
+            static PyObject* nb_add(PyObject* lhs, PyObject* rhs) {
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(lhs));
+                    if (meta->__add__) {
+                        PyObject* const forward[] = {lhs, rhs};
+                        return PyObject_Vectorcall(
+                            meta->__add__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_add) {
+                        return meta->nb_add(lhs, rhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(rhs));
+                    if (meta->__radd__) {
+                        PyObject* const forward[] = {rhs, lhs};
+                        return PyObject_Vectorcall(
+                            meta->__radd__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_add) {
+                        return meta->nb_add(rhs, lhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                }
+            }
+
+            static PyObject* nb_inplace_add(CRTP* self, PyObject* other) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__iadd__) {
+                    PyObject* const forward[] = {self, other};
+                    return PyObject_Vectorcall(
+                        meta->__iadd__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_inplace_add) {
+                    return meta->nb_inplace_add(self, other);
+                } else {
+                    Py_RETURN_NOTIMPLEMENTED;
+                }
+            }
+
+            static PyObject* nb_subtract(PyObject* lhs, PyObject* rhs) {
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(lhs));
+                    if (meta->__sub__) {
+                        PyObject* const forward[] = {lhs, rhs};
+                        return PyObject_Vectorcall(
+                            meta->__sub__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_subtract) {
+                        return meta->nb_subtract(lhs, rhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(rhs));
+                    if (meta->__rsub__) {
+                        PyObject* const forward[] = {rhs, lhs};
+                        return PyObject_Vectorcall(
+                            meta->__rsub__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_subtract) {
+                        return meta->nb_subtract(rhs, lhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                }
+            }
+
+            static PyObject* nb_inplace_subtract(CRTP* self, PyObject* other) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__isub__) {
+                    PyObject* const forward[] = {self, other};
+                    return PyObject_Vectorcall(
+                        meta->__isub__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_inplace_subtract) {
+                    return meta->nb_inplace_subtract(self, other);
+                } else {
+                    Py_RETURN_NOTIMPLEMENTED;
+                }
+            }
+
+            static PyObject* nb_multiply(PyObject* lhs, PyObject* rhs) {
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(lhs));
+                    if (meta->__mul__) {
+                        PyObject* const forward[] = {lhs, rhs};
+                        return PyObject_Vectorcall(
+                            meta->__mul__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_multiply) {
+                        return meta->nb_multiply(lhs, rhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(rhs));
+                    if (meta->__rmul__) {
+                        PyObject* const forward[] = {rhs, lhs};
+                        return PyObject_Vectorcall(
+                            meta->__rmul__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_multiply) {
+                        return meta->nb_multiply(rhs, lhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                }
+            }
+
+            static PyObject* nb_inplace_multiply(CRTP* self, PyObject* other) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__imul__) {
+                    PyObject* const forward[] = {self, other};
+                    return PyObject_Vectorcall(
+                        meta->__imul__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_inplace_multiply) {
+                    return meta->nb_inplace_multiply(self, other);
+                } else {
+                    Py_RETURN_NOTIMPLEMENTED;
+                }
+            }
+
+            static PyObject* nb_remainder(PyObject* lhs, PyObject* rhs) {
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(lhs));
+                    if (meta->__mod__) {
+                        PyObject* const forward[] = {lhs, rhs};
+                        return PyObject_Vectorcall(
+                            meta->__mod__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_remainder) {
+                        return meta->nb_remainder(lhs, rhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(rhs));
+                    if (meta->__rmod__) {
+                        PyObject* const forward[] = {rhs, lhs};
+                        return PyObject_Vectorcall(
+                            meta->__rmod__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_remainder) {
+                        return meta->nb_remainder(rhs, lhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                }
+            }
+
+            static PyObject* nb_inplace_remainder(CRTP* self, PyObject* other) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__imod__) {
+                    PyObject* const forward[] = {self, other};
+                    return PyObject_Vectorcall(
+                        meta->__imod__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_inplace_remainder) {
+                    return meta->nb_inplace_remainder(self, other);
+                } else {
+                    Py_RETURN_NOTIMPLEMENTED;
+                }
+            }
+
+            static PyObject* nb_divmod(PyObject* lhs, PyObject* rhs) {
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(lhs));
+                    if (meta->__divmod__) {
+                        PyObject* const forward[] = {lhs, rhs};
+                        return PyObject_Vectorcall(
+                            meta->__divmod__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_divmod) {
+                        return meta->nb_divmod(lhs, rhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(rhs));
+                    if (meta->__rdivmod__) {
+                        PyObject* const forward[] = {rhs, lhs};
+                        return PyObject_Vectorcall(
+                            meta->__rdivmod__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_divmod) {
+                        return meta->nb_divmod(rhs, lhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                }
+            }
+
+            static PyObject* nb_power(PyObject* base, PyObject* exp, PyObject* mod) {
+                if (PyType_IsSubtype(
+                    Py_TYPE(base),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(base));
+                    if (meta->__pow__) {
+                        PyObject* const forward[] = {base, exp, mod};
+                        return PyObject_Vectorcall(
+                            meta->__pow__,
+                            forward,
+                            2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_power) {
+                        return meta->nb_power(base, exp, mod);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else if (PyType_IsSubtype(
+                    Py_TYPE(exp),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(exp));
+                    if (meta->__rpow__) {
+                        PyObject* const forward[] = {exp, base, mod};
+                        return PyObject_Vectorcall(
+                            meta->__rpow__,
+                            forward,
+                            2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_power) {
+                        return meta->nb_power(exp, base, mod);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(mod));
+                    if (meta->__pow__) {
+                        PyObject* const forward[] = {mod, base, exp};
+                        return PyObject_Vectorcall(
+                            meta->__pow__,
+                            forward,
+                            2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_power) {
+                        return meta->nb_power(mod, base, exp);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                }
+            }
+
+            static PyObject* nb_inplace_power(CRTP* self, PyObject* exp, PyObject* mod) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__ipow__) {
+                    PyObject* const forward[] = {self, exp, mod};
+                    return PyObject_Vectorcall(
+                        meta->__ipow__,
+                        forward,
+                        2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_inplace_power) {
+                    return meta->nb_inplace_power(self, exp, mod);
+                } else {
+                    Py_RETURN_NOTIMPLEMENTED;
+                }
+            }
+
+            static PyObject* nb_negative(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__neg__) {
+                    PyObject* const forward[] = {self};
+                    return PyObject_Vectorcall(
+                        meta->__neg__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_negative) {
+                    return meta->nb_negative(self);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "bad operand type for unary -: '%U'",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static PyObject* nb_positive(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__pos__) {
+                    PyObject* const forward[] = {self};
+                    return PyObject_Vectorcall(
+                        meta->__pos__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_positive) {
+                    return meta->nb_positive(self);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "bad operand type for unary +: '%U'",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static PyObject* nb_absolute(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__abs__) {
+                    PyObject* const forward[] = {self};
+                    return PyObject_Vectorcall(
+                        meta->__abs__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_absolute) {
+                    return meta->nb_absolute(self);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "bad operand type for abs(): '%U'",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static int nb_bool(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__bool__) {
+                    PyObject* const forward[] = {self};
+                    PyObject* result = PyObject_Vectorcall(
+                        meta->__bool__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                    if (result == nullptr) {
+                        return -1;
+                    }
+                    int cond = PyObject_IsTrue(result);
+                    Py_DECREF(result);
+                    return cond;
+                } else if (meta->nb_bool) {
+                    return meta->nb_bool(self);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "cannot convert '%U' object to bool",
+                        meta->demangled
+                    );
+                    return -1;
+                }
+            }
+
+            static PyObject* nb_invert(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__invert__) {
+                    PyObject* const forward[] = {self};
+                    return PyObject_Vectorcall(
+                        meta->__invert__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_invert) {
+                    return meta->nb_invert(self);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "bad operand type for unary ~: '%U'",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static PyObject* nb_lshift(PyObject* lhs, PyObject* rhs) {
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(lhs));
+                    if (meta->__lshift__) {
+                        PyObject* const forward[] = {lhs, rhs};
+                        return PyObject_Vectorcall(
+                            meta->__lshift__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_lshift) {
+                        return meta->nb_lshift(lhs, rhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(rhs));
+                    if (meta->__rlshift__) {
+                        PyObject* const forward[] = {rhs, lhs};
+                        return PyObject_Vectorcall(
+                            meta->__rlshift__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_lshift) {
+                        return meta->nb_lshift(rhs, lhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                }
+            }
+
+            static PyObject* nb_inplace_lshift(CRTP* self, PyObject* other) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__ilshift__) {
+                    PyObject* const forward[] = {self, other};
+                    return PyObject_Vectorcall(
+                        meta->__ilshift__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_inplace_lshift) {
+                    return meta->nb_inplace_lshift(self, other);
+                } else {
+                    Py_RETURN_NOTIMPLEMENTED;
+                }
+            }
+
+            static PyObject* nb_rshift(PyObject* lhs, PyObject* rhs) {
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(lhs));
+                    if (meta->__rshift__) {
+                        PyObject* const forward[] = {lhs, rhs};
+                        return PyObject_Vectorcall(
+                            meta->__rshift__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_rshift) {
+                        return meta->nb_rshift(lhs, rhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(rhs));
+                    if (meta->__rrshift__) {
+                        PyObject* const forward[] = {rhs, lhs};
+                        return PyObject_Vectorcall(
+                            meta->__rrshift__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_rshift) {
+                        return meta->nb_rshift(rhs, lhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                }
+            }
+
+            static PyObject* nb_inplace_rshift(CRTP* self, PyObject* other) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__irshift__) {
+                    PyObject* const forward[] = {self, other};
+                    return PyObject_Vectorcall(
+                        meta->__irshift__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_inplace_rshift) {
+                    return meta->nb_inplace_rshift(self, other);
+                } else {
+                    Py_RETURN_NOTIMPLEMENTED;
+                }
+            }
+
+            static PyObject* nb_and(PyObject* lhs, PyObject* rhs) {
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(lhs));
+                    if (meta->__and__) {
+                        PyObject* const forward[] = {lhs, rhs};
+                        return PyObject_Vectorcall(
+                            meta->__and__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_and) {
+                        return meta->nb_and(lhs, rhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(rhs));
+                    if (meta->__rand__) {
+                        PyObject* const forward[] = {rhs, lhs};
+                        return PyObject_Vectorcall(
+                            meta->__rand__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_and) {
+                        return meta->nb_and(rhs, lhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                }
+            }
+
+            static PyObject* nb_inplace_and(CRTP* self, PyObject* other) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__iand__) {
+                    PyObject* const forward[] = {self, other};
+                    return PyObject_Vectorcall(
+                        meta->__iand__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_inplace_and) {
+                    return meta->nb_inplace_and(self, other);
+                } else {
+                    Py_RETURN_NOTIMPLEMENTED;
+                }
+            }
+
+            static PyObject* nb_xor(PyObject* lhs, PyObject* rhs) {
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(lhs));
+                    if (meta->__xor__) {
+                        PyObject* const forward[] = {lhs, rhs};
+                        return PyObject_Vectorcall(
+                            meta->__xor__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_xor) {
+                        return meta->nb_xor(lhs, rhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(rhs));
+                    if (meta->__rxor__) {
+                        PyObject* const forward[] = {rhs, lhs};
+                        return PyObject_Vectorcall(
+                            meta->__rxor__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_xor) {
+                        return meta->nb_xor(rhs, lhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                }
+            }
+
+            static PyObject* nb_inplace_xor(CRTP* self, PyObject* other) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__ixor__) {
+                    PyObject* const forward[] = {self, other};
+                    return PyObject_Vectorcall(
+                        meta->__ixor__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_inplace_xor) {
+                    return meta->nb_inplace_xor(self, other);
+                } else {
+                    Py_RETURN_NOTIMPLEMENTED;
+                }
+            }
+
+            static PyObject* nb_or(PyObject* lhs, PyObject* rhs) {
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(lhs));
+                    if (meta->__or__) {
+                        PyObject* const forward[] = {lhs, rhs};
+                        return PyObject_Vectorcall(
+                            meta->__or__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_or) {
+                        return meta->nb_or(lhs, rhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(rhs));
+                    if (meta->__ror__) {
+                        PyObject* const forward[] = {rhs, lhs};
+                        return PyObject_Vectorcall(
+                            meta->__ror__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_or) {
+                        return meta->nb_or(rhs, lhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                }
+            }
+
+            static PyObject* nb_inplace_or(CRTP* self, PyObject* other) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__ior__) {
+                    PyObject* const forward[] = {self, other};
+                    return PyObject_Vectorcall(
+                        meta->__ior__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_inplace_or) {
+                    return meta->nb_inplace_or(self, other);
+                } else {
+                    Py_RETURN_NOTIMPLEMENTED;
+                }
+            }
+
+            static PyObject* nb_int(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__int__) {
+                    PyObject* const forward[] = {self};
+                    return PyObject_Vectorcall(
+                        meta->__int__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_int) {
+                    return meta->nb_int(self);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "cannot convert '%U' object to int",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static PyObject* nb_float(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__float__) {
+                    PyObject* const forward[] = {self};
+                    return PyObject_Vectorcall(
+                        meta->__float__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_float) {
+                    return meta->nb_float(self);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "cannot convert '%U' object to float",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static PyObject* nb_floor_divide(PyObject* lhs, PyObject* rhs) {
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(lhs));
+                    if (meta->__floordiv__) {
+                        PyObject* const forward[] = {lhs, rhs};
+                        return PyObject_Vectorcall(
+                            meta->__floordiv__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_floor_divide) {
+                        return meta->nb_floor_divide(lhs, rhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(rhs));
+                    if (meta->__rfloordiv__) {
+                        PyObject* const forward[] = {rhs, lhs};
+                        return PyObject_Vectorcall(
+                            meta->__rfloordiv__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_floor_divide) {
+                        return meta->nb_floor_divide(rhs, lhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                }
+            }
+
+            static PyObject* nb_inplace_floor_divide(CRTP* self, PyObject* other) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__ifloordiv__) {
+                    PyObject* const forward[] = {self, other};
+                    return PyObject_Vectorcall(
+                        meta->__ifloordiv__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_inplace_floor_divide) {
+                    return meta->nb_inplace_floor_divide(self, other);
+                } else {
+                    Py_RETURN_NOTIMPLEMENTED;
+                }
+            }
+
+            static PyObject* nb_true_divide(PyObject* lhs, PyObject* rhs) {
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(lhs));
+                    if (meta->__truediv__) {
+                        PyObject* const forward[] = {lhs, rhs};
+                        return PyObject_Vectorcall(
+                            meta->__truediv__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_true_divide) {
+                        return meta->nb_true_divide(lhs, rhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(rhs));
+                    if (meta->__rtruediv__) {
+                        PyObject* const forward[] = {rhs, lhs};
+                        return PyObject_Vectorcall(
+                            meta->__rtruediv__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_true_divide) {
+                        return meta->nb_true_divide(rhs, lhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                }
+            }
+
+            static PyObject* nb_inplace_true_divide(CRTP* self, PyObject* other) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__itruediv__) {
+                    PyObject* const forward[] = {self, other};
+                    return PyObject_Vectorcall(
+                        meta->__itruediv__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_inplace_true_divide) {
+                    return meta->nb_inplace_true_divide(self, other);
+                } else {
+                    Py_RETURN_NOTIMPLEMENTED;
+                }
+            }
+
+            static PyObject* nb_index(CRTP* self) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__index__) {
+                    PyObject* const forward[] = {self};
+                    return PyObject_Vectorcall(
+                        meta->__index__,
+                        forward,
+                        PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_index) {
+                    return meta->nb_index(self);
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "cannot convert '%U' object to index",
+                        meta->demangled
+                    );
+                    return nullptr;
+                }
+            }
+
+            static PyObject* nb_matrix_multiply(PyObject* lhs, PyObject* rhs) {
+                if (PyType_IsSubtype(
+                    Py_TYPE(lhs),
+                    reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()))
+                )) {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(lhs));
+                    if (meta->__matmul__) {
+                        PyObject* const forward[] = {lhs, rhs};
+                        return PyObject_Vectorcall(
+                            meta->__matmul__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_matrix_multiply) {
+                        return meta->nb_matrix_multiply(lhs, rhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+
+                } else {
+                    Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(rhs));
+                    if (meta->__rmatmul__) {
+                        PyObject* const forward[] = {rhs, lhs};
+                        return PyObject_Vectorcall(
+                            meta->__rmatmul__,
+                            forward,
+                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                    } else if (meta->nb_matrix_multiply) {
+                        return meta->nb_matrix_multiply(rhs, lhs);
+                    } else {
+                        Py_RETURN_NOTIMPLEMENTED;
+                    }
+                }
+            }
+
+            static PyObject* nb_inplace_matrix_multiply(CRTP* self, PyObject* other) {
+                Meta* meta = reinterpret_cast<Meta*>(Py_TYPE(self));
+                if (meta->__imatmul__) {
+                    PyObject* const forward[] = {self, other};
+                    return PyObject_Vectorcall(
+                        meta->__imatmul__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                } else if (meta->nb_inplace_matrix_multiply) {
+                    return meta->nb_inplace_matrix_multiply(self, other);
+                } else {
+                    Py_RETURN_NOTIMPLEMENTED;
+                }
+            }
+
+        };
+
+        /// TODO: these need to be placed into tp_members?  Maybe they just don't
+        /// have to be defined at all, since they're not associated with any slots.
+        /// The metaclass's getset descriptors will handle the rest, including ensuring
+        /// a signature match.
 
         static PyObject* enter(CRTP* self, void* /* unused */) {
             return CRTP::__enter__(self);
@@ -4012,6 +5114,9 @@ namespace impl {
         Type<Wrapper> finalize(unsigned int tp_flags =
             Py_TPFLAGS_BASETYPE | Py_TPFLAGS_MANAGED_WEAKREF | Py_TPFLAGS_MANAGED_DICT
         ) {
+            /// TODO: initialize the type object without any slots, then record them
+            /// in the metaclass and replace with the slots defined above, and then
+            /// call PyType_Modified().
             static unsigned int flags;
             static std::vector<PyType_Slot> slots;
             static bool initialized = false;
