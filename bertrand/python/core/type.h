@@ -980,165 +980,254 @@ the candidate type is implemented in C++.)doc";
 
         PyTypeObject base;
 
+        /// TODO: instancecheck, subclasscheck may need updates to avoid conflicts
+        /// with overload sets, etc.
+
         /* The `instancecheck` and `subclasscheck` function pointers are used to back
         the metaclass's Python-level `__instancecheck__()` and `__subclasscheck()__`
         methods, and are automatically set during construction for each type. */
         bool(*instancecheck)(__python__*, PyObject*);
         bool(*subclasscheck)(__python__*, PyObject*);
 
-        /* C++ needs a few extra hooks to accurately model C++ types in a way that
-        shares state.  The getters and setters decribed here are implemented as
-        `tp_getset` slots on the metaclass, and describe class-level properties. */
-        struct Get {
-            PyObject*(*func)(PyObject*, void*);
-            void* closure;
+        /* C++ needs a few extra hooks to accurately model class-level variables in a
+        way that shares state with Python.  The dictionaries below are searched during
+        the metaclass's Python-level `__getattr__`, `__setattr__`, and `__delattr__`
+        methods, which are invoked whenever an unrecognized class-level attribute
+        access is attempted. */
+        struct ClassGet {
+            PyObject*(*func)(PyObject* /* self */, void* /* closure */);
+            void* closure;  // holds a pointer to a class-level C++ variable
         };
-        struct Set {
-            int(*func)(PyObject*, PyObject*, void*);
-            void* closure;
+        struct ClassSet {
+            /// NOTE: value might be null, which should delete the attribute
+            int(*func)(PyObject* /* self */, PyObject* /* value */, void* /* closure */);
+            void* closure;  // holds a pointer to a class-level C++ variable
         };
-        using Getters = std::unordered_map<std::string_view, Get>;
-        using Setters = std::unordered_map<std::string_view, Set>;
-        Getters getters;
-        Setters setters;
+        using ClassGetters = std::unordered_map<std::string_view, ClassGet>;
+        using ClassSetters = std::unordered_map<std::string_view, ClassSet>;
+        ClassGetters class_getters;
+        ClassSetters class_setters;
 
-        /* The metaclass will demangle the C++ class name and track template
-        instantiations in an internal dictionary accessible through `__getitem__()`. */
+        /* The metaclass will demangle the C++ class name and track templates via an
+        internal dictionary accessible through `__getitem__()`. */
         PyObject* demangled;
-        PyObject* template_instantiations;
+        PyObject* templates;
 
-        /* The bindings will create thin wrappers around all of the slots that are
-        accessible from Python, which delegate to an internal `py::OverloadSet`.  This
-        allows overloads to be registered from either side of the language divide just
-        like any other bertrand function, without incurring any additional overhead. */
-        PyObject* tp_init;
-        PyObject* tp_new;
-        PyObject* tp_getattro;
-        PyObject* tp_setattro;
-        PyObject* tp_delattro;
-        PyObject* tp_repr;
-        PyObject* tp_hash;
-        PyObject* tp_call;
-        PyObject* tp_str;
-        PyObject* tp_lt;
-        PyObject* tp_le;
-        PyObject* tp_eq;
-        PyObject* tp_ne;
-        PyObject* tp_ge;
-        PyObject* tp_gt;
-        PyObject* tp_iter;
-        PyObject* tp_iternext;
-        PyObject* tp_reverse;
-        PyObject* tp_enter;
-        PyObject* tp_exit;
-        PyObject* tp_descr_get;
-        PyObject* tp_descr_set;
-        PyObject* tp_descr_delete;
-        PyObject* mp_length;
-        PyObject* mp_subscript;
-        PyObject* mp_ass_subscript;
-        PyObject* mp_del_subscript;
-        PyObject* sq_contains;
-        PyObject* am_await;
-        PyObject* am_aiter;
-        PyObject* am_anext;
-        PyObject* am_send;
-        PyObject* bf_getbuffer;
-        PyObject* bf_releasebuffer;
-        PyObject* nb_add;
-        PyObject* nb_inplace_add;
-        PyObject* nb_subtract;
-        PyObject* nb_inplace_subtract;
-        PyObject* nb_multiply;
-        PyObject* nb_inplace_multiply;
-        PyObject* nb_remainder;
-        PyObject* nb_inplace_remainder;
-        PyObject* nb_divmod;
-        PyObject* nb_power;
-        PyObject* nb_inplace_power;
-        PyObject* nb_negative;
-        PyObject* nb_positive;
-        PyObject* nb_absolute;
-        PyObject* nb_bool;
-        PyObject* nb_invert;
-        PyObject* nb_lshift;
-        PyObject* nb_inplace_lshift;
-        PyObject* nb_rshift;
-        PyObject* nb_inplace_rshift;
-        PyObject* nb_and;
-        PyObject* nb_inplace_and;
-        PyObject* nb_xor;
-        PyObject* nb_inplace_xor;
-        PyObject* nb_or;
-        PyObject* nb_inplace_or;
-        PyObject* nb_int;
-        PyObject* nb_float;
-        PyObject* nb_floor_divide;
-        PyObject* nb_inplace_floor_divide;
-        PyObject* nb_true_divide;
-        PyObject* nb_inplace_true_divide;
-        PyObject* nb_matrix_multiply;
-        PyObject* nb_inplace_matrix_multiply;
+        /* Python typically uses C slots to implement its object model, which are
+        usually defined statically and are therefore unable to support advanced C++
+        features, like method overloading, templates, etc.  In order to solve this,
+        Bertrand's metaclass reserves an internal `py::OverloadSet` for each slot,
+        which defaults to null and can be populated from either side of the language
+        divide.
 
-        /* If no OverloadSet exists for a given slot, then we fall back to what Python
-        would have used as the default behavior had we not overridden the slot. */
-        initproc base_tp_init;
-        newfunc base_tp_new;
-        getattrofunc base_tp_getattro;
-        setattrofunc base_tp_setattro;
-        reprfunc base_tp_repr;
-        hashfunc base_tp_hash;
-        ternaryfunc base_tp_call;
-        reprfunc base_tp_str;
-        richcmpfunc base_tp_richcompare;
-        getiterfunc base_tp_iter;
-        iternextfunc base_tp_iternext;
-        descrgetfunc base_tp_descr_get;
-        descrsetfunc base_tp_descr_set;
-        lenfunc base_mp_length;
-        binaryfunc base_mp_subscript;
-        objobjargproc base_mp_ass_subscript;
-        objobjargproc base_sq_contains;
-        unaryfunc base_am_await;
-        unaryfunc base_am_aiter;
-        unaryfunc base_am_anext;
-        sendfunc base_am_send;
-        getbufferproc base_bf_getbuffer;
-        releasebufferproc base_bf_releasebuffer;
-        binaryfunc base_nb_add;
-        binaryfunc base_nb_inplace_add;
-        binaryfunc base_nb_subtract;
-        binaryfunc base_nb_inplace_subtract;
-        binaryfunc base_nb_multiply;
-        binaryfunc base_nb_inplace_multiply;
-        binaryfunc base_nb_remainder;
-        binaryfunc base_nb_inplace_remainder;
-        binaryfunc base_nb_divmod;
-        ternaryfunc base_nb_power;
-        ternaryfunc base_nb_inplace_power;
-        unaryfunc base_nb_negative;
-        unaryfunc base_nb_positive;
-        unaryfunc base_nb_absolute;
-        inquiry base_nb_bool;
-        unaryfunc base_nb_invert;
-        binaryfunc base_nb_lshift;
-        binaryfunc base_nb_inplace_lshift;
-        binaryfunc base_nb_rshift;
-        binaryfunc base_nb_inplace_rshift;
-        binaryfunc base_nb_and;
-        binaryfunc base_nb_inplace_and;
-        binaryfunc base_nb_xor;
-        binaryfunc base_nb_inplace_xor;
-        binaryfunc base_nb_or;
-        binaryfunc base_nb_inplace_or;
-        unaryfunc base_nb_int;
-        unaryfunc base_nb_float;
-        binaryfunc base_nb_floor_divide;
-        binaryfunc base_nb_inplace_floor_divide;
-        binaryfunc base_nb_true_divide;
-        binaryfunc base_nb_inplace_true_divide;
-        binaryfunc base_nb_matrix_multiply;
-        binaryfunc base_nb_inplace_matrix_multiply;
+        The way this is implemented is rather complicated, and deserves explanation:
+
+        When the `bindings.type<"name", Cls, Bases...>()` helper is invoked from an
+        `__export__()` script, it corresponds to the creation of a new heap type, which
+        is an instance of this class.  The type initially does not specify any slots,
+        relying on Python to inherit them from the bases like normal.  Once the type is
+        created, these inherited slots are recorded in the metaclass's `parent_*`
+        pointers, and then overridden with thin wrappers that check for a matching
+        overload set.  If one is found, then the slot forwards its arguments to the set
+        using an optimized vectorcall protocol, which accounts for `self` if
+        applicable.  If no overload set is found, then the slot will default to the
+        inherited implementation.  If no such implementation exists, then the slot will
+        raise an `AttributeError` instead.
+
+        The overload sets are stored as opaque pointers listed below, which initialize
+        to null.  They are populated by the `bindings.method<"name">()` helper in the
+        type's `__export__()` script just like all other methods, but via a slightly
+        different code path due to the presence of getset descriptors on the metaclass
+        itself.  When the helper is called with a reserved slot name (like `__init__`,
+        `__getitem__`, etc.), then a property setter is invoked, which will enforce a
+        minimal signature check and then populate the corresponding overload set with
+        the given method.  If the helper is invoked multiple times with the same name,
+        then the set will be appended to, allowing for C++-style method overloading of
+        internal Python slots.
+
+        One of the chief benefits of this system is that it allows overloads to be
+        accessed symmetrically from both sides of the language divide without any
+        special syntax.  As such, users can define a type in C++ using standard method
+        overloading and then expose it to Python, which will see the overloaded methods
+        as distinct and dispatch to the correct one based on the arguments.  Even
+        better, new overloads can be registered dynamically from either side, without
+        regard to whether the method represents a built-in slot or not.
+
+        This approach also limits the performance overhead of dynamic Python lookups as
+        much as possible by encoding everything in Python's slot system, which bypasses
+        much of the interpreter's normal attribute lookup machinery.  Besides searching
+        for an overload, the only additional work that needs to be done is a single
+        null pointer check and possible (stack) allocation for the vectorcall
+        arguments.  The result should thus have similar overall performance to a native
+        Python type, with the added benefit of C++-style method overloading.
+
+        See the Python data model for a complete list of Python dunder methods:
+            https://docs.python.org/3/reference/datamodel.html
+
+        See the Python C API for a complete list of C slots:
+            https://docs.python.org/3/c-api/typeobj.html
+        */
+        PyObject* __new__;
+        PyObject* __init__;
+        PyObject* __del__;
+        PyObject* __repr__;
+        PyObject* __str__;
+        PyObject* __bytes__;
+        PyObject* __format__;
+        PyObject* __lt__;
+        PyObject* __le__;
+        PyObject* __eq__;
+        PyObject* __ne__;
+        PyObject* __ge__;
+        PyObject* __gt__;
+        PyObject* __hash__;
+        PyObject* __bool__;
+        PyObject* __getattr__;
+        PyObject* __getattribute__;
+        PyObject* __setattr__;
+        PyObject* __delattr__;
+        PyObject* __dir__;
+        PyObject* __get__;
+        PyObject* __set__;
+        PyObject* __delete__;
+        PyObject* __init_subclass__;
+        PyObject* __set_name__;
+        PyObject* __mro_entries__;
+        PyObject* __instancecheck__;
+        PyObject* __subclasscheck__; 
+        PyObject* __class_getitem__;  // metaclass's __getitem__ always takes priority
+        PyObject* __call__;
+        PyObject* __len__;
+        PyObject* __length_hint__;
+        PyObject* __getitem__;
+        PyObject* __setitem__;
+        PyObject* __delitem__;
+        PyObject* __missing__;
+        PyObject* __iter__;
+        PyObject* __next__;
+        PyObject* __reversed__;
+        PyObject* __contains__;
+        PyObject* __add__;
+        PyObject* __sub__;
+        PyObject* __mul__;
+        PyObject* __matmul__;
+        PyObject* __truediv__;
+        PyObject* __floordiv__;
+        PyObject* __mod__;
+        PyObject* __divmod__;
+        PyObject* __pow__;
+        PyObject* __lshift__;
+        PyObject* __rshift__;
+        PyObject* __and__;
+        PyObject* __xor__;
+        PyObject* __or__;
+        PyObject* __radd__;
+        PyObject* __rsub__;
+        PyObject* __rmul__;
+        PyObject* __rmatmul__;
+        PyObject* __rtruediv__;
+        PyObject* __rfloordiv__;
+        PyObject* __rmod__;
+        PyObject* __rdivmod__;
+        PyObject* __rpow__;
+        PyObject* __rlshift__;
+        PyObject* __rrshift__;
+        PyObject* __rand__;
+        PyObject* __rxor__;
+        PyObject* __ror__;
+        PyObject* __iadd__;
+        PyObject* __isub__;
+        PyObject* __imul__;
+        PyObject* __imatmul__;
+        PyObject* __itruediv__;
+        PyObject* __ifloordiv__;
+        PyObject* __imod__;
+        PyObject* __ipow__;
+        PyObject* __ilshift__;
+        PyObject* __irshift__;
+        PyObject* __iand__;
+        PyObject* __ixor__;
+        PyObject* __ior__;
+        PyObject* __neg__;
+        PyObject* __pos__;
+        PyObject* __abs__;
+        PyObject* __invert__;
+        PyObject* __complex_py__;
+        PyObject* __int__;
+        PyObject* __float__;
+        PyObject* __index__;
+        PyObject* __round__;
+        PyObject* __trunc__;
+        PyObject* __floor__;
+        PyObject* __ceil__;
+        PyObject* __enter__;
+        PyObject* __exit__;
+        PyObject* __buffer__;
+        PyObject* __release_buffer__;
+        PyObject* __await__;
+        PyObject* __aiter__;
+        PyObject* __anext__;
+        PyObject* __aenter__;
+        PyObject* __aexit__;
+
+        /* The original Python slots are recorded here for posterity. */
+        reprfunc tp_repr;
+        hashfunc tp_hash;
+        ternaryfunc tp_call;
+        reprfunc tp_str;
+        getattrofunc tp_getattro;
+        setattrofunc tp_setattro;
+        richcmpfunc tp_richcompare;
+        getiterfunc tp_iter;
+        iternextfunc tp_iternext;
+        descrgetfunc tp_descr_get;
+        descrsetfunc tp_descr_set;
+        initproc tp_init;
+        newfunc tp_new;
+        lenfunc mp_length;
+        binaryfunc mp_subscript;
+        objobjargproc mp_ass_subscript;
+        objobjargproc sq_contains;
+        unaryfunc am_await;
+        unaryfunc am_aiter;
+        unaryfunc am_anext;
+        sendfunc am_send;
+        getbufferproc bf_getbuffer;
+        releasebufferproc bf_releasebuffer;
+        binaryfunc nb_add;
+        binaryfunc nb_inplace_add;
+        binaryfunc nb_subtract;
+        binaryfunc nb_inplace_subtract;
+        binaryfunc nb_multiply;
+        binaryfunc nb_inplace_multiply;
+        binaryfunc nb_remainder;
+        binaryfunc nb_inplace_remainder;
+        binaryfunc nb_divmod;
+        ternaryfunc nb_power;
+        ternaryfunc nb_inplace_power;
+        unaryfunc nb_negative;
+        unaryfunc nb_positive;
+        unaryfunc nb_absolute;
+        inquiry nb_bool;
+        unaryfunc nb_invert;
+        binaryfunc nb_lshift;
+        binaryfunc nb_inplace_lshift;
+        binaryfunc nb_rshift;
+        binaryfunc nb_inplace_rshift;
+        binaryfunc nb_and;
+        binaryfunc nb_inplace_and;
+        binaryfunc nb_xor;
+        binaryfunc nb_inplace_xor;
+        binaryfunc nb_or;
+        binaryfunc nb_inplace_or;
+        unaryfunc nb_int;
+        unaryfunc nb_float;
+        binaryfunc nb_floor_divide;
+        binaryfunc nb_inplace_floor_divide;
+        binaryfunc nb_true_divide;
+        binaryfunc nb_inplace_true_divide;
+        binaryfunc nb_matrix_multiply;
+        binaryfunc nb_inplace_matrix_multiply;
 
         /* Get a new reference to the metatype from the global `bertrand.python`
         module. */
@@ -1152,13 +1241,15 @@ the candidate type is implemented in C++.)doc";
         static Type __export__(Module<ModName> module) {
             static PyType_Slot slots[] = {
                 {Py_tp_doc, const_cast<char*>(__doc__.buffer)},
+                {Py_tp_traverse, reinterpret_cast<void*>(__traverse__)},
+                {Py_tp_clear, reinterpret_cast<void*>(__clear__)},
                 {Py_tp_dealloc, reinterpret_cast<void*>(__dealloc__)},
-                {Py_tp_repr, reinterpret_cast<void*>(__repr__)},
-                {Py_tp_getattro, reinterpret_cast<void*>(__getattr__)},
-                {Py_tp_setattro, reinterpret_cast<void*>(__setattr__)},
-                {Py_tp_iter, reinterpret_cast<void*>(__iter__)},
-                {Py_mp_length, reinterpret_cast<void*>(__len__)},
-                {Py_mp_subscript, reinterpret_cast<void*>(__getitem__)},
+                {Py_tp_repr, reinterpret_cast<void*>(class_repr)},
+                {Py_tp_getattro, reinterpret_cast<void*>(class_getattr)},
+                {Py_tp_setattro, reinterpret_cast<void*>(class_setattr)},
+                {Py_tp_iter, reinterpret_cast<void*>(class_iter)},
+                {Py_mp_length, reinterpret_cast<void*>(class_len)},
+                {Py_mp_subscript, reinterpret_cast<void*>(class_getitem)},
                 {Py_tp_methods, methods},
                 {Py_tp_getset, getset},
                 {0, nullptr}
@@ -1184,47 +1275,471 @@ the candidate type is implemented in C++.)doc";
             return reinterpret_steal<Type>(cls);
         }
 
-        /* Initialize the metaclass's internal fields after calling the type's Python
-        __new__() hook.  Ordinarily, these are left uninitialized, which leads to
+        /* Register the metaclass's fields with Python's cyclic garbage collector. */
+        static int __traverse__(__python__* cls, visitproc visit, void* arg) {
+            Py_VISIT(cls->demangled);
+            Py_VISIT(cls->templates);
+            Py_VISIT(cls->__new__);
+            Py_VISIT(cls->__init__);
+            Py_VISIT(cls->__del__);
+            Py_VISIT(cls->__repr__);
+            Py_VISIT(cls->__str__);
+            Py_VISIT(cls->__bytes__);
+            Py_VISIT(cls->__format__);
+            Py_VISIT(cls->__lt__);
+            Py_VISIT(cls->__le__);
+            Py_VISIT(cls->__eq__);
+            Py_VISIT(cls->__ne__);
+            Py_VISIT(cls->__ge__);
+            Py_VISIT(cls->__gt__);
+            Py_VISIT(cls->__hash__);
+            Py_VISIT(cls->__bool__);
+            Py_VISIT(cls->__getattr__);
+            Py_VISIT(cls->__getattribute__);
+            Py_VISIT(cls->__setattr__);
+            Py_VISIT(cls->__delattr__);
+            Py_VISIT(cls->__dir__);
+            Py_VISIT(cls->__get__);
+            Py_VISIT(cls->__set__);
+            Py_VISIT(cls->__delete__);
+            Py_VISIT(cls->__init_subclass__);
+            Py_VISIT(cls->__set_name__);
+            Py_VISIT(cls->__mro_entries__);
+            Py_VISIT(cls->__instancecheck__);
+            Py_VISIT(cls->__subclasscheck__);
+            Py_VISIT(cls->__class_getitem__);
+            Py_VISIT(cls->__call__);
+            Py_VISIT(cls->__len__);
+            Py_VISIT(cls->__length_hint__);
+            Py_VISIT(cls->__getitem__);
+            Py_VISIT(cls->__setitem__);
+            Py_VISIT(cls->__delitem__);
+            Py_VISIT(cls->__missing__);
+            Py_VISIT(cls->__iter__);
+            Py_VISIT(cls->__next__);
+            Py_VISIT(cls->__reversed__);
+            Py_VISIT(cls->__contains__);
+            Py_VISIT(cls->__add__);
+            Py_VISIT(cls->__sub__);
+            Py_VISIT(cls->__mul__);
+            Py_VISIT(cls->__matmul__);
+            Py_VISIT(cls->__truediv__);
+            Py_VISIT(cls->__floordiv__);
+            Py_VISIT(cls->__mod__);
+            Py_VISIT(cls->__divmod__);
+            Py_VISIT(cls->__pow__);
+            Py_VISIT(cls->__lshift__);
+            Py_VISIT(cls->__rshift__);
+            Py_VISIT(cls->__and__);
+            Py_VISIT(cls->__xor__);
+            Py_VISIT(cls->__or__);
+            Py_VISIT(cls->__radd__);
+            Py_VISIT(cls->__rsub__);
+            Py_VISIT(cls->__rmul__);
+            Py_VISIT(cls->__rmatmul__);
+            Py_VISIT(cls->__rtruediv__);
+            Py_VISIT(cls->__rfloordiv__);
+            Py_VISIT(cls->__rmod__);
+            Py_VISIT(cls->__rdivmod__);
+            Py_VISIT(cls->__rpow__);
+            Py_VISIT(cls->__rlshift__);
+            Py_VISIT(cls->__rrshift__);
+            Py_VISIT(cls->__rand__);
+            Py_VISIT(cls->__rxor__);
+            Py_VISIT(cls->__ror__);
+            Py_VISIT(cls->__iadd__);
+            Py_VISIT(cls->__isub__);
+            Py_VISIT(cls->__imul__);
+            Py_VISIT(cls->__imatmul__);
+            Py_VISIT(cls->__itruediv__);
+            Py_VISIT(cls->__ifloordiv__);
+            Py_VISIT(cls->__imod__);
+            Py_VISIT(cls->__ipow__);
+            Py_VISIT(cls->__ilshift__);
+            Py_VISIT(cls->__irshift__);
+            Py_VISIT(cls->__iand__);
+            Py_VISIT(cls->__ixor__);
+            Py_VISIT(cls->__ior__);
+            Py_VISIT(cls->__neg__);
+            Py_VISIT(cls->__pos__);
+            Py_VISIT(cls->__abs__);
+            Py_VISIT(cls->__invert__);
+            Py_VISIT(cls->__complex_py__);
+            Py_VISIT(cls->__int__);
+            Py_VISIT(cls->__float__);
+            Py_VISIT(cls->__index__);
+            Py_VISIT(cls->__round__);
+            Py_VISIT(cls->__trunc__);
+            Py_VISIT(cls->__floor__);
+            Py_VISIT(cls->__ceil__);
+            Py_VISIT(cls->__enter__);
+            Py_VISIT(cls->__exit__);
+            Py_VISIT(cls->__buffer__);
+            Py_VISIT(cls->__release_buffer__);
+            Py_VISIT(cls->__await__);
+            Py_VISIT(cls->__aiter__);
+            Py_VISIT(cls->__anext__);
+            Py_VISIT(cls->__aenter__);
+            Py_VISIT(cls->__aexit__);
+            Py_VISIT(Py_TYPE(cls));  // required for heap types
+            return 0;
+        }
+
+        /* Break reference cycles if they exist. */
+        static int __clear__(__python__* cls) {
+            Py_CLEAR(cls->demangled);
+            Py_CLEAR(cls->templates);
+            Py_CLEAR(cls->__new__);
+            Py_CLEAR(cls->__init__);
+            Py_CLEAR(cls->__del__);
+            Py_CLEAR(cls->__repr__);
+            Py_CLEAR(cls->__str__);
+            Py_CLEAR(cls->__bytes__);
+            Py_CLEAR(cls->__format__);
+            Py_CLEAR(cls->__lt__);
+            Py_CLEAR(cls->__le__);
+            Py_CLEAR(cls->__eq__);
+            Py_CLEAR(cls->__ne__);
+            Py_CLEAR(cls->__ge__);
+            Py_CLEAR(cls->__gt__);
+            Py_CLEAR(cls->__hash__);
+            Py_CLEAR(cls->__bool__);
+            Py_CLEAR(cls->__getattr__);
+            Py_CLEAR(cls->__getattribute__);
+            Py_CLEAR(cls->__setattr__);
+            Py_CLEAR(cls->__delattr__);
+            Py_CLEAR(cls->__dir__);
+            Py_CLEAR(cls->__get__);
+            Py_CLEAR(cls->__set__);
+            Py_CLEAR(cls->__delete__);
+            Py_CLEAR(cls->__init_subclass__);
+            Py_CLEAR(cls->__set_name__);
+            Py_CLEAR(cls->__mro_entries__);
+            Py_CLEAR(cls->__instancecheck__);
+            Py_CLEAR(cls->__subclasscheck__);
+            Py_CLEAR(cls->__class_getitem__);
+            Py_CLEAR(cls->__call__);
+            Py_CLEAR(cls->__len__);
+            Py_CLEAR(cls->__length_hint__);
+            Py_CLEAR(cls->__getitem__);
+            Py_CLEAR(cls->__setitem__);
+            Py_CLEAR(cls->__delitem__);
+            Py_CLEAR(cls->__missing__);
+            Py_CLEAR(cls->__iter__);
+            Py_CLEAR(cls->__next__);
+            Py_CLEAR(cls->__reversed__);
+            Py_CLEAR(cls->__contains__);
+            Py_CLEAR(cls->__add__);
+            Py_CLEAR(cls->__sub__);
+            Py_CLEAR(cls->__mul__);
+            Py_CLEAR(cls->__matmul__);
+            Py_CLEAR(cls->__truediv__);
+            Py_CLEAR(cls->__floordiv__);
+            Py_CLEAR(cls->__mod__);
+            Py_CLEAR(cls->__divmod__);
+            Py_CLEAR(cls->__pow__);
+            Py_CLEAR(cls->__lshift__);
+            Py_CLEAR(cls->__rshift__);
+            Py_CLEAR(cls->__and__);
+            Py_CLEAR(cls->__xor__);
+            Py_CLEAR(cls->__or__);
+            Py_CLEAR(cls->__radd__);
+            Py_CLEAR(cls->__rsub__);
+            Py_CLEAR(cls->__rmul__);
+            Py_CLEAR(cls->__rmatmul__);
+            Py_CLEAR(cls->__rtruediv__);
+            Py_CLEAR(cls->__rfloordiv__);
+            Py_CLEAR(cls->__rmod__);
+            Py_CLEAR(cls->__rdivmod__);
+            Py_CLEAR(cls->__rpow__);
+            Py_CLEAR(cls->__rlshift__);
+            Py_CLEAR(cls->__rrshift__);
+            Py_CLEAR(cls->__rand__);
+            Py_CLEAR(cls->__rxor__);
+            Py_CLEAR(cls->__ror__);
+            Py_CLEAR(cls->__iadd__);
+            Py_CLEAR(cls->__isub__);
+            Py_CLEAR(cls->__imul__);
+            Py_CLEAR(cls->__imatmul__);
+            Py_CLEAR(cls->__itruediv__);
+            Py_CLEAR(cls->__ifloordiv__);
+            Py_CLEAR(cls->__imod__);
+            Py_CLEAR(cls->__ipow__);
+            Py_CLEAR(cls->__ilshift__);
+            Py_CLEAR(cls->__irshift__);
+            Py_CLEAR(cls->__iand__);
+            Py_CLEAR(cls->__ixor__);
+            Py_CLEAR(cls->__ior__);
+            Py_CLEAR(cls->__neg__);
+            Py_CLEAR(cls->__pos__);
+            Py_CLEAR(cls->__abs__);
+            Py_CLEAR(cls->__invert__);
+            Py_CLEAR(cls->__complex_py__);
+            Py_CLEAR(cls->__int__);
+            Py_CLEAR(cls->__float__);
+            Py_CLEAR(cls->__index__);
+            Py_CLEAR(cls->__round__);
+            Py_CLEAR(cls->__trunc__);
+            Py_CLEAR(cls->__floor__);
+            Py_CLEAR(cls->__ceil__);
+            Py_CLEAR(cls->__enter__);
+            Py_CLEAR(cls->__exit__);
+            Py_CLEAR(cls->__buffer__);
+            Py_CLEAR(cls->__release_buffer__);
+            Py_CLEAR(cls->__await__);
+            Py_CLEAR(cls->__aiter__);
+            Py_CLEAR(cls->__anext__);
+            Py_CLEAR(cls->__aenter__);
+            Py_CLEAR(cls->__aexit__);
+            return 0;
+        }
+
+        /* Deallocate overload sets and the heap type when it falls out of scope. */
+        static void __dealloc__(__python__* cls) {
+            PyObject_GC_UnTrack(cls);
+            cls->class_getters.~ClassGetters();
+            cls->class_setters.~ClassSetters();
+            Py_XDECREF(cls->demangled);
+            Py_XDECREF(cls->templates);
+            Py_XDECREF(cls->__new__);
+            Py_XDECREF(cls->__init__);
+            Py_XDECREF(cls->__del__);
+            Py_XDECREF(cls->__repr__);
+            Py_XDECREF(cls->__str__);
+            Py_XDECREF(cls->__bytes__);
+            Py_XDECREF(cls->__format__);
+            Py_XDECREF(cls->__lt__);
+            Py_XDECREF(cls->__le__);
+            Py_XDECREF(cls->__eq__);
+            Py_XDECREF(cls->__ne__);
+            Py_XDECREF(cls->__ge__);
+            Py_XDECREF(cls->__gt__);
+            Py_XDECREF(cls->__hash__);
+            Py_XDECREF(cls->__bool__);
+            Py_XDECREF(cls->__getattr__);
+            Py_XDECREF(cls->__getattribute__);
+            Py_XDECREF(cls->__setattr__);
+            Py_XDECREF(cls->__delattr__);
+            Py_XDECREF(cls->__dir__);
+            Py_XDECREF(cls->__get__);
+            Py_XDECREF(cls->__set__);
+            Py_XDECREF(cls->__delete__);
+            Py_XDECREF(cls->__init_subclass__);
+            Py_XDECREF(cls->__set_name__);
+            Py_XDECREF(cls->__mro_entries__);
+            Py_XDECREF(cls->__instancecheck__);
+            Py_XDECREF(cls->__subclasscheck__);
+            Py_XDECREF(cls->__class_getitem__);
+            Py_XDECREF(cls->__call__);
+            Py_XDECREF(cls->__len__);
+            Py_XDECREF(cls->__length_hint__);
+            Py_XDECREF(cls->__getitem__);
+            Py_XDECREF(cls->__setitem__);
+            Py_XDECREF(cls->__delitem__);
+            Py_XDECREF(cls->__missing__);
+            Py_XDECREF(cls->__iter__);
+            Py_XDECREF(cls->__next__);
+            Py_XDECREF(cls->__reversed__);
+            Py_XDECREF(cls->__contains__);
+            Py_XDECREF(cls->__add__);
+            Py_XDECREF(cls->__sub__);
+            Py_XDECREF(cls->__mul__);
+            Py_XDECREF(cls->__matmul__);
+            Py_XDECREF(cls->__truediv__);
+            Py_XDECREF(cls->__floordiv__);
+            Py_XDECREF(cls->__mod__);
+            Py_XDECREF(cls->__divmod__);
+            Py_XDECREF(cls->__pow__);
+            Py_XDECREF(cls->__lshift__);
+            Py_XDECREF(cls->__rshift__);
+            Py_XDECREF(cls->__and__);
+            Py_XDECREF(cls->__xor__);
+            Py_XDECREF(cls->__or__);
+            Py_XDECREF(cls->__radd__);
+            Py_XDECREF(cls->__rsub__);
+            Py_XDECREF(cls->__rmul__);
+            Py_XDECREF(cls->__rmatmul__);
+            Py_XDECREF(cls->__rtruediv__);
+            Py_XDECREF(cls->__rfloordiv__);
+            Py_XDECREF(cls->__rmod__);
+            Py_XDECREF(cls->__rdivmod__);
+            Py_XDECREF(cls->__rpow__);
+            Py_XDECREF(cls->__rlshift__);
+            Py_XDECREF(cls->__rrshift__);
+            Py_XDECREF(cls->__rand__);
+            Py_XDECREF(cls->__rxor__);
+            Py_XDECREF(cls->__ror__);
+            Py_XDECREF(cls->__iadd__);
+            Py_XDECREF(cls->__isub__);
+            Py_XDECREF(cls->__imul__);
+            Py_XDECREF(cls->__imatmul__);
+            Py_XDECREF(cls->__itruediv__);
+            Py_XDECREF(cls->__ifloordiv__);
+            Py_XDECREF(cls->__imod__);
+            Py_XDECREF(cls->__ipow__);
+            Py_XDECREF(cls->__ilshift__);
+            Py_XDECREF(cls->__irshift__);
+            Py_XDECREF(cls->__iand__);
+            Py_XDECREF(cls->__ixor__);
+            Py_XDECREF(cls->__ior__);
+            Py_XDECREF(cls->__neg__);
+            Py_XDECREF(cls->__pos__);
+            Py_XDECREF(cls->__abs__);
+            Py_XDECREF(cls->__invert__);
+            Py_XDECREF(cls->__complex_py__);
+            Py_XDECREF(cls->__int__);
+            Py_XDECREF(cls->__float__);
+            Py_XDECREF(cls->__index__);
+            Py_XDECREF(cls->__round__);
+            Py_XDECREF(cls->__trunc__);
+            Py_XDECREF(cls->__floor__);
+            Py_XDECREF(cls->__ceil__);
+            Py_XDECREF(cls->__enter__);
+            Py_XDECREF(cls->__exit__);
+            Py_XDECREF(cls->__buffer__);
+            Py_XDECREF(cls->__release_buffer__);
+            Py_XDECREF(cls->__await__);
+            Py_XDECREF(cls->__aiter__);
+            Py_XDECREF(cls->__anext__);
+            Py_XDECREF(cls->__aenter__);
+            Py_XDECREF(cls->__aexit__);
+            PyTypeObject* type = Py_TYPE(cls);
+            type->tp_free(cls);
+            Py_DECREF(type);  // required for heap types
+        }
+
+        /* Initialize the metaclass's internal fields within the `bindings.finalize()`
+        helper.  Without this, the pointers are left uninitialized, which leads to
         undefined behavior when accessed. */
         void initialize() {
             instancecheck = nullptr;
             subclasscheck = nullptr;
-            new (&getters) Getters();
-            new (&setters) Setters();
+            new (&class_getters) ClassGetters();
+            new (&class_setters) ClassSetters();
             std::string s = "<class '" + impl::demangle(base.tp_name) + "'>";
             demangled = PyUnicode_FromStringAndSize(s.c_str(), s.size());
             if (demangled == nullptr) {
                 Exception::from_python();
             }
-            template_instantiations = nullptr;
+            templates = nullptr;
+            __new__ = nullptr;
+            __init__ = nullptr;
+            __del__ = nullptr;
+            __repr__ = nullptr;
+            __str__ = nullptr;
+            __bytes__ = nullptr;
+            __format__ = nullptr;
+            __lt__ = nullptr;
+            __le__ = nullptr;
+            __eq__ = nullptr;
+            __ne__ = nullptr;
+            __ge__ = nullptr;
+            __gt__ = nullptr;
+            __hash__ = nullptr;
+            __bool__ = nullptr;
+            __getattr__ = nullptr;
+            __getattribute__ = nullptr;
+            __setattr__ = nullptr;
+            __delattr__ = nullptr;
+            __dir__ = nullptr;
+            __get__ = nullptr;
+            __set__ = nullptr;
+            __delete__ = nullptr;
+            __init_subclass__ = nullptr;
+            __set_name__ = nullptr;
+            __mro_entries__ = nullptr;
+            __instancecheck__ = nullptr;
+            __subclasscheck__ = nullptr;
+            __class_getitem__ = nullptr;
+            __call__ = nullptr;
+            __len__ = nullptr;
+            __length_hint__ = nullptr;
+            __getitem__ = nullptr;
+            __setitem__ = nullptr;
+            __delitem__ = nullptr;
+            __missing__ = nullptr;
+            __iter__ = nullptr;
+            __next__ = nullptr;
+            __reversed__ = nullptr;
+            __contains__ = nullptr;
+            __add__ = nullptr;
+            __sub__ = nullptr;
+            __mul__ = nullptr;
+            __matmul__ = nullptr;
+            __truediv__ = nullptr;
+            __floordiv__ = nullptr;
+            __mod__ = nullptr;
+            __divmod__ = nullptr;
+            __pow__ = nullptr;
+            __lshift__ = nullptr;
+            __rshift__ = nullptr;
+            __and__ = nullptr;
+            __xor__ = nullptr;
+            __or__ = nullptr;
+            __radd__ = nullptr;
+            __rsub__ = nullptr;
+            __rmul__ = nullptr;
+            __rmatmul__ = nullptr;
+            __rtruediv__ = nullptr;
+            __rfloordiv__ = nullptr;
+            __rmod__ = nullptr;
+            __rdivmod__ = nullptr;
+            __rpow__ = nullptr;
+            __rlshift__ = nullptr;
+            __rrshift__ = nullptr;
+            __rand__ = nullptr;
+            __rxor__ = nullptr;
+            __ror__ = nullptr;
+            __iadd__ = nullptr;
+            __isub__ = nullptr;
+            __imul__ = nullptr;
+            __imatmul__ = nullptr;
+            __itruediv__ = nullptr;
+            __ifloordiv__ = nullptr;
+            __imod__ = nullptr;
+            __ipow__ = nullptr;
+            __ilshift__ = nullptr;
+            __irshift__ = nullptr;
+            __iand__ = nullptr;
+            __ixor__ = nullptr;
+            __ior__ = nullptr;
+            __neg__ = nullptr;
+            __pos__ = nullptr;
+            __abs__ = nullptr;
+            __invert__ = nullptr;
+            __complex_py__ = nullptr;
+            __int__ = nullptr;
+            __float__ = nullptr;
+            __index__ = nullptr;
+            __round__ = nullptr;
+            __trunc__ = nullptr;
+            __floor__ = nullptr;
+            __ceil__ = nullptr;
+            __enter__ = nullptr;
+            __exit__ = nullptr;
+            __buffer__ = nullptr;
+            __release_buffer__ = nullptr;
+            __await__ = nullptr;
+            __aiter__ = nullptr;
+            __anext__ = nullptr;
+            __aenter__ = nullptr;
+            __aexit__ = nullptr;
             tp_init = nullptr;
             tp_new = nullptr;
             tp_getattro = nullptr;
             tp_setattro = nullptr;
-            tp_delattro = nullptr;
             tp_repr = nullptr;
             tp_hash = nullptr;
             tp_call = nullptr;
             tp_str = nullptr;
-            tp_lt = nullptr;
-            tp_le = nullptr;
-            tp_eq = nullptr;
-            tp_ne = nullptr;
-            tp_ge = nullptr;
-            tp_gt = nullptr;
+            tp_richcompare = nullptr;
             tp_iter = nullptr;
             tp_iternext = nullptr;
-            tp_reverse = nullptr;
-            tp_enter = nullptr;
-            tp_exit = nullptr;
             tp_descr_get = nullptr;
             tp_descr_set = nullptr;
-            tp_descr_delete = nullptr;
             mp_length = nullptr;
             mp_subscript = nullptr;
             mp_ass_subscript = nullptr;
-            mp_del_subscript = nullptr;
             sq_contains = nullptr;
             am_await = nullptr;
             am_aiter = nullptr;
@@ -1266,63 +1781,6 @@ the candidate type is implemented in C++.)doc";
             nb_inplace_true_divide = nullptr;
             nb_matrix_multiply = nullptr;
             nb_inplace_matrix_multiply = nullptr;
-            base_tp_init = nullptr;
-            base_tp_new = nullptr;
-            base_tp_getattro = nullptr;
-            base_tp_setattro = nullptr;
-            base_tp_repr = nullptr;
-            base_tp_hash = nullptr;
-            base_tp_call = nullptr;
-            base_tp_str = nullptr;
-            base_tp_richcompare = nullptr;
-            base_tp_iter = nullptr;
-            base_tp_iternext = nullptr;
-            base_tp_descr_get = nullptr;
-            base_tp_descr_set = nullptr;
-            base_mp_length = nullptr;
-            base_mp_subscript = nullptr;
-            base_mp_ass_subscript = nullptr;
-            base_sq_contains = nullptr;
-            base_am_await = nullptr;
-            base_am_aiter = nullptr;
-            base_am_anext = nullptr;
-            base_am_send = nullptr;
-            base_bf_getbuffer = nullptr;
-            base_bf_releasebuffer = nullptr;
-            base_nb_add = nullptr;
-            base_nb_inplace_add = nullptr;
-            base_nb_subtract = nullptr;
-            base_nb_inplace_subtract = nullptr;
-            base_nb_multiply = nullptr;
-            base_nb_inplace_multiply = nullptr;
-            base_nb_remainder = nullptr;
-            base_nb_inplace_remainder = nullptr;
-            base_nb_divmod = nullptr;
-            base_nb_power = nullptr;
-            base_nb_inplace_power = nullptr;
-            base_nb_negative = nullptr;
-            base_nb_positive = nullptr;
-            base_nb_absolute = nullptr;
-            base_nb_bool = nullptr;
-            base_nb_invert = nullptr;
-            base_nb_lshift = nullptr;
-            base_nb_inplace_lshift = nullptr;
-            base_nb_rshift = nullptr;
-            base_nb_inplace_rshift = nullptr;
-            base_nb_and = nullptr;
-            base_nb_inplace_and = nullptr;
-            base_nb_xor = nullptr;
-            base_nb_inplace_xor = nullptr;
-            base_nb_or = nullptr;
-            base_nb_inplace_or = nullptr;
-            base_nb_int = nullptr;
-            base_nb_float = nullptr;
-            base_nb_floor_divide = nullptr;
-            base_nb_inplace_floor_divide = nullptr;
-            base_nb_true_divide = nullptr;
-            base_nb_inplace_true_divide = nullptr;
-            base_nb_matrix_multiply = nullptr;
-            base_nb_inplace_matrix_multiply = nullptr;
         }
 
         /* Create a trivial instance of the metaclass to serve as a Python entry point
@@ -1372,8 +1830,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 cls->initialize();
                 cls->instancecheck = template_instancecheck;
                 cls->subclasscheck = template_subclasscheck;
-                cls->template_instantiations = PyDict_New();
-                if (cls->template_instantiations == nullptr) {
+                cls->templates = PyDict_New();
+                if (cls->templates == nullptr) {
                     Exception::from_python();
                 }
                 return reinterpret_steal<BertrandMeta>(reinterpret_cast<PyObject*>(cls));
@@ -1381,26 +1839,24 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 Py_DECREF(cls);
                 throw;
             }
-            
-        };
+        }
 
-        /* `repr(cls)` displays the demangled C++ name.  */
-        static PyObject* __repr__(__python__* cls) {
+        /* `repr(cls)` displays the type's demangled C++ name.  */
+        static PyObject* class_repr(__python__* cls) {
             return Py_XNewRef(cls->demangled);
         }
 
         /* `len(cls)` yields the number of template instantiations registered to this
         type.  This will always succeed: testing `if cls` in Python is sufficient to
         determine whether it is a template interface that requires instantiation. */
-        static Py_ssize_t __len__(__python__* cls) {
-            return cls->template_instantiations ?
-                PyDict_Size(cls->template_instantiations) : 0;
+        static Py_ssize_t class_len(__python__* cls) {
+            return cls->templates ? PyDict_Size(cls->templates) : 0;
         }
 
         /* `iter(cls)` yields individual template instantiations in the order in which
         they were defined. */
-        static PyObject* __iter__(__python__* cls) {
-            if (cls->template_instantiations == nullptr) {
+        static PyObject* class_iter(__python__* cls) {
+            if (cls->templates == nullptr) {
                 PyErr_Format(
                     PyExc_TypeError,
                     "class '%U' has no template instantiations",
@@ -1408,18 +1864,31 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 );
                 return nullptr;
             }
-            return PyObject_GetIter(cls->template_instantiations);
+            return PyObject_GetIter(cls->templates);
         }
 
         /* `cls[]` allows navigation of the C++ template hierarchy. */
-        static PyObject* __getitem__(__python__* cls, PyObject* key) {
-            if (cls->template_instantiations == nullptr) {
-                PyErr_Format(
-                    PyExc_TypeError,
-                    "class '%U' has no template instantiations",
-                    cls->demangled
-                );
-                return nullptr;
+        static PyObject* class_getitem(__python__* cls, PyObject* key) {
+            if (cls->templates == nullptr) {
+                /// TODO: maybe this can more efficiently check whether the
+                /// __class_getitem__ overload set exists?
+                if (PyObject_HasAttr(
+                    reinterpret_cast<PyObject*>(cls),
+                    impl::TemplateString<"__class_getitem__">::ptr
+                )) {
+                    return PyObject_CallMethodOneArg(
+                        reinterpret_cast<PyObject*>(cls),
+                        impl::TemplateString<"__class_getitem__">::ptr,
+                        key
+                    );
+                } else {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "class '%U' has no template instantiations",
+                        cls->demangled
+                    );
+                    return nullptr;
+                }
             }
 
             if (PyTuple_Check(key)) {
@@ -1432,7 +1901,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
             }
 
             try {
-                PyObject* value = PyDict_GetItem(cls->template_instantiations, key);
+                PyObject* value = PyDict_GetItem(cls->templates, key);
                 if (value == nullptr) {
                     const char* demangled = PyUnicode_AsUTF8(cls->demangled);
                     if (demangled == nullptr) {
@@ -1472,17 +1941,17 @@ the C++ level and retrieves their corresponding Python types.)doc";
             }
         }
 
-        /// TODO: will this __doc__ slot be overridden by docs on instances of the
-        /// metaclass?
-
         /* The metaclass's __doc__ string defaults to a getset descriptor that appends
         the type's template instantiations to the normal `tp_doc` slot. */
-        static PyObject* doc(__python__* cls, void*) {
+        static PyObject* class_doc(__python__* cls, void*) {
             std::string doc = cls->base.tp_doc;
-            if (cls->template_instantiations) {
-                doc += "\n\n";
+            if (cls->templates) {
+                if (!doc.ends_with("\n")) {
+                    doc += "\n";
+                }
+                doc += "\n";
                 std::string header = "Instantations (" + std::to_string(PyDict_Size(
-                    cls->template_instantiations
+                    cls->templates
                 )) + ")";
                 doc += header + "\n" + std::string(header.size() - 1, '-') + "\n";
 
@@ -1491,7 +1960,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 PyObject* value;
                 Py_ssize_t pos = 0;
                 while (PyDict_Next(
-                    cls->template_instantiations,
+                    cls->templates,
                     &pos,
                     &key,
                     &value
@@ -1538,15 +2007,15 @@ the C++ level and retrieves their corresponding Python types.)doc";
         }
 
         /* `cls.` allows access to class-level variables with shared state. */
-        static PyObject* __getattr__(__python__* cls, PyObject* attr) {
+        static PyObject* class_getattr(__python__* cls, PyObject* attr) {
             Py_ssize_t size;
             const char* name = PyUnicode_AsUTF8AndSize(attr, &size);
             if (name == nullptr) {
                 return nullptr;
             }
             std::string_view view {name, static_cast<size_t>(size)};
-            auto it = cls->getters.find(view);
-            if (it != cls->getters.end()) {
+            auto it = cls->class_getters.find(view);
+            if (it != cls->class_getters.end()) {
                 return it->second.func(
                     reinterpret_cast<PyObject*>(cls),
                     it->second.closure
@@ -1562,15 +2031,15 @@ the C++ level and retrieves their corresponding Python types.)doc";
         }
 
         /* `cls. = ...` allows assignment to class-level variables with shared state. */
-        static int __setattr__(__python__* cls, PyObject* attr, PyObject* value) {
+        static int class_setattr(__python__* cls, PyObject* attr, PyObject* value) {
             Py_ssize_t size;
             const char* name = PyUnicode_AsUTF8AndSize(attr, &size);
             if (name == nullptr) {
                 return -1;
             }
             std::string_view view {name, static_cast<size_t>(size)};
-            auto it = cls->setters.find(view);
-            if (it != cls->setters.end()) {
+            auto it = cls->class_setters.find(view);
+            if (it != cls->class_setters.end()) {
                 return it->second.func(
                     reinterpret_cast<PyObject*>(cls),
                     value,
@@ -1588,7 +2057,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
 
         /* isinstance(obj, cls) forwards the behavior of the __isinstance__ control
         struct and accounts for possible template instantiations. */
-        static PyObject* __instancecheck__(__python__* cls, PyObject* instance) {
+        static PyObject* class_instancecheck(__python__* cls, PyObject* instance) {
             try {
                 return PyBool_FromLong(cls->instancecheck(cls, instance));
             } catch (...) {
@@ -1599,241 +2068,13 @@ the C++ level and retrieves their corresponding Python types.)doc";
 
         /* issubclass(sub, cls) forwards the behavior of the __issubclass__ control
         struct and accounts for possible template instantiations. */
-        static PyObject* __subclasscheck__(__python__* cls, PyObject* subclass) {
+        static PyObject* class_subclasscheck(__python__* cls, PyObject* subclass) {
             try {
                 return PyBool_FromLong(cls->subclasscheck(cls, subclass));
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
             }
-        }
-
-        static int __traverse__(__python__* cls, visitproc visit, void* arg) {
-            Py_VISIT(cls->demangled);
-            Py_VISIT(cls->template_instantiations);
-            Py_VISIT(cls->tp_init);
-            Py_VISIT(cls->tp_new);
-            Py_VISIT(cls->tp_getattro);
-            Py_VISIT(cls->tp_setattro);
-            Py_VISIT(cls->tp_delattro);
-            Py_VISIT(cls->tp_repr);
-            Py_VISIT(cls->tp_hash);
-            Py_VISIT(cls->tp_call);
-            Py_VISIT(cls->tp_str);
-            Py_VISIT(cls->tp_lt);
-            Py_VISIT(cls->tp_le);
-            Py_VISIT(cls->tp_eq);
-            Py_VISIT(cls->tp_ne);
-            Py_VISIT(cls->tp_ge);
-            Py_VISIT(cls->tp_gt);
-            Py_VISIT(cls->tp_iter);
-            Py_VISIT(cls->tp_iternext);
-            Py_VISIT(cls->tp_reverse);
-            Py_VISIT(cls->tp_enter);
-            Py_VISIT(cls->tp_exit);
-            Py_VISIT(cls->tp_descr_get);
-            Py_VISIT(cls->tp_descr_set);
-            Py_VISIT(cls->tp_descr_delete);
-            Py_VISIT(cls->mp_length);
-            Py_VISIT(cls->mp_subscript);
-            Py_VISIT(cls->mp_ass_subscript);
-            Py_VISIT(cls->mp_del_subscript);
-            Py_VISIT(cls->sq_contains);
-            Py_VISIT(cls->am_await);
-            Py_VISIT(cls->am_aiter);
-            Py_VISIT(cls->am_anext);
-            Py_VISIT(cls->am_send);
-            Py_VISIT(cls->bf_getbuffer);
-            Py_VISIT(cls->bf_releasebuffer);
-            Py_VISIT(cls->nb_add);
-            Py_VISIT(cls->nb_inplace_add);
-            Py_VISIT(cls->nb_subtract);
-            Py_VISIT(cls->nb_inplace_subtract);
-            Py_VISIT(cls->nb_multiply);
-            Py_VISIT(cls->nb_inplace_multiply);
-            Py_VISIT(cls->nb_remainder);
-            Py_VISIT(cls->nb_inplace_remainder);
-            Py_VISIT(cls->nb_divmod);
-            Py_VISIT(cls->nb_power);
-            Py_VISIT(cls->nb_inplace_power);
-            Py_VISIT(cls->nb_negative);
-            Py_VISIT(cls->nb_positive);
-            Py_VISIT(cls->nb_absolute);
-            Py_VISIT(cls->nb_bool);
-            Py_VISIT(cls->nb_invert);
-            Py_VISIT(cls->nb_lshift);
-            Py_VISIT(cls->nb_inplace_lshift);
-            Py_VISIT(cls->nb_rshift);
-            Py_VISIT(cls->nb_inplace_rshift);
-            Py_VISIT(cls->nb_and);
-            Py_VISIT(cls->nb_inplace_and);
-            Py_VISIT(cls->nb_xor);
-            Py_VISIT(cls->nb_inplace_xor);
-            Py_VISIT(cls->nb_or);
-            Py_VISIT(cls->nb_inplace_or);
-            Py_VISIT(cls->nb_int);
-            Py_VISIT(cls->nb_float);
-            Py_VISIT(cls->nb_floor_divide);
-            Py_VISIT(cls->nb_inplace_floor_divide);
-            Py_VISIT(cls->nb_true_divide);
-            Py_VISIT(cls->nb_inplace_true_divide);
-            Py_VISIT(cls->nb_matrix_multiply);
-            Py_VISIT(cls->nb_inplace_matrix_multiply);
-            Py_VISIT(Py_TYPE(cls));  // required for heap types
-            return 0;
-        }
-
-        static int __clear__(__python__* cls) {
-            Py_CLEAR(cls->demangled);
-            Py_CLEAR(cls->template_instantiations);
-            Py_CLEAR(cls->tp_init);
-            Py_CLEAR(cls->tp_new);
-            Py_CLEAR(cls->tp_getattro);
-            Py_CLEAR(cls->tp_setattro);
-            Py_CLEAR(cls->tp_delattro);
-            Py_CLEAR(cls->tp_repr);
-            Py_CLEAR(cls->tp_hash);
-            Py_CLEAR(cls->tp_call);
-            Py_CLEAR(cls->tp_str);
-            Py_CLEAR(cls->tp_lt);
-            Py_CLEAR(cls->tp_le);
-            Py_CLEAR(cls->tp_eq);
-            Py_CLEAR(cls->tp_ne);
-            Py_CLEAR(cls->tp_ge);
-            Py_CLEAR(cls->tp_gt);
-            Py_CLEAR(cls->tp_iter);
-            Py_CLEAR(cls->tp_iternext);
-            Py_CLEAR(cls->tp_reverse);
-            Py_CLEAR(cls->tp_enter);
-            Py_CLEAR(cls->tp_exit);
-            Py_CLEAR(cls->tp_descr_get);
-            Py_CLEAR(cls->tp_descr_set);
-            Py_CLEAR(cls->tp_descr_delete);
-            Py_CLEAR(cls->mp_length);
-            Py_CLEAR(cls->mp_subscript);
-            Py_CLEAR(cls->mp_ass_subscript);
-            Py_CLEAR(cls->mp_del_subscript);
-            Py_CLEAR(cls->sq_contains);
-            Py_CLEAR(cls->am_await);
-            Py_CLEAR(cls->am_aiter);
-            Py_CLEAR(cls->am_anext);
-            Py_CLEAR(cls->am_send);
-            Py_CLEAR(cls->bf_getbuffer);
-            Py_CLEAR(cls->bf_releasebuffer);
-            Py_CLEAR(cls->nb_add);
-            Py_CLEAR(cls->nb_inplace_add);
-            Py_CLEAR(cls->nb_subtract);
-            Py_CLEAR(cls->nb_inplace_subtract);
-            Py_CLEAR(cls->nb_multiply);
-            Py_CLEAR(cls->nb_inplace_multiply);
-            Py_CLEAR(cls->nb_remainder);
-            Py_CLEAR(cls->nb_inplace_remainder);
-            Py_CLEAR(cls->nb_divmod);
-            Py_CLEAR(cls->nb_power);
-            Py_CLEAR(cls->nb_inplace_power);
-            Py_CLEAR(cls->nb_negative);
-            Py_CLEAR(cls->nb_positive);
-            Py_CLEAR(cls->nb_absolute);
-            Py_CLEAR(cls->nb_bool);
-            Py_CLEAR(cls->nb_invert);
-            Py_CLEAR(cls->nb_lshift);
-            Py_CLEAR(cls->nb_inplace_lshift);
-            Py_CLEAR(cls->nb_rshift);
-            Py_CLEAR(cls->nb_inplace_rshift);
-            Py_CLEAR(cls->nb_and);
-            Py_CLEAR(cls->nb_inplace_and);
-            Py_CLEAR(cls->nb_xor);
-            Py_CLEAR(cls->nb_inplace_xor);
-            Py_CLEAR(cls->nb_or);
-            Py_CLEAR(cls->nb_inplace_or);
-            Py_CLEAR(cls->nb_int);
-            Py_CLEAR(cls->nb_float);
-            Py_CLEAR(cls->nb_floor_divide);
-            Py_CLEAR(cls->nb_inplace_floor_divide);
-            Py_CLEAR(cls->nb_true_divide);
-            Py_CLEAR(cls->nb_inplace_true_divide);
-            Py_CLEAR(cls->nb_matrix_multiply);
-            Py_CLEAR(cls->nb_inplace_matrix_multiply);
-            return 0;
-        }
-
-        static void __dealloc__(__python__* cls) {
-            PyObject_GC_UnTrack(cls);
-            cls->getters.~Getters();
-            cls->setters.~Setters();
-            Py_XDECREF(cls->demangled);
-            Py_XDECREF(cls->template_instantiations);
-            Py_XDECREF(cls->tp_init);
-            Py_XDECREF(cls->tp_new);
-            Py_XDECREF(cls->tp_getattro);
-            Py_XDECREF(cls->tp_setattro);
-            Py_XDECREF(cls->tp_delattro);
-            Py_XDECREF(cls->tp_repr);
-            Py_XDECREF(cls->tp_hash);
-            Py_XDECREF(cls->tp_call);
-            Py_XDECREF(cls->tp_str);
-            Py_XDECREF(cls->tp_lt);
-            Py_XDECREF(cls->tp_le);
-            Py_XDECREF(cls->tp_eq);
-            Py_XDECREF(cls->tp_ne);
-            Py_XDECREF(cls->tp_ge);
-            Py_XDECREF(cls->tp_gt);
-            Py_XDECREF(cls->tp_iter);
-            Py_XDECREF(cls->tp_iternext);
-            Py_XDECREF(cls->tp_reverse);
-            Py_XDECREF(cls->tp_enter);
-            Py_XDECREF(cls->tp_exit);
-            Py_XDECREF(cls->tp_descr_get);
-            Py_XDECREF(cls->tp_descr_set);
-            Py_XDECREF(cls->tp_descr_delete);
-            Py_XDECREF(cls->mp_length);
-            Py_XDECREF(cls->mp_subscript);
-            Py_XDECREF(cls->mp_ass_subscript);
-            Py_XDECREF(cls->mp_del_subscript);
-            Py_XDECREF(cls->sq_contains);
-            Py_XDECREF(cls->am_await);
-            Py_XDECREF(cls->am_aiter);
-            Py_XDECREF(cls->am_anext);
-            Py_XDECREF(cls->am_send);
-            Py_XDECREF(cls->bf_getbuffer);
-            Py_XDECREF(cls->bf_releasebuffer);
-            Py_XDECREF(cls->nb_add);
-            Py_XDECREF(cls->nb_inplace_add);
-            Py_XDECREF(cls->nb_subtract);
-            Py_XDECREF(cls->nb_inplace_subtract);
-            Py_XDECREF(cls->nb_multiply);
-            Py_XDECREF(cls->nb_inplace_multiply);
-            Py_XDECREF(cls->nb_remainder);
-            Py_XDECREF(cls->nb_inplace_remainder);
-            Py_XDECREF(cls->nb_divmod);
-            Py_XDECREF(cls->nb_power);
-            Py_XDECREF(cls->nb_inplace_power);
-            Py_XDECREF(cls->nb_negative);
-            Py_XDECREF(cls->nb_positive);
-            Py_XDECREF(cls->nb_absolute);
-            Py_XDECREF(cls->nb_bool);
-            Py_XDECREF(cls->nb_invert);
-            Py_XDECREF(cls->nb_lshift);
-            Py_XDECREF(cls->nb_inplace_lshift);
-            Py_XDECREF(cls->nb_rshift);
-            Py_XDECREF(cls->nb_inplace_rshift);
-            Py_XDECREF(cls->nb_and);
-            Py_XDECREF(cls->nb_inplace_and);
-            Py_XDECREF(cls->nb_xor);
-            Py_XDECREF(cls->nb_inplace_xor);
-            Py_XDECREF(cls->nb_or);
-            Py_XDECREF(cls->nb_inplace_or);
-            Py_XDECREF(cls->nb_int);
-            Py_XDECREF(cls->nb_float);
-            Py_XDECREF(cls->nb_floor_divide);
-            Py_XDECREF(cls->nb_inplace_floor_divide);
-            Py_XDECREF(cls->nb_true_divide);
-            Py_XDECREF(cls->nb_inplace_true_divide);
-            Py_XDECREF(cls->nb_matrix_multiply);
-            Py_XDECREF(cls->nb_inplace_matrix_multiply);
-            PyTypeObject* type = Py_TYPE(cls);
-            type->tp_free(cls);
-            Py_DECREF(type);  // required for heap types
         }
 
     private:
@@ -1850,12 +2091,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
             PyObject* key;
             PyObject* value;
             Py_ssize_t pos = 0;
-            while (PyDict_Next(
-                cls->template_instantiations,
-                &pos,
-                &key,
-                &value
-            )) {
+            while (PyDict_Next(cls->templates, &pos, &key, &value)) {
                 __python__* instantiation = reinterpret_cast<__python__*>(value);
                 if (instantiation->instancecheck(cls, instance)) {
                     return true;
@@ -1877,12 +2113,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 PyObject* key;
                 PyObject* value;
                 Py_ssize_t pos = 0;
-                while (PyDict_Next(
-                    cls->template_instantiations,
-                    &pos,
-                    &key,
-                    &value
-                )) {
+                while (PyDict_Next(cls->templates, &pos, &key, &value)) {
                     __python__* instantiation = reinterpret_cast<__python__*>(value);
                     if (instantiation->subclasscheck(cls, subclass)) {
                         return true;
@@ -1897,28 +2128,41 @@ the C++ level and retrieves their corresponding Python types.)doc";
         /* All of the above slots are implemented as getset descriptors on the
         metaclass so as to intercept the standard assignment operator and update the
         internal C++ function pointers. */
-        struct Slots {
+        struct Descr {
 
             /// TODO: getters should return the default behavior if the slot is not
             /// overloaded?
+            /// -> first, check if an overload set is present, and if so, return it.
+            /// Then, check if the default slot is present, and if so, return a
+            /// Function or PyCFunction that wraps it.  Otherwise, raise an
+            /// AttributeError.
 
-            /// TODO: setters should enforce a signature match (# of args, primarily)
+            /// TODO: setters should enforce a signature match to conform with the
+            /// slot's expected function signature.  Several of these will likely be
+            /// variadic.
 
             /// TODO: setters need to generate an overload set if the slot was
             /// previously null, or insert into the existing set if it was not.
 
-            struct tp_init {
+            struct __new__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
+
+            struct __init__ {
+                /// TODO: this gives a blueprint for the rest of the getters/setters,
+                /// which should be filled in later in core.h.
                 static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_init == nullptr) {
+                    if (cls->__init__ == nullptr) {
                         Py_RETURN_NONE;
                     }
-                    return Py_NewRef(cls->tp_init);
+                    return Py_NewRef(cls->__init__);
                 }
 
                 static int set(__python__* cls, PyObject* value, void*) {
                     if (value == nullptr) {
-                        Py_XDECREF(cls->tp_init);
-                        cls->tp_init = nullptr;
+                        Py_XDECREF(cls->__init__);
+                        cls->__init__ = nullptr;
                         return 0;
                     }
                     if (!PyCallable_Check(value)) {
@@ -1928,1887 +2172,516 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         );
                         return -1;
                     }
-                    PyObject* temp = cls->tp_init;
-                    cls->tp_init = Py_NewRef(value);
+                    PyObject* temp = cls->__init__;
+                    cls->__init__ = Py_NewRef(value);
                     Py_XDECREF(temp);
                     return 0;
                 }
             };
 
-            struct tp_new {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_new == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_new);
-                }
+            struct __del__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_new);
-                        cls->tp_new = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_new;
-                    cls->tp_new = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __repr__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct tp_getattro {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_getattro == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_getattro);
-                }
+            struct __str__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_getattro);
-                        cls->tp_getattro = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {  // TODO: enforce a signature match?
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_getattro;
-                    cls->tp_getattro = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __bytes__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct tp_setattro {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_setattro == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_setattro);
-                }
+            struct __format__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_setattro);
-                        cls->tp_setattro = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_setattro;
-                    cls->tp_setattro = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __lt__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct tp_delattro {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_delattro == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_delattro);
-                }
+            struct __le__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_delattro);
-                        cls->tp_delattro = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_delattro;
-                    cls->tp_delattro = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __eq__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct tp_repr {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_repr == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_repr);
-                }
+            struct __ne__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_repr);
-                        cls->tp_repr = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_repr;
-                    cls->tp_repr = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __ge__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct tp_hash {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_hash == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_hash);
-                }
+            struct __gt__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_hash);
-                        cls->tp_hash = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_hash;
-                    cls->tp_hash = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __hash__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct tp_call {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_call == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_call);
-                }
+            struct __bool__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_call);
-                        cls->tp_call = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_call;
-                    cls->tp_call = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __getattr__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct tp_str {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_str == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_str);
-                }
+            struct __getattribute__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_str);
-                        cls->tp_str = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_str;
-                    cls->tp_str = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __setattr__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct tp_lt {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_lt == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_lt);
-                }
+            struct __delattr__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_lt);
-                        cls->tp_lt = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_lt;
-                    cls->tp_lt = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __dir__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct tp_le {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_le == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_le);
-                }
+            struct __get__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_le);
-                        cls->tp_le = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_le;
-                    cls->tp_le = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __set__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct tp_eq {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_eq == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_eq);
-                }
+            struct __delete__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_eq);
-                        cls->tp_eq = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_eq;
-                    cls->tp_eq = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __init_subclass__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct tp_ne {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_ne == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_ne);
-                }
+            struct __set_name__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_ne);
-                        cls->tp_ne = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_ne;
-                    cls->tp_ne = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __mro_entries__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct tp_ge {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_ge == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_ge);
-                }
+            struct __instancecheck__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_ge);
-                        cls->tp_ge = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_ge;
-                    cls->tp_ge = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __subclasscheck__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct tp_gt {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_gt == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_gt);
-                }
+            struct __class_getitem__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_gt);
-                        cls->tp_gt = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_gt;
-                    cls->tp_gt = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct tp_iter {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_iter == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_iter);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_iter);
-                        cls->tp_iter = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_iter;
-                    cls->tp_iter = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct tp_iternext {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_iternext == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_iternext);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_iternext);
-                        cls->tp_iternext = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_iternext;
-                    cls->tp_iternext = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct tp_reverse {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_reverse == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_reverse);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_reverse);
-                        cls->tp_reverse = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_reverse;
-                    cls->tp_reverse = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct tp_enter {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_enter == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_enter);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_enter);
-                        cls->tp_enter = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_enter;
-                    cls->tp_enter = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct tp_exit {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_exit == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_exit);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_exit);
-                        cls->tp_exit = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_exit;
-                    cls->tp_exit = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct tp_descr_get {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_descr_get == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_descr_get);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_descr_get);
-                        cls->tp_descr_get = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_descr_get;
-                    cls->tp_descr_get = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct tp_descr_set {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_descr_set == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_descr_set);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_descr_set);
-                        cls->tp_descr_set = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_descr_set;
-                    cls->tp_descr_set = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct tp_descr_delete {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->tp_descr_delete == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->tp_descr_delete);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->tp_descr_delete);
-                        cls->tp_descr_delete = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->tp_descr_delete;
-                    cls->tp_descr_delete = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct mp_length {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->mp_length == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->mp_length);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->mp_length);
-                        cls->mp_length = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->mp_length;
-                    cls->mp_length = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct mp_subscript {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->mp_subscript == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->mp_subscript);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->mp_subscript);
-                        cls->mp_subscript = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->mp_subscript;
-                    cls->mp_subscript = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct mp_ass_subscript {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->mp_ass_subscript == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->mp_ass_subscript);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->mp_ass_subscript);
-                        cls->mp_ass_subscript = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->mp_ass_subscript;
-                    cls->mp_ass_subscript = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct mp_del_subscript {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->mp_del_subscript == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->mp_del_subscript);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->mp_del_subscript);
-                        cls->mp_del_subscript = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->mp_del_subscript;
-                    cls->mp_del_subscript = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct sq_contains {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->sq_contains == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->sq_contains);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->sq_contains);
-                        cls->sq_contains = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->sq_contains;
-                    cls->sq_contains = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct am_await {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->am_await == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->am_await);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->am_await);
-                        cls->am_await = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->am_await;
-                    cls->am_await = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct am_aiter {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->am_aiter == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->am_aiter);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->am_aiter);
-                        cls->am_aiter = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->am_aiter;
-                    cls->am_aiter = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct am_anext {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->am_anext == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->am_anext);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->am_anext);
-                        cls->am_anext = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->am_anext;
-                    cls->am_anext = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
-            };
-
-            struct am_send {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->am_send == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->am_send);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->am_send);
-                        cls->am_send = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->am_send;
-                    cls->am_send = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __call__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
-
-            struct bf_getbuffer {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->bf_getbuffer == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->bf_getbuffer);
-                }
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->bf_getbuffer);
-                        cls->bf_getbuffer = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->bf_getbuffer;
-                    cls->bf_getbuffer = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __len__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
-
-            struct bf_releasebuffer {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->bf_releasebuffer == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->bf_releasebuffer);
-                }
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->bf_releasebuffer);
-                        cls->bf_releasebuffer = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->bf_releasebuffer;
-                    cls->bf_releasebuffer = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __length_hint__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_add {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_add == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_add);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_add);
-                        cls->nb_add = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_add;
-                    cls->nb_add = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __getitem__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
-
-            struct nb_inplace_add {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_inplace_add == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_inplace_add);
-                }
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_inplace_add);
-                        cls->nb_inplace_add = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_inplace_add;
-                    cls->nb_inplace_add = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __setitem__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
-
-            struct nb_subtract {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_subtract == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_subtract);
-                }
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_subtract);
-                        cls->nb_subtract = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_subtract;
-                    cls->nb_subtract = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __delitem__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
-
-            struct nb_inplace_subtract {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_inplace_subtract == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_inplace_subtract);
-                }
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_inplace_subtract);
-                        cls->nb_inplace_subtract = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_inplace_subtract;
-                    cls->nb_inplace_subtract = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __missing__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
-
-            struct nb_multiply {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_multiply == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_multiply);
-                }
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_multiply);
-                        cls->nb_multiply = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_multiply;
-                    cls->nb_multiply = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __iter__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
-
-            struct nb_inplace_multiply {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_inplace_multiply == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_inplace_multiply);
-                }
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_inplace_multiply);
-                        cls->nb_inplace_multiply = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_inplace_multiply;
-                    cls->nb_inplace_multiply = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __next__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
-
-            struct nb_remainder {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_remainder == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_remainder);
-                }
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_remainder);
-                        cls->nb_remainder = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_remainder;
-                    cls->nb_remainder = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __reversed__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
-
-            struct nb_inplace_remainder {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_inplace_remainder == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_inplace_remainder);
-                }
-
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_inplace_remainder);
-                        cls->nb_inplace_remainder = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_inplace_remainder;
-                    cls->nb_inplace_remainder = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+
+            struct __contains__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_divmod {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_divmod == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_divmod);
-                }
+            struct __add__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_divmod);
-                        cls->nb_divmod = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_divmod;
-                    cls->nb_divmod = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __sub__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_power {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_power == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_power);
-                }
+            struct __mul__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_power);
-                        cls->nb_power = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_power;
-                    cls->nb_power = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __matmul__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_inplace_power {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_inplace_power == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_inplace_power);
-                }
+            struct __truediv__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_inplace_power);
-                        cls->nb_inplace_power = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_inplace_power;
-                    cls->nb_inplace_power = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __floordiv__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_negative {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_negative == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_negative);
-                }
+            struct __mod__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_negative);
-                        cls->nb_negative = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_negative;
-                    cls->nb_negative = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __divmod__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_positive {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_positive == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_positive);
-                }
+            struct __pow__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_positive);
-                        cls->nb_positive = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_positive;
-                    cls->nb_positive = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __lshift__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
+    
+            struct __rshift__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-            struct nb_absolute {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_absolute == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_absolute);
-                }
+            struct __and__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_absolute);
-                        cls->nb_absolute = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_absolute;
-                    cls->nb_absolute = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __xor__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_bool {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_bool == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_bool);
-                }
+            struct __or__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_bool);
-                        cls->nb_bool = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_bool;
-                    cls->nb_bool = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __radd__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_invert {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_invert == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_invert);
-                }
+            struct __rsub__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_invert);
-                        cls->nb_invert = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_invert;
-                    cls->nb_invert = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __rmul__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_lshift {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_lshift == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_lshift);
-                }
+            struct __rmatmul__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_lshift);
-                        cls->nb_lshift = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_lshift;
-                    cls->nb_lshift = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __rtruediv__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_inplace_lshift {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_inplace_lshift == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_inplace_lshift);
-                }
+            struct __rfloordiv__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_inplace_lshift);
-                        cls->nb_inplace_lshift = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_inplace_lshift;
-                    cls->nb_inplace_lshift = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __rmod__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_rshift {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_rshift == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_rshift);
-                }
+            struct __rdivmod__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_rshift);
-                        cls->nb_rshift = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_rshift;
-                    cls->nb_rshift = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __rpow__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_inplace_rshift {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_inplace_rshift == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_inplace_rshift);
-                }
+            struct __rlshift__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
+    
+            struct __rrshift__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_inplace_rshift);
-                        cls->nb_inplace_rshift = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_inplace_rshift;
-                    cls->nb_inplace_rshift = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __rand__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_and {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_and == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_and);
-                }
+            struct __rxor__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_and);
-                        cls->nb_and = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_and;
-                    cls->nb_and = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __ror__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
+
+            struct __iadd__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
+
+            struct __isub__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
+
+            struct __imul__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
+
+            struct __imatmul__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_inplace_and {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_inplace_and == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_inplace_and);
-                }
+            struct __itruediv__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_inplace_and);
-                        cls->nb_inplace_and = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_inplace_and;
-                    cls->nb_inplace_and = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __ifloordiv__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_xor {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_xor == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_xor);
-                }
+            struct __imod__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_xor);
-                        cls->nb_xor = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_xor;
-                    cls->nb_xor = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __idivmod__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_inplace_xor {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_inplace_xor == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_inplace_xor);
-                }
+            struct __ipow__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_inplace_xor);
-                        cls->nb_inplace_xor = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_inplace_xor;
-                    cls->nb_inplace_xor = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __ilshift__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
+    
+            struct __irshift__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-            struct nb_or {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_or == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_or);
-                }
+            struct __iand__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_or);
-                        cls->nb_or = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_or;
-                    cls->nb_or = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __ixor__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_inplace_or {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_inplace_or == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_inplace_or);
-                }
+            struct __ior__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_inplace_or);
-                        cls->nb_inplace_or = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_inplace_or;
-                    cls->nb_inplace_or = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __neg__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_int {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_int == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_int);
-                }
+            struct __pos__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_int);
-                        cls->nb_int = nullptr
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_int;
-                    cls->nb_int = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __abs__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_float {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_float == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_float);
-                }
+            struct __invert__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_float);
-                        cls->nb_float = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_float;
-                    cls->nb_float = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __complex_py__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_floor_divide {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_floor_divide == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_floor_divide);
-                }
+            struct __int__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_floor_divide);
-                        cls->nb_floor_divide = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_floor_divide;
-                    cls->nb_floor_divide = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __float__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_inplace_floor_divide {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_inplace_floor_divide == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_inplace_floor_divide);
-                }
+            struct __index__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_inplace_floor_divide);
-                        cls->nb_inplace_floor_divide = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_inplace_floor_divide;
-                    cls->nb_inplace_floor_divide = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __round__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_true_divide {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_true_divide == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_true_divide);
-                }
+            struct __trunc__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_true_divide);
-                        cls->nb_true_divide = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_true_divide;
-                    cls->nb_true_divide = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __floor__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_inplace_true_divide {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_inplace_true_divide == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_inplace_true_divide);
-                }
+            struct __ceil__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_inplace_true_divide);
-                        cls->nb_inplace_true_divide = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_inplace_true_divide;
-                    cls->nb_inplace_true_divide = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __enter__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_matrix_multiply {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_matrix_multiply == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_matrix_multiply);
-                }
+            struct __exit__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_matrix_multiply);
-                        cls->nb_matrix_multiply = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_matrix_multiply;
-                    cls->nb_matrix_multiply = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __buffer__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
-            struct nb_inplace_matrix_multiply {
-                static PyObject* get(__python__* cls, void*) {
-                    if (cls->nb_inplace_matrix_multiply == nullptr) {
-                        Py_RETURN_NONE;
-                    }
-                    return Py_NewRef(cls->nb_inplace_matrix_multiply);
-                }
+            struct __release_buffer__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
 
-                static int set(__python__* cls, PyObject* value, void*) {
-                    if (value == nullptr) {
-                        Py_XDECREF(cls->nb_inplace_matrix_multiply);
-                        cls->nb_inplace_matrix_multiply = nullptr;
-                        return 0;
-                    }
-                    if (!PyCallable_Check(value)) {
-                        PyErr_SetString(
-                            PyExc_TypeError,
-                            "attribute must be callable"
-                        );
-                        return -1;
-                    }
-                    PyObject* temp = cls->nb_inplace_matrix_multiply;
-                    cls->nb_inplace_matrix_multiply = Py_NewRef(value);
-                    Py_XDECREF(temp);
-                    return 0;
-                }
+            struct __await__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
+
+            struct __aiter__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
+
+            struct __anext__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
+
+            struct __aenter__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
+            };
+
+            struct __aexit__ {
+                static PyObject* get(__python__* cls, void*);
+                static int set(__python__* cls, PyObject* value, void*);
             };
 
         };
@@ -3816,7 +2689,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
         inline static PyMethodDef methods[] = {
             {
                 .ml_name = "__instancecheck__",
-                .ml_meth = (PyCFunction) __instancecheck__,
+                .ml_meth = reinterpret_cast<PyCFunction>(class_instancecheck),
                 .ml_flags = METH_O,
                 .ml_doc =
 R"doc(Determine if an object is an instance of the class or its subclasses.
@@ -3839,7 +2712,7 @@ be customize by specializing the `__isinstance__` control struct.)doc"
             },
             {
                 .ml_name = "__subclasscheck__",
-                .ml_meth = (PyCFunction) __subclasscheck__,
+                .ml_meth = reinterpret_cast<PyCFunction>(class_subclasscheck),
                 .ml_flags = METH_O,
                 .ml_doc =
 R"doc(Determine if a class is a subclass of this class.
@@ -3868,456 +2741,729 @@ can be customize by specializing the `__issubclass__` control struct.)doc"
         inline static PyGetSetDef getset[] = {
             {
                 .name = "__doc__",
-                .get = reinterpret_cast<getter>(doc),
+                .get = reinterpret_cast<getter>(class_doc),
                 .set = nullptr,
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__init__",
-                .get = reinterpret_cast<getter>(Slots::tp_init::get),
-                .set = reinterpret_cast<setter>(Slots::tp_init::set),
-                .doc = nullptr,  // TODO: fill in?
-                .closure = nullptr
-            },
-            {
                 .name = "__new__",
-                .get = reinterpret_cast<getter>(Slots::tp_new::get),
-                .set = reinterpret_cast<setter>(Slots::tp_new::set),
-                .doc = nullptr,  // TODO: fill in?
+                .get = reinterpret_cast<getter>(Descr::__new__::get),
+                .set = reinterpret_cast<setter>(Descr::__new__::set),
+                .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__getattr__",
-                .get = reinterpret_cast<getter>(Slots::tp_getattro::get),
-                .set = reinterpret_cast<setter>(Slots::tp_getattro::set),
-                .doc = nullptr,  // TODO: fill in?
+                .name = "__init__",
+                .get = reinterpret_cast<getter>(Descr::__init__::get),
+                .set = reinterpret_cast<setter>(Descr::__init__::set),
+                .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__setattr__",
-                .get = reinterpret_cast<getter>(Slots::tp_setattro::get),
-                .set = reinterpret_cast<setter>(Slots::tp_setattro::set),
-                .doc = nullptr,  // TODO: fill in?
-                .closure = nullptr
-            },
-            {
-                .name = "__delattr__",
-                .get = reinterpret_cast<getter>(Slots::tp_delattro::get),
-                .set = reinterpret_cast<setter>(Slots::tp_delattro::set),
-                .doc = nullptr,  // TODO: fill in?
+                .name = "__del__",
+                .get = reinterpret_cast<getter>(Descr::__del__::get),
+                .set = reinterpret_cast<setter>(Descr::__del__::set),
+                .doc = nullptr,
                 .closure = nullptr
             },
             {
                 .name = "__repr__",
-                .get = reinterpret_cast<getter>(Slots::tp_repr::get),
-                .set = reinterpret_cast<setter>(Slots::tp_repr::set),
-                .doc = nullptr,  // TODO: fill in?
-                .closure = nullptr
-            },
-            {
-                .name = "__hash__",
-                .get = reinterpret_cast<getter>(Slots::tp_hash::get),
-                .set = reinterpret_cast<setter>(Slots::tp_hash::set),
-                .doc = nullptr,  // TODO: fill in?
-                .closure = nullptr
-            },
-            {
-                .name = "__call__",
-                .get = reinterpret_cast<getter>(Slots::tp_call::get),
-                .set = reinterpret_cast<setter>(Slots::tp_call::set),
-                .doc = nullptr,  // TODO: fill in?
+                .get = reinterpret_cast<getter>(Descr::__repr__::get),
+                .set = reinterpret_cast<setter>(Descr::__repr__::set),
+                .doc = nullptr,
                 .closure = nullptr
             },
             {
                 .name = "__str__",
-                .get = reinterpret_cast<getter>(Slots::tp_str::get),
-                .set = reinterpret_cast<setter>(Slots::tp_str::set),
-                .doc = nullptr,  // TODO: fill in?
+                .get = reinterpret_cast<getter>(Descr::__str__::get),
+                .set = reinterpret_cast<setter>(Descr::__str__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__bytes__",
+                .get = reinterpret_cast<getter>(Descr::__bytes__::get),
+                .set = reinterpret_cast<setter>(Descr::__bytes__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__format__",
+                .get = reinterpret_cast<getter>(Descr::__format__::get),
+                .set = reinterpret_cast<setter>(Descr::__format__::set),
+                .doc = nullptr,
                 .closure = nullptr
             },
             {
                 .name = "__lt__",
-                .get = reinterpret_cast<getter>(Slots::tp_lt::get),
-                .set = reinterpret_cast<setter>(Slots::tp_lt::set),
-                .doc = nullptr,  // TODO: fill in?
+                .get = reinterpret_cast<getter>(Descr::__lt__::get),
+                .set = reinterpret_cast<setter>(Descr::__lt__::set),
+                .doc = nullptr,
                 .closure = nullptr
             },
             {
                 .name = "__le__",
-                .get = reinterpret_cast<getter>(Slots::tp_le::get),
-                .set = reinterpret_cast<setter>(Slots::tp_le::set),
-                .doc = nullptr,  // TODO: fill in?
+                .get = reinterpret_cast<getter>(Descr::__le__::get),
+                .set = reinterpret_cast<setter>(Descr::__le__::set),
+                .doc = nullptr,
                 .closure = nullptr
             },
             {
                 .name = "__eq__",
-                .get = reinterpret_cast<getter>(Slots::tp_eq::get),
-                .set = reinterpret_cast<setter>(Slots::tp_eq::set),
-                .doc = nullptr,  // TODO: fill in?
+                .get = reinterpret_cast<getter>(Descr::__eq__::get),
+                .set = reinterpret_cast<setter>(Descr::__eq__::set),
+                .doc = nullptr,
                 .closure = nullptr
             },
             {
                 .name = "__ne__",
-                .get = reinterpret_cast<getter>(Slots::tp_ne::get),
-                .set = reinterpret_cast<setter>(Slots::tp_ne::set),
-                .doc = nullptr,  // TODO: fill in?
+                .get = reinterpret_cast<getter>(Descr::__ne__::get),
+                .set = reinterpret_cast<setter>(Descr::__ne__::set),
+                .doc = nullptr,
                 .closure = nullptr
             },
             {
                 .name = "__ge__",
-                .get = reinterpret_cast<getter>(Slots::tp_ge::get),
-                .set = reinterpret_cast<setter>(Slots::tp_ge::set),
-                .doc = nullptr,  // TODO: fill in?
+                .get = reinterpret_cast<getter>(Descr::__ge__::get),
+                .set = reinterpret_cast<setter>(Descr::__ge__::set),
+                .doc = nullptr,
                 .closure = nullptr
             },
             {
                 .name = "__gt__",
-                .get = reinterpret_cast<getter>(Slots::tp_gt::get),
-                .set = reinterpret_cast<setter>(Slots::tp_gt::set),
-                .doc = nullptr,  // TODO: fill in?
-                .closure = nullptr
-            },
-            {
-                .name = "__iter__",
-                .get = reinterpret_cast<getter>(Slots::tp_iter::get),
-                .set = reinterpret_cast<setter>(Slots::tp_iter::set),
-                .doc = nullptr,  // TODO: fill in?
-                .closure = nullptr
-            },
-            {
-                .name = "__next__",
-                .get = reinterpret_cast<getter>(Slots::tp_iternext::get),
-                .set = reinterpret_cast<setter>(Slots::tp_iternext::set),
-                .doc = nullptr,  // TODO: fill in?
-                .closure = nullptr
-            },
-            {
-                .name = "__reversed__",
-                .get = reinterpret_cast<getter>(Slots::tp_reverse::get),
-                .set = reinterpret_cast<setter>(Slots::tp_reverse::set),
-                .doc = nullptr,  // TODO: fill in?
-                .closure = nullptr
-            },
-            {
-                .name = "__enter__",
-                .get = reinterpret_cast<getter>(Slots::tp_enter::get),
-                .set = reinterpret_cast<setter>(Slots::tp_enter::set),
-                .doc = nullptr,  // TODO: fill in?
-                .closure = nullptr
-            },
-            {
-                .name = "__exit__",
-                .get = reinterpret_cast<getter>(Slots::tp_exit::get),
-                .set = reinterpret_cast<setter>(Slots::tp_exit::set),
-                .doc = nullptr,  // TODO: fill in?
-                .closure = nullptr
-            },
-            {
-                .name = "__get__",
-                .get = reinterpret_cast<getter>(Slots::tp_descr_get::get),
-                .set = reinterpret_cast<setter>(Slots::tp_descr_get::set),
-                .doc = nullptr,  // TODO: fill in?
-                .closure = nullptr
-            },
-            {
-                .name = "__set__",
-                .get = reinterpret_cast<getter>(Slots::tp_descr_set::get),
-                .set = reinterpret_cast<setter>(Slots::tp_descr_set::set),
+                .get = reinterpret_cast<getter>(Descr::__gt__::get),
+                .set = reinterpret_cast<setter>(Descr::__gt__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__delete__",
-                .get = reinterpret_cast<getter>(Slots::tp_descr_delete::get),
-                .set = reinterpret_cast<setter>(Slots::tp_descr_delete::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__len__",
-                .get = reinterpret_cast<getter>(Slots::mp_length::get),
-                .set = reinterpret_cast<setter>(Slots::mp_length::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__getitem__",
-                .get = reinterpret_cast<getter>(Slots::mp_subscript::get),
-                .set = reinterpret_cast<setter>(Slots::mp_subscript::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__setitem__",
-                .get = reinterpret_cast<getter>(Slots::mp_ass_subscript::get),
-                .set = reinterpret_cast<setter>(Slots::mp_ass_subscript::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__delitem__",
-                .get = reinterpret_cast<getter>(Slots::mp_del_subscript::get),
-                .set = reinterpret_cast<setter>(Slots::mp_del_subscript::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__contains__",
-                .get = reinterpret_cast<getter>(Slots::sq_contains::get),
-                .set = reinterpret_cast<setter>(Slots::sq_contains::set),
-                .doc = nullptr,
-                .closure = nullptr,
-            },
-            {
-                .name = "__buffer__",
-                .get = reinterpret_cast<getter>(Slots::bf_getbuffer::get),
-                .set = reinterpret_cast<setter>(Slots::bf_getbuffer::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__release_buffer__",
-                .get = reinterpret_cast<getter>(Slots::bf_releasebuffer::get),
-                .set = reinterpret_cast<setter>(Slots::bf_releasebuffer::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__add__",
-                .get = reinterpret_cast<getter>(Slots::nb_add::get),
-                .set = reinterpret_cast<setter>(Slots::nb_add::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__iadd__",
-                .get = reinterpret_cast<getter>(Slots::nb_inplace_add::get),
-                .set = reinterpret_cast<setter>(Slots::nb_inplace_add::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__sub__",
-                .get = reinterpret_cast<getter>(Slots::nb_subtract::get),
-                .set = reinterpret_cast<setter>(Slots::nb_subtract::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__isub__",
-                .get = reinterpret_cast<getter>(Slots::nb_inplace_subtract::get),
-                .set = reinterpret_cast<setter>(Slots::nb_inplace_subtract::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__mul__",
-                .get = reinterpret_cast<getter>(Slots::nb_multiply::get),
-                .set = reinterpret_cast<setter>(Slots::nb_multiply::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__imul__",
-                .get = reinterpret_cast<getter>(Slots::nb_inplace_multiply::get),
-                .set = reinterpret_cast<setter>(Slots::nb_inplace_multiply::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__mod__",
-                .get = reinterpret_cast<getter>(Slots::nb_remainder::get),
-                .set = reinterpret_cast<setter>(Slots::nb_remainder::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__imod__",
-                .get = reinterpret_cast<getter>(Slots::nb_inplace_remainder::get),
-                .set = reinterpret_cast<setter>(Slots::nb_inplace_remainder::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__divmod__",
-                .get = reinterpret_cast<getter>(Slots::nb_divmod::get),
-                .set = reinterpret_cast<setter>(Slots::nb_divmod::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__pow__",
-                .get = reinterpret_cast<getter>(Slots::nb_power::get),
-                .set = reinterpret_cast<setter>(Slots::nb_power::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__ipow__",
-                .get = reinterpret_cast<getter>(Slots::nb_inplace_power::get),
-                .set = reinterpret_cast<setter>(Slots::nb_inplace_power::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__neg__",
-                .get = reinterpret_cast<getter>(Slots::nb_negative::get),
-                .set = reinterpret_cast<setter>(Slots::nb_negative::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__pos__",
-                .get = reinterpret_cast<getter>(Slots::nb_positive::get),
-                .set = reinterpret_cast<setter>(Slots::nb_positive::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
-                .name = "__abs__",
-                .get = reinterpret_cast<getter>(Slots::nb_absolute::get),
-                .set = reinterpret_cast<setter>(Slots::nb_absolute::set),
+                .name = "__hash__",
+                .get = reinterpret_cast<getter>(Descr::__hash__::get),
+                .set = reinterpret_cast<setter>(Descr::__hash__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
                 .name = "__bool__",
-                .get = reinterpret_cast<getter>(Slots::nb_bool::get),
-                .set = reinterpret_cast<setter>(Slots::nb_bool::set),
+                .get = reinterpret_cast<getter>(Descr::__bool__::get),
+                .set = reinterpret_cast<setter>(Descr::__bool__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__invert__",
-                .get = reinterpret_cast<getter>(Slots::nb_invert::get),
-                .set = reinterpret_cast<setter>(Slots::nb_invert::set),
+                .name = "__getattr__",
+                .get = reinterpret_cast<getter>(Descr::__getattr__::get),
+                .set = reinterpret_cast<setter>(Descr::__getattr__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__lshift__",
-                .get = reinterpret_cast<getter>(Slots::nb_lshift::get),
-                .set = reinterpret_cast<setter>(Slots::nb_lshift::set),
+                .name = "__getattribute__",
+                .get = reinterpret_cast<getter>(Descr::__getattribute__::get),
+                .set = reinterpret_cast<setter>(Descr::__getattribute__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__ilshift__",
-                .get = reinterpret_cast<getter>(Slots::nb_inplace_lshift::get),
-                .set = reinterpret_cast<setter>(Slots::nb_inplace_lshift::set),
+                .name = "__setattr__",
+                .get = reinterpret_cast<getter>(Descr::__setattr__::get),
+                .set = reinterpret_cast<setter>(Descr::__setattr__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__rshift__",
-                .get = reinterpret_cast<getter>(Slots::nb_rshift::get),
-                .set = reinterpret_cast<setter>(Slots::nb_rshift::set),
+                .name = "__delattr__",
+                .get = reinterpret_cast<getter>(Descr::__delattr__::get),
+                .set = reinterpret_cast<setter>(Descr::__delattr__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__irshift__",
-                .get = reinterpret_cast<getter>(Slots::nb_inplace_rshift::get),
-                .set = reinterpret_cast<setter>(Slots::nb_inplace_rshift::set),
+                .name = "__dir__",
+                .get = reinterpret_cast<getter>(Descr::__dir__::get),
+                .set = reinterpret_cast<setter>(Descr::__dir__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__and__",
-                .get = reinterpret_cast<getter>(Slots::nb_and::get),
-                .set = reinterpret_cast<setter>(Slots::nb_and::set),
+                .name = "__get__",
+                .get = reinterpret_cast<getter>(Descr::__get__::get),
+                .set = reinterpret_cast<setter>(Descr::__get__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__iand__",
-                .get = reinterpret_cast<getter>(Slots::nb_inplace_and::get),
-                .set = reinterpret_cast<setter>(Slots::nb_inplace_and::set),
+                .name = "__set__",
+                .get = reinterpret_cast<getter>(Descr::__set__::get),
+                .set = reinterpret_cast<setter>(Descr::__set__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__xor__",
-                .get = reinterpret_cast<getter>(Slots::nb_xor::get),
-                .set = reinterpret_cast<setter>(Slots::nb_xor::set),
+                .name = "__delete__",
+                .get = reinterpret_cast<getter>(Descr::__delete__::get),
+                .set = reinterpret_cast<setter>(Descr::__delete__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__ixor__",
-                .get = reinterpret_cast<getter>(Slots::nb_inplace_xor::get),
-                .set = reinterpret_cast<setter>(Slots::nb_inplace_xor::set),
+                .name = "__init_subclass__",
+                .get = reinterpret_cast<getter>(Descr::__init_subclass__::get),
+                .set = reinterpret_cast<setter>(Descr::__init_subclass__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__or__",
-                .get = reinterpret_cast<getter>(Slots::nb_or::get),
-                .set = reinterpret_cast<setter>(Slots::nb_or::set),
+                .name = "__set_name__",
+                .get = reinterpret_cast<getter>(Descr::__set_name__::get),
+                .set = reinterpret_cast<setter>(Descr::__set_name__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__ior__",
-                .get = reinterpret_cast<getter>(Slots::nb_inplace_or::get),
-                .set = reinterpret_cast<setter>(Slots::nb_inplace_or::set),
+                .name = "__mro_entries__",
+                .get = reinterpret_cast<getter>(Descr::__mro_entries__::get),
+                .set = reinterpret_cast<setter>(Descr::__mro_entries__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__int__",
-                .get = reinterpret_cast<getter>(Slots::nb_int::get),
-                .set = reinterpret_cast<setter>(Slots::nb_int::set),
+                .name = "__instancecheck__",
+                .get = reinterpret_cast<getter>(Descr::__instancecheck__::get),
+                .set = reinterpret_cast<setter>(Descr::__instancecheck__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__float__",
-                .get = reinterpret_cast<getter>(Slots::nb_float::get),
-                .set = reinterpret_cast<setter>(Slots::nb_float::set),
+                .name = "__subclasscheck__",
+                .get = reinterpret_cast<getter>(Descr::__subclasscheck__::get),
+                .set = reinterpret_cast<setter>(Descr::__subclasscheck__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__floordiv__",
-                .get = reinterpret_cast<getter>(Slots::nb_floor_divide::get),
-                .set = reinterpret_cast<setter>(Slots::nb_floor_divide::set),
+                .name = "__class_getitem__",
+                .get = reinterpret_cast<getter>(Descr::__class_getitem__::get),
+                .set = reinterpret_cast<setter>(Descr::__class_getitem__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__ifloordiv__",
-                .get = reinterpret_cast<getter>(Slots::nb_inplace_floor_divide::get),
-                .set = reinterpret_cast<setter>(Slots::nb_inplace_floor_divide::set),
+                .name = "__call__",
+                .get = reinterpret_cast<getter>(Descr::__call__::get),
+                .set = reinterpret_cast<setter>(Descr::__call__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__truediv__",
-                .get = reinterpret_cast<getter>(Slots::nb_true_divide::get),
-                .set = reinterpret_cast<setter>(Slots::nb_true_divide::set),
+                .name = "__len__",
+                .get = reinterpret_cast<getter>(Descr::__len__::get),
+                .set = reinterpret_cast<setter>(Descr::__len__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
-                .name = "__itruediv__",
-                .get = reinterpret_cast<getter>(Slots::nb_inplace_true_divide::get),
-                .set = reinterpret_cast<setter>(Slots::nb_inplace_true_divide::set),
+                .name = "__length_hint__",
+                .get = reinterpret_cast<getter>(Descr::__length_hint__::get),
+                .set = reinterpret_cast<setter>(Descr::__length_hint__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__getitem__",
+                .get = reinterpret_cast<getter>(Descr::__getitem__::get),
+                .set = reinterpret_cast<setter>(Descr::__getitem__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__setitem__",
+                .get = reinterpret_cast<getter>(Descr::__setitem__::get),
+                .set = reinterpret_cast<setter>(Descr::__setitem__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__delitem__",
+                .get = reinterpret_cast<getter>(Descr::__delitem__::get),
+                .set = reinterpret_cast<setter>(Descr::__delitem__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__missing__",
+                .get = reinterpret_cast<getter>(Descr::__missing__::get),
+                .set = reinterpret_cast<setter>(Descr::__missing__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__iter__",
+                .get = reinterpret_cast<getter>(Descr::__iter__::get),
+                .set = reinterpret_cast<setter>(Descr::__iter__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__next__",
+                .get = reinterpret_cast<getter>(Descr::__next__::get),
+                .set = reinterpret_cast<setter>(Descr::__next__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__reversed__",
+                .get = reinterpret_cast<getter>(Descr::__reversed__::get),
+                .set = reinterpret_cast<setter>(Descr::__reversed__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__contains__",
+                .get = reinterpret_cast<getter>(Descr::__contains__::get),
+                .set = reinterpret_cast<setter>(Descr::__contains__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__add__",
+                .get = reinterpret_cast<getter>(Descr::__add__::get),
+                .set = reinterpret_cast<setter>(Descr::__add__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__sub__",
+                .get = reinterpret_cast<getter>(Descr::__sub__::get),
+                .set = reinterpret_cast<setter>(Descr::__sub__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__mul__",
+                .get = reinterpret_cast<getter>(Descr::__mul__::get),
+                .set = reinterpret_cast<setter>(Descr::__mul__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
                 .name = "__matmul__",
-                .get = reinterpret_cast<getter>(Slots::nb_matrix_multiply::get),
-                .set = reinterpret_cast<setter>(Slots::nb_matrix_multiply::set),
+                .get = reinterpret_cast<getter>(Descr::__matmul__::get),
+                .set = reinterpret_cast<setter>(Descr::__matmul__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__truediv__",
+                .get = reinterpret_cast<getter>(Descr::__truediv__::get),
+                .set = reinterpret_cast<setter>(Descr::__truediv__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__floordiv__",
+                .get = reinterpret_cast<getter>(Descr::__floordiv__::get),
+                .set = reinterpret_cast<setter>(Descr::__floordiv__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__mod__",
+                .get = reinterpret_cast<getter>(Descr::__mod__::get),
+                .set = reinterpret_cast<setter>(Descr::__mod__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__divmod__",
+                .get = reinterpret_cast<getter>(Descr::__divmod__::get),
+                .set = reinterpret_cast<setter>(Descr::__divmod__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__pow__",
+                .get = reinterpret_cast<getter>(Descr::__pow__::get),
+                .set = reinterpret_cast<setter>(Descr::__pow__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__lshift__",
+                .get = reinterpret_cast<getter>(Descr::__lshift__::get),
+                .set = reinterpret_cast<setter>(Descr::__lshift__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__rshift__",
+                .get = reinterpret_cast<getter>(Descr::__rshift__::get),
+                .set = reinterpret_cast<setter>(Descr::__rshift__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__and__",
+                .get = reinterpret_cast<getter>(Descr::__and__::get),
+                .set = reinterpret_cast<setter>(Descr::__and__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__xor__",
+                .get = reinterpret_cast<getter>(Descr::__xor__::get),
+                .set = reinterpret_cast<setter>(Descr::__xor__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__or__",
+                .get = reinterpret_cast<getter>(Descr::__or__::get),
+                .set = reinterpret_cast<setter>(Descr::__or__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__radd__",
+                .get = reinterpret_cast<getter>(Descr::__radd__::get),
+                .set = reinterpret_cast<setter>(Descr::__radd__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__rsub__",
+                .get = reinterpret_cast<getter>(Descr::__rsub__::get),
+                .set = reinterpret_cast<setter>(Descr::__rsub__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__rmul__",
+                .get = reinterpret_cast<getter>(Descr::__rmul__::get),
+                .set = reinterpret_cast<setter>(Descr::__rmul__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__rmatmul__",
+                .get = reinterpret_cast<getter>(Descr::__rmatmul__::get),
+                .set = reinterpret_cast<setter>(Descr::__rmatmul__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__rtruediv__",
+                .get = reinterpret_cast<getter>(Descr::__rtruediv__::get),
+                .set = reinterpret_cast<setter>(Descr::__rtruediv__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__rfloordiv__",
+                .get = reinterpret_cast<getter>(Descr::__rfloordiv__::get),
+                .set = reinterpret_cast<setter>(Descr::__rfloordiv__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__rmod__",
+                .get = reinterpret_cast<getter>(Descr::__rmod__::get),
+                .set = reinterpret_cast<setter>(Descr::__rmod__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__rdivmod__",
+                .get = reinterpret_cast<getter>(Descr::__rdivmod__::get),
+                .set = reinterpret_cast<setter>(Descr::__rdivmod__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__rpow__",
+                .get = reinterpret_cast<getter>(Descr::__rpow__::get),
+                .set = reinterpret_cast<setter>(Descr::__rpow__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__rlshift__",
+                .get = reinterpret_cast<getter>(Descr::__rlshift__::get),
+                .set = reinterpret_cast<setter>(Descr::__rlshift__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__rrshift__",
+                .get = reinterpret_cast<getter>(Descr::__rrshift__::get),
+                .set = reinterpret_cast<setter>(Descr::__rrshift__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__rand__",
+                .get = reinterpret_cast<getter>(Descr::__rand__::get),
+                .set = reinterpret_cast<setter>(Descr::__rand__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__rxor__",
+                .get = reinterpret_cast<getter>(Descr::__rxor__::get),
+                .set = reinterpret_cast<setter>(Descr::__rxor__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__ror__",
+                .get = reinterpret_cast<getter>(Descr::__ror__::get),
+                .set = reinterpret_cast<setter>(Descr::__ror__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__iadd__",
+                .get = reinterpret_cast<getter>(Descr::__iadd__::get),
+                .set = reinterpret_cast<setter>(Descr::__iadd__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__isub__",
+                .get = reinterpret_cast<getter>(Descr::__isub__::get),
+                .set = reinterpret_cast<setter>(Descr::__isub__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__imul__",
+                .get = reinterpret_cast<getter>(Descr::__imul__::get),
+                .set = reinterpret_cast<setter>(Descr::__imul__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
             {
                 .name = "__imatmul__",
-                .get = reinterpret_cast<getter>(Slots::nb_inplace_matrix_multiply::get),
-                .set = reinterpret_cast<setter>(Slots::nb_inplace_matrix_multiply::set),
+                .get = reinterpret_cast<getter>(Descr::__imatmul__::get),
+                .set = reinterpret_cast<setter>(Descr::__imatmul__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__itruediv__",
+                .get = reinterpret_cast<getter>(Descr::__itruediv__::get),
+                .set = reinterpret_cast<setter>(Descr::__itruediv__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__ifloordiv__",
+                .get = reinterpret_cast<getter>(Descr::__ifloordiv__::get),
+                .set = reinterpret_cast<setter>(Descr::__ifloordiv__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__imod__",
+                .get = reinterpret_cast<getter>(Descr::__imod__::get),
+                .set = reinterpret_cast<setter>(Descr::__imod__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__idivmod__",
+                .get = reinterpret_cast<getter>(Descr::__idivmod__::get),
+                .set = reinterpret_cast<setter>(Descr::__idivmod__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__ipow__",
+                .get = reinterpret_cast<getter>(Descr::__ipow__::get),
+                .set = reinterpret_cast<setter>(Descr::__ipow__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__ilshift__",
+                .get = reinterpret_cast<getter>(Descr::__ilshift__::get),
+                .set = reinterpret_cast<setter>(Descr::__ilshift__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__irshift__",
+                .get = reinterpret_cast<getter>(Descr::__irshift__::get),
+                .set = reinterpret_cast<setter>(Descr::__irshift__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__iand__",
+                .get = reinterpret_cast<getter>(Descr::__iand__::get),
+                .set = reinterpret_cast<setter>(Descr::__iand__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__ixor__",
+                .get = reinterpret_cast<getter>(Descr::__ixor__::get),
+                .set = reinterpret_cast<setter>(Descr::__ixor__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__ior__",
+                .get = reinterpret_cast<getter>(Descr::__ior__::get),
+                .set = reinterpret_cast<setter>(Descr::__ior__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__neg__",
+                .get = reinterpret_cast<getter>(Descr::__neg__::get),
+                .set = reinterpret_cast<setter>(Descr::__neg__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__pos__",
+                .get = reinterpret_cast<getter>(Descr::__pos__::get),
+                .set = reinterpret_cast<setter>(Descr::__pos__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__abs__",
+                .get = reinterpret_cast<getter>(Descr::__abs__::get),
+                .set = reinterpret_cast<setter>(Descr::__abs__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__invert__",
+                .get = reinterpret_cast<getter>(Descr::__invert__::get),
+                .set = reinterpret_cast<setter>(Descr::__invert__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__complex__",
+                .get = reinterpret_cast<getter>(Descr::__complex_py__::get),
+                .set = reinterpret_cast<setter>(Descr::__complex_py__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__int__",
+                .get = reinterpret_cast<getter>(Descr::__int__::get),
+                .set = reinterpret_cast<setter>(Descr::__int__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__float__",
+                .get = reinterpret_cast<getter>(Descr::__float__::get),
+                .set = reinterpret_cast<setter>(Descr::__float__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__index__",
+                .get = reinterpret_cast<getter>(Descr::__index__::get),
+                .set = reinterpret_cast<setter>(Descr::__index__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__round__",
+                .get = reinterpret_cast<getter>(Descr::__round__::get),
+                .set = reinterpret_cast<setter>(Descr::__round__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__trunc__",
+                .get = reinterpret_cast<getter>(Descr::__trunc__::get),
+                .set = reinterpret_cast<setter>(Descr::__trunc__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__floor__",
+                .get = reinterpret_cast<getter>(Descr::__floor__::get),
+                .set = reinterpret_cast<setter>(Descr::__floor__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__ceil__",
+                .get = reinterpret_cast<getter>(Descr::__ceil__::get),
+                .set = reinterpret_cast<setter>(Descr::__ceil__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__enter__",
+                .get = reinterpret_cast<getter>(Descr::__enter__::get),
+                .set = reinterpret_cast<setter>(Descr::__enter__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__exit__",
+                .get = reinterpret_cast<getter>(Descr::__exit__::get),
+                .set = reinterpret_cast<setter>(Descr::__exit__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__buffer__",
+                .get = reinterpret_cast<getter>(Descr::__buffer__::get),
+                .set = reinterpret_cast<setter>(Descr::__buffer__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__release_buffer__",
+                .get = reinterpret_cast<getter>(Descr::__release_buffer__::get),
+                .set = reinterpret_cast<setter>(Descr::__release_buffer__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__await__",
+                .get = reinterpret_cast<getter>(Descr::__await__::get),
+                .set = reinterpret_cast<setter>(Descr::__await__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__aiter__",
+                .get = reinterpret_cast<getter>(Descr::__aiter__::get),
+                .set = reinterpret_cast<setter>(Descr::__aiter__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__anext__",
+                .get = reinterpret_cast<getter>(Descr::__anext__::get),
+                .set = reinterpret_cast<setter>(Descr::__anext__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__aenter__",
+                .get = reinterpret_cast<getter>(Descr::__aenter__::get),
+                .set = reinterpret_cast<setter>(Descr::__aenter__::set),
+                .doc = nullptr,
+                .closure = nullptr
+            },
+            {
+                .name = "__aexit__",
+                .get = reinterpret_cast<getter>(Descr::__aexit__::get),
+                .set = reinterpret_cast<setter>(Descr::__aexit__::set),
                 .doc = nullptr,
                 .closure = nullptr
             },
@@ -4408,14 +3554,14 @@ struct __getitem__<BertrandMeta, Type<T>...>                : Returns<BertrandMe
     static auto operator()(const BertrandMeta& cls, const Type<T>&... key) {
         using Meta = Type<BertrandMeta>::__python__;
         Meta* meta = reinterpret_cast<Meta*>(ptr(cls));
-        if (meta->template_instantiations == nullptr) {
+        if (meta->templates == nullptr) {
             throw TypeError("class has no template instantiations");
         }
         PyObject* tuple = PyTuple_Pack(sizeof...(T), ptr(key)...);
         if (tuple == nullptr) {
             Exception::from_python();
         }
-        PyObject* value = PyDict_GetItem(meta->template_instantiations, tuple);
+        PyObject* value = PyDict_GetItem(meta->templates, tuple);
         Py_DECREF(tuple);
         if (value == nullptr) {
             Exception::from_python();
@@ -4434,14 +3580,14 @@ struct __getitem__<Type<T>, Type<U>...>                     : Returns<BertrandMe
     static auto operator()(const Type<T>& cls, const Type<U>&... key) {
         using Meta = Type<BertrandMeta>::__python__;
         Meta* meta = reinterpret_cast<Meta*>(ptr(cls));
-        if (meta->template_instantiations == nullptr) {
+        if (meta->templates == nullptr) {
             throw TypeError("class has no template instantiations");
         }
         PyObject* tuple = PyTuple_Pack(sizeof...(U), ptr(key)...);
         if (tuple == nullptr) {
             Exception::from_python();
         }
-        PyObject* value = PyDict_GetItem(meta->template_instantiations, tuple);
+        PyObject* value = PyDict_GetItem(meta->templates, tuple);
         Py_DECREF(tuple);
         if (value == nullptr) {
             Exception::from_python();
@@ -4492,8 +3638,8 @@ namespace impl {
                 }
                 Py_DECREF(result);
                 return 0;
-            } else if (meta->base_tp_init) {
-                return meta->base_tp_init(self, args, kwds);
+            } else if (meta->tp_init) {
+                return meta->tp_init(self, args, kwds);
             } else {
                 PyErr_Format(
                     PyExc_TypeError,
@@ -4844,8 +3990,8 @@ namespace impl {
 
         Module<ModName> module;
         std::unordered_map<std::string, Context> context;
-        Meta::Getters class_getters;
-        Meta::Setters class_setters;
+        Meta::ClassGetters class_getters;
+        Meta::ClassSetters class_setters;
 
         Bindings(const Module<ModName>& mod) : module(mod) {}
         Bindings(const Bindings&) = delete;
@@ -5439,8 +4585,8 @@ namespace impl {
             meta->initialize();
             meta->instancecheck = instancecheck;
             meta->subclasscheck = subclasscheck;
-            meta->getters = std::move(class_getters);
-            meta->setters = std::move(class_setters);
+            meta->class_getters = std::move(class_getters);
+            meta->class_setters = std::move(class_setters);
 
             // execute the callbacks to populate the type object
             for (auto&& [name, ctx] : context) {
@@ -6416,7 +5562,7 @@ namespace impl {
                     if (PyDict_SetItem(
                         reinterpret_cast<typename Type<BertrandMeta>::__python__*>(
                             ptr(existing)
-                        )->template_instantiations,
+                        )->templates,
                         key,
                         ptr(cls)
                     )) {
