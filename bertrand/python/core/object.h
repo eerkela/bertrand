@@ -10,12 +10,20 @@ namespace py {
 
 
 /* Retrieve the pointer backing a Python object. */
-[[nodiscard]] inline PyObject* ptr(Handle obj);
+template <std::derived_from<Handle> T>
+[[nodiscard]] PyObject* ptr(const T& obj);
 
 
 /* Cause a Python object to relinquish ownership over its backing pointer, and then
 return the raw pointer. */
-[[nodiscard]] inline PyObject* release(Handle obj);
+template <std::derived_from<Handle> T>
+[[nodiscard]] PyObject* release(T& obj);
+
+
+/* Cause a Python object to relinquish ownership over its backing pointer, and then
+return the raw pointer. */
+template <std::derived_from<Handle> T> requires (!std::is_const_v<T>)
+[[nodiscard]] PyObject* release(T&& obj);
 
 
 /* Steal a reference to a raw Python handle. */
@@ -39,8 +47,12 @@ struct Handle : Interface<Handle>, impl::BertrandTag {
 protected:
     PyObject* m_ptr;
 
-    friend inline PyObject* ptr(Handle handle);
-    friend inline PyObject* release(Handle handle);
+    template <std::derived_from<Handle> T>
+    friend PyObject* ptr(const T&);
+    template <std::derived_from<Handle> T>
+    friend PyObject* release(T&);
+    template <std::derived_from<Handle> T> requires (!std::is_const_v<T>)
+    friend PyObject* release(T&& obj);
 
 public:
 
@@ -53,8 +65,9 @@ public:
     Handle(PyObject* ptr) : m_ptr(ptr) {}
 
     /* Check for exact pointer identity. */
-    [[nodiscard]] bool is(Handle other) const {
-        return m_ptr == ptr(other);
+    template <typename Self>
+    [[nodiscard]] bool is(this const Self& self, Handle other) {
+        return ptr(self) == ptr(other);
     }
 
     /* Contains operator.  Equivalent to Python's `in` keyword, but with reversed
@@ -140,13 +153,22 @@ public:
 
 };
 
-
-[[nodiscard]] inline PyObject* ptr(Handle obj) {
+template <std::derived_from<Handle> T>
+[[nodiscard]] inline PyObject* ptr(const T& obj) {
     return obj.m_ptr;
 }
 
 
-[[nodiscard]] inline PyObject* release(Handle obj) {
+template <std::derived_from<Handle> T>
+[[nodiscard]] inline PyObject* release(T& obj) {
+    PyObject* temp = obj.m_ptr;
+    obj.m_ptr = nullptr;
+    return temp;
+}
+
+
+template <std::derived_from<Handle> T> requires (!std::is_const_v<T>)
+[[nodiscard]] inline PyObject* release(T&& obj) {
     PyObject* temp = obj.m_ptr;
     obj.m_ptr = nullptr;
     return temp;

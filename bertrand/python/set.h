@@ -646,8 +646,8 @@ struct __explicit_init__<Set<Key>, std::tuple<Args...>>     : Returns<Set<Key>> 
         }
 
         auto unpack_tuple = [&]<size_t... Ns>(std::index_sequence<Ns...>) {
-            auto insert = [](PyObject* m_ptr, const Key& item) {
-                if (PySet_Add(m_ptr, item.ptr())) {
+            auto insert = [](PyObject* result, const Key& item) {
+                if (PySet_Add(result, item.ptr())) {
                     Exception::from_python();
                 }
             };
@@ -1312,8 +1312,8 @@ struct __explicit_init__<FrozenSet<Key>, std::tuple<Args...>> : Returns<FrozenSe
         }
 
         auto unpack_tuple = [&]<size_t... Ns>(std::index_sequence<Ns...>) {
-            auto insert = [](PyObject* m_ptr, const Key& item) {
-                if (PySet_Add(m_ptr, item.ptr())) {
+            auto insert = [](PyObject* result, const Key& item) {
+                if (PySet_Add(result, item.ptr())) {
                     Exception::from_python();
                 }
             };

@@ -1413,7 +1413,7 @@ class MappingProxy : public Object, public impl::MappingProxyTag {
 
     Map unwrap() const {
         PyObject* dict = reinterpret_cast<PyObject*>(
-            reinterpret_cast<impl::mappingproxyobject*>(m_ptr)->mapping
+            reinterpret_cast<impl::mappingproxyobject*>(ptr(*this))->mapping
         );
         return reinterpret_borrow<Map>(dict);
     }

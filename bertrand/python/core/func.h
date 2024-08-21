@@ -2451,7 +2451,7 @@ public:
     template <typename... Source> requires (invocable<Source...>)
     Return operator()(Source&&... args) const {
         if constexpr (std::is_void_v<Return>) {
-            invoke_py(m_ptr, std::forward<Source>(args)...);
+            invoke_py(m_ptr, std::forward<Source>(args)...);  // Don't reference m_ptr directly, and turn this into a control struct
         } else {
             return invoke_py(m_ptr, std::forward<Source>(args)...);
         }
@@ -2468,7 +2468,7 @@ public:
 
     /* Get the name of the wrapped function. */
     __declspec(property(get=_get_name)) std::string name;
-    [[nodiscard]] std::string _get_name() const {
+    [[nodiscard]] std::string _get_name(this const auto& self) {
         // TODO: get the base type and check against it.
         if (true) {
             Type<Function> func_type;
@@ -2476,7 +2476,7 @@ public:
                 Py_TYPE(ptr(*this)),
                 reinterpret_cast<PyTypeObject*>(ptr(func_type))
             )) {
-                PyFunction* func = reinterpret_cast<PyFunction*>(ptr(*this));
+                PyFunction* func = reinterpret_cast<PyFunction*>(ptr(self));
                 return func->base.name;
             }
             // TODO: print out a detailed error message with both signatures

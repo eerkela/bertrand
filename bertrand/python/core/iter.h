@@ -23,8 +23,8 @@ template <std::derived_from<Object> Return>
 struct Interface<Iterator<Return>> {};
 template <std::derived_from<Object> Return>
 struct Interface<Type<Iterator<Return>>> {
-    static py::Iterator<Return> __iter__(py::Iterator<Return>& iter);
-    static Return __next__(py::Iterator<Return>& iter);
+    static py::Iterator<Return> __iter__(auto& iter);
+    static Return __next__(auto& iter);
 };
 
 
@@ -229,7 +229,7 @@ struct __getattr__<Type<Iterator<Return>>, "__next__"> : Returns<Function<
 
 
 template <std::derived_from<Object> Return>
-auto Interface<Type<py::Iterator<Return>>>::__iter__(py::Iterator<Return>& iter)
+auto Interface<Type<py::Iterator<Return>>>::__iter__(auto& iter)
     -> py::Iterator<Return>
 {
     return iter;
@@ -237,7 +237,7 @@ auto Interface<Type<py::Iterator<Return>>>::__iter__(py::Iterator<Return>& iter)
 
 
 template <std::derived_from<Object> Return>
-auto Interface<Type<py::Iterator<Return>>>::__next__(py::Iterator<Return>& iter)
+auto Interface<Type<py::Iterator<Return>>>::__next__(auto& iter)
     -> Return
 {
     PyObject* next = PyIter_Next(ptr(iter));

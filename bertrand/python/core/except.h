@@ -65,7 +65,7 @@ struct Traceback;
 
 template <>
 struct Interface<Traceback> {
-    [[nodiscard]] std::string to_string() const;
+    [[nodiscard]] std::string to_string(this const auto& self);
 };
 
 
@@ -699,19 +699,19 @@ struct impl::builtin_exception_map<UnicodeDecodeError> {
 template <>
 struct Interface<UnicodeDecodeError> : Interface<UnicodeError> {
     __declspec(property(get=_encoding)) std::string encoding;
-    [[nodiscard]] std::string _encoding() const;
+    [[nodiscard]] std::string _encoding(this const auto& self);
 
     __declspec(property(get=_object)) std::string object;
-    [[nodiscard]] std::string _object() const;
+    [[nodiscard]] std::string _object(this const auto& self);
 
     __declspec(property(get=_start)) Py_ssize_t start;
-    [[nodiscard]] Py_ssize_t _start() const;
+    [[nodiscard]] Py_ssize_t _start(this const auto& self);
 
     __declspec(property(get=_end)) Py_ssize_t end;
-    [[nodiscard]] Py_ssize_t _end() const;
+    [[nodiscard]] Py_ssize_t _end(this const auto& self);
 
     __declspec(property(get=_reason)) std::string reason;
-    [[nodiscard]] std::string _reason() const;
+    [[nodiscard]] std::string _reason(this const auto& self);
 };
 
 
@@ -837,10 +837,10 @@ struct __explicit_init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> 
 };
 
 
-[[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_encoding() const {
-    PyObject* encoding = PyUnicodeDecodeError_GetEncoding(
-        ptr(reinterpret_cast<const Object&>(*this))
-    );
+[[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_encoding(
+    this const auto& self
+) {
+    PyObject* encoding = PyUnicodeDecodeError_GetEncoding(ptr(self));
     if (encoding == nullptr) {
         Exception::from_python();
     }
@@ -856,10 +856,10 @@ struct __explicit_init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> 
 }
 
 
-[[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_object() const {
-    PyObject* object = PyUnicodeDecodeError_GetObject(
-        ptr(reinterpret_cast<const Object&>(*this))
-    );
+[[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_object(
+    this const auto& self
+) {
+    PyObject* object = PyUnicodeDecodeError_GetObject(ptr(self));
     if (object == nullptr) {
         Exception::from_python();
     }
@@ -875,34 +875,32 @@ struct __explicit_init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> 
 }
 
 
-[[nodiscard]] inline Py_ssize_t Interface<UnicodeDecodeError>::_start() const {
+[[nodiscard]] inline Py_ssize_t Interface<UnicodeDecodeError>::_start(
+    this const auto& self
+) {
     Py_ssize_t start;
-    if (PyUnicodeDecodeError_GetStart(
-        ptr(reinterpret_cast<const Object&>(*this)),
-        &start
-    )) {
+    if (PyUnicodeDecodeError_GetStart(ptr(self), &start)) {
         Exception::from_python();
     }
     return start;
 }
 
 
-[[nodiscard]] inline Py_ssize_t Interface<UnicodeDecodeError>::_end() const {
+[[nodiscard]] inline Py_ssize_t Interface<UnicodeDecodeError>::_end(
+    this const auto& self
+) {
     Py_ssize_t end;
-    if (PyUnicodeDecodeError_GetEnd(
-        ptr(reinterpret_cast<const Object&>(*this)),
-        &end
-    )) {
+    if (PyUnicodeDecodeError_GetEnd(ptr(self), &end)) {
         Exception::from_python();
     }
     return end;
 }
 
 
-[[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_reason() const {
-    PyObject* reason = PyUnicodeDecodeError_GetReason(
-        ptr(reinterpret_cast<const Object&>(*this))
-    );
+[[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_reason(
+    this const auto& self
+) {
+    PyObject* reason = PyUnicodeDecodeError_GetReason(ptr(self));
     if (reason == nullptr) {
         Exception::from_python();
     }
@@ -932,19 +930,19 @@ struct impl::builtin_exception_map<UnicodeEncodeError> {
 template <>
 struct Interface<UnicodeEncodeError> : Interface<UnicodeError> {
     __declspec(property(get=_encoding)) std::string encoding;
-    [[nodiscard]] std::string _encoding() const;
+    [[nodiscard]] std::string _encoding(this const auto& self);
 
     __declspec(property(get=_object)) std::string object;
-    [[nodiscard]] std::string _object() const;
+    [[nodiscard]] std::string _object(this const auto& self);
 
     __declspec(property(get=_start)) Py_ssize_t start;
-    [[nodiscard]] Py_ssize_t _start() const;
+    [[nodiscard]] Py_ssize_t _start(this const auto& self);
 
     __declspec(property(get=_end)) Py_ssize_t end;
-    [[nodiscard]] Py_ssize_t _end() const;
+    [[nodiscard]] Py_ssize_t _end(this const auto& self);
 
     __declspec(property(get=_reason)) std::string reason;
-    [[nodiscard]] std::string _reason() const;
+    [[nodiscard]] std::string _reason(this const auto& self);
 };
 
 
@@ -1071,10 +1069,10 @@ struct __explicit_init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> 
 };
 
 
-[[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_encoding() const {
-    PyObject* encoding = PyUnicodeEncodeError_GetEncoding(
-        ptr(reinterpret_cast<const Object&>(*this))
-    );
+[[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_encoding(
+    this const auto& self
+) {
+    PyObject* encoding = PyUnicodeEncodeError_GetEncoding(ptr(self));
     if (encoding == nullptr) {
         Exception::from_python();
     }
@@ -1090,10 +1088,10 @@ struct __explicit_init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> 
 }
 
 
-[[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_object() const {
-    PyObject* object = PyUnicodeEncodeError_GetObject(
-        ptr(reinterpret_cast<const Object&>(*this))
-    );
+[[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_object(
+    this const auto& self
+) {
+    PyObject* object = PyUnicodeEncodeError_GetObject(ptr(self));
     if (object == nullptr) {
         Exception::from_python();
     }
@@ -1109,34 +1107,32 @@ struct __explicit_init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> 
 }
 
 
-[[nodiscard]] inline Py_ssize_t Interface<UnicodeEncodeError>::_start() const {
+[[nodiscard]] inline Py_ssize_t Interface<UnicodeEncodeError>::_start(
+    this const auto& self
+) {
     Py_ssize_t start;
-    if (PyUnicodeEncodeError_GetStart(
-        ptr(reinterpret_cast<const Object&>(*this)),
-        &start
-    )) {
+    if (PyUnicodeEncodeError_GetStart(ptr(self), &start)) {
         Exception::from_python();
     }
     return start;
 }
 
 
-[[nodiscard]] inline Py_ssize_t Interface<UnicodeEncodeError>::_end() const {
+[[nodiscard]] inline Py_ssize_t Interface<UnicodeEncodeError>::_end(
+    this const auto& self
+) {
     Py_ssize_t end;
-    if (PyUnicodeEncodeError_GetEnd(
-        ptr(reinterpret_cast<const Object&>(*this)),
-        &end
-    )) {
+    if (PyUnicodeEncodeError_GetEnd(ptr(self), &end)) {
         Exception::from_python();
     }
     return end;
 }
 
 
-[[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_reason() const {
-    PyObject* reason = PyUnicodeEncodeError_GetReason(
-        ptr(reinterpret_cast<const Object&>(*this))
-    );
+[[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_reason(
+    this const auto& self
+) {
+    PyObject* reason = PyUnicodeEncodeError_GetReason(ptr(self));
     if (reason == nullptr) {
         Exception::from_python();
     }
@@ -1166,16 +1162,16 @@ struct impl::builtin_exception_map<UnicodeTranslateError> {
 template <>
 struct Interface<UnicodeTranslateError> : Interface<UnicodeError> {
     __declspec(property(get=_object)) std::string object;
-    [[nodiscard]] std::string _object() const;
+    [[nodiscard]] std::string _object(this const auto& self);
 
     __declspec(property(get=_start)) Py_ssize_t start;
-    [[nodiscard]] Py_ssize_t _start() const;
+    [[nodiscard]] Py_ssize_t _start(this const auto& self);
 
     __declspec(property(get=_end)) Py_ssize_t end;
-    [[nodiscard]] Py_ssize_t _end() const;
+    [[nodiscard]] Py_ssize_t _end(this const auto& self);
 
     __declspec(property(get=_reason)) std::string reason;
-    [[nodiscard]] std::string _reason() const;
+    [[nodiscard]] std::string _reason(this const auto& self);
 };
 
 
@@ -1299,10 +1295,10 @@ struct __explicit_init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reaso
 };
 
 
-[[nodiscard]] inline std::string Interface<UnicodeTranslateError>::_object() const {
-    PyObject* object = PyUnicodeTranslateError_GetObject(
-        ptr(reinterpret_cast<const Object&>(*this))
-    );
+[[nodiscard]] inline std::string Interface<UnicodeTranslateError>::_object(
+    this const auto& self
+) {
+    PyObject* object = PyUnicodeTranslateError_GetObject(ptr(self));
     if (object == nullptr) {
         Exception::from_python();
     }
@@ -1318,34 +1314,32 @@ struct __explicit_init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reaso
 }
 
 
-[[nodiscard]] inline Py_ssize_t Interface<UnicodeTranslateError>::_start() const {
+[[nodiscard]] inline Py_ssize_t Interface<UnicodeTranslateError>::_start(
+    this const auto& self
+) {
     Py_ssize_t start;
-    if (PyUnicodeTranslateError_GetStart(
-        ptr(reinterpret_cast<const Object&>(*this)),
-        &start
-    )) {
+    if (PyUnicodeTranslateError_GetStart(ptr(self), &start)) {
         Exception::from_python();
     }
     return start;
 }
 
 
-[[nodiscard]] inline Py_ssize_t Interface<UnicodeTranslateError>::_end() const {
+[[nodiscard]] inline Py_ssize_t Interface<UnicodeTranslateError>::_end(
+    this const auto& self
+) {
     Py_ssize_t end;
-    if (PyUnicodeTranslateError_GetEnd(
-        ptr(reinterpret_cast<const Object&>(*this)),
-        &end
-    )) {
+    if (PyUnicodeTranslateError_GetEnd(ptr(self), &end)) {
         Exception::from_python();
     }
     return end;
 }
 
 
-[[nodiscard]] inline std::string Interface<UnicodeTranslateError>::_reason() const {
-    PyObject* reason = PyUnicodeTranslateError_GetReason(
-        ptr(reinterpret_cast<const Object&>(*this))
-    );
+[[nodiscard]] inline std::string Interface<UnicodeTranslateError>::_reason(
+    this const auto& self
+) {
+    PyObject* reason = PyUnicodeTranslateError_GetReason(ptr(self));
     if (reason == nullptr) {
         Exception::from_python();
     }
@@ -1612,10 +1606,10 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 }
 
 
-[[nodiscard]] inline std::string Interface<Frame>::to_string() const {
-    PyFrameObject* frame = reinterpret_cast<PyFrameObject*>(
-        ptr(reinterpret_cast<const Object&>(*this))
-    );
+[[nodiscard]] inline std::string Interface<Frame>::to_string(
+    this const auto& self
+) {
+    PyFrameObject* frame = reinterpret_cast<PyFrameObject*>(ptr(self));
     PyCodeObject* code = PyFrame_GetCode(frame);
 
     std::string out;
@@ -1643,11 +1637,11 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 }
 
 
-[[nodiscard]] inline std::optional<Code> Interface<Frame>::_code() const {
+[[nodiscard]] inline std::optional<Code> Interface<Frame>::_code(
+    this const auto& self
+) {
     PyCodeObject* code = PyFrame_GetCode(
-        reinterpret_cast<PyFrameObject*>(
-            ptr(reinterpret_cast<const Object&>(*this))
-        )
+        reinterpret_cast<PyFrameObject*>(ptr(self))
     );
     if (code == nullptr) {
         return std::nullopt;
@@ -1656,11 +1650,11 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 }
 
 
-[[nodiscard]] inline std::optional<Frame> Interface<Frame>::_back() const {
+[[nodiscard]] inline std::optional<Frame> Interface<Frame>::_back(
+    this const auto& self
+) {
     PyFrameObject* result = PyFrame_GetBack(
-        reinterpret_cast<PyFrameObject*>(
-            ptr(reinterpret_cast<const Object&>(*this))
-        )
+        reinterpret_cast<PyFrameObject*>(ptr(self))
     );
     if (result == nullptr) {
         return std::nullopt;
@@ -1669,20 +1663,18 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 }
 
 
-[[nodiscard]] inline size_t Interface<Frame>::_line_number() const {
-    return PyFrame_GetLineNumber(
-        reinterpret_cast<PyFrameObject*>(
-            ptr(reinterpret_cast<const Object&>(*this))
-        )
-    );
+[[nodiscard]] inline size_t Interface<Frame>::_line_number(
+    this const auto& self
+) {
+    return PyFrame_GetLineNumber(reinterpret_cast<PyFrameObject*>(ptr(self)));
 }
 
 
-[[nodiscard]] inline size_t Interface<Frame>::_last_instruction() const {
+[[nodiscard]] inline size_t Interface<Frame>::_last_instruction(
+    this const auto& self
+) {
     int result = PyFrame_GetLasti(
-        reinterpret_cast<PyFrameObject*>(
-            ptr(reinterpret_cast<const Object&>(*this))
-        )
+        reinterpret_cast<PyFrameObject*>(ptr(self))
     );
     if (result < 0) {
         throw RuntimeError("frame is not currently executing");
@@ -1691,11 +1683,11 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 }
 
 
-[[nodiscard]] inline std::optional<Object> Interface<Frame>::_generator() const {
+[[nodiscard]] inline std::optional<Object> Interface<Frame>::_generator(
+    this const auto& self
+) {
     PyObject* result = PyFrame_GetGenerator(
-        reinterpret_cast<PyFrameObject*>(
-            ptr(reinterpret_cast<const Object&>(*this))
-        )
+        reinterpret_cast<PyFrameObject*>(ptr(self))
     );
     if (result == nullptr) {
         return std::nullopt;
@@ -1729,11 +1721,11 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 }
 
 
-[[nodiscard]] inline std::string Interface<Traceback>::to_string() const {
+[[nodiscard]] inline std::string Interface<Traceback>::to_string(
+    this const auto& self
+) {
     std::string out = "Traceback (most recent call last):";
-    PyTracebackObject* tb = reinterpret_cast<PyTracebackObject*>(
-        ptr(reinterpret_cast<const Object&>(*this))
-    );
+    PyTracebackObject* tb = reinterpret_cast<PyTracebackObject*>(ptr(self));
     while (tb != nullptr) {
         out += "\n  ";
         out += reinterpret_borrow<Frame>(

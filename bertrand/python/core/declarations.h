@@ -351,9 +351,11 @@ the Object hierarchy.
 
 When mixed with an Object base class, this class allows its interface to be separated
 from the underlying PyObject* pointer, meaning several interfaces can be mixed together
-without affecting the object's binary layout.  Each interface can use
-`reinterpret_cast<Object>(*this)` to access the PyObject* pointer, and can further cast
-that pointer to the a specific C++ type if necessary to access fields at the C++ level.
+without affecting the object's binary layout.  Each interface MUST use an explicit
+auto this parameter to access the PyObject* pointer, which eliminates the need for
+additional casting and ensures that lazy evaluation of the pointer works correctly for
+Item and Attr proxies.  The interface can then further cast the pointer to a specific
+PyObject* type if necessary to access internal fields of the Python representation.
 
 This class must be specialized for all types that wish to support multiple inheritance.
 Doing so is rather tricky due to the circular dependency between the Object and its
@@ -373,8 +375,8 @@ Interface, so here's a simple example to illustrate how it's done:
 
     template <>
     struct Interface<Type<Wrapper>> : Interface<Type<Base1>>, Interface<Type<Base2>>, ... {
-        static void foo(Wrapper& self);  // non-static methods gain a self parameter
-        static int bar(const Wrapper& self);
+        static void foo(auto& self);  // non-static methods gain an auto self parameter
+        static int bar(const auto& self);
         static std::string baz();  // static methods stay the same
     };
 
@@ -457,10 +459,10 @@ Interface, so here's a simple example to illustrate how it's done:
     std::string Interface<Wrapper>::baz() {
         return "static methods work too!";
     }
-    void Interface<Type<Wrapper>>::foo(Wrapper& self) {
+    void Interface<Type<Wrapper>>::foo(auto& self) {
         self.foo();
     }
-    int Interface<Type<Wrapper>>::bar(const Wrapper& self) {
+    int Interface<Type<Wrapper>>::bar(const auto& self) {
         return self.bar();
     }
     std::string Interface<Type<Wrapper>>::baz() {
@@ -1452,13 +1454,6 @@ namespace impl {
     };
 
 }
-
-
-/* A simple tag struct that can be passed to an index or attribute assignment operator
-to invoke a Python-level `@property` deleter, `__delattr__()`, or `__delitem__()`
-method.  This is the closest equivalent to replicating Python's `del` keyword in the
-cases where it matters, and is not superceded by automatic reference counting. */
-struct del : impl::BertrandTag {};
 
 
 /* Wrap a non-owning, mutable reference to a C++ object into a `py::Object` proxy that
