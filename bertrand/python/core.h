@@ -25,8 +25,8 @@ namespace py {
 class NoneType : public Object {
 public:
 
-    NoneType(Handle h, borrowed_t t) : Object(h, t) {}
-    NoneType(Handle h, stolen_t t) : Object(h, t) {}
+    NoneType(PyObject* p, borrowed_t t) : Object(p, t) {}
+    NoneType(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<NoneType>::template enable<Args...>)
     NoneType(Args&&... args) : Object(
@@ -94,8 +94,8 @@ struct __hash__<Self> : Returns<size_t> {};
 class NotImplementedType : public Object {
 public:
 
-    NotImplementedType(Handle h, borrowed_t t) : Object(h, t) {}
-    NotImplementedType(Handle h, stolen_t t) : Object(h, t) {}
+    NotImplementedType(PyObject* p, borrowed_t t) : Object(p, t) {}
+    NotImplementedType(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args>
         requires (implicit_ctor<NotImplementedType>::template enable<Args...>)
@@ -159,8 +159,8 @@ struct __hash__<Self> : Returns<size_t> {};
 class EllipsisType : public Object {
 public:
 
-    EllipsisType(Handle h, borrowed_t t) : Object(h, t) {}
-    EllipsisType(Handle h, stolen_t t) : Object(h, t) {}
+    EllipsisType(PyObject* p, borrowed_t t) : Object(p, t) {}
+    EllipsisType(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args>
         requires (implicit_ctor<EllipsisType>::template enable<Args...>)
@@ -255,8 +255,8 @@ stop, and step values do not strictly need to be integers. */
 class Slice : public Object {
 public:
 
-    Slice(Handle h, borrowed_t t) : Object(h, t) {}
-    Slice(Handle h, stolen_t t) : Object(h, t) {}
+    Slice(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Slice(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Slice>::template enable<Args...>)
     Slice(Args&&... args) : Object(

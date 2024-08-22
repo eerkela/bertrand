@@ -73,8 +73,8 @@ struct Interface<Traceback> {
 application. */
 struct Traceback : Object, Interface<Traceback> {
 
-    Traceback(Handle h, borrowed_t t) : Object(h, t) {}
-    Traceback(Handle h, stolen_t t) : Object(h, t) {}
+    Traceback(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Traceback(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Traceback>::template enable<Args...>)
     [[clang::noinline]] Traceback(Args&&... args) : Object(
@@ -443,8 +443,8 @@ protected:
 
 public:
 
-    Exception(Handle h, borrowed_t t) : Object(h, t) {}
-    Exception(Handle h, stolen_t t) : Object(h, t) {}
+    Exception(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Exception(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Exception>::template enable<Args...>)
     [[clang::noinline]] Exception(Args&&... args) : Object(
@@ -614,8 +614,8 @@ inline void Interface<Exception>::to_python() {
     struct Interface<CLS> : Interface<BASE> {};                                         \
                                                                                         \
     struct CLS : Exception, Interface<CLS> {                                            \
-        CLS(Handle h, borrowed_t t) : Exception(h, t) {}                                \
-        CLS(Handle h, stolen_t t) : Exception(h, t) {}                                  \
+        CLS(PyObject* p, borrowed_t t) : Exception(p, t) {}                             \
+        CLS(PyObject* p, stolen_t t) : Exception(p, t) {}                               \
                                                                                         \
         template <typename... Args>                                                     \
             requires (implicit_ctor<CLS>::template enable<Args...>)                     \
@@ -717,8 +717,8 @@ struct Interface<UnicodeDecodeError> : Interface<UnicodeError> {
 
 struct UnicodeDecodeError : Exception, Interface<UnicodeDecodeError> {
 
-    UnicodeDecodeError(Handle h, borrowed_t t) : Exception(h, t) {}
-    UnicodeDecodeError(Handle h, stolen_t t) : Exception(h, t) {}
+    UnicodeDecodeError(PyObject* p, borrowed_t t) : Exception(p, t) {}
+    UnicodeDecodeError(PyObject* p, stolen_t t) : Exception(p, t) {}
 
     template <typename... Args>
         requires (implicit_ctor<UnicodeDecodeError>::template enable<Args...>)
@@ -948,8 +948,8 @@ struct Interface<UnicodeEncodeError> : Interface<UnicodeError> {
 
 struct UnicodeEncodeError : Exception, Interface<UnicodeEncodeError> {
 
-    UnicodeEncodeError(Handle h, borrowed_t t) : Exception(h, t) {}
-    UnicodeEncodeError(Handle h, stolen_t t) : Exception(h, t) {}
+    UnicodeEncodeError(PyObject* p, borrowed_t t) : Exception(p, t) {}
+    UnicodeEncodeError(PyObject* p, stolen_t t) : Exception(p, t) {}
 
     template <typename... Args>
         requires (implicit_ctor<UnicodeEncodeError>::template enable<Args...>)
@@ -1177,8 +1177,8 @@ struct Interface<UnicodeTranslateError> : Interface<UnicodeError> {
 
 struct UnicodeTranslateError : Exception, Interface<UnicodeTranslateError> {
 
-    UnicodeTranslateError(Handle h, borrowed_t t) : Exception(h, t) {}
-    UnicodeTranslateError(Handle h, stolen_t t) : Exception(h, t) {}
+    UnicodeTranslateError(PyObject* p, borrowed_t t) : Exception(p, t) {}
+    UnicodeTranslateError(PyObject* p, stolen_t t) : Exception(p, t) {}
 
     template <typename... Args>
         requires (implicit_ctor<UnicodeTranslateError>::template enable<Args...>)
@@ -1390,7 +1390,7 @@ bool __issubclass__<T, Object>::operator()(const T& obj, const Object& cls) {
 }
 
 
-template <std::derived_from<Handle> From, std::derived_from<From> To>
+template <std::derived_from<Object> From, std::derived_from<From> To>
 auto __cast__<From, To>::operator()(const From& from) {
     if (isinstance<To>(from)) {
         return reinterpret_borrow<To>(ptr(from));
@@ -1403,7 +1403,7 @@ auto __cast__<From, To>::operator()(const From& from) {
 }
 
 
-template <std::derived_from<Handle> From, std::derived_from<From> To>
+template <std::derived_from<Object> From, std::derived_from<From> To>
 auto __cast__<From, To>::operator()(From&& from) {
     if (isinstance<To>(from)) {
         return reinterpret_steal<To>(release(from));
@@ -1416,7 +1416,7 @@ auto __cast__<From, To>::operator()(From&& from) {
 }
 
 
-template <std::derived_from<Handle> From, std::integral To>
+template <std::derived_from<Object> From, std::integral To>
 To __explicit_cast__<From, To>::operator()(const From& from) {
     long long result = PyLong_AsLongLong(ptr(from));
     if (result == -1 && PyErr_Occurred()) {
@@ -1434,7 +1434,7 @@ To __explicit_cast__<From, To>::operator()(const From& from) {
 }
 
 
-template <std::derived_from<Handle> From, std::floating_point To>
+template <std::derived_from<Object> From, std::floating_point To>
 To __explicit_cast__<From, To>::operator()(const From& from) {
     double result = PyFloat_AsDouble(ptr(from));
     if (result == -1.0 && PyErr_Occurred()) {
@@ -1443,7 +1443,7 @@ To __explicit_cast__<From, To>::operator()(const From& from) {
     return result;
 }
 
-template <std::derived_from<Handle> From, impl::complex_like To>
+template <std::derived_from<Object> From, impl::complex_like To>
     requires (impl::cpp_like<To>)
 To __explicit_cast__<From, To>::operator()(const From& from) {
     Py_complex result = PyComplex_AsCComplex(ptr(from));
@@ -1454,7 +1454,7 @@ To __explicit_cast__<From, To>::operator()(const From& from) {
 }
 
 
-template <std::derived_from<Handle> From>
+template <std::derived_from<Object> From>
 auto __explicit_cast__<From, std::string>::operator()(const From& from) {
     PyObject* str = PyObject_Str(ptr(from));
     if (str == nullptr) {

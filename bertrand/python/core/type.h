@@ -237,45 +237,9 @@ namespace impl {
 
 
 template <>
-struct Type<Handle>;
-template <>
 struct Type<Object>;
-
-
-template <>
-struct Interface<Type<Handle>> {};
 template <>
 struct Interface<Type<Object>> {};
-
-
-/* `Type<Handle>` is implemented for completeness, but is identical to `Type<Object>`
-(the default implementation). */
-template <>
-struct Type<Handle> : Object, Interface<Type<Handle>>, impl::TypeTag {
-    struct __python__ : TypeTag::def<__python__, Type> {
-        static Type __import__() {
-            return reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(
-                &PyBaseObject_Type
-            ));
-        }
-    };
-
-    Type(Handle h, borrowed_t t) : Object(h, t) {}
-    Type(Handle h, stolen_t t) : Object(h, t) {}
-
-    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
-    Type(Args&&... args) : Object(
-        implicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
-    explicit Type(Args&&... args) : Object(
-        explicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-};
 
 
 /* `Type<Object>` (the default specialization) refers to a dynamic type, which can be
@@ -293,8 +257,8 @@ struct Type<Object> : Object, Interface<Type<Object>>, impl::TypeTag {
         }
     };
 
-    Type(Handle h, borrowed_t t) : Object(h, t) {}
-    Type(Handle h, stolen_t t) : Object(h, t) {}
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
     Type(Args&&... args) : Object(
@@ -514,8 +478,8 @@ struct Interface<Type<BertrandMeta>> {};
 have been exposed to Python. */
 struct BertrandMeta : Object, Interface<BertrandMeta> {
 
-    BertrandMeta(Handle h, borrowed_t t) : Object(h, t) {}
-    BertrandMeta(Handle h, stolen_t t) : Object(h, t) {}
+    BertrandMeta(PyObject* p, borrowed_t t) : Object(p, t) {}
+    BertrandMeta(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<BertrandMeta>::enable<Args...>)
     BertrandMeta(Args&&... args) : Object(
@@ -4430,8 +4394,8 @@ can be customize by specializing the `__issubclass__` control struct.)doc"
 
     };
 
-    Type(Handle h, borrowed_t t) : Object(h, t) {}
-    Type(Handle h, stolen_t t) : Object(h, t) {}
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::template enable<Args...>)
     Type(Args&&... args) : Object(
@@ -6583,8 +6547,8 @@ struct Type<Code> : Object, Interface<Type<Code>>, impl::TypeTag {
         }
     };
 
-    Type(Handle h, borrowed_t t) : Object(h, t) {}
-    Type(Handle h, stolen_t t) : Object(h, t) {}
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
     Type(Args&&... args) : Object(
@@ -6662,8 +6626,8 @@ struct Type<Frame> : Object, Interface<Type<Frame>>, impl::TypeTag {
         }
     };
 
-    Type(Handle h, borrowed_t t) : Object(h, t) {}
-    Type(Handle h, stolen_t t) : Object(h, t) {}
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
     Type(Args&&... args) : Object(
@@ -6724,8 +6688,8 @@ struct Type<Traceback> : Object, Interface<Type<Traceback>>, impl::TypeTag {
         }
     };
 
-    Type(Handle h, borrowed_t t) : Object(h, t) {}
-    Type(Handle h, stolen_t t) : Object(h, t) {}
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
     Type(Args&&... args) : Object(
@@ -6770,8 +6734,8 @@ struct Type<Exception> : Object, Interface<Type<Exception>>, impl::TypeTag {
         }
     };
 
-    Type(Handle h, borrowed_t t) : Object(h, t) {}
-    Type(Handle h, stolen_t t) : Object(h, t) {}
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
     Type(Args&&... args) : Object(
@@ -6807,8 +6771,8 @@ inline void Interface<Type<Exception>>::to_python() {
             }                                                                           \
         };                                                                              \
                                                                                         \
-        Type(Handle h, borrowed_t t) : Object(h, t) {}                                  \
-        Type(Handle h, stolen_t t) : Object(h, t) {}                                    \
+        Type(PyObject* p, borrowed_t t) : Object(p, t) {}                               \
+        Type(PyObject* p, stolen_t t) : Object(p, t) {}                                 \
                                                                                         \
         template <typename... Args>                                                     \
             requires (implicit_ctor<Type>::template enable<Args...>)                    \
@@ -6901,8 +6865,8 @@ struct Type<UnicodeDecodeError> : Object, Interface<Type<UnicodeDecodeError>>, i
         }
     };
 
-    Type(Handle h, borrowed_t t) : Object(h, t) {}
-    Type(Handle h, stolen_t t) : Object(h, t) {}
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
     Type(Args&&... args) : Object(
@@ -6967,8 +6931,8 @@ struct Type<UnicodeEncodeError> : Object, Interface<Type<UnicodeEncodeError>>, i
         }
     };
 
-    Type(Handle h, borrowed_t t) : Object(h, t) {}
-    Type(Handle h, stolen_t t) : Object(h, t) {}
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
     Type(Args&&... args) : Object(
@@ -7032,8 +6996,8 @@ struct Type<UnicodeTranslateError> : Object, Interface<Type<UnicodeTranslateErro
         }
     };
 
-    Type(Handle h, borrowed_t t) : Object(h, t) {}
-    Type(Handle h, stolen_t t) : Object(h, t) {}
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
     Type(Args&&... args) : Object(

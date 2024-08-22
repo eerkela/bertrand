@@ -1372,14 +1372,6 @@ struct __delattr__<Self, Name>                              : Returns<void> {};
 
 
 template <StaticStr Name>
-struct __getattr__<Object, Name>                            : Returns<Object> {};
-template <StaticStr Name, std::convertible_to<Object> Value>
-struct __setattr__<Object, Name, Value>                     : Returns<void> {};
-template <StaticStr Name>
-struct __delattr__<Object, Name>                            : Returns<void> {};
-
-
-template <StaticStr Name>
 struct __getattr__<Module, Name>                            : Returns<Object> {};
 template <StaticStr Name, std::convertible_to<Object> Value>
 struct __setattr__<Module, Name, Value>                     : Returns<void> {};
@@ -2501,8 +2493,6 @@ struct __getitem__<Self, Key> : __getitem__<Self, impl::unwrap_proxy<Key>> {};
 template <impl::proxy_like Self, impl::proxy_like Key>
 struct __getitem__<Self, Key> : __getitem__<impl::unwrap_proxy<Self>, impl::unwrap_proxy<Key>> {};
 template <std::convertible_to<Object> Key>
-struct __getitem__<Object, Key>                             : Returns<Object> {};
-template <std::convertible_to<Object> Key>
 struct __getitem__<Type, Key>                               : Returns<Object> {};
 template <std::convertible_to<Object> Key>
 struct __getitem__<Super, Key>                              : Returns<Object> {};
@@ -2557,8 +2547,6 @@ struct __setitem__<Self, Key, Value> : __setitem__<Self, Key, impl::unwrap_proxy
 template <impl::not_proxy_like Self, impl::proxy_like Key, impl::proxy_like Value>
 struct __setitem__<Self, Key, Value> : __setitem__<Self, impl::unwrap_proxy<Key>, impl::unwrap_proxy<Value>> {};
 template <std::convertible_to<Object> Key, std::convertible_to<Object> Value>
-struct __setitem__<Object, Key, Value>                      : Returns<void> {};
-template <std::convertible_to<Object> Key, std::convertible_to<Object> Value>
 struct __setitem__<Super, Key, Value>                       : Returns<void> {};
 template <
     std::derived_from<impl::ListTag> Self,
@@ -2586,8 +2574,6 @@ struct __delitem__<Self, Key> : __delitem__<Self, impl::unwrap_proxy<Key>> {};
 template <impl::proxy_like Self, impl::proxy_like Key>
 struct __delitem__<Self, Key> : __delitem__<impl::unwrap_proxy<Self>, impl::unwrap_proxy<Key>> {};
 template <std::convertible_to<Object> Key>
-struct __delitem__<Object, Key>                             : Returns<void> {};
-template <std::convertible_to<Object> Key>
 struct __delitem__<Super, Key>                              : Returns<void> {};
 template <std::derived_from<impl::ListTag> Self, impl::int_like Key>
 struct __delitem__<Self, Key>                               : Returns<void> {};
@@ -2606,8 +2592,6 @@ template <impl::not_proxy_like Self, impl::proxy_like Key>
 struct __contains__<Self, Key> : __contains__<Self, impl::unwrap_proxy<Key>> {};
 template <impl::proxy_like Self, impl::proxy_like Key>
 struct __contains__<Self, Key> : __contains__<impl::unwrap_proxy<Self>, impl::unwrap_proxy<Key>> {};
-template <std::convertible_to<Object> Key>
-struct __contains__<Object, Key>                            : Returns<bool> {};
 template <std::convertible_to<Object> Key>
 struct __contains__<Super, Key>                             : Returns<bool> {};
 template <std::derived_from<Str> Self, std::convertible_to<Str> Key>
@@ -2675,8 +2659,6 @@ struct __contains__<Self, Key>                              : Returns<bool> {};
 template <impl::proxy_like Self>
 struct __len__<Self> : __len__<impl::unwrap_proxy<Self>> {};
 template <>
-struct __len__<Object>                                      : Returns<size_t> {};
-template <>
 struct __len__<Super>                                       : Returns<size_t> {};
 template <std::derived_from<Str> Self>
 struct __len__<Self>;                                       // defined in str.h
@@ -2709,8 +2691,6 @@ struct __len__<Self>                                        : Returns<size_t> {}
 template <impl::proxy_like Self>
 struct __iter__<Self> : __iter__<impl::unwrap_proxy<Self>> {};
 template <>
-struct __iter__<Object>                                     : Returns<Object> {};
-template <>
 struct __iter__<Super>                                      : Returns<Object> {};
 template <std::derived_from<Str> Self>
 struct __iter__<Self>                                       : Returns<Str> {};
@@ -2742,8 +2722,6 @@ struct __iter__<Self>                                       : Returns<typename S
 
 template <impl::proxy_like Self>
 struct __reversed__<Self> : __reversed__<impl::unwrap_proxy<Self>> {};
-template <>
-struct __reversed__<Object>                                 : Returns<Object> {};
 template <>
 struct __reversed__<Super>                                  : Returns<Object> {};
 template <std::derived_from<Str> Self>
@@ -2780,8 +2758,6 @@ template <impl::proxy_like Self, typename... Args>
 struct __call__<Self, Args...> : __call__<impl::unwrap_proxy<Self>, Args...> {};
 template <impl::proxy_like Self, typename... Args> requires (impl::proxy_like<Args> || ...)
 struct __call__<Self, Args...> : __call__<impl::unwrap_proxy<Self>, impl::unwrap_proxy<Args>...> {};
-template <typename ... Args>
-struct __call__<Object, Args...>                            : Returns<Object> {};
 template <typename... Args>
 struct __call__<Type, Args...>                              : Returns<Object> {};
 template <typename ... Args>
@@ -2791,13 +2767,9 @@ struct __call__<Super, Args...>                             : Returns<Object> {}
 template <impl::proxy_like Self>
 struct __hash__<Self> : __hash__<impl::unwrap_proxy<Self>> {};
 template <>
-struct __hash__<Handle>                                     : Returns<size_t> {};
-template <>
 struct __hash__<Capsule>                                    : Returns<size_t> {};
 template <>
 struct __hash__<WeakRef>                                    : Returns<size_t> {};
-template <>
-struct __hash__<Object>                                     : Returns<size_t> {};
 template <>
 struct __hash__<Module>                                     : Returns<size_t> {};
 template <>
@@ -2837,8 +2809,6 @@ struct __hash__<Self>                                       : Returns<size_t> {}
 template <impl::proxy_like Self>
 struct __abs__<Self> : __abs__<impl::unwrap_proxy<Self>> {};
 template <>
-struct __abs__<Object>                                      : Returns<Object> {};
-template <>
 struct __abs__<Super>                                       : Returns<Object> {};
 template <std::derived_from<Bool> Self>
 struct __abs__<Self>                                        : Returns<Int> {};
@@ -2853,8 +2823,6 @@ struct __abs__<Self>                                        : Returns<Complex> {
 template <impl::proxy_like Self>
 struct __invert__<Self> : __invert__<impl::unwrap_proxy<Self>> {};
 template <>
-struct __invert__<Object>                                   : Returns<Object> {};
-template <>
 struct __invert__<Super>                                    : Returns<Object> {};
 template <std::derived_from<Bool> Self>
 struct __invert__<Self>                                     : Returns<Int> {};
@@ -2864,8 +2832,6 @@ struct __invert__<Self>                                     : Returns<Int> {};
 
 template <impl::proxy_like Self>
 struct __pos__<Self> : __pos__<impl::unwrap_proxy<Self>> {};
-template <>
-struct __pos__<Object>                                      : Returns<Object> {};
 template <>
 struct __pos__<Super>                                       : Returns<Object> {};
 template <std::derived_from<Bool> Self>
@@ -2881,8 +2847,6 @@ struct __pos__<Self>                                        : Returns<Complex> {
 template <impl::proxy_like Self>
 struct __neg__<Self> : __neg__<impl::unwrap_proxy<Self>> {};
 template <>
-struct __neg__<Object>                                      : Returns<Object> {};
-template <>
 struct __neg__<Super>                                       : Returns<Object> {};
 template <std::derived_from<Bool> Self>
 struct __neg__<Self>                                        : Returns<Int> {};
@@ -2897,8 +2861,6 @@ struct __neg__<Self>                                        : Returns<Complex> {
 template <impl::proxy_like Self>
 struct __increment__<Self> : __increment__<impl::unwrap_proxy<Self>> {};
 template <>
-struct __increment__<Object>                                : Returns<Object> {};
-template <>
 struct __increment__<Super>                                 : Returns<Object> {};
 template <std::derived_from<Int> Self>
 struct __increment__<Self>                                  : Returns<Int> {};
@@ -2910,8 +2872,6 @@ struct __increment__<Self>                                  : Returns<Complex> {
 
 template <impl::proxy_like Self>
 struct __decrement__<Self> : __decrement__<impl::unwrap_proxy<Self>> {};
-template <>
-struct __decrement__<Object>                                : Returns<Object> {};
 template <>
 struct __decrement__<Super>                                 : Returns<Object> {};
 template <std::derived_from<Int> Self>
@@ -2928,10 +2888,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __lt__<L, R> : __lt__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __lt__<L, R> : __lt__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __lt__<Object, R>                                    : Returns<bool> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __lt__<L, Object>                                    : Returns<bool> {};
 template <std::convertible_to<Object> R>
 struct __lt__<Super, R>                                     : Returns<bool> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
@@ -3026,10 +2982,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __le__<L, R> : __le__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __le__<L, R> : __le__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __le__<Object, R>                                    : Returns<bool> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __le__<L, Object>                                    : Returns<bool> {};
 template <std::convertible_to<Object> R>
 struct __le__<Super, R>                                     : Returns<bool> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
@@ -3149,10 +3101,6 @@ struct __ge__<L, R> : __ge__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __ge__<L, R> : __ge__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 template <std::convertible_to<Object> R>
-struct __ge__<Object, R>                                    : Returns<bool> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __ge__<L, Object>                                    : Returns<bool> {};
-template <std::convertible_to<Object> R>
 struct __ge__<Super, R>                                     : Returns<bool> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
 struct __ge__<L, Super>                                     : Returns<bool> {};
@@ -3247,10 +3195,6 @@ struct __gt__<L, R> : __gt__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __gt__<L, R> : __gt__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 template <std::convertible_to<Object> R>
-struct __gt__<Object, R>                                    : Returns<bool> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __gt__<L, Object>                                    : Returns<bool> {};
-template <std::convertible_to<Object> R>
 struct __gt__<Super, R>                                     : Returns<bool> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
 struct __gt__<L, Super>                                     : Returns<bool> {};
@@ -3344,10 +3288,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __add__<L, R> : __add__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __add__<L, R> : __add__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __add__<Object, R>                                   : Returns<Object> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __add__<L, Object>                                   : Returns<Object> {};
 template <std::convertible_to<Object> R>
 struct __add__<Super, R>                                    : Returns<Object> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
@@ -3447,8 +3387,6 @@ struct __iadd__<L, R> : __iadd__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __iadd__<L, R> : __iadd__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 template <std::convertible_to<Object> R>
-struct __iadd__<Object, R>                                  : Returns<Object&> {};
-template <std::convertible_to<Object> R>
 struct __iadd__<Super, R>                                   : Returns<Super&> {};
 template <std::derived_from<Int> L, impl::bool_like R>
 struct __iadd__<L, R>                                       : Returns<Int&> {};
@@ -3486,10 +3424,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __sub__<L, R> : __sub__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __sub__<L, R> : __sub__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __sub__<Object, R>                                   : Returns<Object> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __sub__<L, Object>                                   : Returns<Object> {};
 template <std::convertible_to<Object> R>
 struct __sub__<Super, R>                                    : Returns<Object> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
@@ -3587,8 +3521,6 @@ struct __isub__<L, R> : __isub__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __isub__<L, R> : __isub__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 template <std::convertible_to<Object> R>
-struct __isub__<Object, R>                                  : Returns<Object&> {};
-template <std::convertible_to<Object> R>
 struct __isub__<Super, R>                                   : Returns<Super&> {};
 template <std::derived_from<Int> L, impl::bool_like R>
 struct __isub__<L, R>                                       : Returns<Int&> {};
@@ -3620,10 +3552,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __mul__<L, R> : __mul__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __mul__<L, R> : __mul__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __mul__<Object, R>                                   : Returns<Object> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __mul__<L, Object>                                   : Returns<Object> {};
 template <std::convertible_to<Object> R>
 struct __mul__<Super, R>                                    : Returns<Object> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
@@ -3721,8 +3649,6 @@ struct __imul__<L, R> : __imul__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __imul__<L, R> : __imul__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 template <std::convertible_to<Object> R>
-struct __imul__<Object, R>                                  : Returns<Object&> {};
-template <std::convertible_to<Object> R>
 struct __imul__<Super, R>                                   : Returns<Super&> {};
 template <std::derived_from<Int> L, impl::bool_like R>
 struct __imul__<L, R>                                       : Returns<Int&> {};
@@ -3760,10 +3686,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __truediv__<L, R> : __truediv__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __truediv__<L, R> : __truediv__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __truediv__<Object, R>                               : Returns<Object> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __truediv__<L, Object>                               : Returns<Object> {};
 template <std::convertible_to<Object> R>
 struct __truediv__<Super, R>                                : Returns<Object> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
@@ -3841,8 +3763,6 @@ struct __itruediv__<L, R> : __itruediv__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __itruediv__<L, R> : __itruediv__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 template <std::convertible_to<Object> R>
-struct __itruediv__<Object, R>                              : Returns<Object&> {};
-template <std::convertible_to<Object> R>
 struct __itruediv__<Super, R>                               : Returns<Object&> {};
 template <std::derived_from<Float> L, impl::bool_like R>
 struct __itruediv__<L, R>                                   : Returns<Float&> {};
@@ -3866,10 +3786,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __floordiv__<L, R> : __floordiv__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __floordiv__<L, R> : __floordiv__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __floordiv__<Object, R>                              : Returns<Object> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __floordiv__<L, Object>                              : Returns<Object> {};
 template <std::convertible_to<Object> R>
 struct __floordiv__<Super, R>                               : Returns<Object> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
@@ -3919,8 +3835,6 @@ struct __ifloordiv__<L, R> : __ifloordiv__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __ifloordiv__<L, R> : __ifloordiv__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 template <std::convertible_to<Object> R>
-struct __ifloordiv__<Object, R>                             : Returns<Object&> {};
-template <std::convertible_to<Object> R>
 struct __ifloordiv__<Super, R>                              : Returns<Object&> {};
 template <std::derived_from<Int> L, impl::bool_like R>
 struct __ifloordiv__<L, R>                                  : Returns<Int&> {};
@@ -3940,10 +3854,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __mod__<L, R> : __mod__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __mod__<L, R> : __mod__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __mod__<Object, R>                                   : Returns<Object> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __mod__<L, Object>                                   : Returns<Object> {};
 template <std::convertible_to<Object> R>
 struct __mod__<Super, R>                                    : Returns<Object> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
@@ -3993,8 +3903,6 @@ struct __imod__<L, R> : __imod__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __imod__<L, R> : __imod__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 template <std::convertible_to<Object> R>
-struct __imod__<Object, R>                                  : Returns<Object&> {};
-template <std::convertible_to<Object> R>
 struct __imod__<Super, R>                                   : Returns<Object&> {};
 template <std::derived_from<Int> L, impl::bool_like R>
 struct __imod__<L, R>                                       : Returns<Int&> {};
@@ -4014,10 +3922,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __pow__<L, R> : __pow__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __pow__<L, R> : __pow__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __pow__<Object, R>                                   : Returns<Object> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __pow__<L, Object>                                   : Returns<Object> {};
 template <std::convertible_to<Object> R>
 struct __pow__<Super, R>                                    : Returns<Object> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
@@ -4095,8 +3999,6 @@ struct __ipow__<L, R> : __ipow__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __ipow__<L, R> : __ipow__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 template <std::convertible_to<Object> R>
-struct __ipow__<Object, R>                                  : Returns<Object&> {};
-template <std::convertible_to<Object> R>
 struct __ipow__<Super, R>                                   : Returns<Object&> {};
 template <std::derived_from<Int> L, impl::bool_like R>
 struct __ipow__<L, R>                                       : Returns<Int&> {};
@@ -4124,10 +4026,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __lshift__<L, R> : __lshift__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __lshift__<L, R> : __lshift__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __lshift__<Object, R>                                : Returns<Object> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __lshift__<L, Object>                                : Returns<Object> {};
 template <std::convertible_to<Object> R>
 struct __lshift__<Super, R>                                 : Returns<Object> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
@@ -4157,8 +4055,6 @@ struct __ilshift__<L, R> : __ilshift__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __ilshift__<L, R> : __ilshift__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 template <std::convertible_to<Object> R>
-struct __ilshift__<Object, R>                               : Returns<Object&> {};
-template <std::convertible_to<Object> R>
 struct __ilshift__<Super, R>                                : Returns<Object&> {};
 template <std::derived_from<Int> L, impl::bool_like R>
 struct __ilshift__<L, R>                                    : Returns<Int&> {};
@@ -4172,10 +4068,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __rshift__<L, R> : __rshift__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __rshift__<L, R> : __rshift__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __rshift__<Object, R>                                : Returns<Object> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __rshift__<L, Object>                                : Returns<Object> {};
 template <std::convertible_to<Object> R>
 struct __rshift__<Super, R>                                 : Returns<Object> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
@@ -4205,8 +4097,6 @@ struct __irshift__<L, R> : __irshift__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __irshift__<L, R> : __irshift__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 template <std::convertible_to<Object> R>
-struct __irshift__<Object, R>                               : Returns<Object&> {};
-template <std::convertible_to<Object> R>
 struct __irshift__<Super, R>                                : Returns<Object&> {};
 template <std::derived_from<Int> L, impl::bool_like R>
 struct __irshift__<L, R>                                    : Returns<Int&> {};
@@ -4220,10 +4110,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __and__<L, R> : __and__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __and__<L, R> : __and__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __and__<Object, R>                                   : Returns<Object> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __and__<L, Object>                                   : Returns<Object> {};
 template <std::convertible_to<Object> R>
 struct __and__<Super, R>                                    : Returns<Object> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
@@ -4273,8 +4159,6 @@ struct __iand__<L, R> : __iand__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __iand__<L, R> : __iand__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 template <std::convertible_to<Object> R>
-struct __iand__<Object, R>                                  : Returns<Object&> {};
-template <std::convertible_to<Object> R>
 struct __iand__<Super, R>                                   : Returns<Object&> {};
 template <std::derived_from<Bool> L, impl::bool_like R>
 struct __iand__<L, R>                                       : Returns<Bool&> {};
@@ -4294,10 +4178,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __or__<L, R> : __or__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __or__<L, R> : __or__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __or__<Object, R>                                    : Returns<Object> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __or__<L, Object>                                    : Returns<Object> {};
 template <std::convertible_to<Object> R>
 struct __or__<Super, R>                                     : Returns<Object> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
@@ -4363,8 +4243,6 @@ struct __ior__<L, R> : __ior__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __ior__<L, R> : __ior__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
 template <std::convertible_to<Object> R>
-struct __ior__<Object, R>                                   : Returns<Object&> {};
-template <std::convertible_to<Object> R>
 struct __ior__<Super, R>                                    : Returns<Object&> {};
 template <std::derived_from<Bool> L, impl::bool_like R>
 struct __ior__<L, R>                                        : Returns<Bool&> {};
@@ -4386,10 +4264,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __xor__<L, R> : __xor__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __xor__<L, R> : __xor__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __xor__<Object, R>                                   : Returns<Object> {};
-template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
-struct __xor__<L, Object>                                   : Returns<Object> {};
 template <std::convertible_to<Object> R>
 struct __xor__<Super, R>                                    : Returns<Object> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Super>)
@@ -4438,8 +4312,6 @@ template <impl::not_proxy_like L, impl::proxy_like R>
 struct __ixor__<L, R> : __ixor__<L, impl::unwrap_proxy<R>> {};
 template <impl::proxy_like L, impl::proxy_like R>
 struct __ixor__<L, R> : __ixor__<impl::unwrap_proxy<L>, impl::unwrap_proxy<R>> {};
-template <std::convertible_to<Object> R>
-struct __ixor__<Object, R>                                  : Returns<Object&> {};
 template <std::convertible_to<Object> R>
 struct __ixor__<Super, R>                                   : Returns<Object&> {};
 template <std::derived_from<Bool> L, impl::bool_like R>

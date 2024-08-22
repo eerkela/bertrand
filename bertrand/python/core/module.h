@@ -976,8 +976,8 @@ computed properties, overload sets, etc. */
 template <StaticStr Name>
 struct Module : Object {
 
-    Module(Handle h, borrowed_t t) : Object(h, t) {}
-    Module(Handle h, stolen_t t) : Object(h, t) {}
+    Module(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Module(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Module>::template enable<Args...>)
     Module(Args&&... args) : Object(
@@ -1026,8 +1026,8 @@ struct __delattr__<Module<Name>, Attr>                       : Returns<void> {};
 template <StaticStr Name>
 struct Type<Module<Name>> : Object {
 
-    Type(Handle h, borrowed_t t) : Object(h, t) {}
-    Type(Handle h, stolen_t t) : Object(h, t) {}
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::template enable<Args...>)
     Type(Args&&... args) : Object(

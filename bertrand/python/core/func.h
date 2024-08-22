@@ -2079,8 +2079,8 @@ public:
     // isinstance()/issubclass() checks would be sufficient, since those are used
     // during implicit conversion anyways.
 
-    Function(Handle h, borrowed_t t) : Base(h, t) {}
-    Function(Handle h, stolen_t t) : Base(h, t) {}
+    Function(PyObject* p, borrowed_t t) : Base(p, t) {}
+    Function(PyObject* p, stolen_t t) : Base(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Function>::template enable<Args...>)
     Function(Args&&... args) : Base(
@@ -2244,7 +2244,7 @@ public:
     type is known in advance, then setting `R` equal to that type will avoid any extra
     checks or conversions at the expense of safety if that type is incorrect.  */
     template <typename R = Object, typename... Source> requires (invocable<Source...>)
-    static Return invoke_py(Handle func, Source&&... args) {
+    static Return invoke_py(PyObject* func, Source&&... args) {
         static_assert(
             std::derived_from<R, Object>,
             "Interim return type must be a subclass of Object"
@@ -2252,7 +2252,7 @@ public:
 
         // bypass the Python interpreter if the function is an instance of the coupled
         // function type, which guarantees that the template signatures exactly match
-        if (PyType_IsSubtype(Py_TYPE(ptr(func)), &PyFunction::type)) {
+        if (PyType_IsSubtype(Py_TYPE(func), &PyFunction::type)) {
             PyFunction* func = reinterpret_cast<PyFunction*>(ptr(func));
             if constexpr (std::is_void_v<Return>) {
                 invoke_cpp(
@@ -2272,7 +2272,7 @@ public:
         // fall back to an optimized Python call
         return []<size_t... Is>(
             std::index_sequence<Is...>,
-            Handle func,
+            PyObject* func,
             Source&&... args
         ) {
             using source = Signature<Source...>;
@@ -2280,7 +2280,7 @@ public:
 
             // if there are no arguments, we can use the no-args protocol
             if constexpr (source::size == 0) {
-                result = PyObject_CallNoArgs(ptr(func));
+                result = PyObject_CallNoArgs(func);
 
             // if there are no variadic arguments, we can stack allocate the argument
             // array with a fixed size
@@ -2289,14 +2289,14 @@ public:
                 if constexpr (source::size == 1) {
                     if constexpr (source::has_kw) {
                         result = PyObject_CallOneArg(
-                            ptr(func),
+                            func,
                             ptr(as_object(
                                 impl::unpack_arg<0>(std::forward<Source>(args)...).value
                             ))
                         );
                     } else {
                         result = PyObject_CallOneArg(
-                            ptr(func),
+                            func,
                             ptr(as_object(
                                 impl::unpack_arg<0>(std::forward<Source>(args)...)
                             ))
@@ -2325,7 +2325,7 @@ public:
                     );
                     Py_ssize_t npos = source::size - source::kw_count;
                     result = PyObject_Vectorcall(
-                        ptr(func),
+                        func,
                         array + 1,  // skip the first element
                         npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         kwnames
@@ -2358,7 +2358,7 @@ public:
                 );
                 Py_ssize_t npos = source::size - 1 - source::kw_count + var_args.size();
                 result = PyObject_Vectorcall(
-                    ptr(func),
+                    func,
                     array + 1,
                     npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                     nullptr
@@ -2387,7 +2387,7 @@ public:
                 );
                 Py_ssize_t npos = source::size - 1 - source::kw_count;
                 result = PyObject_Vectorcall(
-                    ptr(func),
+                    func,
                     array + 1,
                     npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                     kwnames
@@ -2416,7 +2416,7 @@ public:
                 );
                 size_t npos = source::size - 2 - source::kw_count + var_args.size();
                 result = PyObject_Vectorcall(
-                    ptr(func),
+                    func,
                     array + 1,
                     npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
                     kwnames
@@ -2473,7 +2473,7 @@ public:
         if (true) {
             Type<Function> func_type;
             if (PyType_IsSubtype(
-                Py_TYPE(ptr(*this)),
+                Py_TYPE(ptr(self)),
                 reinterpret_cast<PyTypeObject*>(ptr(func_type))
             )) {
                 PyFunction* func = reinterpret_cast<PyFunction*>(ptr(self));
@@ -2483,7 +2483,7 @@ public:
             throw TypeError("signature mismatch");
         }
 
-        PyObject* result = PyObject_GetAttrString(ptr(*this), "__name__");
+        PyObject* result = PyObject_GetAttrString(ptr(self), "__name__");
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -2952,8 +2952,8 @@ private:
 
 public:
 
-    OverloadSet(Handle h, borrowed_t) : Base(h, borrowed_t{}) {}
-    OverloadSet(Handle h, stolen_t) : Base(h, stolen_t{}) {}
+    OverloadSet(PyObject* p, borrowed_t t) : Base(p, t) {}
+    OverloadSet(PyObject* p, stolen_t t) : Base(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<OverloadSet>::template enable<Args...>)
     OverloadSet(Args&&... args) : Base(
@@ -2988,8 +2988,8 @@ template <>
 struct Type<OverloadSet> : Object {
     using __python__ = OverloadSet::PyOverload;
 
-    Type(Handle h, borrowed_t) : Object(h, borrowed_t{}) {}
-    Type(Handle h, stolen_t) : Object(h, stolen_t{}) {}
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Type>::template enable<Args...>)
     Type(Args&&... args) : Object(

@@ -199,8 +199,8 @@ data into or out of the context.
 */
 struct Code : Object, Interface<Code> {
 
-    Code(Handle h, borrowed_t t) : Object(h, t) {}
-    Code(Handle h, stolen_t t) : Object(h, t) {}
+    Code(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Code(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Code>::template enable<Args...>)
     Code(Args&&... args) : Object(
@@ -407,8 +407,8 @@ struct Interface<Frame> {
 cross-language tracebacks. */
 struct Frame : Object, Interface<Frame> {
 
-    Frame(Handle h, borrowed_t t) : Object(h, t) {}
-    Frame(Handle h, stolen_t t) : Object(h, t) {}
+    Frame(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Frame(PyObject* p, stolen_t t) : Object(p, t) {}
 
     template <typename... Args> requires (implicit_ctor<Frame>::template enable<Args...>)
     Frame(Args&&... args) : Object(
