@@ -1472,6 +1472,24 @@ auto __explicit_cast__<From, std::string>::operator()(const From& from) {
 }
 
 
+template <std::derived_from<std::ostream> Stream, std::derived_from<Object> Self>
+Stream& __lshift__<Stream, Self>::operator()(Stream& stream, const Self& self) {
+    PyObject* repr = PyObject_Repr(ptr(self));
+    if (repr == nullptr) {
+        Exception::from_python();
+    }
+    Py_ssize_t size;
+    const char* data = PyUnicode_AsUTF8AndSize(repr, &size);
+    if (data == nullptr) {
+        Py_DECREF(repr);
+        Exception::from_python();
+    }
+    stream.write(data, size);
+    Py_DECREF(repr);
+    return stream;
+}
+
+
 ////////////////////
 ////    CODE    ////
 ////////////////////

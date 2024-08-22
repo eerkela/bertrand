@@ -2,14 +2,12 @@
 #define BERTRAND_PYTHON_CORE_OBJECT_H
 
 #include "declarations.h"
-// #include "except.h"
-// #include "ops.h"
 
 
 namespace py {
 
 
-/* Retrieve the pointer backing a Python object. */
+/* Retrieve the raw pointer backing a Python object. */
 template <std::derived_from<Object> T>
 [[nodiscard]] PyObject* ptr(const T& obj);
 
@@ -26,14 +24,82 @@ template <std::derived_from<Object> T> requires (!std::is_const_v<T>)
 [[nodiscard]] PyObject* release(T&& obj);
 
 
-/* Steal a reference to a raw Python handle. */
+/* Steal a reference to a raw Python object. */
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_steal(PyObject* obj);
 
 
-/* Borrow a reference to a raw Python handle. */
+/* Borrow a reference to a raw Python object. */
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_borrow(PyObject* obj);
+
+
+/* Wrap a non-owning, mutable reference to a C++ object into a `py::Object` proxy that
+exposes it to Python.  Note that this only works if a corresponding `py::Object`
+subclass exists, which was declared using the `__python__` CRTP helper, and whose C++
+type exactly matches the argument.
+
+WARNING: This function is unsafe and should be used with caution.  It is the caller's
+responsibility to make sure that the underlying object outlives the wrapper, otherwise
+undefined behavior will occur.  It is mostly intended for internal use in order to
+expose shared state to Python, for instance to model exported global variables. */
+template <typename T>
+    requires (
+        __as_object__<T>::enable &&
+        impl::originates_from_cpp<typename __as_object__<T>::type> &&
+        std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
+    )
+[[nodiscard]] auto wrap(T& obj) -> __as_object__<T>::type {
+    return Type<T>::__python__::_wrap(obj);
+}
+
+
+/* Wrap a non-owning, immutable reference to a C++ object into a `py::Object` proxy
+that exposes it to Python.  Note that this only works if a corresponding `py::Object`
+subclass exists, which was declared using the `__python__` CRTP helper, and whose C++
+type exactly matches the argument.
+
+WARNING: This function is unsafe and should be used with caution.  It is the caller's
+responsibility to make sure that the underlying object outlives the wrapper, otherwise
+undefined behavior will occur.  It is mostly intended for internal use in order to
+expose shared state to Python, for instance to model exported global variables. */
+template <typename T>
+    requires (
+        __as_object__<T>::enable &&
+        impl::originates_from_cpp<typename __as_object__<T>::type> &&
+        std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
+    )
+[[nodiscard]] auto wrap(const T& obj) -> __as_object__<T>::type {
+    return Type<T>::__python__::_wrap(obj);
+}
+
+
+/* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper.
+Note that this only works if the wrapper was declared using the `__python__` CRTP
+helper.  If the wrapper does not own the backing object, this method will follow the
+pointer to resolve the reference. */
+template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
+[[nodiscard]] auto& unwrap(T& obj) {
+    if constexpr (impl::cpp_like<T>) {
+        return obj;
+    } else {
+        return Type<T>::__python__::_unwrap(obj);
+    }
+}
+
+
+/* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper.
+Note that this only works if the wrapper was declared using the `__python__` CRTP
+helper.  If the wrapper does not own the backing object, this method will follow the
+pointer to resolve the reference. */
+template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
+[[nodiscard]] const auto& unwrap(const T& obj) {
+    if constexpr (impl::cpp_like<T>) {
+        return obj;
+    } else {
+        return Type<T>::__python__::_unwrap(obj);
+    }
+}
 
 
 template <>
@@ -81,16 +147,16 @@ protected:
     };
 
     template <std::derived_from<Object> T, typename... Args>
-    Object(implicit_ctor<T>, Args&&... args) : Object((
-        Interpreter::init(),
+    Object(implicit_ctor<T>, Args&&... args) : m_ptr(release((
+        Interpreter::init(),  // comma operator
         __init__<T, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
+    ))) {}
 
     template <std::derived_from<Object> T, typename... Args>
-    Object(explicit_ctor<T>, Args&&... args) : Object((
-        Interpreter::init(),
+    Object(explicit_ctor<T>, Args&&... args) : m_ptr(release((
+        Interpreter::init(),  // comma operator
         __explicit_init__<T, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    )) {}
+    ))) {}
 
 public:
 
@@ -100,10 +166,10 @@ public:
     /* Move constructor.  Steals a reference to a temporary object. */
     Object(Object&& other) : m_ptr(release(other)) {}
 
-    /* reinterpret_borrow() constructor.  Borrows a reference to a raw Python handle. */
+    /* reinterpret_borrow() constructor.  Borrows a reference to a raw Python pointer. */
     Object(PyObject* p, borrowed_t) : m_ptr(Py_XNewRef(p)) {}
 
-    /* reinterpret_steal() constructor.  Steals a reference to a raw Python handle. */
+    /* reinterpret_steal() constructor.  Steals a reference to a raw Python pointer. */
     Object(PyObject* p, stolen_t) : m_ptr(p) {}
 
     /* Universal implicit constructor.  Implemented via the __init__ control struct. */
@@ -189,8 +255,8 @@ public:
     }
 
     /* Call operator.  This can be enabled for specific argument signatures and return
-    types via the __call__ control struct, enabling static type safety for Python
-    functions in C++. */
+    types via the __call__ control struct, enabling static type safety for callable
+    Python objects in C++. */
     template <typename Self, typename... Args>
         requires (__call__<std::remove_cvref_t<Self>, Args...>::enable)
     decltype(auto) operator()(this Self&& self, Args&&... args) {
@@ -239,7 +305,7 @@ public:
     __getitem__, __setitem__, and __delitem__ control structs. */
     template <typename Self, typename... Key>
         requires (__getitem__<Self, Key...>::enable)
-    decltype(auto) operator[](this const Self& self, Key&&... key);  // defined in ops.h
+    decltype(auto) operator[](this const Self& self, Key&&... key);
 
 };
 
@@ -275,48 +341,6 @@ template <std::derived_from<Object> T>
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_steal(PyObject* ptr) {
     return T(ptr, Object::stolen_t{});
-}
-
-
-template <typename T>
-    requires (
-        __as_object__<T>::enable &&
-        impl::originates_from_cpp<typename __as_object__<T>::type> &&
-        std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
-    )
-[[nodiscard]] auto wrap(T& obj) -> __as_object__<T>::type {
-    return Type<T>::__python__::_wrap(obj);
-}
-
-
-template <typename T>
-    requires (
-        __as_object__<T>::enable &&
-        impl::originates_from_cpp<typename __as_object__<T>::type> &&
-        std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
-    )
-[[nodiscard]] auto wrap(const T& obj) -> __as_object__<T>::type {
-    return Type<T>::__python__::_wrap(obj);
-}
-
-
-template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
-[[nodiscard]] auto& unwrap(T& obj) {
-    if constexpr (impl::cpp_like<T>) {
-        return obj;
-    } else {
-        return Type<T>::__python__::_unwrap(obj);
-    }
-}
-
-
-template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
-[[nodiscard]] const auto& unwrap(const T& obj) {
-    if constexpr (impl::cpp_like<T>) {
-        return obj;
-    } else {
-        return Type<T>::__python__::_unwrap(obj);
-    }
 }
 
 
@@ -486,9 +510,9 @@ struct __pos__<Object>                                      : Returns<Object> {}
 template <>
 struct __neg__<Object>                                      : Returns<Object> {};
 template <>
-struct __increment__<Object>                                : Returns<Object> {};
+struct __increment__<Object>                                : Returns<Object&> {};
 template <>
-struct __decrement__<Object>                                : Returns<Object> {};
+struct __decrement__<Object>                                : Returns<Object&> {};
 template <std::convertible_to<Object> R>
 struct __lt__<Object, R>                                    : Returns<bool> {};
 template <std::convertible_to<Object> L> requires (!std::same_as<L, Object>)
@@ -585,6 +609,12 @@ template <std::convertible_to<Object> R>
 struct __ior__<Object, R>                                   : Returns<Object&> {};
 template <std::convertible_to<Object> R>
 struct __ixor__<Object, R>                                  : Returns<Object&> {};
+
+
+template <std::derived_from<std::ostream> Stream, std::derived_from<Object> Self>
+struct __lshift__<Stream, Self>                             : Returns<Stream&> {
+    static Stream& operator()(Stream& stream, const Self& self);
+};
 
 
 }  // namespace py

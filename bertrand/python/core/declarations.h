@@ -1541,58 +1541,6 @@ namespace impl {
 }
 
 
-/* Wrap a non-owning, mutable reference to a C++ object into a `py::Object` proxy that
-exposes it to Python.  Note that this only works if a corresponding `py::Object`
-subclass exists, which was declared using the `__python__` CRTP helper, and whose C++
-type exactly matches the argument.
-
-WARNING: This function is unsafe and should be used with caution.  It is the caller's
-responsibility to make sure that the underlying object outlives the wrapper, otherwise
-undefined behavior will occur.  It is mostly intended for internal use in order to
-expose shared state to Python, for instance to model exported global variables. */
-template <typename T>
-    requires (
-        __as_object__<T>::enable &&
-        impl::originates_from_cpp<typename __as_object__<T>::type> &&
-        std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
-    )
-[[nodiscard]] auto wrap(T& obj) -> __as_object__<T>::type;
-
-
-/* Wrap a non-owning, immutable reference to a C++ object into a `py::Object` proxy
-that exposes it to Python.  Note that this only works if a corresponding `py::Object`
-subclass exists, which was declared using the `__python__` CRTP helper, and whose C++
-type exactly matches the argument.
-
-WARNING: This function is unsafe and should be used with caution.  It is the caller's
-responsibility to make sure that the underlying object outlives the wrapper, otherwise
-undefined behavior will occur.  It is mostly intended for internal use in order to
-expose shared state to Python, for instance to model exported global variables. */
-template <typename T>
-    requires (
-        __as_object__<T>::enable &&
-        impl::originates_from_cpp<typename __as_object__<T>::type> &&
-        std::same_as<T, typename __as_object__<T>::type::__python__::t_cpp>
-    )
-[[nodiscard]] auto wrap(const T& obj) -> __as_object__<T>::type;
-
-
-/* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper.
-Note that this only works if the wrapper was declared using the `__python__` CRTP
-helper.  If the wrapper does not own the backing object, this method will follow the
-pointer to resolve the reference. */
-template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
-[[nodiscard]] auto& unwrap(T& obj);
-
-
-/* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper.
-Note that this only works if the wrapper was declared using the `__python__` CRTP
-helper.  If the wrapper does not own the backing object, this method will follow the
-pointer to resolve the reference. */
-template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
-[[nodiscard]] const auto& unwrap(const T& obj);
-
-
 }  // namespace py
 
 
