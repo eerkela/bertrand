@@ -173,6 +173,7 @@ struct Frame;
 template <typename T = Object>
 struct Type;
 struct BertrandMeta;
+struct TypeRegistry;
 template <typename Return>
 struct Iterator;
 template <StaticStr Name, typename T>

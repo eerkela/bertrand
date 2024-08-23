@@ -150,13 +150,27 @@ protected:
     Object(implicit_ctor<T>, Args&&... args) : m_ptr(release((
         Interpreter::init(),  // comma operator
         __init__<T, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ))) {}
+    ))) {
+        using init = __init__<T, std::remove_cvref_t<Args>...>;
+        using Return = std::invoke_result_t<init, Args...>;
+        static_assert(
+            std::same_as<Return, T>,
+            "__init__<T, Args...> must return an instance of T."
+        );
+    }
 
     template <std::derived_from<Object> T, typename... Args>
     Object(explicit_ctor<T>, Args&&... args) : m_ptr(release((
         Interpreter::init(),  // comma operator
         __explicit_init__<T, std::remove_cvref_t<Args>...>{}(std::forward<Args>(args)...)
-    ))) {}
+    ))) {
+        using explicit_init = __explicit_init__<T, std::remove_cvref_t<Args>...>;
+        using Return = std::invoke_result_t<explicit_init, Args...>;
+        static_assert(
+            std::same_as<Return, T>,
+            "__explicit_init__<T, Args...> must return an instance of T."
+        );
+    }
 
 public:
 
@@ -311,13 +325,13 @@ public:
 
 
 template <std::derived_from<Object> T>
-[[nodiscard]] inline PyObject* ptr(const T& obj) {
+[[nodiscard]] PyObject* ptr(const T& obj) {
     return obj.m_ptr;
 }
 
 
 template <std::derived_from<Object> T>
-[[nodiscard]] inline PyObject* release(T& obj) {
+[[nodiscard]] PyObject* release(T& obj) {
     PyObject* temp = obj.m_ptr;
     obj.m_ptr = nullptr;
     return temp;
@@ -325,7 +339,7 @@ template <std::derived_from<Object> T>
 
 
 template <std::derived_from<Object> T> requires (!std::is_const_v<T>)
-[[nodiscard]] inline PyObject* release(T&& obj) {
+[[nodiscard]] PyObject* release(T&& obj) {
     PyObject* temp = obj.m_ptr;
     obj.m_ptr = nullptr;
     return temp;
@@ -611,9 +625,12 @@ template <std::convertible_to<Object> R>
 struct __ixor__<Object, R>                                  : Returns<Object&> {};
 
 
+/* Inserting an object into an output stream corresponds to a `str()` call at the
+Python level. */
 template <std::derived_from<std::ostream> Stream, std::derived_from<Object> Self>
 struct __lshift__<Stream, Self>                             : Returns<Stream&> {
-    static Stream& operator()(Stream& stream, const Self& self);
+    /// TODO: Str, Bytes, ByteArray should specialize this to write to the stream directly.
+    static Stream& operator()(Stream& stream, const Self& self);  // defined in except.h
 };
 
 

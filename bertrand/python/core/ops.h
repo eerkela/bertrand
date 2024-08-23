@@ -1364,11 +1364,26 @@ void delattr(const T& obj) {
 
 
 /* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
-represent C++ types using std::to_string or the stream insertion operator (<<).  If all
+represent C++ types using stream insertion operator (<<) or std::to_string.  If all
 else fails, falls back to typeid(obj).name(). */
 template <typename T>
 [[nodiscard]] std::string repr(const T& obj) {
-    if constexpr (impl::has_stream_insertion<T>) {
+    if constexpr (__as_object__<T>::enable) {
+        PyObject* str = PyObject_Repr(ptr(as_object(obj)));
+        if (str == nullptr) {
+            Exception::from_python();
+        }
+        Py_ssize_t size;
+        const char* data = PyUnicode_AsUTF8AndSize(str, &size);
+        if (data == nullptr) {
+            Py_DECREF(str);
+            Exception::from_python();
+        }
+        std::string result(data, size);
+        Py_DECREF(str);
+        return result;
+
+    } else if constexpr (impl::has_stream_insertion<T>) {
         std::ostringstream stream;
         stream << obj;
         return stream.str();
@@ -1377,23 +1392,7 @@ template <typename T>
         return std::to_string(obj);
 
     } else {
-        try {
-            PyObject* str = PyObject_Repr(ptr(as_object(obj)));
-            if (str == nullptr) {
-                Exception::from_python();
-            }
-            Py_ssize_t size;
-            const char* data = PyUnicode_AsUTF8AndSize(str, &size);
-            if (data == nullptr) {
-                Py_DECREF(str);
-                Exception::from_python();
-            }
-            std::string result(data, size);
-            Py_DECREF(str);
-            return result;
-        } catch (...) {
-            return typeid(obj).name();
-        }
+        return typeid(T).name();
     }
 }
 

@@ -5,6 +5,7 @@
 #include "object.h"
 #include "code.h"
 #include "except.h"
+#include "pybuffer.h"
 
 
 namespace py {
@@ -12,7 +13,12 @@ namespace py {
 
 namespace impl {
 
+    /// TODO: construct() should not be necessary?  Just implement the logic in
+    /// __init__/__explicit_init__?
 
+    /* Construct a new instance of an inner `Type<Wrapper>::__python__` type using
+    Python-based memory allocation and forwarding to its C++ constructor to complete
+    initialization. */
     template <typename Wrapper, typename... Args>
         requires (
             has_type<Wrapper> &&
@@ -44,13 +50,6 @@ namespace impl {
     inherits from its CRTP helpers. */
     struct TypeTag : BertrandTag {
     protected:
-
-        /* A convenience struct implementing the overload pattern for visiting a
-        std::variant. */
-        template <typename... Ts>
-        struct Visitor : Ts... {
-            using Ts::operator()...;
-        };
 
         template <typename Begin, std::sentinel_for<Begin> End>
         struct Iterator {
@@ -110,9 +109,9 @@ namespace impl {
             /* Generate a new instance of the type object to be attached to the given
             module.
 
-            The `bindings` argument is a helper that includes a number of convenience
+            The `bind` argument is a helper that includes a number of convenience
             methods for exposing the type to Python.  The `__export__` script must end
-            with a call to `bindings.finalize<Bases...>()`, which will instantiate a
+            with a call to `bind.finalize<Bases...>()`, which will instantiate a
             unique heap type for each module.  This is the correct way to expose types
             using per-module state, which allows for multiple sub-interpreters to run
             in parallel without interfering with one other (possibly without a central
@@ -133,12 +132,12 @@ namespace impl {
             Types that reference a C++ class or are implemented inline should override
             this method to provide their own bindings. */
             template <StaticStr ModName>
-            static Type<Wrapper> __export__(Bindings<ModName> bindings) {
-                // bindings.var<"foo">(&CppType::foo);
-                // bindings.method<"bar">("an example method", &CppType::bar);
-                // bindings.type<"Baz", CppType::Baz, Bases...>();
+            static Type<Wrapper> __export__(Bindings<ModName> bind) {
+                // bind.var<"foo">(&CppType::foo);
+                // bind.method<"bar">("an example method", &CppType::bar);
+                // bind.type<"Baz", CppType::Baz, Bases...>();
                 // ...
-                // return bindings.template finalize<Bases...>();
+                // return bind.template finalize<Bases...>();
                 return CRTP::__import__();
             }
 
@@ -223,8 +222,19 @@ namespace impl {
         Python.  Everything else is an implementation detail. */
         template <typename CRTP, typename Wrapper>
         struct def<CRTP, Wrapper, void> : BaseDef<CRTP, Wrapper, void> {
+        protected:
+
+            template <StaticStr ModName>
+            struct Bindings;
+
+        public:
             static constexpr Origin __origin__ = Origin::PYTHON;
         };
+
+        /// TODO: there can be a similar level of scrutiny for inline Python types as
+        /// for types that wrap around C++ classes.  The way to detect these is to
+        /// check to see whether the size of the type is nonzero, and if so, generate
+        /// all the conveniences necessary to make it work.
 
     };
 
@@ -516,7 +526,10 @@ behaviors.
 Performing an `isinstance()` check against this type will return `True` if and only if
 the candidate type is implemented in C++.)doc";
 
-        PyTypeObject base;
+        /* This type inherits the binary layout of PyTypeObject, but does so indirectly
+        via a raw buffer, which prevents C++ from attempting to default-initialize this
+        field in the constructor. */
+        alignas(PyTypeObject) char base[sizeof(PyTypeObject)];
 
         /// TODO: instancecheck, subclasscheck may need updates to avoid conflicts
         /// with overload sets, etc.
@@ -524,8 +537,8 @@ the candidate type is implemented in C++.)doc";
         /* The `instancecheck` and `subclasscheck` function pointers are used to back
         the metaclass's Python-level `__instancecheck__()` and `__subclasscheck()__`
         methods, and are automatically set during construction for each type. */
-        bool(*instancecheck)(__python__*, PyObject*);
-        bool(*subclasscheck)(__python__*, PyObject*);
+        bool(*instancecheck)(__python__*, PyObject*) = nullptr;
+        bool(*subclasscheck)(__python__*, PyObject*) = nullptr;
 
         /* C++ needs a few extra hooks to accurately model class-level variables in a
         way that shares state with Python.  The dictionaries below are searched during
@@ -548,10 +561,10 @@ the candidate type is implemented in C++.)doc";
 
         /* The metaclass will demangle the C++ class name and track templates via an
         internal dictionary accessible through `__getitem__()`. */
-        PyObject* demangled;
-        PyObject* templates;
-        __python__* parent;  // backreference to the public template interface, or null
-        /// NOTE: by following the parent pointer, we can look up an instantiation's
+        PyObject* demangled = nullptr;
+        PyObject* templates = nullptr;
+        __python__* parent = nullptr;  // backreference to the public template interface
+        /// TODO: by following the parent pointer, we can look up an instantiation's
         /// exact type in the global C++ registry, then check against its parent and
         /// again for the class itself in order to do an efficient type check.  That
         /// would involve a single import and 2 PyType_IsSubtype() calls, which is
@@ -567,7 +580,7 @@ the candidate type is implemented in C++.)doc";
 
         The way this is implemented is rather complicated, and deserves explanation:
 
-        When the `bindings.type<"name", Cls, Bases...>()` helper is invoked from an
+        When the `bind.type<"name", Cls, Bases...>()` helper is invoked from an
         `__export__()` script, it corresponds to the creation of a new heap type, which
         is an instance of this class.  The type initially does not specify any slots,
         relying on Python to inherit them from the bases like normal.  Once the type is
@@ -580,7 +593,7 @@ the candidate type is implemented in C++.)doc";
         raise an `AttributeError` instead.
 
         The overload sets are stored as opaque pointers listed below, which initialize
-        to null.  They are populated by the `bindings.method<"name">()` helper in the
+        to null.  They are populated by the `bind.method<"name">()` helper in the
         type's `__export__()` script just like all other methods, but via a slightly
         different code path due to the presence of getset descriptors on the metaclass
         itself.  When the helper is called with a reserved slot name (like `__init__`,
@@ -612,178 +625,425 @@ the candidate type is implemented in C++.)doc";
         See the Python C API for a complete list of C slots:
             https://docs.python.org/3/c-api/typeobj.html
         */
-        /// TODO: I might be able to delete the overload sets that aren't directly used
-        /// in the type's slots, which could save a bunch of memory.
-        /// -> The upside to keeping them is that I can enforce a strict signature
-        /// match, which is useful for debugging and type checking.  However, I could
-        /// maybe do the same by specializing method<"name">() to only be enabled if
-        /// the signature matches at compile time.  That wouldn't prevent you from
-        /// messing things up on the python side, but the memory savings would probably
-        /// make up for it.
-        /// -> Perhaps I can keep the descriptor, but lose the overload sets?  That way,
-        /// I still get the same Python-level signature enforcement, but also the
-        /// corresponding memory savings.
-        PyObject* __new__;
-        PyObject* __init__;
-        PyObject* __del__;  // delete
-        PyObject* __repr__;
-        PyObject* __str__;
-        PyObject* __bytes__;  // delete
-        PyObject* __format__;  // delete
-        PyObject* __lt__;
-        PyObject* __le__;
-        PyObject* __eq__;
-        PyObject* __ne__;
-        PyObject* __ge__;
-        PyObject* __gt__;
-        PyObject* __hash__;
-        PyObject* __bool__;
-        PyObject* __getattr__;
-        PyObject* __getattribute__;  // delete
-        PyObject* __setattr__;
-        PyObject* __delattr__;
-        PyObject* __dir__;  // delete
-        PyObject* __get__;
-        PyObject* __set__;
-        PyObject* __delete__;
-        PyObject* __init_subclass__;  // delete
-        PyObject* __set_name__;  // delete
-        PyObject* __mro_entries__;  // delete
-        PyObject* __instancecheck__;  // delete
-        PyObject* __subclasscheck__;   // delete
-        PyObject* __class_getitem__;  // delete, metaclass's __getitem__ always takes priority
-        PyObject* __call__;
-        PyObject* __len__;
-        PyObject* __length_hint__;  // delete
-        PyObject* __getitem__;
-        PyObject* __setitem__;
-        PyObject* __delitem__;
-        PyObject* __missing__;  // delete
-        PyObject* __iter__;
-        PyObject* __next__;
-        PyObject* __reversed__;  // delete
-        PyObject* __contains__;
-        PyObject* __add__;
-        PyObject* __sub__;
-        PyObject* __mul__;
-        PyObject* __matmul__;
-        PyObject* __truediv__;
-        PyObject* __floordiv__;
-        PyObject* __mod__;
-        PyObject* __divmod__;
-        PyObject* __pow__;
-        PyObject* __lshift__;
-        PyObject* __rshift__;
-        PyObject* __and__;
-        PyObject* __xor__;
-        PyObject* __or__;
-        PyObject* __radd__;
-        PyObject* __rsub__;
-        PyObject* __rmul__;
-        PyObject* __rmatmul__;
-        PyObject* __rtruediv__;
-        PyObject* __rfloordiv__;
-        PyObject* __rmod__;
-        PyObject* __rdivmod__;
-        PyObject* __rpow__;
-        PyObject* __rlshift__;
-        PyObject* __rrshift__;
-        PyObject* __rand__;
-        PyObject* __rxor__;
-        PyObject* __ror__;
-        PyObject* __iadd__;
-        PyObject* __isub__;
-        PyObject* __imul__;
-        PyObject* __imatmul__;
-        PyObject* __itruediv__;
-        PyObject* __ifloordiv__;
-        PyObject* __imod__;
-        PyObject* __ipow__;
-        PyObject* __ilshift__;
-        PyObject* __irshift__;
-        PyObject* __iand__;
-        PyObject* __ixor__;
-        PyObject* __ior__;
-        PyObject* __neg__;
-        PyObject* __pos__;
-        PyObject* __abs__;
-        PyObject* __invert__;
-        PyObject* __complex_py__;  // delete
-        PyObject* __int__;
-        PyObject* __float__;
-        PyObject* __index__;
-        PyObject* __round__;  // delete
-        PyObject* __trunc__;  // delete
-        PyObject* __floor__;  // delete
-        PyObject* __ceil__;  // delete
-        PyObject* __enter__;
-        PyObject* __exit__;
-        PyObject* __buffer__;
-        PyObject* __release_buffer__;
-        PyObject* __await__;
-        PyObject* __aiter__;
-        PyObject* __anext__;
-        PyObject* __aenter__;
-        PyObject* __aexit__;
+        PyObject* __new__ = nullptr;
+        PyObject* __init__ = nullptr;
+        PyObject* __repr__ = nullptr;
+        PyObject* __str__ = nullptr;
+        PyObject* __lt__ = nullptr;
+        PyObject* __le__ = nullptr;
+        PyObject* __eq__ = nullptr;
+        PyObject* __ne__ = nullptr;
+        PyObject* __ge__ = nullptr;
+        PyObject* __gt__ = nullptr;
+        PyObject* __hash__ = nullptr;
+        PyObject* __bool__ = nullptr;
+        PyObject* __getattr__ = nullptr;
+        PyObject* __getattribute__ = nullptr;
+        PyObject* __setattr__ = nullptr;
+        PyObject* __delattr__ = nullptr;
+        PyObject* __get__ = nullptr;
+        PyObject* __set__ = nullptr;
+        PyObject* __delete__ = nullptr;
+        PyObject* __call__ = nullptr;
+        PyObject* __len__ = nullptr;
+        PyObject* __getitem__ = nullptr;
+        PyObject* __setitem__ = nullptr;
+        PyObject* __delitem__ = nullptr;
+        PyObject* __iter__ = nullptr;
+        PyObject* __next__ = nullptr;
+        PyObject* __contains__ = nullptr;
+        PyObject* __add__ = nullptr;
+        PyObject* __sub__ = nullptr;
+        PyObject* __mul__ = nullptr;
+        PyObject* __matmul__ = nullptr;
+        PyObject* __truediv__ = nullptr;
+        PyObject* __floordiv__ = nullptr;
+        PyObject* __mod__ = nullptr;
+        PyObject* __divmod__ = nullptr;
+        PyObject* __pow__ = nullptr;
+        PyObject* __lshift__ = nullptr;
+        PyObject* __rshift__ = nullptr;
+        PyObject* __and__ = nullptr;
+        PyObject* __xor__ = nullptr;
+        PyObject* __or__ = nullptr;
+        PyObject* __radd__ = nullptr;
+        PyObject* __rsub__ = nullptr;
+        PyObject* __rmul__ = nullptr;
+        PyObject* __rmatmul__ = nullptr;
+        PyObject* __rtruediv__ = nullptr;
+        PyObject* __rfloordiv__ = nullptr;
+        PyObject* __rmod__ = nullptr;
+        PyObject* __rdivmod__ = nullptr;
+        PyObject* __rpow__ = nullptr;
+        PyObject* __rlshift__ = nullptr;
+        PyObject* __rrshift__ = nullptr;
+        PyObject* __rand__ = nullptr;
+        PyObject* __rxor__ = nullptr;
+        PyObject* __ror__ = nullptr;
+        PyObject* __iadd__ = nullptr;
+        PyObject* __isub__ = nullptr;
+        PyObject* __imul__ = nullptr;
+        PyObject* __imatmul__ = nullptr;
+        PyObject* __itruediv__ = nullptr;
+        PyObject* __ifloordiv__ = nullptr;
+        PyObject* __imod__ = nullptr;
+        PyObject* __ipow__ = nullptr;
+        PyObject* __ilshift__ = nullptr;
+        PyObject* __irshift__ = nullptr;
+        PyObject* __iand__ = nullptr;
+        PyObject* __ixor__ = nullptr;
+        PyObject* __ior__ = nullptr;
+        PyObject* __neg__ = nullptr;
+        PyObject* __pos__ = nullptr;
+        PyObject* __abs__ = nullptr;
+        PyObject* __invert__ = nullptr;
+        PyObject* __int__ = nullptr;
+        PyObject* __float__ = nullptr;
+        PyObject* __index__ = nullptr;
+        PyObject* __buffer__ = nullptr;
+        PyObject* __release_buffer__ = nullptr;
+        PyObject* __await__ = nullptr;
+        PyObject* __aiter__ = nullptr;
+        PyObject* __anext__ = nullptr;
 
         /* The original Python slots are recorded here for posterity. */
-        reprfunc tp_repr;
-        hashfunc tp_hash;
-        ternaryfunc tp_call;
-        reprfunc tp_str;
-        getattrofunc tp_getattro;
-        setattrofunc tp_setattro;
-        richcmpfunc tp_richcompare;
-        getiterfunc tp_iter;
-        iternextfunc tp_iternext;
-        descrgetfunc tp_descr_get;
-        descrsetfunc tp_descr_set;
-        initproc tp_init;
-        newfunc tp_new;
-        lenfunc mp_length;
-        binaryfunc mp_subscript;
-        objobjargproc mp_ass_subscript;
-        objobjargproc sq_contains;
-        unaryfunc am_await;
-        unaryfunc am_aiter;
-        unaryfunc am_anext;
-        getbufferproc bf_getbuffer;
-        releasebufferproc bf_releasebuffer;
-        binaryfunc nb_add;
-        binaryfunc nb_inplace_add;
-        binaryfunc nb_subtract;
-        binaryfunc nb_inplace_subtract;
-        binaryfunc nb_multiply;
-        binaryfunc nb_inplace_multiply;
-        binaryfunc nb_remainder;
-        binaryfunc nb_inplace_remainder;
-        binaryfunc nb_divmod;
-        ternaryfunc nb_power;
-        ternaryfunc nb_inplace_power;
-        unaryfunc nb_negative;
-        unaryfunc nb_positive;
-        unaryfunc nb_absolute;
-        inquiry nb_bool;
-        unaryfunc nb_invert;
-        binaryfunc nb_lshift;
-        binaryfunc nb_inplace_lshift;
-        binaryfunc nb_rshift;
-        binaryfunc nb_inplace_rshift;
-        binaryfunc nb_and;
-        binaryfunc nb_inplace_and;
-        binaryfunc nb_xor;
-        binaryfunc nb_inplace_xor;
-        binaryfunc nb_or;
-        binaryfunc nb_inplace_or;
-        unaryfunc nb_int;
-        unaryfunc nb_float;
-        binaryfunc nb_floor_divide;
-        binaryfunc nb_inplace_floor_divide;
-        binaryfunc nb_true_divide;
-        binaryfunc nb_inplace_true_divide;
-        unaryfunc nb_index;
-        binaryfunc nb_matrix_multiply;
-        binaryfunc nb_inplace_matrix_multiply;
+        reprfunc tp_repr = nullptr;
+        hashfunc tp_hash = nullptr;
+        ternaryfunc tp_call = nullptr;
+        reprfunc tp_str = nullptr;
+        getattrofunc tp_getattro = nullptr;
+        setattrofunc tp_setattro = nullptr;
+        richcmpfunc tp_richcompare = nullptr;
+        getiterfunc tp_iter = nullptr;
+        iternextfunc tp_iternext = nullptr;
+        descrgetfunc tp_descr_get = nullptr;
+        descrsetfunc tp_descr_set = nullptr;
+        initproc tp_init = nullptr;
+        newfunc tp_new = nullptr;
+        lenfunc mp_length = nullptr;
+        binaryfunc mp_subscript = nullptr;
+        objobjargproc mp_ass_subscript = nullptr;
+        objobjargproc sq_contains = nullptr;
+        unaryfunc am_await = nullptr;
+        unaryfunc am_aiter = nullptr;
+        unaryfunc am_anext = nullptr;
+        getbufferproc bf_getbuffer = nullptr;
+        releasebufferproc bf_releasebuffer = nullptr;
+        binaryfunc nb_add = nullptr;
+        binaryfunc nb_inplace_add = nullptr;
+        binaryfunc nb_subtract = nullptr;
+        binaryfunc nb_inplace_subtract = nullptr;
+        binaryfunc nb_multiply = nullptr;
+        binaryfunc nb_inplace_multiply = nullptr;
+        binaryfunc nb_remainder = nullptr;
+        binaryfunc nb_inplace_remainder = nullptr;
+        binaryfunc nb_divmod = nullptr;
+        ternaryfunc nb_power = nullptr;
+        ternaryfunc nb_inplace_power = nullptr;
+        unaryfunc nb_negative = nullptr;
+        unaryfunc nb_positive = nullptr;
+        unaryfunc nb_absolute = nullptr;
+        inquiry nb_bool = nullptr;
+        unaryfunc nb_invert = nullptr;
+        binaryfunc nb_lshift = nullptr;
+        binaryfunc nb_inplace_lshift = nullptr;
+        binaryfunc nb_rshift = nullptr;
+        binaryfunc nb_inplace_rshift = nullptr;
+        binaryfunc nb_and = nullptr;
+        binaryfunc nb_inplace_and = nullptr;
+        binaryfunc nb_xor = nullptr;
+        binaryfunc nb_inplace_xor = nullptr;
+        binaryfunc nb_or = nullptr;
+        binaryfunc nb_inplace_or = nullptr;
+        unaryfunc nb_int = nullptr;
+        unaryfunc nb_float = nullptr;
+        binaryfunc nb_floor_divide = nullptr;
+        binaryfunc nb_inplace_floor_divide = nullptr;
+        binaryfunc nb_true_divide = nullptr;
+        binaryfunc nb_inplace_true_divide = nullptr;
+        unaryfunc nb_index = nullptr;
+        binaryfunc nb_matrix_multiply = nullptr;
+        binaryfunc nb_inplace_matrix_multiply = nullptr;
+
+        __python__(const std::string& demangled) {
+            std::string s = "<class '" + demangled + "'>";
+            this->demangled = PyUnicode_FromStringAndSize(s.c_str(), s.size());
+            if (this->demangled == nullptr) {
+                Exception::from_python();
+            }
+        }
+
+        ~__python__() {
+            Py_XDECREF(demangled);
+            Py_XDECREF(templates);
+            Py_XDECREF(parent);
+            Py_XDECREF(__new__);
+            Py_XDECREF(__init__);
+            Py_XDECREF(__repr__);
+            Py_XDECREF(__str__);
+            Py_XDECREF(__lt__);
+            Py_XDECREF(__le__);
+            Py_XDECREF(__eq__);
+            Py_XDECREF(__ne__);
+            Py_XDECREF(__ge__);
+            Py_XDECREF(__gt__);
+            Py_XDECREF(__hash__);
+            Py_XDECREF(__bool__);
+            Py_XDECREF(__getattr__);
+            Py_XDECREF(__getattribute__);
+            Py_XDECREF(__setattr__);
+            Py_XDECREF(__delattr__);
+            Py_XDECREF(__get__);
+            Py_XDECREF(__set__);
+            Py_XDECREF(__delete__);
+            Py_XDECREF(__call__);
+            Py_XDECREF(__len__);
+            Py_XDECREF(__getitem__);
+            Py_XDECREF(__setitem__);
+            Py_XDECREF(__delitem__);
+            Py_XDECREF(__iter__);
+            Py_XDECREF(__next__);
+            Py_XDECREF(__contains__);
+            Py_XDECREF(__add__);
+            Py_XDECREF(__sub__);
+            Py_XDECREF(__mul__);
+            Py_XDECREF(__matmul__);
+            Py_XDECREF(__truediv__);
+            Py_XDECREF(__floordiv__);
+            Py_XDECREF(__mod__);
+            Py_XDECREF(__divmod__);
+            Py_XDECREF(__pow__);
+            Py_XDECREF(__lshift__);
+            Py_XDECREF(__rshift__);
+            Py_XDECREF(__and__);
+            Py_XDECREF(__xor__);
+            Py_XDECREF(__or__);
+            Py_XDECREF(__radd__);
+            Py_XDECREF(__rsub__);
+            Py_XDECREF(__rmul__);
+            Py_XDECREF(__rmatmul__);
+            Py_XDECREF(__rtruediv__);
+            Py_XDECREF(__rfloordiv__);
+            Py_XDECREF(__rmod__);
+            Py_XDECREF(__rdivmod__);
+            Py_XDECREF(__rpow__);
+            Py_XDECREF(__rlshift__);
+            Py_XDECREF(__rrshift__);
+            Py_XDECREF(__rand__);
+            Py_XDECREF(__rxor__);
+            Py_XDECREF(__ror__);
+            Py_XDECREF(__iadd__);
+            Py_XDECREF(__isub__);
+            Py_XDECREF(__imul__);
+            Py_XDECREF(__imatmul__);
+            Py_XDECREF(__itruediv__);
+            Py_XDECREF(__ifloordiv__);
+            Py_XDECREF(__imod__);
+            Py_XDECREF(__ipow__);
+            Py_XDECREF(__ilshift__);
+            Py_XDECREF(__irshift__);
+            Py_XDECREF(__iand__);
+            Py_XDECREF(__ixor__);
+            Py_XDECREF(__ior__);
+            Py_XDECREF(__neg__);
+            Py_XDECREF(__pos__);
+            Py_XDECREF(__abs__);
+            Py_XDECREF(__invert__);
+            Py_XDECREF(__int__);
+            Py_XDECREF(__float__);
+            Py_XDECREF(__index__);
+            Py_XDECREF(__buffer__);
+            Py_XDECREF(__release_buffer__);
+            Py_XDECREF(__await__);
+            Py_XDECREF(__aiter__);
+            Py_XDECREF(__anext__);
+        }
+
+        /* Deallocate overload sets and the heap type when it falls out of scope. */
+        static void __dealloc__(__python__* cls) {
+            PyObject_GC_UnTrack(cls);
+            cls->~__python__();
+            PyTypeObject* type = Py_TYPE(cls);
+            type->tp_free(cls);
+            Py_DECREF(type);  // required for heap types
+        }
+
+        /* Register the metaclass's fields with Python's cyclic garbage collector. */
+        static int __traverse__(__python__* cls, visitproc visit, void* arg) {
+            Py_VISIT(cls->demangled);
+            Py_VISIT(cls->templates);
+            Py_VISIT(cls->parent);
+            Py_VISIT(cls->__new__);
+            Py_VISIT(cls->__init__);
+            Py_VISIT(cls->__repr__);
+            Py_VISIT(cls->__str__);
+            Py_VISIT(cls->__lt__);
+            Py_VISIT(cls->__le__);
+            Py_VISIT(cls->__eq__);
+            Py_VISIT(cls->__ne__);
+            Py_VISIT(cls->__ge__);
+            Py_VISIT(cls->__gt__);
+            Py_VISIT(cls->__hash__);
+            Py_VISIT(cls->__bool__);
+            Py_VISIT(cls->__getattr__);
+            Py_VISIT(cls->__getattribute__);
+            Py_VISIT(cls->__setattr__);
+            Py_VISIT(cls->__delattr__);
+            Py_VISIT(cls->__get__);
+            Py_VISIT(cls->__set__);
+            Py_VISIT(cls->__delete__);
+            Py_VISIT(cls->__call__);
+            Py_VISIT(cls->__len__);
+            Py_VISIT(cls->__getitem__);
+            Py_VISIT(cls->__setitem__);
+            Py_VISIT(cls->__delitem__);
+            Py_VISIT(cls->__iter__);
+            Py_VISIT(cls->__next__);
+            Py_VISIT(cls->__contains__);
+            Py_VISIT(cls->__add__);
+            Py_VISIT(cls->__sub__);
+            Py_VISIT(cls->__mul__);
+            Py_VISIT(cls->__matmul__);
+            Py_VISIT(cls->__truediv__);
+            Py_VISIT(cls->__floordiv__);
+            Py_VISIT(cls->__mod__);
+            Py_VISIT(cls->__divmod__);
+            Py_VISIT(cls->__pow__);
+            Py_VISIT(cls->__lshift__);
+            Py_VISIT(cls->__rshift__);
+            Py_VISIT(cls->__and__);
+            Py_VISIT(cls->__xor__);
+            Py_VISIT(cls->__or__);
+            Py_VISIT(cls->__radd__);
+            Py_VISIT(cls->__rsub__);
+            Py_VISIT(cls->__rmul__);
+            Py_VISIT(cls->__rmatmul__);
+            Py_VISIT(cls->__rtruediv__);
+            Py_VISIT(cls->__rfloordiv__);
+            Py_VISIT(cls->__rmod__);
+            Py_VISIT(cls->__rdivmod__);
+            Py_VISIT(cls->__rpow__);
+            Py_VISIT(cls->__rlshift__);
+            Py_VISIT(cls->__rrshift__);
+            Py_VISIT(cls->__rand__);
+            Py_VISIT(cls->__rxor__);
+            Py_VISIT(cls->__ror__);
+            Py_VISIT(cls->__iadd__);
+            Py_VISIT(cls->__isub__);
+            Py_VISIT(cls->__imul__);
+            Py_VISIT(cls->__imatmul__);
+            Py_VISIT(cls->__itruediv__);
+            Py_VISIT(cls->__ifloordiv__);
+            Py_VISIT(cls->__imod__);
+            Py_VISIT(cls->__ipow__);
+            Py_VISIT(cls->__ilshift__);
+            Py_VISIT(cls->__irshift__);
+            Py_VISIT(cls->__iand__);
+            Py_VISIT(cls->__ixor__);
+            Py_VISIT(cls->__ior__);
+            Py_VISIT(cls->__neg__);
+            Py_VISIT(cls->__pos__);
+            Py_VISIT(cls->__abs__);
+            Py_VISIT(cls->__invert__);
+            Py_VISIT(cls->__int__);
+            Py_VISIT(cls->__float__);
+            Py_VISIT(cls->__index__);
+            Py_VISIT(cls->__buffer__);
+            Py_VISIT(cls->__release_buffer__);
+            Py_VISIT(cls->__await__);
+            Py_VISIT(cls->__aiter__);
+            Py_VISIT(cls->__anext__);
+            Py_VISIT(Py_TYPE(cls));  // required for heap types
+            return 0;
+        }
+
+        /* Break reference cycles if they exist. */
+        static int __clear__(__python__* cls) {
+            Py_CLEAR(cls->demangled);
+            Py_CLEAR(cls->templates);
+            Py_CLEAR(cls->parent);
+            Py_CLEAR(cls->__new__);
+            Py_CLEAR(cls->__init__);
+            Py_CLEAR(cls->__repr__);
+            Py_CLEAR(cls->__str__);
+            Py_CLEAR(cls->__lt__);
+            Py_CLEAR(cls->__le__);
+            Py_CLEAR(cls->__eq__);
+            Py_CLEAR(cls->__ne__);
+            Py_CLEAR(cls->__ge__);
+            Py_CLEAR(cls->__gt__);
+            Py_CLEAR(cls->__hash__);
+            Py_CLEAR(cls->__bool__);
+            Py_CLEAR(cls->__getattr__);
+            Py_CLEAR(cls->__getattribute__);
+            Py_CLEAR(cls->__setattr__);
+            Py_CLEAR(cls->__delattr__);
+            Py_CLEAR(cls->__get__);
+            Py_CLEAR(cls->__set__);
+            Py_CLEAR(cls->__delete__);
+            Py_CLEAR(cls->__call__);
+            Py_CLEAR(cls->__len__);
+            Py_CLEAR(cls->__getitem__);
+            Py_CLEAR(cls->__setitem__);
+            Py_CLEAR(cls->__delitem__);
+            Py_CLEAR(cls->__iter__);
+            Py_CLEAR(cls->__next__);
+            Py_CLEAR(cls->__contains__);
+            Py_CLEAR(cls->__add__);
+            Py_CLEAR(cls->__sub__);
+            Py_CLEAR(cls->__mul__);
+            Py_CLEAR(cls->__matmul__);
+            Py_CLEAR(cls->__truediv__);
+            Py_CLEAR(cls->__floordiv__);
+            Py_CLEAR(cls->__mod__);
+            Py_CLEAR(cls->__divmod__);
+            Py_CLEAR(cls->__pow__);
+            Py_CLEAR(cls->__lshift__);
+            Py_CLEAR(cls->__rshift__);
+            Py_CLEAR(cls->__and__);
+            Py_CLEAR(cls->__xor__);
+            Py_CLEAR(cls->__or__);
+            Py_CLEAR(cls->__radd__);
+            Py_CLEAR(cls->__rsub__);
+            Py_CLEAR(cls->__rmul__);
+            Py_CLEAR(cls->__rmatmul__);
+            Py_CLEAR(cls->__rtruediv__);
+            Py_CLEAR(cls->__rfloordiv__);
+            Py_CLEAR(cls->__rmod__);
+            Py_CLEAR(cls->__rdivmod__);
+            Py_CLEAR(cls->__rpow__);
+            Py_CLEAR(cls->__rlshift__);
+            Py_CLEAR(cls->__rrshift__);
+            Py_CLEAR(cls->__rand__);
+            Py_CLEAR(cls->__rxor__);
+            Py_CLEAR(cls->__ror__);
+            Py_CLEAR(cls->__iadd__);
+            Py_CLEAR(cls->__isub__);
+            Py_CLEAR(cls->__imul__);
+            Py_CLEAR(cls->__imatmul__);
+            Py_CLEAR(cls->__itruediv__);
+            Py_CLEAR(cls->__ifloordiv__);
+            Py_CLEAR(cls->__imod__);
+            Py_CLEAR(cls->__ipow__);
+            Py_CLEAR(cls->__ilshift__);
+            Py_CLEAR(cls->__irshift__);
+            Py_CLEAR(cls->__iand__);
+            Py_CLEAR(cls->__ixor__);
+            Py_CLEAR(cls->__ior__);
+            Py_CLEAR(cls->__neg__);
+            Py_CLEAR(cls->__pos__);
+            Py_CLEAR(cls->__abs__);
+            Py_CLEAR(cls->__invert__);
+            Py_CLEAR(cls->__int__);
+            Py_CLEAR(cls->__float__);
+            Py_CLEAR(cls->__index__);
+            Py_CLEAR(cls->__buffer__);
+            Py_CLEAR(cls->__release_buffer__);
+            Py_CLEAR(cls->__await__);
+            Py_CLEAR(cls->__aiter__);
+            Py_CLEAR(cls->__anext__);
+            return 0;
+        }
 
         /* Get a new reference to the metatype from the global `bertrand.python`
         module. */
@@ -831,519 +1091,11 @@ the candidate type is implemented in C++.)doc";
             return reinterpret_steal<Type>(cls);
         }
 
-        /* Register the metaclass's fields with Python's cyclic garbage collector. */
-        static int __traverse__(__python__* cls, visitproc visit, void* arg) {
-            Py_VISIT(cls->demangled);
-            Py_VISIT(cls->templates);
-            Py_VISIT(cls->__new__);
-            Py_VISIT(cls->__init__);
-            Py_VISIT(cls->__del__);
-            Py_VISIT(cls->__repr__);
-            Py_VISIT(cls->__str__);
-            Py_VISIT(cls->__bytes__);
-            Py_VISIT(cls->__format__);
-            Py_VISIT(cls->__lt__);
-            Py_VISIT(cls->__le__);
-            Py_VISIT(cls->__eq__);
-            Py_VISIT(cls->__ne__);
-            Py_VISIT(cls->__ge__);
-            Py_VISIT(cls->__gt__);
-            Py_VISIT(cls->__hash__);
-            Py_VISIT(cls->__bool__);
-            Py_VISIT(cls->__getattr__);
-            Py_VISIT(cls->__getattribute__);
-            Py_VISIT(cls->__setattr__);
-            Py_VISIT(cls->__delattr__);
-            Py_VISIT(cls->__dir__);
-            Py_VISIT(cls->__get__);
-            Py_VISIT(cls->__set__);
-            Py_VISIT(cls->__delete__);
-            Py_VISIT(cls->__init_subclass__);
-            Py_VISIT(cls->__set_name__);
-            Py_VISIT(cls->__mro_entries__);
-            Py_VISIT(cls->__instancecheck__);
-            Py_VISIT(cls->__subclasscheck__);
-            Py_VISIT(cls->__class_getitem__);
-            Py_VISIT(cls->__call__);
-            Py_VISIT(cls->__len__);
-            Py_VISIT(cls->__length_hint__);
-            Py_VISIT(cls->__getitem__);
-            Py_VISIT(cls->__setitem__);
-            Py_VISIT(cls->__delitem__);
-            Py_VISIT(cls->__missing__);
-            Py_VISIT(cls->__iter__);
-            Py_VISIT(cls->__next__);
-            Py_VISIT(cls->__reversed__);
-            Py_VISIT(cls->__contains__);
-            Py_VISIT(cls->__add__);
-            Py_VISIT(cls->__sub__);
-            Py_VISIT(cls->__mul__);
-            Py_VISIT(cls->__matmul__);
-            Py_VISIT(cls->__truediv__);
-            Py_VISIT(cls->__floordiv__);
-            Py_VISIT(cls->__mod__);
-            Py_VISIT(cls->__divmod__);
-            Py_VISIT(cls->__pow__);
-            Py_VISIT(cls->__lshift__);
-            Py_VISIT(cls->__rshift__);
-            Py_VISIT(cls->__and__);
-            Py_VISIT(cls->__xor__);
-            Py_VISIT(cls->__or__);
-            Py_VISIT(cls->__radd__);
-            Py_VISIT(cls->__rsub__);
-            Py_VISIT(cls->__rmul__);
-            Py_VISIT(cls->__rmatmul__);
-            Py_VISIT(cls->__rtruediv__);
-            Py_VISIT(cls->__rfloordiv__);
-            Py_VISIT(cls->__rmod__);
-            Py_VISIT(cls->__rdivmod__);
-            Py_VISIT(cls->__rpow__);
-            Py_VISIT(cls->__rlshift__);
-            Py_VISIT(cls->__rrshift__);
-            Py_VISIT(cls->__rand__);
-            Py_VISIT(cls->__rxor__);
-            Py_VISIT(cls->__ror__);
-            Py_VISIT(cls->__iadd__);
-            Py_VISIT(cls->__isub__);
-            Py_VISIT(cls->__imul__);
-            Py_VISIT(cls->__imatmul__);
-            Py_VISIT(cls->__itruediv__);
-            Py_VISIT(cls->__ifloordiv__);
-            Py_VISIT(cls->__imod__);
-            Py_VISIT(cls->__ipow__);
-            Py_VISIT(cls->__ilshift__);
-            Py_VISIT(cls->__irshift__);
-            Py_VISIT(cls->__iand__);
-            Py_VISIT(cls->__ixor__);
-            Py_VISIT(cls->__ior__);
-            Py_VISIT(cls->__neg__);
-            Py_VISIT(cls->__pos__);
-            Py_VISIT(cls->__abs__);
-            Py_VISIT(cls->__invert__);
-            Py_VISIT(cls->__complex_py__);
-            Py_VISIT(cls->__int__);
-            Py_VISIT(cls->__float__);
-            Py_VISIT(cls->__index__);
-            Py_VISIT(cls->__round__);
-            Py_VISIT(cls->__trunc__);
-            Py_VISIT(cls->__floor__);
-            Py_VISIT(cls->__ceil__);
-            Py_VISIT(cls->__enter__);
-            Py_VISIT(cls->__exit__);
-            Py_VISIT(cls->__buffer__);
-            Py_VISIT(cls->__release_buffer__);
-            Py_VISIT(cls->__await__);
-            Py_VISIT(cls->__aiter__);
-            Py_VISIT(cls->__anext__);
-            Py_VISIT(cls->__aenter__);
-            Py_VISIT(cls->__aexit__);
-            Py_VISIT(Py_TYPE(cls));  // required for heap types
-            return 0;
-        }
-
-        /* Break reference cycles if they exist. */
-        static int __clear__(__python__* cls) {
-            Py_CLEAR(cls->demangled);
-            Py_CLEAR(cls->templates);
-            Py_CLEAR(cls->__new__);
-            Py_CLEAR(cls->__init__);
-            Py_CLEAR(cls->__del__);
-            Py_CLEAR(cls->__repr__);
-            Py_CLEAR(cls->__str__);
-            Py_CLEAR(cls->__bytes__);
-            Py_CLEAR(cls->__format__);
-            Py_CLEAR(cls->__lt__);
-            Py_CLEAR(cls->__le__);
-            Py_CLEAR(cls->__eq__);
-            Py_CLEAR(cls->__ne__);
-            Py_CLEAR(cls->__ge__);
-            Py_CLEAR(cls->__gt__);
-            Py_CLEAR(cls->__hash__);
-            Py_CLEAR(cls->__bool__);
-            Py_CLEAR(cls->__getattr__);
-            Py_CLEAR(cls->__getattribute__);
-            Py_CLEAR(cls->__setattr__);
-            Py_CLEAR(cls->__delattr__);
-            Py_CLEAR(cls->__dir__);
-            Py_CLEAR(cls->__get__);
-            Py_CLEAR(cls->__set__);
-            Py_CLEAR(cls->__delete__);
-            Py_CLEAR(cls->__init_subclass__);
-            Py_CLEAR(cls->__set_name__);
-            Py_CLEAR(cls->__mro_entries__);
-            Py_CLEAR(cls->__instancecheck__);
-            Py_CLEAR(cls->__subclasscheck__);
-            Py_CLEAR(cls->__class_getitem__);
-            Py_CLEAR(cls->__call__);
-            Py_CLEAR(cls->__len__);
-            Py_CLEAR(cls->__length_hint__);
-            Py_CLEAR(cls->__getitem__);
-            Py_CLEAR(cls->__setitem__);
-            Py_CLEAR(cls->__delitem__);
-            Py_CLEAR(cls->__missing__);
-            Py_CLEAR(cls->__iter__);
-            Py_CLEAR(cls->__next__);
-            Py_CLEAR(cls->__reversed__);
-            Py_CLEAR(cls->__contains__);
-            Py_CLEAR(cls->__add__);
-            Py_CLEAR(cls->__sub__);
-            Py_CLEAR(cls->__mul__);
-            Py_CLEAR(cls->__matmul__);
-            Py_CLEAR(cls->__truediv__);
-            Py_CLEAR(cls->__floordiv__);
-            Py_CLEAR(cls->__mod__);
-            Py_CLEAR(cls->__divmod__);
-            Py_CLEAR(cls->__pow__);
-            Py_CLEAR(cls->__lshift__);
-            Py_CLEAR(cls->__rshift__);
-            Py_CLEAR(cls->__and__);
-            Py_CLEAR(cls->__xor__);
-            Py_CLEAR(cls->__or__);
-            Py_CLEAR(cls->__radd__);
-            Py_CLEAR(cls->__rsub__);
-            Py_CLEAR(cls->__rmul__);
-            Py_CLEAR(cls->__rmatmul__);
-            Py_CLEAR(cls->__rtruediv__);
-            Py_CLEAR(cls->__rfloordiv__);
-            Py_CLEAR(cls->__rmod__);
-            Py_CLEAR(cls->__rdivmod__);
-            Py_CLEAR(cls->__rpow__);
-            Py_CLEAR(cls->__rlshift__);
-            Py_CLEAR(cls->__rrshift__);
-            Py_CLEAR(cls->__rand__);
-            Py_CLEAR(cls->__rxor__);
-            Py_CLEAR(cls->__ror__);
-            Py_CLEAR(cls->__iadd__);
-            Py_CLEAR(cls->__isub__);
-            Py_CLEAR(cls->__imul__);
-            Py_CLEAR(cls->__imatmul__);
-            Py_CLEAR(cls->__itruediv__);
-            Py_CLEAR(cls->__ifloordiv__);
-            Py_CLEAR(cls->__imod__);
-            Py_CLEAR(cls->__ipow__);
-            Py_CLEAR(cls->__ilshift__);
-            Py_CLEAR(cls->__irshift__);
-            Py_CLEAR(cls->__iand__);
-            Py_CLEAR(cls->__ixor__);
-            Py_CLEAR(cls->__ior__);
-            Py_CLEAR(cls->__neg__);
-            Py_CLEAR(cls->__pos__);
-            Py_CLEAR(cls->__abs__);
-            Py_CLEAR(cls->__invert__);
-            Py_CLEAR(cls->__complex_py__);
-            Py_CLEAR(cls->__int__);
-            Py_CLEAR(cls->__float__);
-            Py_CLEAR(cls->__index__);
-            Py_CLEAR(cls->__round__);
-            Py_CLEAR(cls->__trunc__);
-            Py_CLEAR(cls->__floor__);
-            Py_CLEAR(cls->__ceil__);
-            Py_CLEAR(cls->__enter__);
-            Py_CLEAR(cls->__exit__);
-            Py_CLEAR(cls->__buffer__);
-            Py_CLEAR(cls->__release_buffer__);
-            Py_CLEAR(cls->__await__);
-            Py_CLEAR(cls->__aiter__);
-            Py_CLEAR(cls->__anext__);
-            Py_CLEAR(cls->__aenter__);
-            Py_CLEAR(cls->__aexit__);
-            return 0;
-        }
-
-        /* Deallocate overload sets and the heap type when it falls out of scope. */
-        static void __dealloc__(__python__* cls) {
-            PyObject_GC_UnTrack(cls);
-            cls->class_getters.~ClassGetters();
-            cls->class_setters.~ClassSetters();
-            Py_XDECREF(cls->demangled);
-            Py_XDECREF(cls->templates);
-            Py_XDECREF(cls->__new__);
-            Py_XDECREF(cls->__init__);
-            Py_XDECREF(cls->__del__);
-            Py_XDECREF(cls->__repr__);
-            Py_XDECREF(cls->__str__);
-            Py_XDECREF(cls->__bytes__);
-            Py_XDECREF(cls->__format__);
-            Py_XDECREF(cls->__lt__);
-            Py_XDECREF(cls->__le__);
-            Py_XDECREF(cls->__eq__);
-            Py_XDECREF(cls->__ne__);
-            Py_XDECREF(cls->__ge__);
-            Py_XDECREF(cls->__gt__);
-            Py_XDECREF(cls->__hash__);
-            Py_XDECREF(cls->__bool__);
-            Py_XDECREF(cls->__getattr__);
-            Py_XDECREF(cls->__getattribute__);
-            Py_XDECREF(cls->__setattr__);
-            Py_XDECREF(cls->__delattr__);
-            Py_XDECREF(cls->__dir__);
-            Py_XDECREF(cls->__get__);
-            Py_XDECREF(cls->__set__);
-            Py_XDECREF(cls->__delete__);
-            Py_XDECREF(cls->__init_subclass__);
-            Py_XDECREF(cls->__set_name__);
-            Py_XDECREF(cls->__mro_entries__);
-            Py_XDECREF(cls->__instancecheck__);
-            Py_XDECREF(cls->__subclasscheck__);
-            Py_XDECREF(cls->__class_getitem__);
-            Py_XDECREF(cls->__call__);
-            Py_XDECREF(cls->__len__);
-            Py_XDECREF(cls->__length_hint__);
-            Py_XDECREF(cls->__getitem__);
-            Py_XDECREF(cls->__setitem__);
-            Py_XDECREF(cls->__delitem__);
-            Py_XDECREF(cls->__missing__);
-            Py_XDECREF(cls->__iter__);
-            Py_XDECREF(cls->__next__);
-            Py_XDECREF(cls->__reversed__);
-            Py_XDECREF(cls->__contains__);
-            Py_XDECREF(cls->__add__);
-            Py_XDECREF(cls->__sub__);
-            Py_XDECREF(cls->__mul__);
-            Py_XDECREF(cls->__matmul__);
-            Py_XDECREF(cls->__truediv__);
-            Py_XDECREF(cls->__floordiv__);
-            Py_XDECREF(cls->__mod__);
-            Py_XDECREF(cls->__divmod__);
-            Py_XDECREF(cls->__pow__);
-            Py_XDECREF(cls->__lshift__);
-            Py_XDECREF(cls->__rshift__);
-            Py_XDECREF(cls->__and__);
-            Py_XDECREF(cls->__xor__);
-            Py_XDECREF(cls->__or__);
-            Py_XDECREF(cls->__radd__);
-            Py_XDECREF(cls->__rsub__);
-            Py_XDECREF(cls->__rmul__);
-            Py_XDECREF(cls->__rmatmul__);
-            Py_XDECREF(cls->__rtruediv__);
-            Py_XDECREF(cls->__rfloordiv__);
-            Py_XDECREF(cls->__rmod__);
-            Py_XDECREF(cls->__rdivmod__);
-            Py_XDECREF(cls->__rpow__);
-            Py_XDECREF(cls->__rlshift__);
-            Py_XDECREF(cls->__rrshift__);
-            Py_XDECREF(cls->__rand__);
-            Py_XDECREF(cls->__rxor__);
-            Py_XDECREF(cls->__ror__);
-            Py_XDECREF(cls->__iadd__);
-            Py_XDECREF(cls->__isub__);
-            Py_XDECREF(cls->__imul__);
-            Py_XDECREF(cls->__imatmul__);
-            Py_XDECREF(cls->__itruediv__);
-            Py_XDECREF(cls->__ifloordiv__);
-            Py_XDECREF(cls->__imod__);
-            Py_XDECREF(cls->__ipow__);
-            Py_XDECREF(cls->__ilshift__);
-            Py_XDECREF(cls->__irshift__);
-            Py_XDECREF(cls->__iand__);
-            Py_XDECREF(cls->__ixor__);
-            Py_XDECREF(cls->__ior__);
-            Py_XDECREF(cls->__neg__);
-            Py_XDECREF(cls->__pos__);
-            Py_XDECREF(cls->__abs__);
-            Py_XDECREF(cls->__invert__);
-            Py_XDECREF(cls->__complex_py__);
-            Py_XDECREF(cls->__int__);
-            Py_XDECREF(cls->__float__);
-            Py_XDECREF(cls->__index__);
-            Py_XDECREF(cls->__round__);
-            Py_XDECREF(cls->__trunc__);
-            Py_XDECREF(cls->__floor__);
-            Py_XDECREF(cls->__ceil__);
-            Py_XDECREF(cls->__enter__);
-            Py_XDECREF(cls->__exit__);
-            Py_XDECREF(cls->__buffer__);
-            Py_XDECREF(cls->__release_buffer__);
-            Py_XDECREF(cls->__await__);
-            Py_XDECREF(cls->__aiter__);
-            Py_XDECREF(cls->__anext__);
-            Py_XDECREF(cls->__aenter__);
-            Py_XDECREF(cls->__aexit__);
-            PyTypeObject* type = Py_TYPE(cls);
-            type->tp_free(cls);
-            Py_DECREF(type);  // required for heap types
-        }
-
-        /* Initialize the metaclass's internal fields within the `bindings.finalize()`
-        helper.  Without this, the pointers are left uninitialized, which leads to
-        undefined behavior when accessed. */
-        void __construct__() {
-            instancecheck = nullptr;
-            subclasscheck = nullptr;
-            new (&class_getters) ClassGetters();
-            new (&class_setters) ClassSetters();
-            std::string s = "<class '" + impl::demangle(base.tp_name) + "'>";
-            demangled = PyUnicode_FromStringAndSize(s.c_str(), s.size());
-            if (demangled == nullptr) {
-                Exception::from_python();
-            }
-            templates = nullptr;
-            __new__ = nullptr;
-            __init__ = nullptr;
-            __del__ = nullptr;
-            __repr__ = nullptr;
-            __str__ = nullptr;
-            __bytes__ = nullptr;
-            __format__ = nullptr;
-            __lt__ = nullptr;
-            __le__ = nullptr;
-            __eq__ = nullptr;
-            __ne__ = nullptr;
-            __ge__ = nullptr;
-            __gt__ = nullptr;
-            __hash__ = nullptr;
-            __bool__ = nullptr;
-            __getattr__ = nullptr;
-            __getattribute__ = nullptr;
-            __setattr__ = nullptr;
-            __delattr__ = nullptr;
-            __dir__ = nullptr;
-            __get__ = nullptr;
-            __set__ = nullptr;
-            __delete__ = nullptr;
-            __init_subclass__ = nullptr;
-            __set_name__ = nullptr;
-            __mro_entries__ = nullptr;
-            __instancecheck__ = nullptr;
-            __subclasscheck__ = nullptr;
-            __class_getitem__ = nullptr;
-            __call__ = nullptr;
-            __len__ = nullptr;
-            __length_hint__ = nullptr;
-            __getitem__ = nullptr;
-            __setitem__ = nullptr;
-            __delitem__ = nullptr;
-            __missing__ = nullptr;
-            __iter__ = nullptr;
-            __next__ = nullptr;
-            __reversed__ = nullptr;
-            __contains__ = nullptr;
-            __add__ = nullptr;
-            __sub__ = nullptr;
-            __mul__ = nullptr;
-            __matmul__ = nullptr;
-            __truediv__ = nullptr;
-            __floordiv__ = nullptr;
-            __mod__ = nullptr;
-            __divmod__ = nullptr;
-            __pow__ = nullptr;
-            __lshift__ = nullptr;
-            __rshift__ = nullptr;
-            __and__ = nullptr;
-            __xor__ = nullptr;
-            __or__ = nullptr;
-            __radd__ = nullptr;
-            __rsub__ = nullptr;
-            __rmul__ = nullptr;
-            __rmatmul__ = nullptr;
-            __rtruediv__ = nullptr;
-            __rfloordiv__ = nullptr;
-            __rmod__ = nullptr;
-            __rdivmod__ = nullptr;
-            __rpow__ = nullptr;
-            __rlshift__ = nullptr;
-            __rrshift__ = nullptr;
-            __rand__ = nullptr;
-            __rxor__ = nullptr;
-            __ror__ = nullptr;
-            __iadd__ = nullptr;
-            __isub__ = nullptr;
-            __imul__ = nullptr;
-            __imatmul__ = nullptr;
-            __itruediv__ = nullptr;
-            __ifloordiv__ = nullptr;
-            __imod__ = nullptr;
-            __ipow__ = nullptr;
-            __ilshift__ = nullptr;
-            __irshift__ = nullptr;
-            __iand__ = nullptr;
-            __ixor__ = nullptr;
-            __ior__ = nullptr;
-            __neg__ = nullptr;
-            __pos__ = nullptr;
-            __abs__ = nullptr;
-            __invert__ = nullptr;
-            __complex_py__ = nullptr;
-            __int__ = nullptr;
-            __float__ = nullptr;
-            __index__ = nullptr;
-            __round__ = nullptr;
-            __trunc__ = nullptr;
-            __floor__ = nullptr;
-            __ceil__ = nullptr;
-            __enter__ = nullptr;
-            __exit__ = nullptr;
-            __buffer__ = nullptr;
-            __release_buffer__ = nullptr;
-            __await__ = nullptr;
-            __aiter__ = nullptr;
-            __anext__ = nullptr;
-            __aenter__ = nullptr;
-            __aexit__ = nullptr;
-            tp_init = nullptr;
-            tp_new = nullptr;
-            tp_getattro = nullptr;
-            tp_setattro = nullptr;
-            tp_repr = nullptr;
-            tp_hash = nullptr;
-            tp_call = nullptr;
-            tp_str = nullptr;
-            tp_richcompare = nullptr;
-            tp_iter = nullptr;
-            tp_iternext = nullptr;
-            tp_descr_get = nullptr;
-            tp_descr_set = nullptr;
-            mp_length = nullptr;
-            mp_subscript = nullptr;
-            mp_ass_subscript = nullptr;
-            sq_contains = nullptr;
-            am_await = nullptr;
-            am_aiter = nullptr;
-            am_anext = nullptr;
-            bf_getbuffer = nullptr;
-            bf_releasebuffer = nullptr;
-            nb_add = nullptr;
-            nb_inplace_add = nullptr;
-            nb_subtract = nullptr;
-            nb_inplace_subtract = nullptr;
-            nb_multiply = nullptr;
-            nb_inplace_multiply = nullptr;
-            nb_remainder = nullptr;
-            nb_inplace_remainder = nullptr;
-            nb_divmod = nullptr;
-            nb_power = nullptr;
-            nb_inplace_power = nullptr;
-            nb_negative = nullptr;
-            nb_positive = nullptr;
-            nb_absolute = nullptr;
-            nb_bool = nullptr;
-            nb_invert = nullptr;
-            nb_lshift = nullptr;
-            nb_inplace_lshift = nullptr;
-            nb_rshift = nullptr;
-            nb_inplace_rshift = nullptr;
-            nb_and = nullptr;
-            nb_inplace_and = nullptr;
-            nb_xor = nullptr;
-            nb_inplace_xor = nullptr;
-            nb_or = nullptr;
-            nb_inplace_or = nullptr;
-            nb_int = nullptr;
-            nb_float = nullptr;
-            nb_floor_divide = nullptr;
-            nb_inplace_floor_divide = nullptr;
-            nb_true_divide = nullptr;
-            nb_inplace_true_divide = nullptr;
-            nb_index = nullptr;
-            nb_matrix_multiply = nullptr;
-            nb_inplace_matrix_multiply = nullptr;
-        }
-
         /* Create a trivial instance of the metaclass to serve as a Python entry point
         for a C++ template hierarchy.  The interface type is not usable on its own
         except to provide access to its C++ instantiations, as well as efficient type
         checks against them and a central point for documentation. */
-        template <StaticStr Name, typename Cls, StaticStr ModName>
+        template <StaticStr Name, StaticStr ModName>
         static BertrandMeta stub_type(Module<ModName>& module) {
             static std::string docstring;
             static bool doc_initialized = false;
@@ -1383,7 +1135,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 Exception::from_python();
             }
             try {
-                cls->__construct__();
+                new (cls) __python__(Name);
                 cls->instancecheck = template_instancecheck;
                 cls->subclasscheck = template_subclasscheck;
                 cls->templates = PyDict_New();
@@ -1500,7 +1252,9 @@ the C++ level and retrieves their corresponding Python types.)doc";
         /* The metaclass's __doc__ string defaults to a getset descriptor that appends
         the type's template instantiations to the normal `tp_doc` slot. */
         static PyObject* class_doc(__python__* cls, void*) {
-            std::string doc = cls->base.tp_doc;
+            PyTypeObject& base = reinterpret_cast<PyTypeObject&>(cls->base);
+
+            std::string doc = base.tp_doc;
             if (cls->templates) {
                 if (!doc.ends_with("\n")) {
                     doc += "\n";
@@ -1511,7 +1265,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 )) + ")";
                 doc += header + "\n" + std::string(header.size() - 1, '-') + "\n";
 
-                std::string prefix = "    " + std::string(cls->base.tp_name) + "[";
+                std::string prefix = "    " + std::string(base.tp_name) + "[";
                 PyObject* key;
                 PyObject* value;
                 Py_ssize_t pos = 0;
@@ -1567,6 +1321,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
         /// class variable dictionary, it should forward to the standard Python
         /// behavior of inserting into and retrieving from the class dictionary.
         /// -> perhaps not for template interfaces, however, which should be immutable.
+        /// Also, tp_getattro corresponds to a __getattribute__ call at the Python
+        /// level, which is not the same as __getattr__.
 
         /* `cls.` allows access to class-level variables with shared state. */
         static PyObject* class_getattr(__python__* cls, PyObject* attr) {
@@ -1779,534 +1535,937 @@ the C++ level and retrieves their corresponding Python types.)doc";
         internal C++ function pointers. */
         struct Descr {
 
-            /// TODO: getters should return the default behavior if the slot is not
-            /// overloaded?
-            /// -> first, check if an overload set is present, and if so, return it.
-            /// Then, check if the default slot is present, and if so, return a
-            /// Function or PyCFunction that wraps it.  Otherwise, raise an
-            /// AttributeError.
+            /// TODO: all of the compile time signature checks should be moved to
+            /// the individual binding classes, so as to enforce the correct parent
+            /// class.  They should also allow static methods to be bound to the
+            /// slots, reflecting ADL behavior from C++.  The Function call operator
+            /// will check to see if the function is static and
+            /// PY_VECTORCALL_ARGUMENTS_OFFSET is set.  If so, and the self argument
+            /// is non-null then it will shift the argument array back by one in order
+            /// to pass self as the first argument.  Since static methods are converted
+            /// static descriptors, Python will not ordinarily invoke this, but if I
+            /// do the call from C++ and include `self`, then it will apply the
+            /// correct ADL behavior.
+
+            /// TODO: descriptors include extra slots that aren't actually stored
+            /// as overload sets in the metaclass itself.  These will need signature
+            /// checks, but otherwise get inserted into the instance dict, rather than
+            /// an internal overload set, since there's no corresponding slot.
 
             /// TODO: setters should enforce a signature match to conform with the
             /// slot's expected function signature.  Several of these will likely be
             /// variadic.
+            /// -> Maybe signature checks are too invasive?  It might interfere with
+            /// writing lambda wrappers around the slots.
 
             /// TODO: setters always generate a new overload set, and replace the
             /// corresponding slot with a new function pointer that delegates to the
             /// overload set.  Deleting the overload set should revert the slot back to
             /// its original behavior.
 
+            template <StaticStr Name>
+            static PyObject* search_mro(__python__* cls) {
+                PyTypeObject& base = reinterpret_cast<PyTypeObject&>(cls->base);
+
+                // search the instance dictionary first
+                PyObject* dict = PyType_GetDict(&base);
+                if (dict) {
+                    PyObject* value = PyDict_GetItem(
+                        dict,
+                        impl::TemplateString<Name>::ptr
+                    );
+                    if (value) {
+                        return Py_NewRef(value);
+                    }
+                }
+
+                // traverse the MRO
+                PyObject* mro = base.tp_mro;
+                if (mro != nullptr) {
+                    Py_ssize_t size = PyTuple_GET_SIZE(mro);
+                    for (Py_ssize_t i = 1; i < size; ++i) {
+                        PyObject* type = PyTuple_GET_ITEM(mro, i);
+                        if (PyObject_HasAttr(
+                            type,
+                            impl::TemplateString<Name>::ptr
+                        )) {
+                            return PyObject_GetAttr(
+                                type,
+                                impl::TemplateString<Name>::ptr
+                            );
+                        }
+                    }
+                }
+
+                PyErr_Format(
+                    PyExc_AttributeError,
+                    "type object '%U' has no attribute " + Name,
+                    cls->demangled
+                );
+                return nullptr;
+            }
+
             struct __new__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__new__ ?
+                        Py_NewRef(cls->__new__) :
+                        search_mro<"__new__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __init__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__init__ ?
+                        Py_NewRef(cls->__init__) :
+                        search_mro<"__init__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __del__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__del__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __repr__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__repr__ ?
+                        Py_NewRef(cls->__repr__) :
+                        search_mro<"__repr__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __str__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__str__ ?
+                        Py_NewRef(cls->__str__) :
+                        search_mro<"__str__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __bytes__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__bytes__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __format__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__format__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __lt__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__lt__ ?
+                        Py_NewRef(cls->__lt__) :
+                        search_mro<"__lt__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __le__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__le__ ?
+                        Py_NewRef(cls->__le__) :
+                        search_mro<"__le__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __eq__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__eq__ ?
+                        Py_NewRef(cls->__eq__) :
+                        search_mro<"__eq__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __ne__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__ne__ ?
+                        Py_NewRef(cls->__ne__) :
+                        search_mro<"__ne__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __ge__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__ge__ ?
+                        Py_NewRef(cls->__ge__) :
+                        search_mro<"__ge__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __gt__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__gt__ ?
+                        Py_NewRef(cls->__gt__) :
+                        search_mro<"__gt__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __hash__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__hash__ ?
+                        Py_NewRef(cls->__hash__) :
+                        search_mro<"__hash__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __bool__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__bool__ ?
+                        Py_NewRef(cls->__bool__) :
+                        search_mro<"__bool__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __getattr__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__getattr__ ?
+                        Py_NewRef(cls->__getattr__) :
+                        search_mro<"__getattr__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __getattribute__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__getattribute__ ?
+                        Py_NewRef(cls->__getattribute__) :
+                        search_mro<"__getattribute__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __setattr__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__setattr__ ?
+                        Py_NewRef(cls->__setattr__) :
+                        search_mro<"__setattr__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __delattr__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__delattr__ ?
+                        Py_NewRef(cls->__delattr__) :
+                        search_mro<"__delattr__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __dir__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__dir__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __get__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__get__ ?
+                        Py_NewRef(cls->__get__) :
+                        search_mro<"__get__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __set__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__set__ ?
+                        Py_NewRef(cls->__set__) :
+                        search_mro<"__set__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __delete__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__delete__ ?
+                        Py_NewRef(cls->__delete__) :
+                        search_mro<"__delete__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __init_subclass__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__init_subclass__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __set_name__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__set_name__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __mro_entries__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__mro_entries__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __instancecheck__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__instancecheck__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __subclasscheck__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__subclasscheck__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __class_getitem__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__class_getitem__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __call__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__call__ ?
+                        Py_NewRef(cls->__call__) :
+                        search_mro<"__call__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __len__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__len__ ?
+                        Py_NewRef(cls->__len__) :
+                        search_mro<"__len__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __length_hint__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__length_hint__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __getitem__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__getitem__ ?
+                        Py_NewRef(cls->__getitem__) :
+                        search_mro<"__getitem__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __setitem__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__setitem__ ?
+                        Py_NewRef(cls->__setitem__) :
+                        search_mro<"__setitem__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __delitem__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__delitem__ ?
+                        Py_NewRef(cls->__delitem__) :
+                        search_mro<"__delitem__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __missing__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__missing__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __iter__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__iter__ ?
+                        Py_NewRef(cls->__iter__) :
+                        search_mro<"__iter__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __next__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__next__ ?
+                        Py_NewRef(cls->__next__) :
+                        search_mro<"__next__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __reversed__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__reversed__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __contains__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__contains__ ?
+                        Py_NewRef(cls->__contains__) :
+                        search_mro<"__contains__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __add__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__add__ ?
+                        Py_NewRef(cls->__add__) :
+                        search_mro<"__add__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __sub__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__sub__ ?
+                        Py_NewRef(cls->__sub__) :
+                        search_mro<"__sub__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __mul__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__mul__ ?
+                        Py_NewRef(cls->__mul__) :
+                        search_mro<"__mul__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __matmul__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__matmul__ ?
+                        Py_NewRef(cls->__matmul__) :
+                        search_mro<"__matmul__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __truediv__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__truediv__ ?
+                        Py_NewRef(cls->__truediv__) :
+                        search_mro<"__truediv__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __floordiv__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__floordiv__ ?
+                        Py_NewRef(cls->__floordiv__) :
+                        search_mro<"__floordiv__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __mod__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__mod__ ?
+                        Py_NewRef(cls->__mod__) :
+                        search_mro<"__mod__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __divmod__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__divmod__ ?
+                        Py_NewRef(cls->__divmod__) :
+                        search_mro<"__divmod__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __pow__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__pow__ ?
+                        Py_NewRef(cls->__pow__) :
+                        search_mro<"__pow__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __lshift__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__lshift__ ?
+                        Py_NewRef(cls->__lshift__) :
+                        search_mro<"__lshift__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
     
             struct __rshift__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__rshift__ ?
+                        Py_NewRef(cls->__rshift__) :
+                        search_mro<"__rshift__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __and__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__and__ ?
+                        Py_NewRef(cls->__and__) :
+                        search_mro<"__and__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __xor__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__xor__ ?
+                        Py_NewRef(cls->__xor__) :
+                        search_mro<"__xor__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __or__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__or__ ?
+                        Py_NewRef(cls->__or__) :
+                        search_mro<"__or__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __radd__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__radd__ ?
+                        Py_NewRef(cls->__radd__) :
+                        search_mro<"__radd__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __rsub__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__rsub__ ?
+                        Py_NewRef(cls->__rsub__) :
+                        search_mro<"__rsub__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __rmul__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__rmul__ ?
+                        Py_NewRef(cls->__rmul__) :
+                        search_mro<"__rmul__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __rmatmul__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__rmatmul__ ?
+                        Py_NewRef(cls->__rmatmul__) :
+                        search_mro<"__rmatmul__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __rtruediv__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__rtruediv__ ?
+                        Py_NewRef(cls->__rtruediv__) :
+                        search_mro<"__rtruediv__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __rfloordiv__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__rfloordiv__ ?
+                        Py_NewRef(cls->__rfloordiv__) :
+                        search_mro<"__rfloordiv__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __rmod__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__rmod__ ?
+                        Py_NewRef(cls->__rmod__) :
+                        search_mro<"__rmod__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __rdivmod__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__rdivmod__ ?
+                        Py_NewRef(cls->__rdivmod__) :
+                        search_mro<"__rdivmod__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __rpow__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__rpow__ ?
+                        Py_NewRef(cls->__rpow__) :
+                        search_mro<"__rpow__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __rlshift__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__rlshift__ ?
+                        Py_NewRef(cls->__rlshift__) :
+                        search_mro<"__rlshift__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
     
             struct __rrshift__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__rrshift__ ?
+                        Py_NewRef(cls->__rrshift__) :
+                        search_mro<"__rrshift__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __rand__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__rand__ ?
+                        Py_NewRef(cls->__rand__) :
+                        search_mro<"__rand__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __rxor__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__rxor__ ?
+                        Py_NewRef(cls->__rxor__) :
+                        search_mro<"__rxor__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __ror__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__ror__ ?
+                        Py_NewRef(cls->__ror__) :
+                        search_mro<"__ror__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __iadd__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__iadd__ ?
+                        Py_NewRef(cls->__iadd__) :
+                        search_mro<"__iadd__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __isub__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__isub__ ?
+                        Py_NewRef(cls->__isub__) :
+                        search_mro<"__isub__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __imul__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__imul__ ?
+                        Py_NewRef(cls->__imul__) :
+                        search_mro<"__imul__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __imatmul__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__imatmul__ ?
+                        Py_NewRef(cls->__imatmul__) :
+                        search_mro<"__imatmul__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __itruediv__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__itruediv__ ?
+                        Py_NewRef(cls->__itruediv__) :
+                        search_mro<"__itruediv__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __ifloordiv__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__ifloordiv__ ?
+                        Py_NewRef(cls->__ifloordiv__) :
+                        search_mro<"__ifloordiv__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __imod__ {
-                static PyObject* get(__python__* cls, void*);
-                static int set(__python__* cls, PyObject* value, void*);
-            };
-
-            struct __idivmod__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__imod__ ?
+                        Py_NewRef(cls->__imod__) :
+                        search_mro<"__imod__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __ipow__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__ipow__ ?
+                        Py_NewRef(cls->__ipow__) :
+                        search_mro<"__ipow__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __ilshift__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__ilshift__ ?
+                        Py_NewRef(cls->__ilshift__) :
+                        search_mro<"__ilshift__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
     
             struct __irshift__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__irshift__ ?
+                        Py_NewRef(cls->__irshift__) :
+                        search_mro<"__irshift__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __iand__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__iand__ ?
+                        Py_NewRef(cls->__iand__) :
+                        search_mro<"__iand__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __ixor__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__ixor__ ?
+                        Py_NewRef(cls->__ixor__) :
+                        search_mro<"__ixor__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __ior__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__ior__ ?
+                        Py_NewRef(cls->__ior__) :
+                        search_mro<"__ior__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __neg__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__neg__ ?
+                        Py_NewRef(cls->__neg__) :
+                        search_mro<"__neg__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __pos__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__pos__ ?
+                        Py_NewRef(cls->__pos__) :
+                        search_mro<"__pos__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __abs__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__abs__ ?
+                        Py_NewRef(cls->__abs__) :
+                        search_mro<"__abs__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __invert__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__invert__ ?
+                        Py_NewRef(cls->__invert__) :
+                        search_mro<"__invert__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __complex_py__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__complex__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __int__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__int__ ?
+                        Py_NewRef(cls->__int__) :
+                        search_mro<"__int__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __float__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__float__ ?
+                        Py_NewRef(cls->__float__) :
+                        search_mro<"__float__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __index__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return cls->__index__ ?
+                        Py_NewRef(cls->__index__) :
+                        search_mro<"__index__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __round__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__round__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __trunc__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__trunc__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __floor__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__floor__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __ceil__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__ceil__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __enter__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__enter__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __exit__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__exit__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __buffer__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__buffer__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __release_buffer__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__release_buffer__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __await__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__await__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __aiter__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__aiter__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __anext__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__anext__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __aenter__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__aenter__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
             struct __aexit__ {
-                static PyObject* get(__python__* cls, void*);
+                static PyObject* get(__python__* cls, void*) {
+                    return search_mro<"__aexit__">(cls);
+                }
                 static int set(__python__* cls, PyObject* value, void*);
             };
 
@@ -2395,13 +2554,32 @@ the C++ level and retrieves their corresponding Python types.)doc";
             }
 
             static PyObject* tp_getattro(PyObject* self, PyObject* attr) {
-                PyObject* const forward[] = {self, attr};
-                return PyObject_Vectorcall(
-                    reinterpret_cast<__python__*>(Py_TYPE(self))->__getattribute__,
-                    forward,
-                    1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                    nullptr
-                );
+                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(self));
+                if (meta->__getattribute__) {
+                    PyObject* const forward[] = {self, attr};
+                    return PyObject_Vectorcall(
+                        meta->__getattribute__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                }
+                PyObject* result = PyObject_GenericGetAttr(self, attr);
+                if (
+                    result == nullptr &&
+                    meta->__getattr__ &&
+                    PyErr_ExceptionMatches(PyExc_AttributeError)
+                ) {
+                    PyErr_Clear();
+                    PyObject* const forward[] = {self, attr};
+                    return PyObject_Vectorcall(
+                        meta->__getattr__,
+                        forward,
+                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        nullptr
+                    );
+                }
+                return result;
             }
 
             static int tp_setattro(PyObject* self, PyObject* attr, PyObject* value) {
@@ -2836,13 +3014,67 @@ the C++ level and retrieves their corresponding Python types.)doc";
             }
 
             static int bf_getbuffer(PyObject* self, Py_buffer* view, int flags) {
-                /// TODO: this gets really complicated, and will require a deeper
-                /// dive to implement according to Python semantics
+                PyObject* pyflags = PyLong_FromLong(flags);
+                if (pyflags == nullptr) {
+                    return -1;
+                }
+                PyObject* const forward[] = {self, pyflags};
+                PyObject* result = PyObject_Vectorcall(
+                    reinterpret_cast<__python__*>(Py_TYPE(self))->__buffer__,
+                    forward,
+                    1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                    nullptr
+                );
+                Py_DECREF(pyflags);
+                if (result == nullptr) {
+                    return -1;
+                }
+                if (!PyMemoryView_Check(result)) {
+                    PyErr_Format(
+                        PyExc_TypeError,
+                        "__buffer__ must return a memoryview object"
+                    );
+                    Py_DECREF(result);
+                    return -1;
+                }
+                Py_buffer* buffer = PyMemoryView_GET_BUFFER(result);
+                int rc = PyBuffer_FillInfo(
+                    view,
+                    self,
+                    buffer->buf,
+                    buffer->len,
+                    buffer->readonly,
+                    flags
+                );
+                view->itemsize = buffer->itemsize;
+                view->format = buffer->format;
+                view->ndim = buffer->ndim;
+                view->shape = buffer->shape;
+                view->strides = buffer->strides;
+                view->suboffsets = buffer->suboffsets;
+                view->internal = buffer->internal;
+                Py_DECREF(result);
+                return rc;
             }
 
             static int bf_releasebuffer(PyObject* self, Py_buffer* view) {
-                /// TODO: this gets really complicated, and will require a deeper
-                /// dive to implement according to Python semantics
+                PyObject* memoryview = PyMemoryView_FromBuffer(view);
+                if (memoryview == nullptr) {
+                    return -1;
+                }
+                PyObject* const forward[] = {self, memoryview};
+                PyObject* result = PyObject_Vectorcall(
+                    reinterpret_cast<__python__*>(Py_TYPE(self))->__release_buffer__,
+                    forward,
+                    1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                    nullptr
+                );
+                Py_DECREF(memoryview);
+                if (result == nullptr) {
+                    return -1;
+                }
+                Py_DECREF(result);
+                return 0;
             }
 
             static PyObject* nb_add(PyObject* lhs, PyObject* rhs) {
@@ -4194,13 +4426,6 @@ can be customize by specializing the `__issubclass__` control struct.)doc"
                 .closure = nullptr
             },
             {
-                .name = "__idivmod__",
-                .get = reinterpret_cast<getter>(Descr::__idivmod__::get),
-                .set = reinterpret_cast<setter>(Descr::__idivmod__::set),
-                .doc = nullptr,
-                .closure = nullptr
-            },
-            {
                 .name = "__ipow__",
                 .get = reinterpret_cast<getter>(Descr::__ipow__::get),
                 .set = reinterpret_cast<setter>(Descr::__ipow__::set),
@@ -4520,15 +4745,133 @@ struct __getitem__<Type<T>, Type<U>...>                     : Returns<BertrandMe
 
 
 ////////////////////////
+////    REGISTRY    ////
+////////////////////////
+
+
+// template <>
+// struct Type<TypeRegistry>;
+
+
+// template <>
+// struct Interface<TypeRegistry> {};
+// template <>
+// struct Interface<Type<TypeRegistry>> {};
+
+
+// /* A registry of all the types that are being tracked by Bertrand, which allows
+// searches from both sides of the language divide. */
+// struct TypeRegistry : Object, Interface<TypeRegistry> {
+
+//     TypeRegistry(PyObject* p, borrowed_t t) : Object(p, t) {}
+//     TypeRegistry(PyObject* p, stolen_t t) : Object(p, t) {}
+
+//     template <typename... Args> requires (implicit_ctor<TypeRegistry>::enable<Args...>)
+//     TypeRegistry(Args&&... args) : Object(
+//         implicit_ctor<TypeRegistry>{},
+//         std::forward<Args>(args)...
+//     ) {}
+
+//     template <typename... Args> requires (explicit_ctor<TypeRegistry>::enable<Args...>)
+//     explicit TypeRegistry(Args&&... args) : Object(
+//         explicit_ctor<TypeRegistry>{},
+//         std::forward<Args>(args)...
+//     ) {}
+
+// };
+
+
+
+// // namespace impl {
+
+// //     struct TypeRegistry {
+// //         struct Context {
+// //             PyTypeObject* py_type;
+// //             Type<BertrandMeta>::__python__* parent;
+// //         };
+
+// //         std::unordered_map<std::type_index, Context> cpp_map;
+// //         std::unordered_map<PyTypeObject*, Context> py_map;
+
+// //         template <
+
+// //         Context get(const Type<Object>& type) {
+// //             auto it = py_map.find(
+// //                 reinterpret_cast<PyTypeObject*>(ptr(type))
+// //             );
+// //             if (it == py_map.end()) {
+// //                 throw KeyError(type);
+// //             }
+// //             return it->second;
+// //         }
+
+// //     };
+
+// // }
+
+
+// /* Bertrand's metatype, which is used to expose C++ classes to Python and simplify the
+// binding process. */
+// template <>
+// struct Type<TypeRegistry> : Object, Interface<Type<TypeRegistry>>, impl::TypeTag {
+//     struct __python__ : TypeTag::def<__python__, TypeRegistry> {
+
+//         template <StaticStr ModName>
+//         Type __export__(Bindings<ModName> bind) {
+//             bind.method<"get">(&__python__::get);
+//             return bind.finalize();
+//         }
+
+//         Type __import__() {
+//             PyObject* module = PyImport_Import(
+//                 impl::TemplateString<"bertrand.python">::ptr
+//             );
+//             if (module == nullptr) {
+//                 Exception::from_python();
+//             }
+//             PyObject* type = PyObject_GetAttr(
+//                 module,
+//                 impl::TemplateString<"TypeRegistry">::ptr
+//             );
+//             Py_DECREF(module);
+//             if (type == nullptr) {
+//                 Exception::from_python();
+//             }
+//             return reinterpret_steal<Type>(type);
+//         }
+
+//         /// TODO: Context should be convertible to a namedtuple?
+//         struct Context {
+//             PyTypeObject* py_type;
+//             Type<BertrandMeta>::__python__* parent;
+//         };
+
+//         PyObject_HEAD
+//         std::unordered_map<std::type_index, Context> cpp_map;
+//         std::unordered_map<PyTypeObject*, Context> py_map;
+
+//         Context get(const Type<Object>& type) {
+//             auto it = py_map.find(
+//                 reinterpret_cast<PyTypeObject*>(ptr(type))
+//             );
+//             if (it == py_map.end()) {
+//                 throw KeyError(type);
+//             }
+//             return it->second;
+//         }
+
+//     };
+
+// };
+
+
+
+////////////////////////
 ////    BINDINGS    ////
 ////////////////////////
 
 
 namespace impl {
-
-    /// TODO: all bindings can be centralized in BaseDef.  There's no need for any
-    /// special handling, and all types use the exact same system, without any extra
-    /// template magic.
 
     template <typename CRTP, typename Wrapper, typename CppType>
     template <StaticStr ModName>
@@ -4585,18 +4928,6 @@ namespace impl {
             }
         }
 
-        /// TODO: Perhaps the way to implement register_type is to use a C++ unordered
-        /// map that maps std::type_index to a context object that contains all the
-        /// information needed to generate bindings for that type.  In fact, that
-        /// might directly reference the type's template instantiations, which
-        /// can be dynamically inserted into during the module's export process.
-
-        /* Insert a Python type into the global `bertrand.python.types` registry, so
-        that it can be mapped to its C++ equivalent and used when generating Python
-        bindings. */
-        template <typename Cls>
-        static void register_type(Module<ModName>& mod, PyTypeObject* type);
-
         struct Context {
             bool is_member_var = false;
             bool is_class_var = false;
@@ -4610,8 +4941,21 @@ namespace impl {
             std::vector<std::function<void(Type<Wrapper>&)>> callbacks;
         };
 
+        /// TODO: Perhaps the way to implement register_type is to use a C++ unordered
+        /// map that maps std::type_index to a context object that contains all the
+        /// information needed to generate bindings for that type.  In fact, that
+        /// might directly reference the type's template instantiations, which
+        /// can be dynamically inserted into during the module's export process.
+
+        /* Insert a Python type into the global `bertrand.python.types` registry, so
+        that it can be mapped to its C++ equivalent and used when generating Python
+        bindings. */
+        template <typename Cls>
+        static void register_type(Module<ModName>& mod, PyTypeObject* type);
+
+
         template <typename T>
-        static void register_iterator(Type<Wrapper>& type) {
+        void register_iterator(Type<Wrapper>& type) {
             static PyType_Slot slots[] = {
                 {
                     Py_tp_iter,
@@ -4634,7 +4978,7 @@ namespace impl {
                 .slots = slots
             };
             PyObject* cls = PyType_FromModuleAndSpec(
-                ptr(Base::module),
+                ptr(module),
                 &spec,
                 nullptr
             );
@@ -4675,6 +5019,1152 @@ namespace impl {
         // }
         // return result;
 
+        template <typename Binding>
+        struct signature {
+
+            template <typename Return, typename Func, typename... Args>
+            static constexpr bool static_invocable = false;
+            template <
+                typename Return,
+                typename R,
+                typename... A,
+                typename... Args
+            >
+            static constexpr bool static_invocable<
+                Return,
+                R(*)(A...),
+                Args...
+            > = std::is_invocable_r_v<
+                Return,
+                R(*)(A...),
+                Args...
+            >;
+            template <typename Return, typename R, typename... A, typename... Args>
+            static constexpr bool static_invocable<
+                Return,
+                R(*)(A...) noexcept,
+                Args...
+            > = std::is_invocable_r_v<
+                Return,
+                R(*)(A...) noexcept,
+                Args...
+            >;
+
+            template <typename Return, typename Func, typename... Args>
+            static constexpr bool member_invocable = false;
+            template <
+                typename Return,
+                typename R,
+                typename T,
+                typename... A,
+                typename... Args
+            >
+            static constexpr bool member_invocable<
+                Return,
+                R(T::*)(A...),
+                Args...
+            > = std::is_invocable_r_v<
+                Return,
+                R(T::*)(A...),
+                Args...
+            >;
+            template <typename Return, typename R, typename T, typename... A, typename... Args>
+            static constexpr bool member_invocable<
+                Return,
+                R(T::*)(A...) volatile,
+                Args...
+            > = std::is_invocable_r_v<
+                Return,
+                R(T::*)(A...) volatile,
+                Args...
+            >;
+            template <typename Return, typename R, typename T, typename... A, typename... Args>
+            static constexpr bool member_invocable<
+                Return,
+                R(T::*)(A...) noexcept,
+                Args...
+            > = std::is_invocable_r_v<
+                Return,
+                R(T::*)(A...) noexcept,
+                Args...
+            >;
+            template <typename Return, typename R, typename T, typename... A, typename... Args>
+            static constexpr bool member_invocable<
+                Return,
+                R(T::*)(A...) volatile noexcept,
+                Args...
+            > = std::is_invocable_r_v<
+                Return,
+                R(T::*)(A...) volatile noexcept,
+                Args...
+            >;
+
+            template <typename Return, typename Func, typename... Args>
+            static constexpr bool const_member_invocable = false;
+            template <typename Return, typename R, typename T, typename... A, typename... Args>
+            static constexpr bool const_member_invocable<
+                Return,
+                R(T::*)(A...) const,
+                Args...
+            > = std::is_invocable_r_v<
+                Return,
+                R(T::*)(A...) const,
+                Args...
+            >;
+            template <typename Return, typename R, typename T, typename... A, typename... Args>
+            static constexpr bool const_member_invocable<
+                Return,
+                R(T::*)(A...) const volatile,
+                Args...
+            > = std::is_invocable_r_v<
+                Return,
+                R(T::*)(A...) const volatile,
+                Args...
+            >;
+            template <typename Return, typename R, typename T, typename... A, typename... Args>
+            static constexpr bool const_member_invocable<
+                Return,
+                R(T::*)(A...) const noexcept,
+                Args...
+            > = std::is_invocable_r_v<
+                Return,
+                R(T::*)(A...) const noexcept,
+                Args...
+            >;
+            template <typename Return, typename R, typename T, typename... A, typename... Args>
+            static constexpr bool const_member_invocable<
+                Return,
+                R(T::*)(A...) const volatile noexcept,
+                Args...
+            > = std::is_invocable_r_v<
+                Return,
+                R(T::*)(A...) const volatile noexcept,
+                Args...
+            >;
+
+            template <StaticStr Name>
+            struct check {
+                template <typename T>
+                static constexpr bool value = false;
+
+                template <typename R, typename... Ts>
+                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                static constexpr bool value<R(*)(Ts...)> = true;
+
+                template <typename R, typename T, typename... Ts>
+                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                static constexpr bool value<R(T::*)(Ts...)> = true;
+
+                template <typename R, typename T, typename... Ts>
+                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                static constexpr bool value<R(T::*)(Ts...) const> = true;
+
+                template <typename R, typename T, typename... Ts>
+                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                static constexpr bool value<R(T::*)(Ts...) volatile> = true;
+
+                template <typename R, typename T, typename... Ts>
+                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                static constexpr bool value<R(T::*)(Ts...) const volatile> = true;
+
+                template <typename R, typename... Ts>
+                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                static constexpr bool value<R(*)(Ts...) noexcept> = true;
+
+                template <typename R, typename T, typename... Ts>
+                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                static constexpr bool value<R(T::*)(Ts...) noexcept> = true;
+
+                template <typename R, typename T, typename... Ts>
+                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                static constexpr bool value<R(T::*)(Ts...) const noexcept> = true;
+
+                template <typename R, typename T, typename... Ts>
+                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                static constexpr bool value<R(T::*)(Ts...) volatile noexcept> = true;
+
+                template <typename R, typename T, typename... Ts>
+                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                static constexpr bool value<R(T::*)(Ts...) const volatile noexcept> = true;
+
+            };
+
+            template <>
+            struct check<"__new__"> {
+                template <typename T>
+                static constexpr bool value = false;
+
+                template <typename... Ts>
+                static constexpr bool value<Binding(*)(Ts...)> =
+                    (std::convertible_to<Object, Ts> && ...);
+                template <typename... Ts>
+                static constexpr bool value<Binding(*)(Ts...) noexcept> =
+                    (std::convertible_to<Object, Ts> && ...);
+            };
+
+            template <>
+            struct check<"__init__"> {
+                template <typename T>
+                static constexpr bool value = false;
+
+                template <typename T, typename... Ts>
+                static constexpr bool value<void(*)(T, Ts...)> =
+                    std::is_invocable_v<void(*)(T, Ts...), Binding, Ts...> &&
+                    (std::convertible_to<Object, Ts> && ...);
+                template <typename T, typename... Ts>
+                static constexpr bool value<void(*)(T, Ts...) noexcept> =
+                    std::is_invocable_v<void(*)(T, Ts...) noexcept, Binding, Ts...> &&
+                    (std::convertible_to<Object, Ts> && ...);
+
+                template <typename... Ts>
+                static constexpr bool value<void(Binding::*)(Ts...)> =
+                    (std::convertible_to<Object, Ts> && ...);
+                template <typename... Ts>
+                static constexpr bool value<void(Binding::*)(Ts...) volatile> =
+                    (std::convertible_to<Object, Ts> && ...);
+                template <typename... Ts>
+                static constexpr bool value<void(Binding::*)(Ts...) noexcept> =
+                    (std::convertible_to<Object, Ts> && ...);
+                template <typename... Ts>
+                static constexpr bool value<void(Binding::*)(Ts...) volatile noexcept> =
+                    (std::convertible_to<Object, Ts> && ...);
+            };
+
+            template <>
+            struct check<"__del__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<void, Binding, T> ||
+                    member_invocable<void, T>;
+            };
+
+            template <>
+            struct check<"__repr__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Str, Binding, T> ||
+                    member_invocable<Str, T> ||
+                    const_member_invocable<Str, T>;
+            };
+
+            template <>
+            struct check<"__str__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Str, Binding, T> ||
+                    member_invocable<Str, T> ||
+                    const_member_invocable<Str, T>;
+            };
+
+            template <>
+            struct check<"__bytes__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Bytes, Binding, T> ||
+                    member_invocable<Bytes, T> ||
+                    const_member_invocable<Bytes, T>;
+            };
+
+            template <>
+            struct check<"__format__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Str, T, Binding, Str> ||
+                    member_invocable<Str, T, Str> ||
+                    const_member_invocable<Str, T, Str>;
+            };
+
+            template <>
+            struct check<"__lt__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Bool, T, Binding, Object> ||
+                    member_invocable<Bool, T, Object> ||
+                    const_member_invocable<Bool, T, Object>;
+            };
+
+            template <>
+            struct check<"__le__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Bool, T, Binding, Object> ||
+                    member_invocable<Bool, T, Object> ||
+                    const_member_invocable<Bool, T, Object>;
+            };
+
+            template <>
+            struct check<"__eq__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Bool, T, Binding, Object> ||
+                    member_invocable<Bool, T, Object> ||
+                    const_member_invocable<Bool, T, Object>;
+            };
+
+            template <>
+            struct check<"__ne__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Bool, T, Binding, Object> ||
+                    member_invocable<Bool, T, Object> ||
+                    const_member_invocable<Bool, T, Object>;
+            };
+
+            template <>
+            struct check<"__ge__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Bool, T, Binding, Object> ||
+                    member_invocable<Bool, T, Object> ||
+                    const_member_invocable<Bool, T, Object>;
+            };
+
+            template <>
+            struct check<"__gt__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Bool, T, Binding, Object> ||
+                    member_invocable<Bool, T, Object> ||
+                    const_member_invocable<Bool, T, Object>;
+            };
+
+            template <>
+            struct check<"__hash__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Int, T, Binding> ||
+                    member_invocable<Int, T> ||
+                    const_member_invocable<Int, T>;
+            };
+
+            template <>
+            struct check<"__bool__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Bool, T, Binding> ||
+                    member_invocable<Bool, T> ||
+                    const_member_invocable<Bool, T>;
+            };
+
+            template <>
+            struct check<"__getattr__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Str> ||
+                    member_invocable<Object, T, Str> ||
+                    const_member_invocable<Object, T, Str>;
+            };
+
+            template <>
+            struct check<"__getattribute__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Str> ||
+                    member_invocable<Object, T, Str> ||
+                    const_member_invocable<Object, T, Str>;
+            };
+
+            template <>
+            struct check<"__setattr__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<void, T, Binding, Str, Object> ||
+                    member_invocable<void, T, Str, Object> ||
+                    const_member_invocable<void, T, Str, Object>;
+            };
+
+            template <>
+            struct check<"__delattr__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<void, T, Binding, Str> ||
+                    member_invocable<void, T, Str> ||
+                    const_member_invocable<void, T, Str>;
+            };
+
+            template <>
+            struct check<"__dir__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<List<Str>, T, Binding> ||
+                    member_invocable<List<Str>, T> ||
+                    const_member_invocable<List<Str>, T>;
+            };
+
+            template <>
+            struct check<"__get__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object, Type<Object>> ||
+                    member_invocable<Object, T, Object, Type<Object>> ||
+                    const_member_invocable<Object, T, Object, Type<Object>>;
+            };
+
+            template <>
+            struct check<"__set__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<void, T, Binding, Object, Object> ||
+                    member_invocable<void, T, Object, Object> ||
+                    const_member_invocable<void, T, Object, Object>;
+            };
+
+            template <>
+            struct check<"__delete__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<void, T, Binding, Object> ||
+                    member_invocable<void, T, Object> ||
+                    const_member_invocable<void, T, Object>;
+            };
+
+            template <>
+            struct check<"__init_subclass__"> {
+                template <typename T>
+                static constexpr bool value = false;
+
+                template <typename T, typename... Ts>
+                static constexpr bool value<void(*)(T, Ts...)> =
+                    std::is_invocable_v<void(*)(T, Ts...), Binding, Ts...> &&
+                    (std::convertible_to<Object, Ts> && ...);
+                template <typename T, typename... Ts>
+                static constexpr bool value<void(*)(T, Ts...) noexcept> =
+                    std::is_invocable_v<void(*)(T, Ts...) noexcept, Binding, Ts...> &&
+                    (std::convertible_to<Object, Ts> && ...);
+            };
+
+            template <>
+            struct check<"__set_name__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<void, T, Binding, Type<Object>, Str> ||
+                    member_invocable<void, T, Type<Object>, Str> ||
+                    const_member_invocable<void, T, Type<Object>, Str>;
+            };
+
+            template <>
+            struct check<"__mro_entries__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Tuple<Type<Object>>, T, Binding, Tuple<Type<Object>>> ||
+                    member_invocable<Tuple<Type<Object>>, T, Tuple<Type<Object>>> ||
+                    const_member_invocable<Tuple<Type<Object>>, T, Tuple<Type<Object>>>;
+            };
+
+            template <>
+            struct check<"__instancecheck__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Bool, T, Binding, Object> ||
+                    member_invocable<Bool, T, Object> ||
+                    const_member_invocable<Bool, T, Object>;
+            };
+
+            template <>
+            struct check<"__subclasscheck__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Bool, T, Binding, Object> ||
+                    member_invocable<Bool, T, Object> ||
+                    const_member_invocable<Bool, T, Object>;
+            };
+
+            template <>
+            struct check<"__class_getitem__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__call__"> {
+                template <typename T>
+                static constexpr bool value = false;
+
+                template <typename R, typename T, typename... Ts>
+                static constexpr bool value<R(*)(T, Ts...)> =
+                    std::is_invocable_v<R(*)(T, Ts...), Binding, Ts...> &&
+                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                    (std::convertible_to<Object, Ts> && ...);
+                template <typename R, typename T, typename... Ts>
+                static constexpr bool value<R(*)(T, Ts...) noexcept> =
+                    std::is_invocable_v<R(*)(T, Ts...) noexcept, Binding, Ts...> &&
+                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                    (std::convertible_to<Object, Ts> && ...);
+
+                template <typename R, typename... Ts>
+                static constexpr bool value<R(Binding::*)(Ts...)> =
+                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                    (std::convertible_to<Object, Ts> && ...);
+                template <typename R, typename... Ts>
+                static constexpr bool value<R(Binding::*)(Ts...) volatile> =
+                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                    (std::convertible_to<Object, Ts> && ...);
+                template <typename R, typename... Ts>
+                static constexpr bool value<R(Binding::*)(Ts...) noexcept> =
+                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                    (std::convertible_to<Object, Ts> && ...);
+                template <typename R, typename... Ts>
+                static constexpr bool value<R(Binding::*)(Ts...) volatile noexcept> =
+                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                    (std::convertible_to<Object, Ts> && ...);
+
+                template <typename R, typename... Ts>
+                static constexpr bool value<R(Binding::*)(Ts...) const> =
+                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                    (std::convertible_to<Object, Ts> && ...);
+                template <typename R, typename... Ts>
+                static constexpr bool value<R(Binding::*)(Ts...) const volatile> =
+                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                    (std::convertible_to<Object, Ts> && ...);
+                template <typename R, typename... Ts>
+                static constexpr bool value<R(Binding::*)(Ts...) const noexcept> =
+                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                    (std::convertible_to<Object, Ts> && ...);
+                template <typename R, typename... Ts>
+                static constexpr bool value<R(Binding::*)(Ts...) const volatile noexcept> =
+                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                    (std::convertible_to<Object, Ts> && ...);
+            };
+
+            template <>
+            struct check<"__len__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Int, T, Binding> ||
+                    member_invocable<Int, T> ||
+                    const_member_invocable<Int, T>;
+            };
+
+            template <>
+            struct check<"__length_hint__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Int, T, Binding> ||
+                    member_invocable<Int, T> ||
+                    const_member_invocable<Int, T>;
+            };
+
+            template <>
+            struct check<"__getitem__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__setitem__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<void, T, Binding, Object, Object> ||
+                    member_invocable<void, T, Object, Object> ||
+                    const_member_invocable<void, T, Object, Object>;
+            };
+
+            template <>
+            struct check<"__delitem__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<void, T, Binding, Object> ||
+                    member_invocable<void, T, Object> ||
+                    const_member_invocable<void, T, Object>;
+            };
+
+            template <>
+            struct check<"__missing__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            // template <>
+            // struct check<"__iter__"> {
+            //     template <typename T>
+            //     static constexpr bool value =
+            //         static_invocable<Object, T, Binding> ||
+            //         member_invocable<Object, T> ||
+            //         const_member_invocable<Object, T>;
+            // };
+
+            template <>
+            struct check<"__next__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding> ||
+                    member_invocable<Object, T>;
+            };
+
+            // template <>
+            // struct check<"__reversed__"> {
+            //     template <typename T>
+            //     static constexpr bool value =
+            //         static_invocable<Object, T, Binding> ||
+            //         member_invocable<Object, T> ||
+            //         const_member_invocable<Object, T>;
+            // };
+
+            template <>
+            struct check<"__contains__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Bool, T, Binding, Object> ||
+                    member_invocable<Bool, T, Object> ||
+                    const_member_invocable<Bool, T, Object>;
+            };
+
+            template <>
+            struct check<"__add__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__sub__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__mul__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Int> ||
+                    member_invocable<Object, T, Int> ||
+                    const_member_invocable<Object, T, Int>;
+            };
+
+            template <>
+            struct check<"__matmul__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__truediv__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__floordiv__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__mod__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__divmod__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Tuple<Object>, T, Binding, Object> ||
+                    member_invocable<Tuple<Object>, T, Object> ||
+                    const_member_invocable<Tuple<Object>, T, Object>;
+            };
+
+            template <>
+            struct check<"__pow__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object, Object> ||
+                    member_invocable<Object, T, Object, Object> ||
+                    const_member_invocable<Object, T, Object, Object>;
+            };
+
+            template <>
+            struct check<"__lshift__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Int> ||
+                    member_invocable<Object, T, Int> ||
+                    const_member_invocable<Object, T, Int>;
+            };
+
+            template <>
+            struct check<"__rshift__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Int> ||
+                    member_invocable<Object, T, Int> ||
+                    const_member_invocable<Object, T, Int>;
+            };
+
+            template <>
+            struct check<"__and__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__xor__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__or__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__radd__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__rsub__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__rmul__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Int> ||
+                    member_invocable<Object, T, Int> ||
+                    const_member_invocable<Object, T, Int>;
+            };
+
+            template <>
+            struct check<"__rmatmul__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__rtruediv__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__rfloordiv__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__rmod__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__rdivmod__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Tuple<Object>, T, Binding, Object> ||
+                    member_invocable<Tuple<Object>, T, Object> ||
+                    const_member_invocable<Tuple<Object>, T, Object>;
+            };
+
+            template <>
+            struct check<"__rpow__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object, Object> ||
+                    member_invocable<Object, T, Object, Object> ||
+                    const_member_invocable<Object, T, Object, Object>;
+            };
+
+            template <>
+            struct check<"__rlshift__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Int> ||
+                    member_invocable<Object, T, Int> ||
+                    const_member_invocable<Object, T, Int>;
+            };
+
+            template <>
+            struct check<"__rrshift__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Int> ||
+                    member_invocable<Object, T, Int> ||
+                    const_member_invocable<Object, T, Int>;
+            };
+
+            template <>
+            struct check<"__rand__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__rxor__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__ror__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object> ||
+                    const_member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__iadd__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__isub__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__imul__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Int> ||
+                    member_invocable<Object, T, Int>;
+            };
+
+            template <>
+            struct check<"__imatmul__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__itruediv__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__ifloordiv__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__imod__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__ipow__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object, Object> ||
+                    member_invocable<Object, T, Object, Object>;
+            };
+
+            template <>
+            struct check<"__ilshift__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Int> ||
+                    member_invocable<Object, T, Int>;
+            };
+
+            template <>
+            struct check<"__irshift__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Int> ||
+                    member_invocable<Object, T, Int>;
+            };
+
+            template <>
+            struct check<"__iand__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__ixor__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__ior__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Object> ||
+                    member_invocable<Object, T, Object>;
+            };
+
+            template <>
+            struct check<"__neg__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding> ||
+                    member_invocable<Object, T> ||
+                    const_member_invocable<Object, T>;
+            };
+
+            template <>
+            struct check<"__pos__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding> ||
+                    member_invocable<Object, T> ||
+                    const_member_invocable<Object, T>;
+            };
+
+            template <>
+            struct check<"__abs__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding> ||
+                    member_invocable<Object, T> ||
+                    const_member_invocable<Object, T>;
+            };
+
+            template <>
+            struct check<"__invert__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding> ||
+                    member_invocable<Object, T> ||
+                    const_member_invocable<Object, T>;
+            };
+
+            template <>
+            struct check<"__complex__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Complex, T, Binding> ||
+                    member_invocable<Complex, T> ||
+                    const_member_invocable<Complex, T>;
+            };
+
+            template <>
+            struct check<"__int__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Int, T, Binding> ||
+                    member_invocable<Int, T> ||
+                    const_member_invocable<Int, T>;
+            };
+
+            template <>
+            struct check<"__float__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Float, T, Binding> ||
+                    member_invocable<Float, T> ||
+                    const_member_invocable<Float, T>;
+            };
+
+            template <>
+            struct check<"__index__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Int, T, Binding> ||
+                    member_invocable<Int, T> ||
+                    const_member_invocable<Int, T>;
+            };
+
+            template <>
+            struct check<"__round__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Int> ||
+                    member_invocable<Object, T, Int> ||
+                    const_member_invocable<Object, T, Int>;
+            };
+
+            template <>
+            struct check<"__trunc__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding> ||
+                    member_invocable<Object, T> ||
+                    const_member_invocable<Object, T>;
+            };
+
+            template <>
+            struct check<"__floor__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding> ||
+                    member_invocable<Object, T> ||
+                    const_member_invocable<Object, T>;
+            };
+
+            template <>
+            struct check<"__ceil__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding> ||
+                    member_invocable<Object, T> ||
+                    const_member_invocable<Object, T>;
+            };
+
+            template <>
+            struct check<"__enter__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding> ||
+                    member_invocable<Object, T> ||
+                    const_member_invocable<Object, T>;
+            };
+
+            template <>
+            struct check<"__exit__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<void, T, Binding, Type<Exception>, Exception, Traceback> ||
+                    member_invocable<void, T, Type<Exception>, Exception, Traceback> ||
+                    const_member_invocable<void, T, Type<Exception>, Exception, Traceback>;
+            };
+
+            template <>
+            struct check<"__buffer__"> {
+                /// TODO: this should return specifically a MemoryView?
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding, Int> ||
+                    member_invocable<Object, T, Int> ||
+                    const_member_invocable<Object, T, Int>;
+            };
+
+            template <>
+            struct check<"__release_buffer__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<void, T, Binding, Object> ||
+                    member_invocable<void, T, Object> ||
+                    const_member_invocable<void, T, Object>;
+            };
+
+            template <>
+            struct check<"__await__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding> ||
+                    member_invocable<Object, T> ||
+                    const_member_invocable<Object, T>;
+            };
+
+            // template <>
+            // struct check<"__aiter__"> {
+            //     template <typename T>
+            //     static constexpr bool value =
+            //         static_invocable<Object, T, Binding> ||
+            //         member_invocable<Object, T> ||
+            //         const_member_invocable<Object, T>;
+            // };
+
+            template <>
+            struct check<"__anext__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding> ||
+                    member_invocable<Object, T>;
+            };
+
+            template <>
+            struct check<"__aenter__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<Object, T, Binding> ||
+                    member_invocable<Object, T> ||
+                    const_member_invocable<Object, T>;
+            };
+
+            template <>
+            struct check<"__aexit__"> {
+                template <typename T>
+                static constexpr bool value =
+                    static_invocable<void, T, Binding, Type<Exception>, Exception, Traceback> ||
+                    member_invocable<void, T, Type<Exception>, Exception, Traceback> ||
+                    const_member_invocable<void, T, Type<Exception>, Exception, Traceback>;
+            };
+
+        };
+
     public:
         using t_cpp = CppType;
 
@@ -4687,277 +6177,10 @@ namespace impl {
         Bindings(const Bindings&) = delete;
         Bindings(Bindings&&) = delete;
 
-        /* Expose an immutable member variable to Python as a getset descriptor,
-        which synchronizes its state. */
-        template <StaticStr Name, typename T>
-        void var(const T CRTP::*value) {
-            if (context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            context[Name] = {
-                .is_member_var = true,
-            };
-            static bool skip = false;
-            if (skip) {
-                return;
-            }
-            static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                try {
-                    CRTP* obj = reinterpret_cast<CRTP*>(self);
-                    auto member = reinterpret_cast<const T CRTP::*>(closure);
-                    if constexpr (impl::python_like<T>) {
-                        return Py_NewRef(ptr(obj->*member));
-                    } else {
-                        return release(wrap(obj->*member));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-                std::string msg = "variable '" + Name + "' of type '" +
-                    impl::demangle(typeid(Wrapper).name()) + "' is immutable.";
-                PyErr_SetString(PyExc_TypeError, msg.c_str());
-                return -1;
-            };
-            tp_getset.push_back({
-                Name,
-                +get,  // converts a stateless lambda to a function pointer
-                +set,
-                nullptr,
-                const_cast<void*>(reinterpret_cast<const void*>(value))
-            });
-            skip = true;
-        }
-
-        /* Expose a mutable member variable to Python as a getset descriptor, which
-        synchronizes its state. */
-        template <StaticStr Name, typename T>
-        void var(T CRTP::*value) {
-            if (context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            context[Name] = {
-                .is_member_var = true,
-            };
-            static bool skip = false;
-            if (skip) {
-                return;
-            }
-            static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                try {
-                    CRTP* obj = reinterpret_cast<CRTP*>(self);
-                    auto member = reinterpret_cast<T CRTP::*>(closure);
-                    if constexpr (impl::python_like<T>) {
-                        return Py_NewRef(ptr(obj->*member));
-                    } else {
-                        return release(wrap(obj->*member));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-                if (new_val == nullptr) {
-                    std::string msg = "variable '" + Name + "' of type '" +
-                        impl::demangle(typeid(Wrapper).name()) +
-                        "' cannot be deleted.";
-                    PyErr_SetString(PyExc_TypeError, msg.c_str());
-                    return -1;
-                }
-                try {
-                    CRTP* obj = reinterpret_cast<CRTP*>(self);
-                    auto member = reinterpret_cast<T CRTP::*>(closure);
-                    obj->*member = static_cast<T>(
-                        reinterpret_borrow<Object>(new_val)
-                    );
-                    return 0;
-                } catch (...) {
-                    Exception::to_python();
-                    return -1;
-                }
-            };
-            tp_getset.push_back({
-                Name,
-                +get,  // converts a stateless lambda to a function pointer
-                +set,
-                nullptr,  // doc
-                reinterpret_cast<void*>(value)
-            });
-            skip = true;
-        }
-
-        /* Expose an immutable member variable to Python as a getset descriptor,
-        which synchronizes its state. */
-        template <StaticStr Name, typename T>
-        void var(const T CppType::*value) {
-            if (context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            context[Name] = {
-                .is_member_var = true,
-            };
-            static bool skip = false;
-            if (skip) {
-                return;
-            }
-            static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                try {
-                    auto member = reinterpret_cast<const T CppType::*>(closure);
-                    return std::visit(
-                        Visitor{
-                            [member](const CppType& obj) {
-                                if constexpr (impl::python_like<T>) {
-                                    return Py_NewRef(ptr(obj.*member));
-                                } else {
-                                    return release(wrap(obj.*member));
-                                }
-                            },
-                            [member](const CppType* obj) {
-                                if constexpr (impl::python_like<T>) {
-                                    return Py_NewRef(ptr(obj->*member));
-                                } else {
-                                    return release(wrap(obj->*member));
-                                }
-                            }
-                        },
-                        reinterpret_cast<CRTP*>(self)->m_cpp
-                    );
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-                std::string msg = "variable '" + Name + "' of type '" +
-                    impl::demangle(typeid(Wrapper).name()) + "' is immutable.";
-                PyErr_SetString(PyExc_TypeError, msg.c_str());
-                return -1;
-            };
-            tp_getset.push_back({
-                Name,
-                +get,  // converts a stateless lambda to a function pointer
-                +set,
-                nullptr,
-                const_cast<void*>(reinterpret_cast<const void*>(value))
-            });
-            skip = true;
-        }
-
-        /* Expose a mutable member variable to Python as a getset descriptor, which
-        synchronizes its state. */
-        template <StaticStr Name, typename T>
-        void var(T CppType::*value) {
-            if (context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            context[Name] = {
-                .is_member_var = true,
-            };
-            static bool skip = false;
-            if (skip) {
-                return;
-            }
-            static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                try {
-                    auto member = reinterpret_cast<T CppType::*>(closure);
-                    return std::visit(
-                        Visitor{
-                            [member](CppType& obj) {
-                                if constexpr (impl::python_like<T>) {
-                                    return Py_NewRef(ptr(obj.*member));
-                                } else {
-                                    return release(wrap(obj.*member));
-                                }
-                            },
-                            [member](CppType* obj) {
-                                if constexpr (impl::python_like<T>) {
-                                    return Py_NewRef(ptr(obj->*member));
-                                } else {
-                                    return release(wrap(obj->*member));
-                                }
-                            },
-                            [member](const CppType* obj) {
-                                if constexpr (impl::python_like<T>) {
-                                    return Py_NewRef(ptr(obj->*member));
-                                } else {
-                                    return release(wrap(obj->*member));
-                                }
-                            }
-                        },
-                        reinterpret_cast<CRTP*>(self)->m_cpp
-                    );
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-                if (new_val == nullptr) {
-                    std::string msg = "variable '" + Name + "' of type '" +
-                        impl::demangle(typeid(Wrapper).name()) +
-                        "' cannot be deleted.";
-                    PyErr_SetString(PyExc_TypeError, msg.c_str());
-                    return -1;
-                }
-                try {
-                    auto member = reinterpret_cast<T CppType::*>(closure);
-                    std::visit(
-                        Visitor{
-                            [member, new_val](CppType& obj) {
-                                obj.*member = static_cast<T>(
-                                    reinterpret_borrow<Object>(new_val)
-                                );
-                            },
-                            [member, new_val](CppType* obj) {
-                                obj->*member = static_cast<T>(
-                                    reinterpret_borrow<Object>(new_val)
-                                );
-                            },
-                            [new_val](const CppType* obj) {
-                                throw TypeError(
-                                    "variable '" + Name + "' of type '" +
-                                    impl::demangle(typeid(Wrapper).name()) +
-                                    "' is immutable."
-                                );
-                            }
-                        },
-                        reinterpret_cast<CRTP*>(self)->m_cpp
-                    );
-                    return 0;
-                } catch (...) {
-                    Exception::to_python();
-                    return -1;
-                }
-            };
-            tp_getset.push_back({
-                Name,
-                +get,  // converts a stateless lambda to a function pointer
-                +set,
-                nullptr,  // doc
-                reinterpret_cast<void*>(value)
-            });
-            skip = true;
-        }
-
         /* Expose an immutable static variable to Python using the `__getattr__()`
         slot of the metatype, which synchronizes its state. */
-        template <StaticStr Name, typename T>
-        void classvar(const T& value) {
+        template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
+        void var(const T& value) {
             if (context.contains(Name)) {
                 throw AttributeError(
                     "Class '" + impl::demangle(typeid(Wrapper).name()) +
@@ -4998,8 +6221,8 @@ namespace impl {
 
         /* Expose a mutable static variable to Python using the `__getattr__()` and
         `__setattr__()` slots of the metatype, which synchronizes its state.  */
-        template <StaticStr Name, typename T>
-        void classvar(T& value) {
+        template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
+        void var(T& value) {
             if (context.contains(Name)) {
                 throw AttributeError(
                     "Class '" + impl::demangle(typeid(Wrapper).name()) +
@@ -5044,305 +6267,10 @@ namespace impl {
             class_setters[Name] = {+set, reinterpret_cast<void*>(&value)};
         }
 
-        /* Expose a C++-style const getter to Python as a getset descriptor. */
-        template <StaticStr Name, typename Return>
-        void property(Return(CRTP::*getter)() const) {
-            if (context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            context[Name] = {
-                .is_property = true,
-            };
-            static bool skip = false;
-            if (skip) {
-                return;
-            }
-            static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                try {
-                    CRTP* obj = reinterpret_cast<CRTP*>(self);
-                    auto member = reinterpret_cast<Return(CRTP::*)() const>(closure);
-                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                        if constexpr (impl::python_like<Return>) {
-                            return Py_NewRef(ptr((obj->*member)()));
-                        } else {
-                            return release(wrap((obj->*member)()));
-                        }
-                    } else {
-                        return release(as_object((obj->*member)()));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            tp_getset.push_back({
-                Name,
-                +get,  // converts a stateless lambda to a function pointer
-                nullptr,  // setter
-                nullptr,  // doc
-                const_cast<void*>(reinterpret_cast<const void*>(getter))
-            });
-            skip = true;
-        }
-
-        /* Expose a C++-style getter/setter pair to Python as a getset
-        descriptor. */
-        template <StaticStr Name, typename Return, typename Value>
-        void property(
-            Return(CRTP::*getter)() const,
-            void(CRTP::*setter)(Value&&)
-        ) {
-            if (context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            context[Name] = {
-                .is_property = true,
-            };
-            static bool skip = false;
-            if (skip) {
-                return;
-            }
-            static struct Closure {
-                Return(CRTP::*getter)() const;
-                void(CRTP::*setter)(Value&&);
-            } closure = {getter, setter};
-            static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                try {
-                    CRTP* obj = reinterpret_cast<CRTP*>(self);
-                    Closure* ctx = reinterpret_cast<Closure*>(closure);
-                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                        if constexpr (impl::python_like<Return>) {
-                            return Py_NewRef(ptr((obj->*(ctx->getter))()));
-                        } else {
-                            return release(wrap((obj->*(ctx->getter))()));
-                        }
-                    } else {
-                        return release(as_object((obj->*(ctx->getter))()));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-                if (new_val == nullptr) {
-                    std::string msg = "variable '" + Name + "' of type '" +
-                        impl::demangle(typeid(Wrapper).name()) +
-                        "' cannot be deleted.";
-                    PyErr_SetString(PyExc_TypeError, msg.c_str());
-                    return -1;
-                }
-                try {
-                    CRTP* obj = reinterpret_cast<CRTP*>(self);
-                    Closure* ctx = reinterpret_cast<Closure*>(closure);
-                    (obj->*(ctx->setter))(static_cast<Value>(
-                        reinterpret_borrow<Object>(new_val)
-                    ));
-                    return 0;
-                } catch (...) {
-                    Exception::to_python();
-                    return -1;
-                }
-            };
-            tp_getset.push_back({
-                Name,
-                +get,  // converts a stateless lambda to a function pointer
-                +set,
-                nullptr,  // doc
-                &closure
-            });
-            skip = true;
-        }
-
-        /* Expose a C++-style const getter to Python as a getset descriptor. */
-        template <StaticStr Name, typename Return>
-        void property(Return(CppType::*getter)() const) {
-            if (context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            context[Name] = {
-                .is_property = true,
-            };
-            static bool skip = false;
-            if (skip) {
-                return;
-            }
-            static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                try {
-                    auto member = reinterpret_cast<Return(CppType::*)() const>(closure);
-                    return release(wrap(std::visit(
-                        Visitor{
-                            [member](const CppType& obj) {
-                                if constexpr (std::is_lvalue_reference_v<Return>) {
-                                    if constexpr (impl::python_like<Return>) {
-                                        return Py_NewRef(ptr((obj.*member)()));
-                                    } else {
-                                        return release(wrap((obj.*member)()));
-                                    }
-                                } else {
-                                    return release(as_object((obj.*member)()));
-                                }
-                            },
-                            [member](const CppType* obj) {
-                                if constexpr (std::is_lvalue_reference_v<Return>) {
-                                    if constexpr (impl::python_like<Return>) {
-                                        return Py_NewRef(ptr((obj->*member)()));
-                                    } else {
-                                        return release(wrap((obj->*member)()));
-                                    }
-                                } else {
-                                    return release(as_object((obj->*member)()));
-                                }
-                            }
-                        },
-                        reinterpret_cast<CRTP*>(self)->m_cpp
-                    )));
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            tp_getset.push_back({
-                Name,
-                +get,  // converts a stateless lambda to a function pointer
-                nullptr,  // setter
-                nullptr,  // doc
-                const_cast<void*>(reinterpret_cast<const void*>(getter))
-            });
-            skip = true;
-        }
-
-        /* Expose a C++-style getter/setter pair to Python as a getset
-        descriptor. */
-        template <StaticStr Name, typename Return, typename Value>
-        void property(
-            Return(CppType::*getter)() const,
-            void(CppType::*setter)(Value&&)
-        ) {
-            if (context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            context[Name] = {
-                .is_property = true,
-            };
-            static bool skip = false;
-            if (skip) {
-                return;
-            }
-            static struct Closure {
-                Return(CppType::*getter)() const;
-                void(CppType::*setter)(Value&&);
-            } closure = {getter, setter};
-            static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                try {
-                    Closure* ctx = reinterpret_cast<Closure*>(closure);
-                    return release(wrap(std::visit(
-                        Visitor{
-                            [ctx](CppType& obj) {
-                                if constexpr (std::is_lvalue_reference_v<Return>) {
-                                    if constexpr (impl::python_like<Return>) {
-                                        return Py_NewRef(ptr((obj.*(ctx->getter))()));
-                                    } else {
-                                        return release(wrap((obj.*(ctx->getter))()));
-                                    }
-                                } else {
-                                    return release(as_object((obj.*(ctx->getter))()));
-                                }
-                            },
-                            [ctx](CppType* obj) {
-                                if constexpr (std::is_lvalue_reference_v<Return>) {
-                                    if constexpr (impl::python_like<Return>) {
-                                        return Py_NewRef(ptr((obj->*(ctx->getter))()));
-                                    } else {
-                                        return release(wrap((obj->*(ctx->getter))()));
-                                    }
-                                } else {
-                                    return release(as_object((obj->*(ctx->getter))()));
-                                }
-                            },
-                            [ctx](const CppType* obj) {
-                                if constexpr (std::is_lvalue_reference_v<Return>) {
-                                    if constexpr (impl::python_like<Return>) {
-                                        return Py_NewRef(ptr((obj->*(ctx->getter))()));
-                                    } else {
-                                        return release(wrap((obj->*(ctx->getter))()));
-                                    }
-                                } else {
-                                    return release(as_object((obj->*(ctx->getter))()));
-                                }
-                            }
-                        },
-                        reinterpret_cast<CRTP*>(self)->m_cpp
-                    )));
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-                if (new_val == nullptr) {
-                    std::string msg = "variable '" + Name + "' of type '" +
-                        impl::demangle(typeid(Wrapper).name()) +
-                        "' cannot be deleted.";
-                    PyErr_SetString(PyExc_TypeError, msg.c_str());
-                    return -1;
-                }
-                try {
-                    Closure* ctx = reinterpret_cast<Closure*>(closure);
-                    std::visit(
-                        Visitor{
-                            [ctx, new_val](CppType& obj) {
-                                obj.*(ctx->setter)(static_cast<Value>(
-                                    reinterpret_borrow<Object>(new_val)
-                                ));
-                            },
-                            [ctx, new_val](CppType* obj) {
-                                obj->*(ctx->setter)(static_cast<Value>(
-                                    reinterpret_borrow<Object>(new_val)
-                                ));
-                            },
-                            [new_val](const CppType* obj) {
-                                throw TypeError(
-                                    "variable '" + Name + "' of type '" +
-                                    impl::demangle(typeid(Wrapper).name()) +
-                                    "' is immutable."
-                                );
-                            }
-                        },
-                        reinterpret_cast<CRTP*>(self)->m_cpp
-                    );
-                    return 0;
-                } catch (...) {
-                    Exception::to_python();
-                    return -1;
-                }
-            };
-            tp_getset.push_back({
-                Name,
-                +get,  // converts a stateless lambda to a function pointer
-                +set,
-                nullptr,  // doc
-                &closure
-            });
-            skip = true;
-        }
-
         /* Expose a C++-style static getter to Python using the `__getattr__()`
         slot of the metatype. */
-        template <StaticStr Name, typename Return>
-        void classproperty(Return(*getter)()) {
+        template <StaticStr Name, typename Return> requires (__as_object__<Return>::enable)
+        void property(Return(*getter)()) {
             if (context.contains(Name)) {
                 throw AttributeError(
                     "Class '" + impl::demangle(typeid(Wrapper).name()) +
@@ -5375,7 +6303,8 @@ namespace impl {
         /* Expose a C++-style static getter/setter pair to Python using the
         `__getattr__()` and `__setattr__()` slots of the metatype. */
         template <StaticStr Name, typename Return, typename Value>
-        void classproperty(Return(*getter)(), void(*setter)(Value&&)) {
+            requires (__as_object__<Return>::enable && __as_object__<Value>::enable)
+        void property(Return(*getter)(), void(*setter)(Value&&)) {
             if (context.contains(Name)) {
                 throw AttributeError(
                     "Class '" + impl::demangle(typeid(Wrapper).name()) +
@@ -5426,6 +6355,22 @@ namespace impl {
             };
             class_getters[Name] = {+get, reinterpret_cast<void*>(&closure)};
             class_setters[Name] = {+set, reinterpret_cast<void*>(&closure)};
+        }
+
+        /// TODO: __iter__ and __reversed__ need special treatment, and require two
+        /// functions to be supplied
+
+        /// TODO: all of the methods need the signature check to be implemented
+
+        /* Expose a C++ static method to Python as a static method, which can be
+        overloaded from either side of the language boundary.  */
+        template <StaticStr Name, typename Return, typename... Target>
+            requires (
+                __as_object__<std::remove_cvref_t<Return>>::enable &&
+                (__as_object__<std::remove_cvref_t<Target>>::enable && ...)
+            )
+        void method(Return(*func)(Target...)) {
+
         }
 
         /* Expose a nested py::Object type to Python. */
@@ -5502,7 +6447,7 @@ namespace impl {
                         if (ptr(mod) == nullptr) {
                             Exception::from_python();
                         }
-                        BertrandMeta stub = Meta::stub_type<Name, Cls>(mod);
+                        BertrandMeta stub = Meta::stub_type<Name>(mod);
                         if (PyObject_SetAttr(ptr(type), Name, ptr(stub))) {
                             Exception::from_python();
                         }
@@ -5608,47 +6553,6 @@ namespace impl {
             });
         }
 
-        /// TODO: implement a template constraint that enforces that dunder methods
-        /// always have the correct signature at compile time.
-
-        /* Expose a C++ instance method to Python as an instance method, which can
-        be overloaded from either side of the language boundary.  */
-        template <StaticStr Name, typename Return, typename... Target>
-        void method(Return(CRTP::*func)(Target...)) {
-            // TODO: check for an existing overload set with the same name and
-            // insert into it, or create a new one if none exists.  Then, call
-            // PyObject_SetAttr() to insert the overload set into the class dict
-            // or invoke a metaclass descriptor to handle internal slots.
-        }
-
-        /* Expose a C++ instance method to Python as an instance method, which can
-        be overloaded from either side of the language boundary.  */
-        template <StaticStr Name, typename Return, typename... Target>
-        void method(Return(CppType::*func)(Target...)) {
-            // TODO: check for an existing overload set with the same name and
-            // insert into it, or create a new one if none exists.  Then, call
-            // PyObject_SetAttr() to insert the overload set into the class dict
-            // or invoke a metaclass descriptor to handle internal slots.
-
-            // func is a pointer to a member function of CppType, which can be
-            // called like this:
-            //      obj.*func(std::forward<Args>(args)...);
-        }
-
-        /* Expose a C++ static method to Python as a class method, which can be
-        overloaded from either side of the language boundary.  */
-        template <StaticStr Name, typename Return, typename... Target>
-        void classmethod(Return(*func)(Target...)) {
-
-        }
-
-        /* Expose a C++ static method to Python as a static method, which can be
-        overloaded from either side of the language boundary.  */
-        template <StaticStr Name, typename Return, typename... Target>
-        void staticmethod(Return(*func)(Target...)) {
-
-        }
-
         /* Finalize a type definition and produce a corresponding type object.  This
         method should always be called in the return statement of an `__export__()`
         script, which automates the import process.
@@ -5669,7 +6573,10 @@ namespace impl {
             /// call PyType_Modified().
             static unsigned int flags =
                 Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC;
-            static std::vector<PyType_Slot> slots;
+            static std::vector<PyType_Slot> slots {
+                {Py_tp_dealloc, reinterpret_cast<void*>(__dealloc__)},
+                {0, nullptr}
+            };
             static bool initialized = false;
             if (!initialized) {
                 flags |= tp_flags;
@@ -5745,7 +6652,7 @@ namespace impl {
 
             // initialize the metaclass fields
             Meta* meta = reinterpret_cast<Meta*>(ptr(cls));
-            meta->__construct__();
+            new (meta) Meta(impl::demangle(typeid(Wrapper).name()));
             meta->instancecheck = instancecheck;
             meta->subclasscheck = subclasscheck;
             meta->class_getters = std::move(class_getters);
@@ -5758,24 +6665,657 @@ namespace impl {
                 }
             }
 
-            /// TODO: insert the type into the global type registry.
+            // insert into the global type map for use when generating bindings
+            register_type<Wrapper>(
+                module,
+                reinterpret_cast<PyTypeObject*>(ptr(cls))
+            );
 
             return cls;
         }
 
     };
 
+    template <typename CRTP, typename Wrapper>
+    template <StaticStr ModName>
+    struct TypeTag::def<CRTP, Wrapper, void>::Bindings :
+        BaseDef<CRTP, Wrapper, void>::template Bindings<ModName>
+    {
+    private:
+        using Base = BaseDef<CRTP, Wrapper, void>::template Bindings<ModName>;
+
+    public:
+        using Base::Base;
+        using Base::var;
+        using Base::property;
+        using Base::method;
+
+        /* Expose an immutable member variable to Python as a getset descriptor,
+        which synchronizes its state. */
+        template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
+        void var(const T CRTP::*value) {
+            if (Base::context.contains(Name)) {
+                throw AttributeError(
+                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                    "' already has an attribute named '" + Name + "'."
+                );
+            }
+            Base::context[Name] = {
+                .is_member_var = true,
+            };
+            static bool skip = false;
+            if (skip) {
+                return;
+            }
+            static auto get = [](PyObject* self, void* closure) -> PyObject* {
+                try {
+                    CRTP* obj = reinterpret_cast<CRTP*>(self);
+                    auto member = reinterpret_cast<const T CRTP::*>(closure);
+                    if constexpr (impl::python_like<T>) {
+                        return Py_NewRef(ptr(obj->*member));
+                    } else {
+                        return release(wrap(obj->*member));
+                    }
+                } catch (...) {
+                    Exception::to_python();
+                    return nullptr;
+                }
+            };
+            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
+                std::string msg = "variable '" + Name + "' of type '" +
+                    impl::demangle(typeid(Wrapper).name()) + "' is immutable.";
+                PyErr_SetString(PyExc_TypeError, msg.c_str());
+                return -1;
+            };
+            Base::tp_getset.push_back({
+                Name,
+                +get,  // converts a stateless lambda to a function pointer
+                +set,
+                nullptr,
+                const_cast<void*>(reinterpret_cast<const void*>(value))
+            });
+            skip = true;
+        }
+
+        /* Expose a mutable member variable to Python as a getset descriptor, which
+        synchronizes its state. */
+        template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
+        void var(T CRTP::*value) {
+            if (Base::context.contains(Name)) {
+                throw AttributeError(
+                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                    "' already has an attribute named '" + Name + "'."
+                );
+            }
+            Base::context[Name] = {
+                .is_member_var = true,
+            };
+            static bool skip = false;
+            if (skip) {
+                return;
+            }
+            static auto get = [](PyObject* self, void* closure) -> PyObject* {
+                try {
+                    CRTP* obj = reinterpret_cast<CRTP*>(self);
+                    auto member = reinterpret_cast<T CRTP::*>(closure);
+                    if constexpr (impl::python_like<T>) {
+                        return Py_NewRef(ptr(obj->*member));
+                    } else {
+                        return release(wrap(obj->*member));
+                    }
+                } catch (...) {
+                    Exception::to_python();
+                    return nullptr;
+                }
+            };
+            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
+                if (new_val == nullptr) {
+                    std::string msg = "variable '" + Name + "' of type '" +
+                        impl::demangle(typeid(Wrapper).name()) +
+                        "' cannot be deleted.";
+                    PyErr_SetString(PyExc_TypeError, msg.c_str());
+                    return -1;
+                }
+                try {
+                    CRTP* obj = reinterpret_cast<CRTP*>(self);
+                    auto member = reinterpret_cast<T CRTP::*>(closure);
+                    obj->*member = static_cast<T>(
+                        reinterpret_borrow<Object>(new_val)
+                    );
+                    return 0;
+                } catch (...) {
+                    Exception::to_python();
+                    return -1;
+                }
+            };
+            Base::tp_getset.push_back({
+                Name,
+                +get,  // converts a stateless lambda to a function pointer
+                +set,
+                nullptr,  // doc
+                reinterpret_cast<void*>(value)
+            });
+            skip = true;
+        }
+
+        /* Expose a C++-style const getter to Python as a getset descriptor. */
+        template <StaticStr Name, typename Return> requires (__as_object__<Return>::enable)
+        void property(Return(CRTP::*getter)() const) {
+            if (Base::context.contains(Name)) {
+                throw AttributeError(
+                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                    "' already has an attribute named '" + Name + "'."
+                );
+            }
+            Base::context[Name] = {
+                .is_property = true,
+            };
+            static bool skip = false;
+            if (skip) {
+                return;
+            }
+            static auto get = [](PyObject* self, void* closure) -> PyObject* {
+                try {
+                    CRTP* obj = reinterpret_cast<CRTP*>(self);
+                    auto member = reinterpret_cast<Return(CRTP::*)() const>(closure);
+                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                        if constexpr (impl::python_like<Return>) {
+                            return Py_NewRef(ptr((obj->*member)()));
+                        } else {
+                            return release(wrap((obj->*member)()));
+                        }
+                    } else {
+                        return release(as_object((obj->*member)()));
+                    }
+                } catch (...) {
+                    Exception::to_python();
+                    return nullptr;
+                }
+            };
+            Base::tp_getset.push_back({
+                Name,
+                +get,  // converts a stateless lambda to a function pointer
+                nullptr,  // setter
+                nullptr,  // doc
+                const_cast<void*>(reinterpret_cast<const void*>(getter))
+            });
+            skip = true;
+        }
+
+        /* Expose a C++-style getter/setter pair to Python as a getset
+        descriptor. */
+        template <StaticStr Name, typename Return, typename Value>
+            requires (__as_object__<Return>::enable && __as_object__<Value>::enable)
+        void property(
+            Return(CRTP::*getter)() const,
+            void(CRTP::*setter)(Value&&)
+        ) {
+            if (Base::context.contains(Name)) {
+                throw AttributeError(
+                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                    "' already has an attribute named '" + Name + "'."
+                );
+            }
+            Base::context[Name] = {
+                .is_property = true,
+            };
+            static bool skip = false;
+            if (skip) {
+                return;
+            }
+            static struct Closure {
+                Return(CRTP::*getter)() const;
+                void(CRTP::*setter)(Value&&);
+            } closure = {getter, setter};
+            static auto get = [](PyObject* self, void* closure) -> PyObject* {
+                try {
+                    CRTP* obj = reinterpret_cast<CRTP*>(self);
+                    Closure* ctx = reinterpret_cast<Closure*>(closure);
+                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                        if constexpr (impl::python_like<Return>) {
+                            return Py_NewRef(ptr((obj->*(ctx->getter))()));
+                        } else {
+                            return release(wrap((obj->*(ctx->getter))()));
+                        }
+                    } else {
+                        return release(as_object((obj->*(ctx->getter))()));
+                    }
+                } catch (...) {
+                    Exception::to_python();
+                    return nullptr;
+                }
+            };
+            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
+                if (new_val == nullptr) {
+                    std::string msg = "variable '" + Name + "' of type '" +
+                        impl::demangle(typeid(Wrapper).name()) +
+                        "' cannot be deleted.";
+                    PyErr_SetString(PyExc_TypeError, msg.c_str());
+                    return -1;
+                }
+                try {
+                    CRTP* obj = reinterpret_cast<CRTP*>(self);
+                    Closure* ctx = reinterpret_cast<Closure*>(closure);
+                    (obj->*(ctx->setter))(static_cast<Value>(
+                        reinterpret_borrow<Object>(new_val)
+                    ));
+                    return 0;
+                } catch (...) {
+                    Exception::to_python();
+                    return -1;
+                }
+            };
+            Base::tp_getset.push_back({
+                Name,
+                +get,  // converts a stateless lambda to a function pointer
+                +set,
+                nullptr,  // doc
+                &closure
+            });
+            skip = true;
+        }
+
+        /* Expose a C++ instance method to Python as an instance method, which can
+        be overloaded from either side of the language boundary.  */
+        template <StaticStr Name, typename Return, typename... Target>
+            requires (
+                __as_object__<std::remove_cvref_t<Return>>::enable &&
+                (__as_object__<std::remove_cvref_t<Target>>::enable && ...)
+            )
+        void method(Return(CRTP::*func)(Target...)) {
+            // TODO: check for an existing overload set with the same name and
+            // insert into it, or create a new one if none exists.  Then, call
+            // PyObject_SetAttr() to insert the overload set into the class dict
+            // or invoke a metaclass descriptor to handle internal slots.
+        }
+
+    };
+
     template <typename CRTP, typename Wrapper, typename CppType>
     struct TypeTag::def : BaseDef<CRTP, Wrapper, CppType> {
-        using Base = BaseDef<CRTP, Wrapper, CppType>;
 
     protected:
         using Variant = std::variant<CppType, CppType*, const CppType*>;
 
+        /* A convenience struct implementing the overload pattern for visiting a
+        std::variant. */
+        template <typename... Ts>
+        struct Visitor : Ts... {
+            using Ts::operator()...;
+        };
+
+        template <StaticStr ModName>
+        struct Bindings : BaseDef<CRTP, Wrapper, CppType>::template Bindings<ModName> {
+        private:
+            using Base = BaseDef<CRTP, Wrapper, CppType>::template Bindings<ModName>;
+
+        public:
+            using Base::Base;
+            using Base::var;
+            using Base::property;
+            using Base::method;
+
+            /* Expose an immutable member variable to Python as a getset descriptor,
+            which synchronizes its state. */
+            template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
+            void var(const T CppType::*value) {
+                if (Base::context.contains(Name)) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                        "' already has an attribute named '" + Name + "'."
+                    );
+                }
+                Base::context[Name] = {
+                    .is_member_var = true,
+                };
+                static bool skip = false;
+                if (skip) {
+                    return;
+                }
+                static auto get = [](PyObject* self, void* closure) -> PyObject* {
+                    try {
+                        auto member = reinterpret_cast<const T CppType::*>(closure);
+                        return std::visit(
+                            Visitor{
+                                [member](const CppType& obj) {
+                                    if constexpr (impl::python_like<T>) {
+                                        return Py_NewRef(ptr(obj.*member));
+                                    } else {
+                                        return release(wrap(obj.*member));
+                                    }
+                                },
+                                [member](const CppType* obj) {
+                                    if constexpr (impl::python_like<T>) {
+                                        return Py_NewRef(ptr(obj->*member));
+                                    } else {
+                                        return release(wrap(obj->*member));
+                                    }
+                                }
+                            },
+                            reinterpret_cast<CRTP*>(self)->m_cpp
+                        );
+                    } catch (...) {
+                        Exception::to_python();
+                        return nullptr;
+                    }
+                };
+                static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
+                    std::string msg = "variable '" + Name + "' of type '" +
+                        impl::demangle(typeid(Wrapper).name()) + "' is immutable.";
+                    PyErr_SetString(PyExc_TypeError, msg.c_str());
+                    return -1;
+                };
+                Base::tp_getset.push_back({
+                    Name,
+                    +get,  // converts a stateless lambda to a function pointer
+                    +set,
+                    nullptr,
+                    const_cast<void*>(reinterpret_cast<const void*>(value))
+                });
+                skip = true;
+            }
+
+            /* Expose a mutable member variable to Python as a getset descriptor, which
+            synchronizes its state. */
+            template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
+            void var(T CppType::*value) {
+                if (Base::context.contains(Name)) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                        "' already has an attribute named '" + Name + "'."
+                    );
+                }
+                Base::context[Name] = {
+                    .is_member_var = true,
+                };
+                static bool skip = false;
+                if (skip) {
+                    return;
+                }
+                static auto get = [](PyObject* self, void* closure) -> PyObject* {
+                    try {
+                        auto member = reinterpret_cast<T CppType::*>(closure);
+                        return std::visit(
+                            Visitor{
+                                [member](CppType& obj) {
+                                    if constexpr (impl::python_like<T>) {
+                                        return Py_NewRef(ptr(obj.*member));
+                                    } else {
+                                        return release(wrap(obj.*member));
+                                    }
+                                },
+                                [member](CppType* obj) {
+                                    if constexpr (impl::python_like<T>) {
+                                        return Py_NewRef(ptr(obj->*member));
+                                    } else {
+                                        return release(wrap(obj->*member));
+                                    }
+                                },
+                                [member](const CppType* obj) {
+                                    if constexpr (impl::python_like<T>) {
+                                        return Py_NewRef(ptr(obj->*member));
+                                    } else {
+                                        return release(wrap(obj->*member));
+                                    }
+                                }
+                            },
+                            reinterpret_cast<CRTP*>(self)->m_cpp
+                        );
+                    } catch (...) {
+                        Exception::to_python();
+                        return nullptr;
+                    }
+                };
+                static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
+                    if (new_val == nullptr) {
+                        std::string msg = "variable '" + Name + "' of type '" +
+                            impl::demangle(typeid(Wrapper).name()) +
+                            "' cannot be deleted.";
+                        PyErr_SetString(PyExc_TypeError, msg.c_str());
+                        return -1;
+                    }
+                    try {
+                        auto member = reinterpret_cast<T CppType::*>(closure);
+                        std::visit(
+                            Visitor{
+                                [member, new_val](CppType& obj) {
+                                    obj.*member = static_cast<T>(
+                                        reinterpret_borrow<Object>(new_val)
+                                    );
+                                },
+                                [member, new_val](CppType* obj) {
+                                    obj->*member = static_cast<T>(
+                                        reinterpret_borrow<Object>(new_val)
+                                    );
+                                },
+                                [new_val](const CppType* obj) {
+                                    throw TypeError(
+                                        "variable '" + Name + "' of type '" +
+                                        impl::demangle(typeid(Wrapper).name()) +
+                                        "' is immutable."
+                                    );
+                                }
+                            },
+                            reinterpret_cast<CRTP*>(self)->m_cpp
+                        );
+                        return 0;
+                    } catch (...) {
+                        Exception::to_python();
+                        return -1;
+                    }
+                };
+                Base::tp_getset.push_back({
+                    Name,
+                    +get,  // converts a stateless lambda to a function pointer
+                    +set,
+                    nullptr,  // doc
+                    reinterpret_cast<void*>(value)
+                });
+                skip = true;
+            }
+
+            /* Expose a C++-style const getter to Python as a getset descriptor. */
+            template <StaticStr Name, typename Return> requires (__as_object__<Return>::enable)
+            void property(Return(CppType::*getter)() const) {
+                if (Base::context.contains(Name)) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                        "' already has an attribute named '" + Name + "'."
+                    );
+                }
+                Base::context[Name] = {
+                    .is_property = true,
+                };
+                static bool skip = false;
+                if (skip) {
+                    return;
+                }
+                static auto get = [](PyObject* self, void* closure) -> PyObject* {
+                    try {
+                        auto member = reinterpret_cast<Return(CppType::*)() const>(closure);
+                        return release(wrap(std::visit(
+                            Visitor{
+                                [member](const CppType& obj) {
+                                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                                        if constexpr (impl::python_like<Return>) {
+                                            return Py_NewRef(ptr((obj.*member)()));
+                                        } else {
+                                            return release(wrap((obj.*member)()));
+                                        }
+                                    } else {
+                                        return release(as_object((obj.*member)()));
+                                    }
+                                },
+                                [member](const CppType* obj) {
+                                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                                        if constexpr (impl::python_like<Return>) {
+                                            return Py_NewRef(ptr((obj->*member)()));
+                                        } else {
+                                            return release(wrap((obj->*member)()));
+                                        }
+                                    } else {
+                                        return release(as_object((obj->*member)()));
+                                    }
+                                }
+                            },
+                            reinterpret_cast<CRTP*>(self)->m_cpp
+                        )));
+                    } catch (...) {
+                        Exception::to_python();
+                        return nullptr;
+                    }
+                };
+                Base::tp_getset.push_back({
+                    Name,
+                    +get,  // converts a stateless lambda to a function pointer
+                    nullptr,  // setter
+                    nullptr,  // doc
+                    const_cast<void*>(reinterpret_cast<const void*>(getter))
+                });
+                skip = true;
+            }
+
+            /* Expose a C++-style getter/setter pair to Python as a getset
+            descriptor. */
+            template <StaticStr Name, typename Return, typename Value>
+                requires (__as_object__<Return>::enable && __as_object__<Value>::enable)
+            void property(
+                Return(CppType::*getter)() const,
+                void(CppType::*setter)(Value&&)
+            ) {
+                if (Base::context.contains(Name)) {
+                    throw AttributeError(
+                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                        "' already has an attribute named '" + Name + "'."
+                    );
+                }
+                Base::context[Name] = {
+                    .is_property = true,
+                };
+                static bool skip = false;
+                if (skip) {
+                    return;
+                }
+                static struct Closure {
+                    Return(CppType::*getter)() const;
+                    void(CppType::*setter)(Value&&);
+                } closure = {getter, setter};
+                static auto get = [](PyObject* self, void* closure) -> PyObject* {
+                    try {
+                        Closure* ctx = reinterpret_cast<Closure*>(closure);
+                        return release(wrap(std::visit(
+                            Visitor{
+                                [ctx](CppType& obj) {
+                                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                                        if constexpr (impl::python_like<Return>) {
+                                            return Py_NewRef(ptr((obj.*(ctx->getter))()));
+                                        } else {
+                                            return release(wrap((obj.*(ctx->getter))()));
+                                        }
+                                    } else {
+                                        return release(as_object((obj.*(ctx->getter))()));
+                                    }
+                                },
+                                [ctx](CppType* obj) {
+                                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                                        if constexpr (impl::python_like<Return>) {
+                                            return Py_NewRef(ptr((obj->*(ctx->getter))()));
+                                        } else {
+                                            return release(wrap((obj->*(ctx->getter))()));
+                                        }
+                                    } else {
+                                        return release(as_object((obj->*(ctx->getter))()));
+                                    }
+                                },
+                                [ctx](const CppType* obj) {
+                                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                                        if constexpr (impl::python_like<Return>) {
+                                            return Py_NewRef(ptr((obj->*(ctx->getter))()));
+                                        } else {
+                                            return release(wrap((obj->*(ctx->getter))()));
+                                        }
+                                    } else {
+                                        return release(as_object((obj->*(ctx->getter))()));
+                                    }
+                                }
+                            },
+                            reinterpret_cast<CRTP*>(self)->m_cpp
+                        )));
+                    } catch (...) {
+                        Exception::to_python();
+                        return nullptr;
+                    }
+                };
+                static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
+                    if (new_val == nullptr) {
+                        std::string msg = "variable '" + Name + "' of type '" +
+                            impl::demangle(typeid(Wrapper).name()) +
+                            "' cannot be deleted.";
+                        PyErr_SetString(PyExc_TypeError, msg.c_str());
+                        return -1;
+                    }
+                    try {
+                        Closure* ctx = reinterpret_cast<Closure*>(closure);
+                        std::visit(
+                            Visitor{
+                                [ctx, new_val](CppType& obj) {
+                                    obj.*(ctx->setter)(static_cast<Value>(
+                                        reinterpret_borrow<Object>(new_val)
+                                    ));
+                                },
+                                [ctx, new_val](CppType* obj) {
+                                    obj->*(ctx->setter)(static_cast<Value>(
+                                        reinterpret_borrow<Object>(new_val)
+                                    ));
+                                },
+                                [new_val](const CppType* obj) {
+                                    throw TypeError(
+                                        "variable '" + Name + "' of type '" +
+                                        impl::demangle(typeid(Wrapper).name()) +
+                                        "' is immutable."
+                                    );
+                                }
+                            },
+                            reinterpret_cast<CRTP*>(self)->m_cpp
+                        );
+                        return 0;
+                    } catch (...) {
+                        Exception::to_python();
+                        return -1;
+                    }
+                };
+                Base::tp_getset.push_back({
+                    Name,
+                    +get,  // converts a stateless lambda to a function pointer
+                    +set,
+                    nullptr,  // doc
+                    &closure
+                });
+                skip = true;
+            }
+
+            /* Expose a C++ instance method to Python as an instance method, which can
+            be overloaded from either side of the language boundary.  */
+            template <StaticStr Name, typename Return, typename... Target>
+                requires (
+                    __as_object__<std::remove_cvref_t<Return>>::enable &&
+                    (__as_object__<std::remove_cvref_t<Target>>::enable && ...)
+                )
+            void method(Return(CppType::*func)(Target...)) {
+                // TODO: check for an existing overload set with the same name and
+                // insert into it, or create a new one if none exists.  Then, call
+                // PyObject_SetAttr() to insert the overload set into the class dict
+                // or invoke a metaclass descriptor to handle internal slots.
+
+                // func is a pointer to a member function of CppType, which can be
+                // called like this:
+                //      obj.*func(std::forward<Args>(args)...);
+            }
+
+        };
+
     public:
         using t_cpp = CppType;
-
-        // TODO: the variant and visitor have to be defined separately
 
         static constexpr Origin __origin__ = Origin::CPP;
         static constexpr StaticStr __doc__ = [] {
@@ -5786,6 +7326,9 @@ namespace impl {
         }();
         PyObject_HEAD
         Variant m_cpp;
+
+        template <typename... Args>
+        def(Args&&... args) : m_cpp(std::forward<Args>(args)...) {}
 
         template <typename Begin, std::sentinel_for<Begin> End>
         using Iterator = TypeTag::Iterator<Begin, End>;
@@ -5969,38 +7512,6 @@ namespace impl {
             }
         }
 
-
-        /// TODO: __create__ should be a void member function that initializes the C++
-        /// fields given arbitrary C++ arguments.  Separating it from the tp_alloc and
-        /// reinterpret_steal components allows for much more flexibility.  I might
-        /// also be able to merge this with the metaclass's initialize() method.
-        /// BaseDef should provide a default implementation that does nothing, and the
-        /// user should always call the parent class's method first in their own
-        /// implementation.  There should also be a corresponding __destroy__ method
-        /// that should again call the parent class's method first, and then clean up
-        /// any C++ resources that were allocated in __create__.  This allows the
-        /// dealloc logic to be separated from GC tracking and heap type boilerplate.
-        /// -> What to do with traverse and clear?  These would have to be implemented
-        /// by hand, and should always call the parent class's method first.
-
-        /* C++ constructor that forwards to the wrapped object's constructor.  This is
-        called from the Wrapper's C++ constructors to convert a C++ value into a Python
-        object outside the Python-level __new__/__init__ sequence.  It can be overridden
-        if the object type includes more members than just the wrapped C++ object, but
-        this will generally never occur.  Any required fields should be contained
-        within the C++ object itself. */
-        template <typename... Args>
-        static Wrapper __construct__(Args&&... args) {
-            PyTypeObject* type = reinterpret_cast<PyTypeObject*>(ptr(Type<Wrapper>()));
-            Object self = reinterpret_steal<Object>(type->tp_alloc(type, 0));
-            if (ptr(self) == nullptr) {
-                Exception::from_python();
-            }
-            CRTP* obj = reinterpret_cast<CRTP*>(ptr(self));
-            new (&obj->m_cpp) CppType(std::forward<Args>(args)...);
-            return reinterpret_steal<Wrapper>(release(self));
-        }
-
         /* tp_repr demangles the exact C++ type name and includes memory address
         similar to Python. */
         static PyObject* __repr__(CRTP* self) {
@@ -6025,15 +7536,6 @@ namespace impl {
                 Exception::to_python();
                 return nullptr;
             }
-        }
-
-        /* tp_dealloc calls the ordinary C++ destructor. */
-        static void __dealloc__(CRTP* self) {
-            PyObject_GC_UnTrack(self);  // required for heap types
-            self->~CRTP();  // cleans up all C++ resources
-            PyTypeObject* type = Py_TYPE(self);
-            type->tp_free(self);
-            Py_DECREF(type);  // required for heap types
         }
 
         // TODO: maybe there needs to be some handling to make sure that the container
@@ -6182,7 +7684,7 @@ template <impl::originates_from_cpp Self, typename T>
     requires (std::convertible_to<T, impl::cpp_type<Self>>)
 struct __init__<Self, T>                                    : Returns<Self> {
     static Self operator()(T&& value) {
-        return Type<Self>::__python__::__construct__(std::forward<T>(value));
+        return impl::construct<Self>(std::forward<T>(value));
     }
 };
 
@@ -6191,7 +7693,7 @@ template <impl::originates_from_cpp Self, typename... Args>
     requires (std::constructible_from<impl::cpp_type<Self>, Args...>)
 struct __explicit_init__<Self, Args...>                     : Returns<Self> {
     static Self operator()(Args&&... args) {
-        return Type<Self>::__python__::__construct__(std::forward<Args>(args)...);
+        return impl::construct<Self>(std::forward<Args>(args)...);
     }
 };
 

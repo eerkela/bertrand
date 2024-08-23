@@ -1474,7 +1474,7 @@ auto __explicit_cast__<From, std::string>::operator()(const From& from) {
 
 template <std::derived_from<std::ostream> Stream, std::derived_from<Object> Self>
 Stream& __lshift__<Stream, Self>::operator()(Stream& stream, const Self& self) {
-    PyObject* repr = PyObject_Repr(ptr(self));
+    PyObject* repr = PyObject_Str(ptr(self));
     if (repr == nullptr) {
         Exception::from_python();
     }
