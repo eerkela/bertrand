@@ -1055,6 +1055,69 @@ struct __init__<Type<Mod>>                                  : Returns<Type<Mod>>
 };
 
 
+//////////////////////////////////////
+////    BERTRAND.PYTHON MODULE    ////
+//////////////////////////////////////
+
+
+/// TODO: perhaps the play is to have def<> be held in Object, but be restricted to
+/// only accepting Type<> definitions.  That might allow me to eliminate the extra tags
+/// and standardize everything in the same way.
+
+
+template <>
+struct Module<"bertrand.python">;
+template <>
+struct Type<Module<"bertrand.python">>;
+
+
+template <>
+struct Interface<Module<"bertrand.python">> {
+
+};
+
+
+template <>
+struct Interface<Type<Module<"bertrand.python">>> {
+
+};
+
+
+/* The global `bertrand.python` module, which exposes the internal machinery of the
+Python/C++ bindings to Python. */
+template <>
+struct Module<"bertrand.python"> :
+    Object,
+    Interface<Module<"bertrand.python">>,
+    impl::ModuleTag
+{
+
+};
+
+
+/* The global `bertrand.python` module's unique type. */
+template <>
+struct Type<Module<"bertrand.python">> :
+    Object,
+    Interface<Type<Module<"bertrand.python">>>,
+    impl::TypeTag
+{
+    struct __python__ : def<__python__, Module<"bertrand.python">> {
+
+        struct Context {
+            std::string demangled_name;
+            std::function<void(PyObject*)> exception_callback;
+            Type<BertrandMeta>::__python__* template_interface;
+        };
+
+        PyObject_HEAD
+        std::unordered_map<std::type_index, Context> cpp_types;
+        std::unordered_map<PyTypeObject*, Context> py_types;
+
+    };
+};
+
+
 }  // namespace py
 
 

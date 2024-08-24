@@ -5,7 +5,6 @@
 #include "object.h"
 #include "code.h"
 #include "except.h"
-#include "pybuffer.h"
 
 
 namespace py {
@@ -23,8 +22,7 @@ namespace impl {
         requires (
             has_type<Wrapper> &&
             is_type<Type<Wrapper>> &&
-            std::constructible_from<typename Type<Wrapper>::__python__, Args...> &&
-            sizeof(Type<Wrapper>::__python__) != 0
+            std::constructible_from<typename Type<Wrapper>::__python__, Args...>
         )
     static Wrapper construct(Args&&... args) {
         using Self = Type<Wrapper>::__python__;
@@ -40,8 +38,10 @@ namespace impl {
             cls->tp_free(self);
             throw;
         }
-        PyObject_GC_Track(self);
-        return reinterpret_steal<Wrapper>(reinterpret_cast<PyObject*>(self));
+        if (cls->tp_flags & Py_TPFLAGS_HAVE_GC) {
+            PyObject_GC_Track(self);
+        }
+        return reinterpret_steal<Wrapper>(self);
     }
 
     /* Marks a py::Object subclass as a type object, and exposes several helpers to
@@ -93,152 +93,10 @@ namespace impl {
 
         };
 
-        /* Shared behavior for all Python types, be they wrappers around external C++
-        classes or pure Python, possibly even implemented inline within the CRTP class
-        itself.  Each type must minimally support these methods.  Everything else is an
-        implementation detail. */
-        template <typename CRTP, typename Wrapper, typename CppType>
-        struct BaseDef : BertrandTag {
-        protected:
-
-            template <StaticStr ModName>
-            struct Bindings;
-
-        public:
-
-            /* Generate a new instance of the type object to be attached to the given
-            module.
-
-            The `bind` argument is a helper that includes a number of convenience
-            methods for exposing the type to Python.  The `__export__` script must end
-            with a call to `bind.finalize<Bases...>()`, which will instantiate a
-            unique heap type for each module.  This is the correct way to expose types
-            using per-module state, which allows for multiple sub-interpreters to run
-            in parallel without interfering with one other (possibly without a central
-            GIL).  The bindings are automatically executed by the import system
-            whenever the enclosing module is loaded into a fresh interpreter.
-
-            Any attributes added at this stage are guaranteed be unique for each
-            module.  It's still up to the user to make sure that any data they
-            reference does not cause race conditions with other modules, but the
-            modules themselves will not impede this.
-
-            Note that this method does not actually attach the type to the module -
-            that is done in the module's `__export__()` script, which is semantically
-            identical to this method and provides much of the same syntax.
-
-            The default implementation forwards to `__import__()`, which eases the
-            binding of standard library types and external, C-style Python extensions.
-            Types that reference a C++ class or are implemented inline should override
-            this method to provide their own bindings. */
-            template <StaticStr ModName>
-            static Type<Wrapper> __export__(Bindings<ModName> bind) {
-                // bind.var<"foo">(&CppType::foo);
-                // bind.method<"bar">("an example method", &CppType::bar);
-                // bind.type<"Baz", CppType::Baz, Bases...>();
-                // ...
-                // return bind.template finalize<Bases...>();
-                return CRTP::__import__();
-            }
-
-            /* Return a new reference to the type by importing its parent module and
-            unpacking this specific type.
-
-            This is called automatically by the default constructor for
-            `Type<Wrapper>`, and is the proper way to handle per-module state, instead
-            of using static type objects.  It will implicitly invoke the `__export__()`
-            method if the module was not previously loaded, either via a
-            `PyImport_Import()` API call or the simplified `Module` constructor. */
-            static Type<Wrapper> __import__() {
-                throw NotImplementedError(
-                    "the __import__() method must be defined for all Python types: "
-                    + demangle(typeid(CRTP).name())
-                );
-            }
-
-            /* tp_dealloc calls the ordinary C++ destructor. */
-            static void __dealloc__(CRTP* self) {
-                PyObject_GC_UnTrack(self);  // required for heap types
-                self->~CRTP();  // cleans up all C++ resources
-                PyTypeObject* type = Py_TYPE(self);
-                type->tp_free(self);
-                Py_DECREF(type);  // required for heap types
-            }
-
-        };
-
-        /* A CRTP base class that automatically generates boilerplate bindings for a
-        new Python type which wraps around an external C++ type.  This is the preferred
-        way of writing new Python types in C++.
-
-        This class is only available to specializations of `py::Type<>`, each of which
-        should define a public `__python__` struct that inherits from it via the CRTP
-        pattern.  It uses template metaprogramming to automate the creation of Python
-        types and their associated methods, slots, and other attributes in a way that
-        conforms to Python best practices.  This includes:
-
-            -   The use of heap types over static types, which are closer to native
-                Python and can be mutated at runtime.
-            -   Per-module (rather than per-process) state, which allows for multiple
-                sub-interpreters to run in parallel.
-            -   Cyclic GC support, which is necessary for types that contain Python
-                objects, as well as the heap type itself.
-            -   Direct access to the wrapped C++ object, which can be a non-owning,
-                mutable or immutable reference, allowing for shared state across the
-                language boundary.
-            -   Default implementations of common slots like `__repr__`, `__hash__`,
-                `__iter__`, and others, which can be detected via template
-                metaprogramming and naturally overridden by the user if necessary.
-            -   A shared metaclass, which demangles the C++ type name and delegates
-                `isinstance()` and `issubclass()` checks to the `py::__isinstance__<>`
-                and `py::__issubclass__<>` control structs, respectively.
-            -   Support for C++ templates, which can be indexed in Python using the
-                metaclass's `__getitem__` slot.
-            -   Method overloading, wherein each method is represented as an overload
-                set attached to the type object via the descriptor protocol.
-            -   Modeling for member and static methods and variables, which are
-                translated 1:1 into Python equivalents.
-
-        Needless to say, these are all very complex and error-prone tasks that are best
-        left to Bertrand's metaprogramming facilities.  By using this base class, the
-        user can focus only on the public interface of the class they're trying to bind
-        and not on any of the low-level details necessary to configure it for Python.
-        Its protected status also strongly couples the type with the enclosing wrapper,
-        producing a single unit of code that is easier to reason about and manage. */
-        template <typename CRTP, typename Wrapper, typename CppType = void>
-        struct def;
-
-        /* A specialization of `def` for pure Python classes, which have no C++
-        equivalent.  This is the default specialization if the C++ type is omitted
-        during inheritance.  It expects the user to either implement a raw CPython type
-        directly inline or supply a reference to an externally-defined `PyTypeObject`,
-        which presumably exists somewhere in the CPython API or a third-party
-        library.
-
-        Users of this type must at least implement the `__import__()` hook, which
-        returns a new reference to the type object, wherever it is defined.  If the
-        type is defined inline within this class, then the user must also implement the
-        `__export__()` hook, which is called to initialize the type and expose it to
-        Python.  Everything else is an implementation detail. */
-        template <typename CRTP, typename Wrapper>
-        struct def<CRTP, Wrapper, void> : BaseDef<CRTP, Wrapper, void> {
-        protected:
-
-            template <StaticStr ModName>
-            struct Bindings;
-
-        public:
-            static constexpr Origin __origin__ = Origin::PYTHON;
-        };
-
-        /// TODO: there can be a similar level of scrutiny for inline Python types as
-        /// for types that wrap around C++ classes.  The way to detect these is to
-        /// check to see whether the size of the type is nonzero, and if so, generate
-        /// all the conveniences necessary to make it work.
-
     };
 
 }
+
 
 
 ////////////////////
@@ -258,15 +116,7 @@ types can always be implicitly converted to this type, but doing the opposite in
 runtime `issubclass()` check, and can potentially raise a `TypeError`, just like
 `py::Object`. */
 template <>
-struct Type<Object> : Object, Interface<Type<Object>>, impl::TypeTag {
-    struct __python__ : TypeTag::def<__python__, Type> {
-        static Type __import__() {
-            return reinterpret_borrow<Type>(reinterpret_cast<PyObject*>(
-                &PyBaseObject_Type
-            ));
-        }
-    };
-
+struct Type<Object> : Object, Interface<Type<Object>> {
     Type(PyObject* p, borrowed_t t) : Object(p, t) {}
     Type(PyObject* p, stolen_t t) : Object(p, t) {}
 
@@ -510,29 +360,39 @@ struct BertrandMeta : Object, Interface<BertrandMeta> {
 binding process. */
 template <>
 struct Type<BertrandMeta> : Object, Interface<Type<BertrandMeta>>, impl::TypeTag {
-    struct __python__ : TypeTag::def<__python__, BertrandMeta> {
+    struct __python__ : PyTypeObject, def<__python__, BertrandMeta> {
         static constexpr StaticStr __doc__ =
 R"doc(A shared metaclass for all Bertrand extension types.
 
 Notes
 -----
-This metaclass identifies all types that originate from C++.  It is used to
-automatically demangle the type name, provide accurate `isinstance()` and
-`issubclass()` checks based on Bertrand's C++ control structures, allow C++ template
-subscription via `__getitem__`, and provide a common interface for class-level property
-descriptors, method overloading (including for built-in slots), and other common
-behaviors.
+This metaclass effectively identifies all types that originate from C++, and is used to
+expose a variety of C++ features to Python in a way that conforms to the idioms of both
+languages.  This includes (but is not limited to):
+
+    -   Method overloading for built-in Python slots like `__init__`, `__add__`, etc,
+        which are implemented according to Python's dunder interface.
+    -   Access to C++ template instantiations via Python type subscription.  This is
+        done by indexing an instance of the metaclass, requesting its length, or
+        iterating over it in a loop.
+    -   Automatic demangling of the type's C++ name where possible, which improves the
+        readability of error messages and other diagnostic output.
+    -   A common interface for class-level variables and properties, which can share
+        state between Python and C++.
 
 Performing an `isinstance()` check against this type will return `True` if and only if
-the candidate type is implemented in C++.)doc";
-
-        /* This type inherits the binary layout of PyTypeObject, but does so indirectly
-        via a raw buffer, which prevents C++ from attempting to default-initialize this
-        field in the constructor. */
-        alignas(PyTypeObject) char base[sizeof(PyTypeObject)];
+the candidate type was exposed to Python by way of Bertrand's binding interface.
+Instances of this class cannot be created any other way.)doc";
 
         /// TODO: instancecheck, subclasscheck may need updates to avoid conflicts
         /// with overload sets, etc.
+        /// -> instancecheck and subclasscheck don't need to/shouldn't call the C++
+        /// control structs, since doing so is asking for an infinite recursion.  The
+        /// two should always remain separate, and you'd just overload
+        /// __instancecheck__/__subclasscheck__ where necessary to make this work.
+        /// -> iirc, the primary reason I wrote this was to account for template
+        /// interfaces, but that's probably not necessary anymore since all types
+        /// inherit from their interface like normal.
 
         /* The `instancecheck` and `subclasscheck` function pointers are used to back
         the metaclass's Python-level `__instancecheck__()` and `__subclasscheck()__`
@@ -707,63 +567,63 @@ the candidate type is implemented in C++.)doc";
         PyObject* __anext__ = nullptr;
 
         /* The original Python slots are recorded here for posterity. */
-        reprfunc tp_repr = nullptr;
-        hashfunc tp_hash = nullptr;
-        ternaryfunc tp_call = nullptr;
-        reprfunc tp_str = nullptr;
-        getattrofunc tp_getattro = nullptr;
-        setattrofunc tp_setattro = nullptr;
-        richcmpfunc tp_richcompare = nullptr;
-        getiterfunc tp_iter = nullptr;
-        iternextfunc tp_iternext = nullptr;
-        descrgetfunc tp_descr_get = nullptr;
-        descrsetfunc tp_descr_set = nullptr;
-        initproc tp_init = nullptr;
-        newfunc tp_new = nullptr;
-        lenfunc mp_length = nullptr;
-        binaryfunc mp_subscript = nullptr;
-        objobjargproc mp_ass_subscript = nullptr;
-        objobjargproc sq_contains = nullptr;
-        unaryfunc am_await = nullptr;
-        unaryfunc am_aiter = nullptr;
-        unaryfunc am_anext = nullptr;
-        getbufferproc bf_getbuffer = nullptr;
-        releasebufferproc bf_releasebuffer = nullptr;
-        binaryfunc nb_add = nullptr;
-        binaryfunc nb_inplace_add = nullptr;
-        binaryfunc nb_subtract = nullptr;
-        binaryfunc nb_inplace_subtract = nullptr;
-        binaryfunc nb_multiply = nullptr;
-        binaryfunc nb_inplace_multiply = nullptr;
-        binaryfunc nb_remainder = nullptr;
-        binaryfunc nb_inplace_remainder = nullptr;
-        binaryfunc nb_divmod = nullptr;
-        ternaryfunc nb_power = nullptr;
-        ternaryfunc nb_inplace_power = nullptr;
-        unaryfunc nb_negative = nullptr;
-        unaryfunc nb_positive = nullptr;
-        unaryfunc nb_absolute = nullptr;
-        inquiry nb_bool = nullptr;
-        unaryfunc nb_invert = nullptr;
-        binaryfunc nb_lshift = nullptr;
-        binaryfunc nb_inplace_lshift = nullptr;
-        binaryfunc nb_rshift = nullptr;
-        binaryfunc nb_inplace_rshift = nullptr;
-        binaryfunc nb_and = nullptr;
-        binaryfunc nb_inplace_and = nullptr;
-        binaryfunc nb_xor = nullptr;
-        binaryfunc nb_inplace_xor = nullptr;
-        binaryfunc nb_or = nullptr;
-        binaryfunc nb_inplace_or = nullptr;
-        unaryfunc nb_int = nullptr;
-        unaryfunc nb_float = nullptr;
-        binaryfunc nb_floor_divide = nullptr;
-        binaryfunc nb_inplace_floor_divide = nullptr;
-        binaryfunc nb_true_divide = nullptr;
-        binaryfunc nb_inplace_true_divide = nullptr;
-        unaryfunc nb_index = nullptr;
-        binaryfunc nb_matrix_multiply = nullptr;
-        binaryfunc nb_inplace_matrix_multiply = nullptr;
+        reprfunc base_tp_repr = nullptr;
+        hashfunc base_tp_hash = nullptr;
+        ternaryfunc base_tp_call = nullptr;
+        reprfunc base_tp_str = nullptr;
+        getattrofunc base_tp_getattro = nullptr;
+        setattrofunc base_tp_setattro = nullptr;
+        richcmpfunc base_tp_richcompare = nullptr;
+        getiterfunc base_tp_iter = nullptr;
+        iternextfunc base_tp_iternext = nullptr;
+        descrgetfunc base_tp_descr_get = nullptr;
+        descrsetfunc base_tp_descr_set = nullptr;
+        initproc base_tp_init = nullptr;
+        newfunc base_tp_new = nullptr;
+        lenfunc base_mp_length = nullptr;
+        binaryfunc base_mp_subscript = nullptr;
+        objobjargproc base_mp_ass_subscript = nullptr;
+        objobjargproc base_sq_contains = nullptr;
+        unaryfunc base_am_await = nullptr;
+        unaryfunc base_am_aiter = nullptr;
+        unaryfunc base_am_anext = nullptr;
+        getbufferproc base_bf_getbuffer = nullptr;
+        releasebufferproc base_bf_releasebuffer = nullptr;
+        binaryfunc base_nb_add = nullptr;
+        binaryfunc base_nb_inplace_add = nullptr;
+        binaryfunc base_nb_subtract = nullptr;
+        binaryfunc base_nb_inplace_subtract = nullptr;
+        binaryfunc base_nb_multiply = nullptr;
+        binaryfunc base_nb_inplace_multiply = nullptr;
+        binaryfunc base_nb_remainder = nullptr;
+        binaryfunc base_nb_inplace_remainder = nullptr;
+        binaryfunc base_nb_divmod = nullptr;
+        ternaryfunc base_nb_power = nullptr;
+        ternaryfunc base_nb_inplace_power = nullptr;
+        unaryfunc base_nb_negative = nullptr;
+        unaryfunc base_nb_positive = nullptr;
+        unaryfunc base_nb_absolute = nullptr;
+        inquiry base_nb_bool = nullptr;
+        unaryfunc base_nb_invert = nullptr;
+        binaryfunc base_nb_lshift = nullptr;
+        binaryfunc base_nb_inplace_lshift = nullptr;
+        binaryfunc base_nb_rshift = nullptr;
+        binaryfunc base_nb_inplace_rshift = nullptr;
+        binaryfunc base_nb_and = nullptr;
+        binaryfunc base_nb_inplace_and = nullptr;
+        binaryfunc base_nb_xor = nullptr;
+        binaryfunc base_nb_inplace_xor = nullptr;
+        binaryfunc base_nb_or = nullptr;
+        binaryfunc base_nb_inplace_or = nullptr;
+        unaryfunc base_nb_int = nullptr;
+        unaryfunc base_nb_float = nullptr;
+        binaryfunc base_nb_floor_divide = nullptr;
+        binaryfunc base_nb_inplace_floor_divide = nullptr;
+        binaryfunc base_nb_true_divide = nullptr;
+        binaryfunc base_nb_inplace_true_divide = nullptr;
+        unaryfunc base_nb_index = nullptr;
+        binaryfunc base_nb_matrix_multiply = nullptr;
+        binaryfunc base_nb_inplace_matrix_multiply = nullptr;
 
         __python__(const std::string& demangled) {
             std::string s = "<class '" + demangled + "'>";
@@ -773,7 +633,7 @@ the candidate type is implemented in C++.)doc";
             }
         }
 
-        ~__python__() {
+        ~__python__() noexcept {
             Py_XDECREF(demangled);
             Py_XDECREF(templates);
             Py_XDECREF(parent);
@@ -859,16 +719,8 @@ the candidate type is implemented in C++.)doc";
             Py_XDECREF(__anext__);
         }
 
-        /* Deallocate overload sets and the heap type when it falls out of scope. */
-        static void __dealloc__(__python__* cls) {
-            PyObject_GC_UnTrack(cls);
-            cls->~__python__();
-            PyTypeObject* type = Py_TYPE(cls);
-            type->tp_free(cls);
-            Py_DECREF(type);  // required for heap types
-        }
-
-        /* Register the metaclass's fields with Python's cyclic garbage collector. */
+        /* Metaclass's `tp_traverse` slot registers the metaclass's fields with
+        Python's cyclic garbage collector. */
         static int __traverse__(__python__* cls, visitproc visit, void* arg) {
             Py_VISIT(cls->demangled);
             Py_VISIT(cls->templates);
@@ -953,11 +805,10 @@ the candidate type is implemented in C++.)doc";
             Py_VISIT(cls->__await__);
             Py_VISIT(cls->__aiter__);
             Py_VISIT(cls->__anext__);
-            Py_VISIT(Py_TYPE(cls));  // required for heap types
-            return 0;
+            return def::__traverse__(cls, visit, arg);
         }
 
-        /* Break reference cycles if they exist. */
+        /* Metaclass's `tp_clear` slot breaks reference cycles if they exist. */
         static int __clear__(__python__* cls) {
             Py_CLEAR(cls->demangled);
             Py_CLEAR(cls->templates);
@@ -1042,111 +893,7 @@ the candidate type is implemented in C++.)doc";
             Py_CLEAR(cls->__await__);
             Py_CLEAR(cls->__aiter__);
             Py_CLEAR(cls->__anext__);
-            return 0;
-        }
-
-        /* Get a new reference to the metatype from the global `bertrand.python`
-        module. */
-        static Type __import__();  // TODO: defined in __init__.h alongside "bertrand.python" module {
-        //     return impl::get_type<BertrandMeta>(Module<"bertrand.python">());
-        // }
-
-        /* The metaclass can't use Bindings, since they depend on the metaclass to
-        function.  The logic is fundamentally the same, however. */
-        template <StaticStr ModName>
-        static Type __export__(Module<ModName> module) {
-            static PyType_Slot slots[] = {
-                {Py_tp_doc, const_cast<char*>(__doc__.buffer)},
-                {Py_tp_traverse, reinterpret_cast<void*>(__traverse__)},
-                {Py_tp_clear, reinterpret_cast<void*>(__clear__)},
-                {Py_tp_dealloc, reinterpret_cast<void*>(__dealloc__)},
-                {Py_tp_repr, reinterpret_cast<void*>(class_repr)},
-                {Py_tp_getattro, reinterpret_cast<void*>(class_getattr)},
-                {Py_tp_setattro, reinterpret_cast<void*>(class_setattr)},
-                {Py_tp_iter, reinterpret_cast<void*>(class_iter)},
-                {Py_mp_length, reinterpret_cast<void*>(class_len)},
-                {Py_mp_subscript, reinterpret_cast<void*>(class_getitem)},
-                {Py_tp_methods, methods},
-                {Py_tp_getset, getset},
-                {0, nullptr}
-            };
-            static PyType_Spec spec = {
-                .name = ModName + ".Meta",
-                .basicsize = sizeof(BertrandMeta),
-                .itemsize = 0,
-                .flags =
-                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC |
-                    Py_TPFLAGS_MANAGED_WEAKREF | Py_TPFLAGS_MANAGED_DICT |
-                    Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_TYPE_SUBCLASS,
-                .slots = slots
-            };
-            PyObject* cls = PyType_FromModuleAndSpec(
-                ptr(module),
-                &spec,
-                &PyType_Type
-            );
-            if (cls == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Type>(cls);
-        }
-
-        /* Create a trivial instance of the metaclass to serve as a Python entry point
-        for a C++ template hierarchy.  The interface type is not usable on its own
-        except to provide access to its C++ instantiations, as well as efficient type
-        checks against them and a central point for documentation. */
-        template <StaticStr Name, StaticStr ModName>
-        static BertrandMeta stub_type(Module<ModName>& module) {
-            static std::string docstring;
-            static bool doc_initialized = false;
-            if (!doc_initialized) {
-                docstring = "A public interface for the '" + ModName + "." + Name;
-                docstring += "' template hierarchy.\n\n";
-                docstring +=
-R"doc(This type cannot be used directly, but indexing it with one or more Python
-types allows access to individual instantiations with the same syntax as C++.
-Note that due to its dynamic nature, Python cannot create any new instantiations
-of a C++ template - this class merely navigates the existing instantiations at
-the C++ level and retrieves their corresponding Python types.)doc";
-                doc_initialized = true;
-            }
-            static PyType_Slot slots[] = {
-                {Py_tp_doc, const_cast<char*>(docstring.c_str())},
-                {0, nullptr}
-            };
-            static PyType_Spec spec = {
-                .name = Name,
-                .basicsize = sizeof(__python__),
-                .itemsize = 0,
-                .flags =
-                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE |
-                    Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_DISALLOW_INSTANTIATION |
-                    Py_TPFLAGS_IMMUTABLETYPE,
-                .slots = slots
-            };
-
-            __python__* cls = reinterpret_cast<__python__*>(PyType_FromMetaclass(
-                reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>())),
-                ptr(module),
-                &spec,
-                nullptr
-            ));
-            if (cls == nullptr) {
-                Exception::from_python();
-            }
-            try {
-                new (cls) __python__(Name);
-                cls->instancecheck = template_instancecheck;
-                cls->subclasscheck = template_subclasscheck;
-                cls->templates = PyDict_New();
-                if (cls->templates == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<BertrandMeta>(reinterpret_cast<PyObject*>(cls));
-            } catch (...) {
-                Py_DECREF(cls);
-                throw;
-            }
+            return def::__clear__(cls);
         }
 
         /* `repr(cls)` displays the type's demangled C++ name.  */
@@ -1252,9 +999,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
         /* The metaclass's __doc__ string defaults to a getset descriptor that appends
         the type's template instantiations to the normal `tp_doc` slot. */
         static PyObject* class_doc(__python__* cls, void*) {
-            PyTypeObject& base = reinterpret_cast<PyTypeObject&>(cls->base);
-
-            std::string doc = base.tp_doc;
+            std::string doc = cls->tp_doc;
             if (cls->templates) {
                 if (!doc.ends_with("\n")) {
                     doc += "\n";
@@ -1265,7 +1010,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 )) + ")";
                 doc += header + "\n" + std::string(header.size() - 1, '-') + "\n";
 
-                std::string prefix = "    " + std::string(base.tp_name) + "[";
+                std::string prefix = "    " + std::string(cls->tp_name) + "[";
                 PyObject* key;
                 PyObject* value;
                 Py_ssize_t pos = 0;
@@ -1316,16 +1061,9 @@ the C++ level and retrieves their corresponding Python types.)doc";
             return PyUnicode_FromStringAndSize(doc.c_str(), doc.size());
         }
 
-        /// TODO: reserving getattr/setattr for class variables interferes with the
-        /// type creation process.  If the attribute name doesn't appear in the
-        /// class variable dictionary, it should forward to the standard Python
-        /// behavior of inserting into and retrieving from the class dictionary.
-        /// -> perhaps not for template interfaces, however, which should be immutable.
-        /// Also, tp_getattro corresponds to a __getattribute__ call at the Python
-        /// level, which is not the same as __getattr__.
-
-        /* `cls.` allows access to class-level variables with shared state. */
-        static PyObject* class_getattr(__python__* cls, PyObject* attr) {
+        /* `cls.` allows access to class-level variables with shared state, and
+        otherwise falls back to ordinary Python attribute access. */
+        static PyObject* class_getattro(__python__* cls, PyObject* attr) {
             Py_ssize_t size;
             const char* name = PyUnicode_AsUTF8AndSize(attr, &size);
             if (name == nullptr) {
@@ -1339,17 +1077,11 @@ the C++ level and retrieves their corresponding Python types.)doc";
                     it->second.closure
                 );
             }
-            PyErr_Format(
-                PyExc_AttributeError,
-                "type object '%U' has no attribute '%s'",
-                cls->demangled,
-                name
-            );
-            return nullptr;
+            return PyObject_GenericGetAttr(reinterpret_cast<PyObject*>(cls), attr);
         }
 
         /* `cls. = ...` allows assignment to class-level variables with shared state. */
-        static int class_setattr(__python__* cls, PyObject* attr, PyObject* value) {
+        static int class_setattro(__python__* cls, PyObject* attr, PyObject* value) {
             Py_ssize_t size;
             const char* name = PyUnicode_AsUTF8AndSize(attr, &size);
             if (name == nullptr) {
@@ -1364,13 +1096,11 @@ the C++ level and retrieves their corresponding Python types.)doc";
                     it->second.closure
                 );
             }
-            PyErr_Format(
-                PyExc_AttributeError,
-                "type object '%U' has no attribute '%s'",
-                cls->demangled,
-                name
+            return PyObject_GenericSetAttr(
+                reinterpret_cast<PyObject*>(cls),
+                attr,
+                value
             );
-            return -1;
         }
 
         /* isinstance(obj, cls) forwards the behavior of the __isinstance__ control
@@ -1392,6 +1122,110 @@ the C++ level and retrieves their corresponding Python types.)doc";
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
+            }
+        }
+
+        /* The metaclass can't use Bindings, since they depend on the metaclass to
+        function.  The logic is fundamentally the same, however. */
+        template <StaticStr ModName>
+        static Type __export__(Module<ModName> module) {
+            static PyType_Slot slots[] = {
+                {Py_tp_doc, const_cast<char*>(__doc__.buffer)},
+                {Py_tp_dealloc, reinterpret_cast<void*>(__dealloc__)},
+                {Py_tp_traverse, reinterpret_cast<void*>(__traverse__)},
+                {Py_tp_clear, reinterpret_cast<void*>(__clear__)},
+                {Py_tp_repr, reinterpret_cast<void*>(class_repr)},
+                {Py_tp_getattro, reinterpret_cast<void*>(class_getattro)},
+                {Py_tp_setattro, reinterpret_cast<void*>(class_setattro)},
+                {Py_tp_iter, reinterpret_cast<void*>(class_iter)},
+                {Py_mp_length, reinterpret_cast<void*>(class_len)},
+                {Py_mp_subscript, reinterpret_cast<void*>(class_getitem)},
+                {Py_tp_methods, methods},
+                {Py_tp_getset, getset},
+                {0, nullptr}
+            };
+            static PyType_Spec spec = {
+                .name = ModName + ".Meta",
+                .basicsize = sizeof(BertrandMeta),
+                .itemsize = 0,
+                .flags =
+                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC |
+                    Py_TPFLAGS_MANAGED_WEAKREF | Py_TPFLAGS_MANAGED_DICT |
+                    Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_TYPE_SUBCLASS,
+                .slots = slots
+            };
+            PyObject* cls = PyType_FromModuleAndSpec(
+                ptr(module),
+                &spec,
+                &PyType_Type
+            );
+            if (cls == nullptr) {
+                Exception::from_python();
+            }
+            return reinterpret_steal<Type>(cls);
+        }
+
+        /* Get a new reference to the metatype from the global `bertrand.python`
+        module. */
+        static Type __import__();  // TODO: defined in __init__.h alongside "bertrand.python" module {
+        //     return impl::get_type<BertrandMeta>(Module<"bertrand.python">());
+        // }
+
+        /* Create a trivial instance of the metaclass to serve as a Python entry point
+        for a C++ template hierarchy.  The interface type is not usable on its own
+        except to provide access to its C++ instantiations, as well as efficient type
+        checks against them and a central point for documentation. */
+        template <StaticStr Name, StaticStr ModName>
+        static BertrandMeta stub_type(Module<ModName>& module) {
+            static std::string docstring;
+            static bool doc_initialized = false;
+            if (!doc_initialized) {
+                docstring = "A public interface for the '" + ModName + "." + Name;
+                docstring += "' template hierarchy.\n\n";
+                docstring +=
+R"doc(This type cannot be used directly, but indexing it with one or more Python
+types allows access to individual instantiations with the same syntax as C++.
+Note that due to its dynamic nature, Python cannot create any new instantiations
+of a C++ template - this class merely navigates the existing instantiations at
+the C++ level and retrieves their corresponding Python types.)doc";
+                doc_initialized = true;
+            }
+            static PyType_Slot slots[] = {
+                {Py_tp_doc, const_cast<char*>(docstring.c_str())},
+                {0, nullptr}
+            };
+            static PyType_Spec spec = {
+                .name = Name,
+                .basicsize = sizeof(__python__),
+                .itemsize = 0,
+                .flags =
+                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE |
+                    Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_DISALLOW_INSTANTIATION |
+                    Py_TPFLAGS_IMMUTABLETYPE,
+                .slots = slots
+            };
+
+            __python__* cls = reinterpret_cast<__python__*>(PyType_FromMetaclass(
+                reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>())),
+                ptr(module),
+                &spec,
+                nullptr
+            ));
+            if (cls == nullptr) {
+                Exception::from_python();
+            }
+            try {
+                new (cls) __python__(Name);
+                cls->instancecheck = template_instancecheck;
+                cls->subclasscheck = template_subclasscheck;
+                cls->templates = PyDict_New();
+                if (cls->templates == nullptr) {
+                    Exception::from_python();
+                }
+                return reinterpret_steal<BertrandMeta>(reinterpret_cast<PyObject*>(cls));
+            } catch (...) {
+                Py_DECREF(cls);
+                throw;
             }
         }
 
@@ -1565,10 +1399,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
 
             template <StaticStr Name>
             static PyObject* search_mro(__python__* cls) {
-                PyTypeObject& base = reinterpret_cast<PyTypeObject&>(cls->base);
-
                 // search the instance dictionary first
-                PyObject* dict = PyType_GetDict(&base);
+                PyObject* dict = PyType_GetDict(cls);
                 if (dict) {
                     PyObject* value = PyDict_GetItem(
                         dict,
@@ -1580,7 +1412,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 }
 
                 // traverse the MRO
-                PyObject* mro = base.tp_mro;
+                PyObject* mro = cls->tp_mro;
                 if (mro != nullptr) {
                     Py_ssize_t size = PyTuple_GET_SIZE(mro);
                     for (Py_ssize_t i = 1; i < size; ++i) {
@@ -2532,8 +2364,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                     delete[] forward;
                     Py_XDECREF(kwnames);
                     return result;
-                } else if (meta->tp_call) {
-                    return meta->tp_call(self, args, kwargs);
+                } else if (meta->base_tp_call) {
+                    return meta->base_tp_call(self, args, kwargs);
                 } else {
                     PyErr_Format(
                         PyExc_TypeError,
@@ -2598,8 +2430,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         }
                         Py_DECREF(result);
                         return 0;
-                    } else if (meta->tp_setattro) {
-                        return meta->tp_setattro(self, attr, value);
+                    } else if (meta->base_tp_setattro) {
+                        return meta->base_tp_setattro(self, attr, value);
                     } else {
                         PyErr_Format(
                             PyExc_AttributeError,
@@ -2624,8 +2456,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         }
                         Py_DECREF(result);
                         return 0;
-                    } else if (meta->tp_setattro) {
-                        return meta->tp_setattro(self, attr, value);
+                    } else if (meta->base_tp_setattro) {
+                        return meta->base_tp_setattro(self, attr, value);
                     } else {
                         PyErr_Format(
                             PyExc_AttributeError,
@@ -2650,8 +2482,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                                 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                                 nullptr
                             );
-                        } else if (meta->tp_richcompare) {
-                            return meta->tp_richcompare(self, other, op);
+                        } else if (meta->base_tp_richcompare) {
+                            return meta->base_tp_richcompare(self, other, op);
                         } else {
                             PyErr_Format(
                                 PyExc_TypeError,
@@ -2671,8 +2503,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                                 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                                 nullptr
                             );
-                        } else if (meta->tp_richcompare) {
-                            return meta->tp_richcompare(self, other, op);
+                        } else if (meta->base_tp_richcompare) {
+                            return meta->base_tp_richcompare(self, other, op);
                         } else {
                             PyErr_Format(
                                 PyExc_TypeError,
@@ -2692,8 +2524,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                                 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                                 nullptr
                             );
-                        } else if (meta->tp_richcompare) {
-                            return meta->tp_richcompare(self, other, op);
+                        } else if (meta->base_tp_richcompare) {
+                            return meta->base_tp_richcompare(self, other, op);
                         } else {
                             PyErr_Format(
                                 PyExc_TypeError,
@@ -2713,8 +2545,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                                 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                                 nullptr
                             );
-                        } else if (meta->tp_richcompare) {
-                            return meta->tp_richcompare(self, other, op);
+                        } else if (meta->base_tp_richcompare) {
+                            return meta->base_tp_richcompare(self, other, op);
                         } else {
                             PyErr_Format(
                                 PyExc_TypeError,
@@ -2734,8 +2566,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                                 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                                 nullptr
                             );
-                        } else if (meta->tp_richcompare) {
-                            return meta->tp_richcompare(self, other, op);
+                        } else if (meta->base_tp_richcompare) {
+                            return meta->base_tp_richcompare(self, other, op);
                         } else {
                             PyErr_Format(
                                 PyExc_TypeError,
@@ -2755,8 +2587,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                                 1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                                 nullptr
                             );
-                        } else if (meta->tp_richcompare) {
-                            return meta->tp_richcompare(self, other, op);
+                        } else if (meta->base_tp_richcompare) {
+                            return meta->base_tp_richcompare(self, other, op);
                         } else {
                             PyErr_Format(
                                 PyExc_TypeError,
@@ -2820,8 +2652,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         }
                         Py_DECREF(result);
                         return 0;
-                    } else if (meta->tp_descr_set) {
-                        return meta->tp_descr_set(self, obj, value);
+                    } else if (meta->base_tp_descr_set) {
+                        return meta->base_tp_descr_set(self, obj, value);
                     } else {
                         PyErr_Format(
                             PyExc_AttributeError,
@@ -2846,8 +2678,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         }
                         Py_DECREF(result);
                         return 0;
-                    } else if (meta->tp_descr_set) {
-                        return meta->tp_descr_set(self, obj, value);
+                    } else if (meta->base_tp_descr_set) {
+                        return meta->base_tp_descr_set(self, obj, value);
                     } else {
                         PyErr_Format(
                             PyExc_AttributeError,
@@ -2933,8 +2765,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         }
                         Py_DECREF(result);
                         return 0;
-                    } else if (meta->mp_ass_subscript) {
-                        return meta->mp_ass_subscript(self, key, value);
+                    } else if (meta->base_mp_ass_subscript) {
+                        return meta->base_mp_ass_subscript(self, key, value);
                     } else {
                         PyErr_Format(
                             PyExc_TypeError,
@@ -2957,8 +2789,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         }
                         Py_DECREF(result);
                         return 0;
-                    } else if (meta->mp_ass_subscript) {
-                        return meta->mp_ass_subscript(self, key, value);
+                    } else if (meta->base_mp_ass_subscript) {
+                        return meta->base_mp_ass_subscript(self, key, value);
                     } else {
                         PyErr_Format(
                             PyExc_TypeError,
@@ -3093,8 +2925,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_add) {
-                        result = meta->nb_add(lhs, rhs);
+                    } else if (meta->base_nb_add) {
+                        result = meta->base_nb_add(lhs, rhs);
                     }
                     if (result != Py_NotImplemented) {
                         return result;
@@ -3109,8 +2941,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                } else if (meta->nb_add) {
-                    return meta->nb_add(rhs, lhs);
+                } else if (meta->base_nb_add) {
+                    return meta->base_nb_add(rhs, lhs);
                 }
                 Py_RETURN_NOTIMPLEMENTED;
             }
@@ -3141,8 +2973,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_subtract) {
-                        result = meta->nb_subtract(lhs, rhs);
+                    } else if (meta->base_nb_subtract) {
+                        result = meta->base_nb_subtract(lhs, rhs);
                     }
                     if (result != Py_NotImplemented) {
                         return result;
@@ -3157,8 +2989,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                } else if (meta->nb_subtract) {
-                    return meta->nb_subtract(rhs, lhs);
+                } else if (meta->base_nb_subtract) {
+                    return meta->base_nb_subtract(rhs, lhs);
                 }
                 Py_RETURN_NOTIMPLEMENTED;
             }
@@ -3189,8 +3021,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_multiply) {
-                        result = meta->nb_multiply(lhs, rhs);
+                    } else if (meta->base_nb_multiply) {
+                        result = meta->base_nb_multiply(lhs, rhs);
                     }
                     if (result != Py_NotImplemented) {
                         return result;
@@ -3205,8 +3037,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                } else if (meta->nb_multiply) {
-                    return meta->nb_multiply(rhs, lhs);
+                } else if (meta->base_nb_multiply) {
+                    return meta->base_nb_multiply(rhs, lhs);
                 }
                 Py_RETURN_NOTIMPLEMENTED;
             }
@@ -3237,8 +3069,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_remainder) {
-                        result = meta->nb_remainder(lhs, rhs);
+                    } else if (meta->base_nb_remainder) {
+                        result = meta->base_nb_remainder(lhs, rhs);
                     }
                     if (result != Py_NotImplemented) {
                         return result;
@@ -3253,8 +3085,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                } else if (meta->nb_remainder) {
-                    return meta->nb_remainder(rhs, lhs);
+                } else if (meta->base_nb_remainder) {
+                    return meta->base_nb_remainder(rhs, lhs);
                 }
                 Py_RETURN_NOTIMPLEMENTED;
             }
@@ -3285,8 +3117,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_divmod) {
-                        result = meta->nb_divmod(lhs, rhs);
+                    } else if (meta->base_nb_divmod) {
+                        result = meta->base_nb_divmod(lhs, rhs);
                     }
                     if (result != Py_NotImplemented) {
                         return result;
@@ -3301,8 +3133,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                } else if (meta->nb_divmod) {
-                    return meta->nb_divmod(rhs, lhs);
+                } else if (meta->base_nb_divmod) {
+                    return meta->base_nb_divmod(rhs, lhs);
                 }
                 Py_RETURN_NOTIMPLEMENTED;
             }
@@ -3324,8 +3156,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_power) {
-                        result = meta->nb_power(base, exp, mod);
+                    } else if (meta->base_nb_power) {
+                        result = meta->base_nb_power(base, exp, mod);
                     }
                     if (result != Py_NotImplemented) {
                         return result;
@@ -3346,8 +3178,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_power) {
-                        result = meta->nb_power(exp, base, mod);
+                    } else if (meta->base_nb_power) {
+                        result = meta->base_nb_power(exp, base, mod);
                     }
                     if (result != Py_NotImplemented) {
                         return result;
@@ -3362,8 +3194,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                } else if (meta->nb_power) {
-                    return meta->nb_power(mod, base, exp);
+                } else if (meta->base_nb_power) {
+                    return meta->base_nb_power(mod, base, exp);
                 }
                 Py_RETURN_NOTIMPLEMENTED;
             }
@@ -3445,8 +3277,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_lshift) {
-                        result = meta->nb_lshift(lhs, rhs);
+                    } else if (meta->base_nb_lshift) {
+                        result = meta->base_nb_lshift(lhs, rhs);
                     }
                     if (result != Py_NotImplemented) {
                         return result;
@@ -3461,8 +3293,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                } else if (meta->nb_lshift) {
-                    return meta->nb_lshift(rhs, lhs);
+                } else if (meta->base_nb_lshift) {
+                    return meta->base_nb_lshift(rhs, lhs);
                 }
                 Py_RETURN_NOTIMPLEMENTED;
             }
@@ -3493,8 +3325,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_rshift) {
-                        result = meta->nb_rshift(lhs, rhs);
+                    } else if (meta->base_nb_rshift) {
+                        result = meta->base_nb_rshift(lhs, rhs);
                     }
                     if (result != Py_NotImplemented) {
                         return result;
@@ -3509,8 +3341,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                } else if (meta->nb_rshift) {
-                    return meta->nb_rshift(rhs, lhs);
+                } else if (meta->base_nb_rshift) {
+                    return meta->base_nb_rshift(rhs, lhs);
                 }
                 Py_RETURN_NOTIMPLEMENTED;
             }
@@ -3541,8 +3373,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_and) {
-                        result = meta->nb_and(lhs, rhs);
+                    } else if (meta->base_nb_and) {
+                        result = meta->base_nb_and(lhs, rhs);
                     }
                     if (result != Py_NotImplemented) {
                         return result;
@@ -3557,8 +3389,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                } else if (meta->nb_and) {
-                    return meta->nb_and(rhs, lhs);
+                } else if (meta->base_nb_and) {
+                    return meta->base_nb_and(rhs, lhs);
                 }
                 Py_RETURN_NOTIMPLEMENTED;
             }
@@ -3589,8 +3421,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_xor) {
-                        result = meta->nb_xor(lhs, rhs);
+                    } else if (meta->base_nb_xor) {
+                        result = meta->base_nb_xor(lhs, rhs);
                     }
                     if (result != Py_NotImplemented) {
                         return result;
@@ -3605,8 +3437,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                } else if (meta->nb_xor) {
-                    return meta->nb_xor(rhs, lhs);
+                } else if (meta->base_nb_xor) {
+                    return meta->base_nb_xor(rhs, lhs);
                 }
                 Py_RETURN_NOTIMPLEMENTED;
             }
@@ -3637,8 +3469,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_or) {
-                        result = meta->nb_or(lhs, rhs);
+                    } else if (meta->base_nb_or) {
+                        result = meta->base_nb_or(lhs, rhs);
                     }
                     if (result != Py_NotImplemented) {
                         return result;
@@ -3653,8 +3485,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                } else if (meta->nb_or) {
-                    return meta->nb_or(rhs, lhs);
+                } else if (meta->base_nb_or) {
+                    return meta->base_nb_or(rhs, lhs);
                 }
                 Py_RETURN_NOTIMPLEMENTED;
             }
@@ -3703,8 +3535,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_floor_divide) {
-                        result = meta->nb_floor_divide(lhs, rhs);
+                    } else if (meta->base_nb_floor_divide) {
+                        result = meta->base_nb_floor_divide(lhs, rhs);
                     }
                     Py_RETURN_NOTIMPLEMENTED;
                 }
@@ -3717,8 +3549,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                } else if (meta->nb_floor_divide) {
-                    return meta->nb_floor_divide(rhs, lhs);
+                } else if (meta->base_nb_floor_divide) {
+                    return meta->base_nb_floor_divide(rhs, lhs);
                 }
                 Py_RETURN_NOTIMPLEMENTED;
             }
@@ -3749,8 +3581,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_true_divide) {
-                        result = meta->nb_true_divide(lhs, rhs);
+                    } else if (meta->base_nb_true_divide) {
+                        result = meta->base_nb_true_divide(lhs, rhs);
                     }
                     if (result != Py_NotImplemented) {
                         return result;
@@ -3765,8 +3597,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                } else if (meta->nb_true_divide) {
-                    return meta->nb_true_divide(rhs, lhs);
+                } else if (meta->base_nb_true_divide) {
+                    return meta->base_nb_true_divide(rhs, lhs);
                 }
                 Py_RETURN_NOTIMPLEMENTED;
             }
@@ -3806,8 +3638,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                             1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                             nullptr
                         );
-                    } else if (meta->nb_matrix_multiply) {
-                        result = meta->nb_matrix_multiply(lhs, rhs);
+                    } else if (meta->base_nb_matrix_multiply) {
+                        result = meta->base_nb_matrix_multiply(lhs, rhs);
                     }
                     if (result != Py_NotImplemented) {
                         return result;
@@ -3822,8 +3654,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
                         1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
                         nullptr
                     );
-                } else if (meta->nb_matrix_multiply) {
-                    return meta->nb_matrix_multiply(rhs, lhs);
+                } else if (meta->base_nb_matrix_multiply) {
+                    return meta->base_nb_matrix_multiply(rhs, lhs);
                 }
                 Py_RETURN_NOTIMPLEMENTED;
             }
@@ -6935,14 +6767,9 @@ namespace impl {
     struct TypeTag::def : BaseDef<CRTP, Wrapper, CppType> {
 
     protected:
-        using Variant = std::variant<CppType, CppType*, const CppType*>;
+        
 
-        /* A convenience struct implementing the overload pattern for visiting a
-        std::variant. */
-        template <typename... Ts>
-        struct Visitor : Ts... {
-            using Ts::operator()...;
-        };
+
 
         template <StaticStr ModName>
         struct Bindings : BaseDef<CRTP, Wrapper, CppType>::template Bindings<ModName> {
@@ -8004,212 +7831,6 @@ template <typename L, typename R>
         impl::has_ixor<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __ixor__<L, R> : Returns<impl::ixor_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
-
-
-////////////////////
-////    CODE    ////
-////////////////////
-
-
-template <>
-struct Type<Code>;
-
-
-template <>
-struct Interface<Type<Code>> {
-    [[nodiscard]] static Code compile(const std::string& source);
-    [[nodiscard]] static Py_ssize_t line_number(const auto& self) noexcept;
-    [[nodiscard]] static Py_ssize_t argcount(const auto& self) noexcept;
-    [[nodiscard]] static Py_ssize_t posonlyargcount(const auto& self) noexcept;
-    [[nodiscard]] static Py_ssize_t kwonlyargcount(const auto& self) noexcept;
-    [[nodiscard]] static Py_ssize_t nlocals(const auto& self) noexcept;
-    [[nodiscard]] static Py_ssize_t stacksize(const auto& self) noexcept;
-    [[nodiscard]] static int flags(const auto& self) noexcept;
-
-    /// NOTE: these are defined in __init__.h
-    [[nodiscard]] static Str filename(const auto& self);
-    [[nodiscard]] static Str name(const auto& self);
-    [[nodiscard]] static Str qualname(const auto& self);
-    [[nodiscard]] static Tuple<Str> varnames(const auto& self);
-    [[nodiscard]] static Tuple<Str> cellvars(const auto& self);
-    [[nodiscard]] static Tuple<Str> freevars(const auto& self);
-    [[nodiscard]] static Bytes bytecode(const auto& self);
-    [[nodiscard]] static Tuple<Object> consts(const auto& self);
-    [[nodiscard]] static Tuple<Str> names(const auto& self);
-};
-
-
-template <>
-struct Type<Code> : Object, Interface<Type<Code>>, impl::TypeTag {
-    struct __python__ : TypeTag::def<__python__, Type> {
-        static Type __import__() {
-            return reinterpret_borrow<Type>(
-                reinterpret_cast<PyObject*>(&PyCode_Type)
-            );
-        }
-    };
-
-    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
-    Type(PyObject* p, stolen_t t) : Object(p, t) {}
-
-    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
-    Type(Args&&... args) : Object(
-        implicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
-    explicit Type(Args&&... args) : Object(
-        explicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-};
-
-
-[[nodiscard]] inline Code Interface<Type<Code>>::compile(const std::string& source) {
-    return Code::compile(source);
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::line_number(const auto& self) noexcept {
-    return self.line_number;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::argcount(const auto& self) noexcept {
-    return self.argcount;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::posonlyargcount(const auto& self) noexcept {
-    return self.posonlyargcount;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::kwonlyargcount(const auto& self) noexcept {
-    return self.kwonlyargcount;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::nlocals(const auto& self) noexcept {
-    return self.nlocals;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::stacksize(const auto& self) noexcept {
-    return self.stacksize;
-}
-[[nodiscard]] inline int Interface<Type<Code>>::flags(const auto& self) noexcept {
-    return self.flags;
-}
-
-
-/////////////////////
-////    FRAME    ////
-/////////////////////
-
-
-template <>
-struct Type<Frame>;
-
-
-template <>
-struct Interface<Type<Frame>> {
-    [[nodiscard]] static std::string to_string(const auto& self);
-    [[nodiscard]] static std::optional<Code> code(const auto& self);
-    [[nodiscard]] static std::optional<Frame> back(const auto& self);
-    [[nodiscard]] static size_t line_number(const auto& self);
-    [[nodiscard]] static size_t last_instruction(const auto& self);
-    [[nodiscard]] static std::optional<Object> generator(const auto& self);
-
-    /// NOTE: these are defined in __init__.h
-    [[nodiscard]] static Object get(const auto& self, const Str& name);
-    [[nodiscard]] static Dict<Str, Object> builtins(const auto& self);
-    [[nodiscard]] static Dict<Str, Object> globals(const auto& self);
-    [[nodiscard]] static Dict<Str, Object> locals(const auto& self);
-};
-
-
-template <>
-struct Type<Frame> : Object, Interface<Type<Frame>>, impl::TypeTag {
-    struct __python__ : TypeTag::def<__python__, Type> {
-        static Type __import__() {
-            return reinterpret_borrow<Type>(
-                reinterpret_cast<PyObject*>(&PyFrame_Type)
-            );
-        }
-    };
-
-    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
-    Type(PyObject* p, stolen_t t) : Object(p, t) {}
-
-    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
-    Type(Args&&... args) : Object(
-        implicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
-    explicit Type(Args&&... args) : Object(
-        explicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-};
-
-
-[[nodiscard]] inline std::string Interface<Type<Frame>>::to_string(const auto& self) {
-    return self.to_string();
-}
-[[nodiscard]] inline std::optional<Code> Interface<Type<Frame>>::code(const auto& self) {
-    return self.code;
-}
-[[nodiscard]] inline std::optional<Frame> Interface<Type<Frame>>::back(const auto& self) {
-    return self.back;
-}
-[[nodiscard]] inline size_t Interface<Type<Frame>>::line_number(const auto& self) {
-    return self.line_number;
-}
-[[nodiscard]] inline size_t Interface<Type<Frame>>::last_instruction(const auto& self) {
-    return self.last_instruction;
-}
-[[nodiscard]] inline std::optional<Object> Interface<Type<Frame>>::generator(const auto& self) {
-    return self.generator;
-}
-
-
-/////////////////////////
-////    TRACEBACK    ////
-/////////////////////////
-
-
-template <>
-struct Type<Traceback>;
-
-
-template <>
-struct Interface<Type<Traceback>> {
-    [[nodiscard]] static std::string to_string(const auto& self);
-};
-
-
-template <>
-struct Type<Traceback> : Object, Interface<Type<Traceback>>, impl::TypeTag {
-    struct __python__ : TypeTag::def<__python__, Type> {
-        static Type __import__() {
-            return reinterpret_borrow<Type>(
-                reinterpret_cast<PyObject*>(&PyTraceBack_Type)
-            );
-        }
-    };
-
-    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
-    Type(PyObject* p, stolen_t t) : Object(p, t) {}
-
-    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
-    Type(Args&&... args) : Object(
-        implicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
-    explicit Type(Args&&... args) : Object(
-        explicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-};
-
-
-[[nodiscard]] inline std::string Interface<Type<Traceback>>::to_string(const auto& self) {
-    return self.to_string();
-}
 
 
 ///////////////////////////////

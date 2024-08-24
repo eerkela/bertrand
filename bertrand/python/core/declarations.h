@@ -170,6 +170,7 @@ private:
 struct Object;
 struct Code;
 struct Frame;
+struct Traceback;
 template <typename T = Object>
 struct Type;
 struct BertrandMeta;
@@ -1258,12 +1259,12 @@ namespace impl {
     template <typename T>
     concept cpp_or_originates_from_cpp = cpp_like<T> || originates_from_cpp<T>;
 
+    template <typename T>
+    struct cpp_type_helper { using type = T; };
+    template <originates_from_cpp T>
+    struct cpp_type_helper<T> { using type = Type<T>::__python__::__cpp__; };
     template <cpp_or_originates_from_cpp T>
-    using cpp_type = std::conditional_t<
-        originates_from_cpp<T>,
-        typename Type<std::remove_cvref_t<T>>::__python__::t_cpp,
-        T
-    >;
+    using cpp_type = cpp_type_helper<std::remove_cvref_t<T>>::type;
 
     template <typename T>
     concept type_like =

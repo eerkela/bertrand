@@ -60,18 +60,26 @@ namespace impl {
 }
 
 
-struct Traceback;
+template <>
+struct Type<Traceback>;
 
 
 template <>
 struct Interface<Traceback> {
     [[nodiscard]] std::string to_string(this const auto& self);
 };
+template <>
+struct Interface<Type<Traceback>> {
+    [[nodiscard]] static std::string to_string(const auto& self);
+};
 
 
 /* A cross-language traceback that records an accurate call stack of a mixed Python/C++
 application. */
 struct Traceback : Object, Interface<Traceback> {
+    struct __python__ : def<__python__, Traceback>, PyTracebackObject {
+        static Type<Traceback> __import__();
+    };
 
     Traceback(PyObject* p, borrowed_t t) : Object(p, t) {}
     Traceback(PyObject* p, stolen_t t) : Object(p, t) {}
@@ -89,6 +97,38 @@ struct Traceback : Object, Interface<Traceback> {
     ) {}
 
 };
+
+
+template <>
+struct Type<Traceback> : Object, Interface<Type<Traceback>> {
+    struct __python__ : def<__python__, Type>, PyTypeObject {
+        static Type __import__() {
+            return Traceback::__python__::__import__();
+        }
+    };
+
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+};
+
+
+inline Type<Traceback> Traceback::__python__::__import__() {
+    return reinterpret_borrow<Type<Traceback>>(
+        reinterpret_cast<PyObject*>(&PyTraceBack_Type)
+    );
+}
 
 
 /* Converting a `cpptrace::stacktrace_frame` into a Python frame object will synthesize
@@ -401,6 +441,11 @@ struct __reversed__<Traceback>                              : Returns<Traceback>
         return ptr(traceback) != ptr(other.traceback) || index != other.index;
     }
 };
+
+
+[[nodiscard]] inline std::string Interface<Type<Traceback>>::to_string(const auto& self) {
+    return self.to_string();
+}
 
 
 /////////////////////////
@@ -1540,7 +1585,6 @@ auto __init__<Code, Source>::operator()(const std::string& source) {
     }
     return reinterpret_steal<Code>(result);
 }
-
 
 
 /* Parse and compile a source file into a Python code object. */

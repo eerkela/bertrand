@@ -14,6 +14,10 @@ namespace py {
 
 
 template <>
+struct Type<Code>;
+
+
+template <>
 struct Interface<Code> {
     [[nodiscard]] static Code compile(const std::string& source);
 
@@ -51,6 +55,28 @@ struct Interface<Code> {
     [[nodiscard]] Tuple<Object> _consts(this const auto& self);
     __declspec(property(get = _names)) Tuple<Str> names;
     [[nodiscard]] Tuple<Str> _names(this const auto& self);
+};
+template <>
+struct Interface<Type<Code>> {
+    [[nodiscard]] static Code compile(const std::string& source);
+    [[nodiscard]] static Py_ssize_t line_number(const auto& self) noexcept;
+    [[nodiscard]] static Py_ssize_t argcount(const auto& self) noexcept;
+    [[nodiscard]] static Py_ssize_t posonlyargcount(const auto& self) noexcept;
+    [[nodiscard]] static Py_ssize_t kwonlyargcount(const auto& self) noexcept;
+    [[nodiscard]] static Py_ssize_t nlocals(const auto& self) noexcept;
+    [[nodiscard]] static Py_ssize_t stacksize(const auto& self) noexcept;
+    [[nodiscard]] static int flags(const auto& self) noexcept;
+
+    /// NOTE: these are defined in __init__.h
+    [[nodiscard]] static Str filename(const auto& self);
+    [[nodiscard]] static Str name(const auto& self);
+    [[nodiscard]] static Str qualname(const auto& self);
+    [[nodiscard]] static Tuple<Str> varnames(const auto& self);
+    [[nodiscard]] static Tuple<Str> cellvars(const auto& self);
+    [[nodiscard]] static Tuple<Str> freevars(const auto& self);
+    [[nodiscard]] static Bytes bytecode(const auto& self);
+    [[nodiscard]] static Tuple<Object> consts(const auto& self);
+    [[nodiscard]] static Tuple<Str> names(const auto& self);
 };
 
 
@@ -198,6 +224,9 @@ data into or out of the context.
     script({{"x", "side"}});
 */
 struct Code : Object, Interface<Code> {
+    struct __python__ : def<__python__, Code>, PyCodeObject {
+        static Type<Code> __import__();
+    };
 
     Code(PyObject* p, borrowed_t t) : Object(p, t) {}
     Code(PyObject* p, stolen_t t) : Object(p, t) {}
@@ -215,6 +244,37 @@ struct Code : Object, Interface<Code> {
     ) {}
 
 };
+
+
+
+template <>
+struct Type<Code> : Object, Interface<Type<Code>> {
+    struct __python__ : def<__python__, Type>, PyTypeObject {
+        static Type __import__() {
+            return Code::__python__::__import__();
+        }
+    };
+
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+};
+
+
+inline Type<Code> Code::__python__::__import__() {
+    return reinterpret_borrow<Type<Code>>(reinterpret_cast<PyObject*>(&PyCode_Type));
+}
 
 
 template <typename T>
@@ -318,6 +378,32 @@ arguments. */
 }
 
 
+[[nodiscard]] inline Code Interface<Type<Code>>::compile(const std::string& source) {
+    return Code::compile(source);
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::line_number(const auto& self) noexcept {
+    return self.line_number;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::argcount(const auto& self) noexcept {
+    return self.argcount;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::posonlyargcount(const auto& self) noexcept {
+    return self.posonlyargcount;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::kwonlyargcount(const auto& self) noexcept {
+    return self.kwonlyargcount;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::nlocals(const auto& self) noexcept {
+    return self.nlocals;
+}
+[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::stacksize(const auto& self) noexcept {
+    return self.stacksize;
+}
+[[nodiscard]] inline int Interface<Type<Code>>::flags(const auto& self) noexcept {
+    return self.flags;
+}
+
+
 ///////////////////////////
 ////    STACK FRAME    ////
 ///////////////////////////
@@ -374,7 +460,8 @@ namespace impl {
 }
 
 
-struct Frame;
+template <>
+struct Type<Frame>;
 
 
 template <>
@@ -401,11 +488,29 @@ struct Interface<Frame> {
     __declspec(property(get = _locals)) Dict<Str, Object> locals;
     [[nodiscard]] Dict<Str, Object> _locals(this const auto& self);
 };
+template <>
+struct Interface<Type<Frame>> {
+    [[nodiscard]] static std::string to_string(const auto& self);
+    [[nodiscard]] static std::optional<Code> code(const auto& self);
+    [[nodiscard]] static std::optional<Frame> back(const auto& self);
+    [[nodiscard]] static size_t line_number(const auto& self);
+    [[nodiscard]] static size_t last_instruction(const auto& self);
+    [[nodiscard]] static std::optional<Object> generator(const auto& self);
+
+    /// NOTE: these are defined in __init__.h
+    [[nodiscard]] static Object get(const auto& self, const Str& name);
+    [[nodiscard]] static Dict<Str, Object> builtins(const auto& self);
+    [[nodiscard]] static Dict<Str, Object> globals(const auto& self);
+    [[nodiscard]] static Dict<Str, Object> locals(const auto& self);
+};
 
 
 /* A CPython interpreter frame, which can be introspected or arranged into coherent
 cross-language tracebacks. */
 struct Frame : Object, Interface<Frame> {
+    struct __python__ : def<__python__, Frame>, PyFrameObject {
+        static Type<Frame> __import__();
+    };
 
     Frame(PyObject* p, borrowed_t t) : Object(p, t) {}
     Frame(PyObject* p, stolen_t t) : Object(p, t) {}
@@ -423,6 +528,38 @@ struct Frame : Object, Interface<Frame> {
     ) {}
 
 };
+
+
+template <>
+struct Type<Frame> : Object, Interface<Type<Frame>> {
+    struct __python__ : def<__python__, Type>, PyTypeObject {
+        static Type __import__() {
+            return Frame::__python__::__import__();
+        }
+    };
+
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+};
+
+
+inline Type<Frame> Frame::__python__::__import__() {
+    return reinterpret_borrow<Type<Frame>>(
+        reinterpret_cast<PyObject*>(&PyFrame_Type)
+    );
+}
 
 
 template <typename T>
@@ -522,6 +659,26 @@ template <>
 struct __call__<Frame> : Returns<Object> {
     static auto operator()(const Frame& frame);
 };
+
+
+[[nodiscard]] inline std::string Interface<Type<Frame>>::to_string(const auto& self) {
+    return self.to_string();
+}
+[[nodiscard]] inline std::optional<Code> Interface<Type<Frame>>::code(const auto& self) {
+    return self.code;
+}
+[[nodiscard]] inline std::optional<Frame> Interface<Type<Frame>>::back(const auto& self) {
+    return self.back;
+}
+[[nodiscard]] inline size_t Interface<Type<Frame>>::line_number(const auto& self) {
+    return self.line_number;
+}
+[[nodiscard]] inline size_t Interface<Type<Frame>>::last_instruction(const auto& self) {
+    return self.last_instruction;
+}
+[[nodiscard]] inline std::optional<Object> Interface<Type<Frame>>::generator(const auto& self) {
+    return self.generator;
+}
 
 
 }
