@@ -14,10 +14,6 @@ namespace py {
 
 
 template <>
-struct Type<Code>;
-
-
-template <>
 struct Interface<Code> {
     [[nodiscard]] static Code compile(const std::string& source);
 
@@ -55,28 +51,6 @@ struct Interface<Code> {
     [[nodiscard]] Tuple<Object> _consts(this const auto& self);
     __declspec(property(get = _names)) Tuple<Str> names;
     [[nodiscard]] Tuple<Str> _names(this const auto& self);
-};
-template <>
-struct Interface<Type<Code>> {
-    [[nodiscard]] static Code compile(const std::string& source);
-    [[nodiscard]] static Py_ssize_t line_number(const auto& self) noexcept;
-    [[nodiscard]] static Py_ssize_t argcount(const auto& self) noexcept;
-    [[nodiscard]] static Py_ssize_t posonlyargcount(const auto& self) noexcept;
-    [[nodiscard]] static Py_ssize_t kwonlyargcount(const auto& self) noexcept;
-    [[nodiscard]] static Py_ssize_t nlocals(const auto& self) noexcept;
-    [[nodiscard]] static Py_ssize_t stacksize(const auto& self) noexcept;
-    [[nodiscard]] static int flags(const auto& self) noexcept;
-
-    /// NOTE: these are defined in __init__.h
-    [[nodiscard]] static Str filename(const auto& self);
-    [[nodiscard]] static Str name(const auto& self);
-    [[nodiscard]] static Str qualname(const auto& self);
-    [[nodiscard]] static Tuple<Str> varnames(const auto& self);
-    [[nodiscard]] static Tuple<Str> cellvars(const auto& self);
-    [[nodiscard]] static Tuple<Str> freevars(const auto& self);
-    [[nodiscard]] static Bytes bytecode(const auto& self);
-    [[nodiscard]] static Tuple<Object> consts(const auto& self);
-    [[nodiscard]] static Tuple<Str> names(const auto& self);
 };
 
 
@@ -246,35 +220,44 @@ struct Code : Object, Interface<Code> {
 };
 
 
-
 template <>
-struct Type<Code> : Object, Interface<Type<Code>> {
-    struct __python__ : def<__python__, Type>, PyTypeObject {
-        static Type __import__() {
-            return Code::__python__::__import__();
-        }
-    };
+struct Interface<Type<Code>> {
+    [[nodiscard]] static Code compile(const std::string& source) {
+        return Code::compile(source);
+    }
+    [[nodiscard]] static Py_ssize_t line_number(const auto& self) noexcept {
+        return self.line_number;
+    }
+    [[nodiscard]] static Py_ssize_t argcount(const auto& self) noexcept {
+        return self.argcount;
+    }
+    [[nodiscard]] static Py_ssize_t posonlyargcount(const auto& self) noexcept {
+        return self.posonlyargcount;
+    }
+    [[nodiscard]] static Py_ssize_t kwonlyargcount(const auto& self) noexcept {
+        return self.kwonlyargcount;
+    }
+    [[nodiscard]] static Py_ssize_t nlocals(const auto& self) noexcept {
+        return self.nlocals;
+    }
+    [[nodiscard]] static Py_ssize_t stacksize(const auto& self) noexcept {
+        return self.stacksize;
+    }
+    [[nodiscard]] static int flags(const auto& self) noexcept {
+        return self.flags;
+    }
 
-    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
-    Type(PyObject* p, stolen_t t) : Object(p, t) {}
-
-    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
-    Type(Args&&... args) : Object(
-        implicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
-    explicit Type(Args&&... args) : Object(
-        explicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
+    /// NOTE: these are defined in __init__.h
+    [[nodiscard]] static Str filename(const auto& self);
+    [[nodiscard]] static Str name(const auto& self);
+    [[nodiscard]] static Str qualname(const auto& self);
+    [[nodiscard]] static Tuple<Str> varnames(const auto& self);
+    [[nodiscard]] static Tuple<Str> cellvars(const auto& self);
+    [[nodiscard]] static Tuple<Str> freevars(const auto& self);
+    [[nodiscard]] static Bytes bytecode(const auto& self);
+    [[nodiscard]] static Tuple<Object> consts(const auto& self);
+    [[nodiscard]] static Tuple<Str> names(const auto& self);
 };
-
-
-inline Type<Code> Code::__python__::__import__() {
-    return reinterpret_borrow<Type<Code>>(reinterpret_cast<PyObject*>(&PyCode_Type));
-}
 
 
 template <typename T>
@@ -320,87 +303,47 @@ struct __call__<Code, Context>                              : Returns<Dict<Str, 
 
 
 /* Get the first line number of the function. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_line_number(
-    this const auto& self
-) noexcept {
-    return reinterpret_cast<PyCodeObject*>(ptr(self))->co_firstlineno;
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_line_number(this const auto& self) noexcept {
+    return ptr(self)->co_firstlineno;
 }
 
 
 /* Get the number of positional arguments for the function. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_argcount(
-    this const auto& self
-) noexcept {
-    return reinterpret_cast<PyCodeObject*>(ptr(self))->co_argcount;
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_argcount(this const auto& self) noexcept {
+    return ptr(self)->co_argcount;
 }
 
 
 /* Get the number of positional-only arguments for the function, including those with
 default values.  Does not include variable positional or keyword arguments. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_posonlyargcount(
-    this const auto& self
-) noexcept {
-    return reinterpret_cast<PyCodeObject*>(ptr(self))->co_posonlyargcount;
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_posonlyargcount(this const auto& self) noexcept {
+    return ptr(self)->co_posonlyargcount;
 }
 
 
 /* Get the number of keyword-only arguments for the function, including those with
 default values.  Does not include positional-only or variable positional/keyword
 arguments. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_kwonlyargcount(
-    this const auto& self
-) noexcept {
-    return reinterpret_cast<PyCodeObject*>(ptr(self))->co_kwonlyargcount;
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_kwonlyargcount(this const auto& self) noexcept {
+    return ptr(self)->co_kwonlyargcount;
 }
 
 
 /* Get the number of local variables used by the function (including all parameters). */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_nlocals(
-    this const auto& self
-) noexcept {
-    return reinterpret_cast<PyCodeObject*>(ptr(self))->co_nlocals;
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_nlocals(this const auto& self) noexcept {
+    return ptr(self)->co_nlocals;
 }
 
 
 /* Get the required stack space for the code object. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_stacksize(
-    this const auto& self
-) noexcept {
-    return reinterpret_cast<PyCodeObject*>(ptr(self))->co_stacksize;
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_stacksize(this const auto& self) noexcept {
+    return ptr(self)->co_stacksize;
 }
 
 
 /* Get an integer encoding flags for the Python interpreter. */
-[[nodiscard]] inline int Interface<Code>::_flags(
-    this const auto& self
-) noexcept {
-    return reinterpret_cast<PyCodeObject*>(ptr(self))->co_flags;
-}
-
-
-[[nodiscard]] inline Code Interface<Type<Code>>::compile(const std::string& source) {
-    return Code::compile(source);
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::line_number(const auto& self) noexcept {
-    return self.line_number;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::argcount(const auto& self) noexcept {
-    return self.argcount;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::posonlyargcount(const auto& self) noexcept {
-    return self.posonlyargcount;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::kwonlyargcount(const auto& self) noexcept {
-    return self.kwonlyargcount;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::nlocals(const auto& self) noexcept {
-    return self.nlocals;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<Code>>::stacksize(const auto& self) noexcept {
-    return self.stacksize;
-}
-[[nodiscard]] inline int Interface<Type<Code>>::flags(const auto& self) noexcept {
-    return self.flags;
+[[nodiscard]] inline int Interface<Code>::_flags(this const auto& self) noexcept {
+    return ptr(self)->co_flags;
 }
 
 
@@ -461,10 +404,6 @@ namespace impl {
 
 
 template <>
-struct Type<Frame>;
-
-
-template <>
 struct Interface<Frame> {
     [[nodiscard]] std::string to_string(this const auto& self);
 
@@ -487,21 +426,6 @@ struct Interface<Frame> {
     [[nodiscard]] Dict<Str, Object> _globals(this const auto& self);
     __declspec(property(get = _locals)) Dict<Str, Object> locals;
     [[nodiscard]] Dict<Str, Object> _locals(this const auto& self);
-};
-template <>
-struct Interface<Type<Frame>> {
-    [[nodiscard]] static std::string to_string(const auto& self);
-    [[nodiscard]] static std::optional<Code> code(const auto& self);
-    [[nodiscard]] static std::optional<Frame> back(const auto& self);
-    [[nodiscard]] static size_t line_number(const auto& self);
-    [[nodiscard]] static size_t last_instruction(const auto& self);
-    [[nodiscard]] static std::optional<Object> generator(const auto& self);
-
-    /// NOTE: these are defined in __init__.h
-    [[nodiscard]] static Object get(const auto& self, const Str& name);
-    [[nodiscard]] static Dict<Str, Object> builtins(const auto& self);
-    [[nodiscard]] static Dict<Str, Object> globals(const auto& self);
-    [[nodiscard]] static Dict<Str, Object> locals(const auto& self);
 };
 
 
@@ -531,35 +455,32 @@ struct Frame : Object, Interface<Frame> {
 
 
 template <>
-struct Type<Frame> : Object, Interface<Type<Frame>> {
-    struct __python__ : def<__python__, Type>, PyTypeObject {
-        static Type __import__() {
-            return Frame::__python__::__import__();
-        }
-    };
+struct Interface<Type<Frame>> {
+    [[nodiscard]] static std::string to_string(const auto& self) {
+        return self.to_string();
+    }
+    [[nodiscard]] static std::optional<Code> code(const auto& self) {
+        return self.code;
+    }
+    [[nodiscard]] static std::optional<Frame> back(const auto& self) {
+        return self.back;
+    }
+    [[nodiscard]] static size_t line_number(const auto& self) {
+        return self.line_number;
+    }
+    [[nodiscard]] static size_t last_instruction(const auto& self) {
+        return self.last_instruction;
+    }
+    [[nodiscard]] static std::optional<Object> generator(const auto& self) {
+        return self.generator;
+    }
 
-    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
-    Type(PyObject* p, stolen_t t) : Object(p, t) {}
-
-    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
-    Type(Args&&... args) : Object(
-        implicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
-    explicit Type(Args&&... args) : Object(
-        explicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
+    /// NOTE: these are defined in __init__.h
+    [[nodiscard]] static Object get(const auto& self, const Str& name);
+    [[nodiscard]] static Dict<Str, Object> builtins(const auto& self);
+    [[nodiscard]] static Dict<Str, Object> globals(const auto& self);
+    [[nodiscard]] static Dict<Str, Object> locals(const auto& self);
 };
-
-
-inline Type<Frame> Frame::__python__::__import__() {
-    return reinterpret_borrow<Type<Frame>>(
-        reinterpret_cast<PyObject*>(&PyFrame_Type)
-    );
-}
 
 
 template <typename T>
@@ -659,26 +580,6 @@ template <>
 struct __call__<Frame> : Returns<Object> {
     static auto operator()(const Frame& frame);
 };
-
-
-[[nodiscard]] inline std::string Interface<Type<Frame>>::to_string(const auto& self) {
-    return self.to_string();
-}
-[[nodiscard]] inline std::optional<Code> Interface<Type<Frame>>::code(const auto& self) {
-    return self.code;
-}
-[[nodiscard]] inline std::optional<Frame> Interface<Type<Frame>>::back(const auto& self) {
-    return self.back;
-}
-[[nodiscard]] inline size_t Interface<Type<Frame>>::line_number(const auto& self) {
-    return self.line_number;
-}
-[[nodiscard]] inline size_t Interface<Type<Frame>>::last_instruction(const auto& self) {
-    return self.last_instruction;
-}
-[[nodiscard]] inline std::optional<Object> Interface<Type<Frame>>::generator(const auto& self) {
-    return self.generator;
-}
 
 
 }

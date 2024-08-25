@@ -47,7 +47,7 @@ namespace impl {
                     );
                 }
                 tb->tb_next = front;
-                tb->tb_frame = reinterpret_cast<PyFrameObject*>(release(Frame(frame)));
+                tb->tb_frame = release(Frame(frame));
                 tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
                 tb->tb_lineno = PyFrame_GetLineNumber(tb->tb_frame);
                 PyObject_GC_Track(tb);
@@ -61,16 +61,8 @@ namespace impl {
 
 
 template <>
-struct Type<Traceback>;
-
-
-template <>
 struct Interface<Traceback> {
     [[nodiscard]] std::string to_string(this const auto& self);
-};
-template <>
-struct Interface<Type<Traceback>> {
-    [[nodiscard]] static std::string to_string(const auto& self);
 };
 
 
@@ -100,35 +92,11 @@ struct Traceback : Object, Interface<Traceback> {
 
 
 template <>
-struct Type<Traceback> : Object, Interface<Type<Traceback>> {
-    struct __python__ : def<__python__, Type>, PyTypeObject {
-        static Type __import__() {
-            return Traceback::__python__::__import__();
-        }
-    };
-
-    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
-    Type(PyObject* p, stolen_t t) : Object(p, t) {}
-
-    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
-    Type(Args&&... args) : Object(
-        implicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
-    explicit Type(Args&&... args) : Object(
-        explicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
+struct Interface<Type<Traceback>> {
+    [[nodiscard]] static std::string to_string(const auto& self) {
+        return self.to_string();
+    }
 };
-
-
-inline Type<Traceback> Traceback::__python__::__import__() {
-    return reinterpret_borrow<Type<Traceback>>(
-        reinterpret_cast<PyObject*>(&PyTraceBack_Type)
-    );
-}
 
 
 /* Converting a `cpptrace::stacktrace_frame` into a Python frame object will synthesize
@@ -196,9 +164,7 @@ struct __explicit_init__<Traceback, T>                      : Returns<Traceback>
 
         // compute the full traceback to account for mixed C++ and Python frames
         Traceback trace(cpptrace::generate_trace(1));
-        PyTracebackObject* curr = reinterpret_cast<PyTracebackObject*>(
-            ptr(trace)
-        );
+        PyTracebackObject* curr = ptr(trace);
 
         // if skip is negative, we need to skip the most recent frames, which are
         // stored at the tail of the list.  Since we don't know the exact length of the
@@ -253,7 +219,7 @@ Python frames. */
 template <>
 struct __len__<Traceback>                                   : Returns<size_t> {
     static auto operator()(const Traceback& self) {
-        PyTracebackObject* tb = reinterpret_cast<PyTracebackObject*>(ptr(self));
+        PyTracebackObject* tb = ptr(self);
         size_t count = 0;
         while (tb != nullptr) {
             ++count;
@@ -278,26 +244,10 @@ struct __iter__<Traceback>                                  : Returns<Frame> {
 
     __iter__(const Traceback& self) : traceback(self), curr(nullptr) {}
     __iter__(Traceback&& self) : traceback(std::move(self)), curr(nullptr) {}
-
-    __iter__(const Traceback& self, int) :
-        traceback(self),
-        curr(reinterpret_cast<PyTracebackObject*>(ptr(traceback)))
-    {}
-
-    __iter__(Traceback&& self, int) :
-        traceback(std::move(self)),
-        curr(reinterpret_cast<PyTracebackObject*>(ptr(traceback)))
-    {}
-
-    __iter__(const __iter__& other) :
-        traceback(other.traceback),
-        curr(other.curr)
-    {}
-
-    __iter__(__iter__&& other) :
-        traceback(std::move(other.traceback)),
-        curr(other.curr)
-    {
+    __iter__(const Traceback& self, int) : traceback(self), curr(ptr(traceback)) {}
+    __iter__(Traceback&& self, int) : traceback(std::move(self)), curr(ptr(traceback)) {}
+    __iter__(const __iter__& other) : traceback(other.traceback), curr(other.curr) {}
+    __iter__(__iter__&& other) : traceback(std::move(other.traceback)), curr(other.curr) {
         other.curr = nullptr;
     }
 
@@ -362,9 +312,7 @@ struct __reversed__<Traceback>                              : Returns<Traceback>
     __reversed__(Traceback&& self) : traceback(std::move(self)), index(-1) {}
 
     __reversed__(const Traceback& self, int) : traceback(self) {
-        PyTracebackObject* curr = reinterpret_cast<PyTracebackObject*>(
-            ptr(traceback)
-        );
+        PyTracebackObject* curr = ptr(traceback);
         while (curr != nullptr) {
             frames.push_back(curr);
             curr = curr->tb_next;
@@ -373,9 +321,7 @@ struct __reversed__<Traceback>                              : Returns<Traceback>
     }
 
     __reversed__(Traceback&& self, int) : traceback(std::move(self)) {
-        PyTracebackObject* curr = reinterpret_cast<PyTracebackObject*>(
-            ptr(traceback)
-        );
+        PyTracebackObject* curr = ptr(traceback);
         while (curr != nullptr) {
             frames.push_back(curr);
             curr = curr->tb_next;
@@ -443,11 +389,6 @@ struct __reversed__<Traceback>                              : Returns<Traceback>
 };
 
 
-[[nodiscard]] inline std::string Interface<Type<Traceback>>::to_string(const auto& self) {
-    return self.to_string();
-}
-
-
 /////////////////////////
 ////    EXCEPTION    ////
 /////////////////////////
@@ -471,6 +412,9 @@ struct Interface<Exception> {
 };
 
 
+/* The base of the exception hierarchy, from which all exceptions derive.  Exception
+types should inherit from this class instead of `py::Object` in order to register a
+new exception.  Otherwise, all the same semantics apply. */
 struct Exception : std::exception, Object, Interface<Exception> {
 protected:
     mutable std::optional<std::string> m_message;
@@ -487,6 +431,9 @@ protected:
     ) {}
 
 public:
+    struct __python__ : def<__python__, Exception>, PyBaseExceptionObject {
+        static Type<Exception> __import__();
+    };
 
     Exception(PyObject* p, borrowed_t t) : Object(p, t) {}
     Exception(PyObject* p, stolen_t t) : Object(p, t) {}
@@ -506,7 +453,9 @@ public:
     /* Returns the message that was supplied to construct this exception. */
     const char* message() const noexcept {
         if (!m_message.has_value()) {
-            PyObject* args = PyException_GetArgs(ptr(*this));
+            PyObject* args = PyException_GetArgs(
+                reinterpret_cast<PyObject*>(ptr(*this))
+            );
             if (args == nullptr) {
                 PyErr_Clear();
                 return "";
@@ -539,7 +488,9 @@ public:
         if (!m_what.has_value()) {
             std::string msg;
             Traceback tb = reinterpret_steal<Traceback>(
-                PyException_GetTraceback(ptr(*this))
+                PyException_GetTraceback(
+                    reinterpret_cast<PyObject*>(ptr(*this))
+                )
             );
             if (ptr(tb) != nullptr) {
                 msg = tb.to_string() + "\n";
@@ -564,6 +515,15 @@ public:
         m_what.reset();
     }
 
+};
+
+
+template <>
+struct Interface<Type<Exception>> {
+    [[noreturn, clang::noinline]] static void from_python();  // defined in __init__.h
+    static void to_python() {
+        Exception::to_python();
+    }
 };
 
 
@@ -623,7 +583,9 @@ inline void Interface<Exception>::to_python() {
     try {
         throw;
     } catch (const Exception& err) {
-        PyThreadState_Get()->current_exception = release(err);
+        PyThreadState_Get()->current_exception = reinterpret_cast<PyObject*>(
+            release(err)
+        );
     } catch (const std::exception& err) {
         PyErr_SetString(PyExc_Exception, err.what());
     } catch (...) {
@@ -645,7 +607,7 @@ inline void Interface<Exception>::to_python() {
  */
 
 
-#define BUILTIN_EXCEPTION(CLS, BASE, PYTYPE)                                            \
+#define BUILTIN_EXCEPTION(CLS, BASE, PYTYPE, PYOBJECT)                                  \
     struct CLS;                                                                         \
                                                                                         \
     template <>                                                                         \
@@ -657,8 +619,14 @@ inline void Interface<Exception>::to_python() {
                                                                                         \
     template <>                                                                         \
     struct Interface<CLS> : Interface<BASE> {};                                         \
+    template <>                                                                         \
+    struct Interface<Type<CLS>> : Interface<Type<BASE>> {};                             \
                                                                                         \
     struct CLS : Exception, Interface<CLS> {                                            \
+        struct __python__ : def<__python__, CLS>, PYOBJECT {                            \
+            static Type<CLS> __import__();                                              \
+        };                                                                              \
+                                                                                        \
         CLS(PyObject* p, borrowed_t t) : Exception(p, t) {}                             \
         CLS(PyObject* p, stolen_t t) : Exception(p, t) {}                               \
                                                                                         \
@@ -678,54 +646,54 @@ inline void Interface<Exception>::to_python() {
     };
 
 
-BUILTIN_EXCEPTION(ArithmeticError, Exception, PyExc_ArithmeticError)
-    BUILTIN_EXCEPTION(FloatingPointError, ArithmeticError, PyExc_FloatingPointError)
-    BUILTIN_EXCEPTION(OverflowError, ArithmeticError, PyExc_OverflowError)
-    BUILTIN_EXCEPTION(ZeroDivisionError, ArithmeticError, PyExc_ZeroDivisionError)
-BUILTIN_EXCEPTION(AssertionError, Exception, PyExc_AssertionError)
-BUILTIN_EXCEPTION(AttributeError, Exception, PyExc_AttributeError)
-BUILTIN_EXCEPTION(BufferError, Exception, PyExc_BufferError)
-BUILTIN_EXCEPTION(EOFError, Exception, PyExc_EOFError)
-BUILTIN_EXCEPTION(ImportError, Exception, PyExc_ImportError)
-    BUILTIN_EXCEPTION(ModuleNotFoundError, ImportError, PyExc_ModuleNotFoundError)
-BUILTIN_EXCEPTION(LookupError, Exception, PyExc_LookupError)
-    BUILTIN_EXCEPTION(IndexError, LookupError, PyExc_IndexError)
-    BUILTIN_EXCEPTION(KeyError, LookupError, PyExc_KeyError)
-BUILTIN_EXCEPTION(MemoryError, Exception, PyExc_MemoryError)
-BUILTIN_EXCEPTION(NameError, Exception, PyExc_NameError)
-    BUILTIN_EXCEPTION(UnboundLocalError, NameError, PyExc_UnboundLocalError)
-BUILTIN_EXCEPTION(OSError, Exception, PyExc_OSError)
-    BUILTIN_EXCEPTION(BlockingIOError, OSError, PyExc_BlockingIOError)
-    BUILTIN_EXCEPTION(ChildProcessError, OSError, PyExc_ChildProcessError)
-    BUILTIN_EXCEPTION(ConnectionError, OSError, PyExc_ConnectionError)
-        BUILTIN_EXCEPTION(BrokenPipeError, ConnectionError, PyExc_BrokenPipeError)
-        BUILTIN_EXCEPTION(ConnectionAbortedError, ConnectionError, PyExc_ConnectionAbortedError)
-        BUILTIN_EXCEPTION(ConnectionRefusedError, ConnectionError, PyExc_ConnectionRefusedError)
-        BUILTIN_EXCEPTION(ConnectionResetError, ConnectionError, PyExc_ConnectionResetError)
-    BUILTIN_EXCEPTION(FileExistsError, OSError, PyExc_FileExistsError)
-    BUILTIN_EXCEPTION(FileNotFoundError, OSError, PyExc_FileNotFoundError)
-    BUILTIN_EXCEPTION(InterruptedError, OSError, PyExc_InterruptedError)
-    BUILTIN_EXCEPTION(IsADirectoryError, OSError, PyExc_IsADirectoryError)
-    BUILTIN_EXCEPTION(NotADirectoryError, OSError, PyExc_NotADirectoryError)
-    BUILTIN_EXCEPTION(PermissionError, OSError, PyExc_PermissionError)
-    BUILTIN_EXCEPTION(ProcessLookupError, OSError, PyExc_ProcessLookupError)
-    BUILTIN_EXCEPTION(TimeoutError, OSError, PyExc_TimeoutError)
-BUILTIN_EXCEPTION(ReferenceError, Exception, PyExc_ReferenceError)
-BUILTIN_EXCEPTION(RuntimeError, Exception, PyExc_RuntimeError)
-    BUILTIN_EXCEPTION(NotImplementedError, RuntimeError, PyExc_NotImplementedError)
-    BUILTIN_EXCEPTION(RecursionError, RuntimeError, PyExc_RecursionError)
-BUILTIN_EXCEPTION(StopAsyncIteration, Exception, PyExc_StopAsyncIteration)
-BUILTIN_EXCEPTION(StopIteration, Exception, PyExc_StopIteration)
-BUILTIN_EXCEPTION(SyntaxError, Exception, PyExc_SyntaxError)
-    BUILTIN_EXCEPTION(IndentationError, SyntaxError, PyExc_IndentationError)
-        BUILTIN_EXCEPTION(TabError, IndentationError, PyExc_TabError)
-BUILTIN_EXCEPTION(SystemError, Exception, PyExc_SystemError)
-BUILTIN_EXCEPTION(TypeError, Exception, PyExc_TypeError)
-BUILTIN_EXCEPTION(ValueError, Exception, PyExc_ValueError)
-    BUILTIN_EXCEPTION(UnicodeError, ValueError, PyExc_UnicodeError)
-        // BUILTIN_EXCEPTION(UnicodeDecodeError, UnicodeError)
-        // BUILTIN_EXCEPTION(UnicodeEncodeError, UnicodeError)
-        // BUILTIN_EXCEPTION(UnicodeTranslateError, UnicodeError)
+BUILTIN_EXCEPTION(ArithmeticError, Exception, PyExc_ArithmeticError, PyBaseExceptionObject)
+    BUILTIN_EXCEPTION(FloatingPointError, ArithmeticError, PyExc_FloatingPointError, PyBaseExceptionObject)
+    BUILTIN_EXCEPTION(OverflowError, ArithmeticError, PyExc_OverflowError, PyBaseExceptionObject)
+    BUILTIN_EXCEPTION(ZeroDivisionError, ArithmeticError, PyExc_ZeroDivisionError, PyBaseExceptionObject)
+BUILTIN_EXCEPTION(AssertionError, Exception, PyExc_AssertionError, PyBaseExceptionObject)
+BUILTIN_EXCEPTION(AttributeError, Exception, PyExc_AttributeError, PyAttributeErrorObject)
+BUILTIN_EXCEPTION(BufferError, Exception, PyExc_BufferError, PyBaseExceptionObject)
+BUILTIN_EXCEPTION(EOFError, Exception, PyExc_EOFError, PyBaseExceptionObject)
+BUILTIN_EXCEPTION(ImportError, Exception, PyExc_ImportError, PyImportErrorObject)
+    BUILTIN_EXCEPTION(ModuleNotFoundError, ImportError, PyExc_ModuleNotFoundError, PyImportErrorObject)
+BUILTIN_EXCEPTION(LookupError, Exception, PyExc_LookupError, PyBaseExceptionObject)
+    BUILTIN_EXCEPTION(IndexError, LookupError, PyExc_IndexError, PyBaseExceptionObject)
+    BUILTIN_EXCEPTION(KeyError, LookupError, PyExc_KeyError, PyBaseExceptionObject)
+BUILTIN_EXCEPTION(MemoryError, Exception, PyExc_MemoryError, PyBaseExceptionObject)
+BUILTIN_EXCEPTION(NameError, Exception, PyExc_NameError, PyNameErrorObject)
+    BUILTIN_EXCEPTION(UnboundLocalError, NameError, PyExc_UnboundLocalError, PyNameErrorObject)
+BUILTIN_EXCEPTION(OSError, Exception, PyExc_OSError, PyOSErrorObject)
+    BUILTIN_EXCEPTION(BlockingIOError, OSError, PyExc_BlockingIOError, PyOSErrorObject)
+    BUILTIN_EXCEPTION(ChildProcessError, OSError, PyExc_ChildProcessError, PyOSErrorObject)
+    BUILTIN_EXCEPTION(ConnectionError, OSError, PyExc_ConnectionError, PyOSErrorObject)
+        BUILTIN_EXCEPTION(BrokenPipeError, ConnectionError, PyExc_BrokenPipeError, PyOSErrorObject)
+        BUILTIN_EXCEPTION(ConnectionAbortedError, ConnectionError, PyExc_ConnectionAbortedError, PyOSErrorObject)
+        BUILTIN_EXCEPTION(ConnectionRefusedError, ConnectionError, PyExc_ConnectionRefusedError, PyOSErrorObject)
+        BUILTIN_EXCEPTION(ConnectionResetError, ConnectionError, PyExc_ConnectionResetError, PyOSErrorObject)
+    BUILTIN_EXCEPTION(FileExistsError, OSError, PyExc_FileExistsError, PyOSErrorObject)
+    BUILTIN_EXCEPTION(FileNotFoundError, OSError, PyExc_FileNotFoundError, PyOSErrorObject)
+    BUILTIN_EXCEPTION(InterruptedError, OSError, PyExc_InterruptedError, PyOSErrorObject)
+    BUILTIN_EXCEPTION(IsADirectoryError, OSError, PyExc_IsADirectoryError, PyOSErrorObject)
+    BUILTIN_EXCEPTION(NotADirectoryError, OSError, PyExc_NotADirectoryError, PyOSErrorObject)
+    BUILTIN_EXCEPTION(PermissionError, OSError, PyExc_PermissionError, PyOSErrorObject)
+    BUILTIN_EXCEPTION(ProcessLookupError, OSError, PyExc_ProcessLookupError, PyOSErrorObject)
+    BUILTIN_EXCEPTION(TimeoutError, OSError, PyExc_TimeoutError, PyOSErrorObject)
+BUILTIN_EXCEPTION(ReferenceError, Exception, PyExc_ReferenceError, PyBaseExceptionObject)
+BUILTIN_EXCEPTION(RuntimeError, Exception, PyExc_RuntimeError, PyBaseExceptionObject)
+    BUILTIN_EXCEPTION(NotImplementedError, RuntimeError, PyExc_NotImplementedError, PyBaseExceptionObject)
+    BUILTIN_EXCEPTION(RecursionError, RuntimeError, PyExc_RecursionError, PyBaseExceptionObject)
+BUILTIN_EXCEPTION(StopAsyncIteration, Exception, PyExc_StopAsyncIteration, PyBaseExceptionObject)
+BUILTIN_EXCEPTION(StopIteration, Exception, PyExc_StopIteration, PyStopIterationObject)
+BUILTIN_EXCEPTION(SyntaxError, Exception, PyExc_SyntaxError, PySyntaxErrorObject)
+    BUILTIN_EXCEPTION(IndentationError, SyntaxError, PyExc_IndentationError, PySyntaxErrorObject)
+        BUILTIN_EXCEPTION(TabError, IndentationError, PyExc_TabError, PySyntaxErrorObject)
+BUILTIN_EXCEPTION(SystemError, Exception, PyExc_SystemError, PyBaseExceptionObject)
+BUILTIN_EXCEPTION(TypeError, Exception, PyExc_TypeError, PyBaseExceptionObject)
+BUILTIN_EXCEPTION(ValueError, Exception, PyExc_ValueError, PyBaseExceptionObject)
+    BUILTIN_EXCEPTION(UnicodeError, ValueError, PyExc_UnicodeError, PyUnicodeErrorObject)
+        // BUILTIN_EXCEPTION(UnicodeDecodeError, UnicodeError, PyExc_UnicodeDecodeError, PyUnicodeErrorObject)
+        // BUILTIN_EXCEPTION(UnicodeEncodeError, UnicodeError, PyExc_UnicodeEncodeError, PyUnicodeErrorObject)
+        // BUILTIN_EXCEPTION(UnicodeTranslateError, UnicodeError, PyExc_UnicodeTranslateError, PyUnicodeErrorObject)
 
 #undef BUILTIN_EXCEPTION
 
@@ -761,6 +729,9 @@ struct Interface<UnicodeDecodeError> : Interface<UnicodeError> {
 
 
 struct UnicodeDecodeError : Exception, Interface<UnicodeDecodeError> {
+    struct __python__ : def<__python__, UnicodeDecodeError>, PyUnicodeErrorObject {
+        static Type<UnicodeDecodeError> __import__();
+    };
 
     UnicodeDecodeError(PyObject* p, borrowed_t t) : Exception(p, t) {}
     UnicodeDecodeError(PyObject* p, stolen_t t) : Exception(p, t) {}
@@ -798,7 +769,9 @@ struct UnicodeDecodeError : Exception, Interface<UnicodeDecodeError> {
             try {
                 std::string msg;
                 Traceback tb = reinterpret_steal<Traceback>(
-                    PyException_GetTraceback(ptr(*this))
+                    PyException_GetTraceback(
+                        reinterpret_cast<PyObject*>(ptr(*this))
+                    )
                 );
                 if (ptr(tb) != nullptr) {
                     msg = tb.to_string() + "\n";
@@ -819,6 +792,26 @@ struct UnicodeDecodeError : Exception, Interface<UnicodeDecodeError> {
         return m_what.value().c_str();
     }
 
+};
+
+
+template <>
+struct Interface<Type<UnicodeDecodeError>> : Interface<Type<UnicodeError>> {
+    [[nodiscard]] static std::string encoding(const auto& self) {
+        return self.encoding;
+    }
+    [[nodiscard]] static std::string object(const auto& self) {
+        return self.object;
+    }
+    [[nodiscard]] static Py_ssize_t start(const auto& self) {
+        return self.start;
+    }
+    [[nodiscard]] static Py_ssize_t end(const auto& self) {
+        return self.end;
+    }
+    [[nodiscard]] static std::string reason(const auto& self) {
+        return self.reason;
+    }
 };
 
 
@@ -885,7 +878,9 @@ struct __explicit_init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> 
 [[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_encoding(
     this const auto& self
 ) {
-    PyObject* encoding = PyUnicodeDecodeError_GetEncoding(ptr(self));
+    PyObject* encoding = PyUnicodeDecodeError_GetEncoding(
+        reinterpret_cast<PyObject*>(ptr(self))
+    );
     if (encoding == nullptr) {
         Exception::from_python();
     }
@@ -924,7 +919,10 @@ struct __explicit_init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> 
     this const auto& self
 ) {
     Py_ssize_t start;
-    if (PyUnicodeDecodeError_GetStart(ptr(self), &start)) {
+    if (PyUnicodeDecodeError_GetStart(
+        reinterpret_cast<PyObject*>(ptr(self)),
+        &start
+    )) {
         Exception::from_python();
     }
     return start;
@@ -935,7 +933,10 @@ struct __explicit_init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> 
     this const auto& self
 ) {
     Py_ssize_t end;
-    if (PyUnicodeDecodeError_GetEnd(ptr(self), &end)) {
+    if (PyUnicodeDecodeError_GetEnd(
+        reinterpret_cast<PyObject*>(ptr(self)),
+        &end
+    )) {
         Exception::from_python();
     }
     return end;
@@ -945,7 +946,9 @@ struct __explicit_init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> 
 [[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_reason(
     this const auto& self
 ) {
-    PyObject* reason = PyUnicodeDecodeError_GetReason(ptr(self));
+    PyObject* reason = PyUnicodeDecodeError_GetReason(
+        reinterpret_cast<PyObject*>(ptr(self))
+    );
     if (reason == nullptr) {
         Exception::from_python();
     }
@@ -992,6 +995,9 @@ struct Interface<UnicodeEncodeError> : Interface<UnicodeError> {
 
 
 struct UnicodeEncodeError : Exception, Interface<UnicodeEncodeError> {
+    struct __python__ : def<__python__, UnicodeEncodeError>, PyUnicodeErrorObject {
+        static Type<UnicodeEncodeError> __import__();
+    };
 
     UnicodeEncodeError(PyObject* p, borrowed_t t) : Exception(p, t) {}
     UnicodeEncodeError(PyObject* p, stolen_t t) : Exception(p, t) {}
@@ -1029,7 +1035,9 @@ struct UnicodeEncodeError : Exception, Interface<UnicodeEncodeError> {
             try {
                 std::string msg;
                 Traceback tb = reinterpret_steal<Traceback>(
-                    PyException_GetTraceback(ptr(*this))
+                    PyException_GetTraceback(
+                        reinterpret_cast<PyObject*>(ptr(*this))
+                    )
                 );
                 if (ptr(tb) != nullptr) {
                     msg = tb.to_string() + "\n";
@@ -1050,6 +1058,26 @@ struct UnicodeEncodeError : Exception, Interface<UnicodeEncodeError> {
         return m_what.value().c_str();
     }
 
+};
+
+
+template <>
+struct Interface<Type<UnicodeEncodeError>> : Interface<Type<UnicodeError>> {
+    [[nodiscard]] static std::string encoding(const auto& self) {
+        return self.encoding;
+    }
+    [[nodiscard]] static std::string object(const auto& self) {
+        return self.object;
+    }
+    [[nodiscard]] static Py_ssize_t start(const auto& self) {
+        return self.start;
+    }
+    [[nodiscard]] static Py_ssize_t end(const auto& self) {
+        return self.end;
+    }
+    [[nodiscard]] static std::string reason(const auto& self) {
+        return self.reason;
+    }
 };
 
 
@@ -1117,7 +1145,9 @@ struct __explicit_init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> 
 [[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_encoding(
     this const auto& self
 ) {
-    PyObject* encoding = PyUnicodeEncodeError_GetEncoding(ptr(self));
+    PyObject* encoding = PyUnicodeEncodeError_GetEncoding(
+        reinterpret_cast<PyObject*>(ptr(self))
+    );
     if (encoding == nullptr) {
         Exception::from_python();
     }
@@ -1156,7 +1186,10 @@ struct __explicit_init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> 
     this const auto& self
 ) {
     Py_ssize_t start;
-    if (PyUnicodeEncodeError_GetStart(ptr(self), &start)) {
+    if (PyUnicodeEncodeError_GetStart(
+        reinterpret_cast<PyObject*>(ptr(self)),
+        &start
+    )) {
         Exception::from_python();
     }
     return start;
@@ -1167,7 +1200,10 @@ struct __explicit_init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> 
     this const auto& self
 ) {
     Py_ssize_t end;
-    if (PyUnicodeEncodeError_GetEnd(ptr(self), &end)) {
+    if (PyUnicodeEncodeError_GetEnd(
+        reinterpret_cast<PyObject*>(ptr(self)),
+        &end
+    )) {
         Exception::from_python();
     }
     return end;
@@ -1177,7 +1213,9 @@ struct __explicit_init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> 
 [[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_reason(
     this const auto& self
 ) {
-    PyObject* reason = PyUnicodeEncodeError_GetReason(ptr(self));
+    PyObject* reason = PyUnicodeEncodeError_GetReason(
+        reinterpret_cast<PyObject*>(ptr(self))
+    );
     if (reason == nullptr) {
         Exception::from_python();
     }
@@ -1221,6 +1259,9 @@ struct Interface<UnicodeTranslateError> : Interface<UnicodeError> {
 
 
 struct UnicodeTranslateError : Exception, Interface<UnicodeTranslateError> {
+    struct __python__ : def<__python__, UnicodeTranslateError>, PyUnicodeErrorObject {
+        static Type<UnicodeTranslateError> __import__();
+    };
 
     UnicodeTranslateError(PyObject* p, borrowed_t t) : Exception(p, t) {}
     UnicodeTranslateError(PyObject* p, stolen_t t) : Exception(p, t) {}
@@ -1257,7 +1298,9 @@ struct UnicodeTranslateError : Exception, Interface<UnicodeTranslateError> {
             try {
                 std::string msg;
                 Traceback tb = reinterpret_steal<Traceback>(
-                    PyException_GetTraceback(ptr(*this))
+                    PyException_GetTraceback(
+                        reinterpret_cast<PyObject*>(ptr(*this))
+                    )
                 );
                 if (ptr(tb) != nullptr) {
                     msg = tb.to_string() + "\n";
@@ -1278,6 +1321,23 @@ struct UnicodeTranslateError : Exception, Interface<UnicodeTranslateError> {
         return m_what.value().c_str();
     }
 
+};
+
+
+template <>
+struct Interface<Type<UnicodeTranslateError>> : Interface<Type<UnicodeError>> {
+    [[nodiscard]] static std::string object(const auto& self) {
+        return self.object;
+    }
+    [[nodiscard]] static Py_ssize_t start(const auto& self) {
+        return self.start;
+    }
+    [[nodiscard]] static Py_ssize_t end(const auto& self) {
+        return self.end;
+    }
+    [[nodiscard]] static std::string reason(const auto& self) {
+        return self.reason;
+    }
 };
 
 
@@ -1363,7 +1423,10 @@ struct __explicit_init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reaso
     this const auto& self
 ) {
     Py_ssize_t start;
-    if (PyUnicodeTranslateError_GetStart(ptr(self), &start)) {
+    if (PyUnicodeTranslateError_GetStart(
+        reinterpret_cast<PyObject*>(ptr(self)),
+        &start
+    )) {
         Exception::from_python();
     }
     return start;
@@ -1374,7 +1437,9 @@ struct __explicit_init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reaso
     this const auto& self
 ) {
     Py_ssize_t end;
-    if (PyUnicodeTranslateError_GetEnd(ptr(self), &end)) {
+    if (PyUnicodeTranslateError_GetEnd(
+        reinterpret_cast<PyObject*>(ptr(self)), &end
+    )) {
         Exception::from_python();
     }
     return end;
@@ -1384,7 +1449,9 @@ struct __explicit_init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reaso
 [[nodiscard]] inline std::string Interface<UnicodeTranslateError>::_reason(
     this const auto& self
 ) {
-    PyObject* reason = PyUnicodeTranslateError_GetReason(ptr(self));
+    PyObject* reason = PyUnicodeTranslateError_GetReason(
+        reinterpret_cast<PyObject*>(ptr(self))
+    );
     if (reason == nullptr) {
         Exception::from_python();
     }
@@ -1658,9 +1725,7 @@ Frame __explicit_init__<Frame, T>::operator()(int skip) {
 
 
 inline auto __call__<Frame>::operator()(const Frame& frame) {
-    PyObject* result = PyEval_EvalFrame(
-        reinterpret_cast<PyFrameObject*>(ptr(frame))
-    );
+    PyObject* result = PyEval_EvalFrame(ptr(frame));
     if (result == nullptr) {
         Exception::from_python();
     }
@@ -1671,7 +1736,7 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 [[nodiscard]] inline std::string Interface<Frame>::to_string(
     this const auto& self
 ) {
-    PyFrameObject* frame = reinterpret_cast<PyFrameObject*>(ptr(self));
+    PyFrameObject* frame = ptr(self);
     PyCodeObject* code = PyFrame_GetCode(frame);
 
     std::string out;
@@ -1702,9 +1767,7 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 [[nodiscard]] inline std::optional<Code> Interface<Frame>::_code(
     this const auto& self
 ) {
-    PyCodeObject* code = PyFrame_GetCode(
-        reinterpret_cast<PyFrameObject*>(ptr(self))
-    );
+    PyCodeObject* code = PyFrame_GetCode(ptr(self));
     if (code == nullptr) {
         return std::nullopt;
     }
@@ -1715,9 +1778,7 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 [[nodiscard]] inline std::optional<Frame> Interface<Frame>::_back(
     this const auto& self
 ) {
-    PyFrameObject* result = PyFrame_GetBack(
-        reinterpret_cast<PyFrameObject*>(ptr(self))
-    );
+    PyFrameObject* result = PyFrame_GetBack(ptr(self));
     if (result == nullptr) {
         return std::nullopt;
     }
@@ -1728,16 +1789,14 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 [[nodiscard]] inline size_t Interface<Frame>::_line_number(
     this const auto& self
 ) {
-    return PyFrame_GetLineNumber(reinterpret_cast<PyFrameObject*>(ptr(self)));
+    return PyFrame_GetLineNumber(ptr(self));
 }
 
 
 [[nodiscard]] inline size_t Interface<Frame>::_last_instruction(
     this const auto& self
 ) {
-    int result = PyFrame_GetLasti(
-        reinterpret_cast<PyFrameObject*>(ptr(self))
-    );
+    int result = PyFrame_GetLasti(ptr(self));
     if (result < 0) {
         throw RuntimeError("frame is not currently executing");
     }
@@ -1748,9 +1807,7 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
 [[nodiscard]] inline std::optional<Object> Interface<Frame>::_generator(
     this const auto& self
 ) {
-    PyObject* result = PyFrame_GetGenerator(
-        reinterpret_cast<PyFrameObject*>(ptr(self))
-    );
+    PyObject* result = PyFrame_GetGenerator(ptr(self));
     if (result == nullptr) {
         return std::nullopt;
     }
@@ -1787,7 +1844,7 @@ inline auto __call__<Frame>::operator()(const Frame& frame) {
     this const auto& self
 ) {
     std::string out = "Traceback (most recent call last):";
-    PyTracebackObject* tb = reinterpret_cast<PyTracebackObject*>(ptr(self));
+    PyTracebackObject* tb = ptr(self);
     while (tb != nullptr) {
         out += "\n  ";
         out += reinterpret_borrow<Frame>(

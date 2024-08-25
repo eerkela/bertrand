@@ -1144,9 +1144,9 @@ struct __getitem__<Self, Key>                               : Returns<typename S
 };
 
 
-template <std::derived_from<impl::ListTag> Self, std::integral Key, typename Value>
+template <std::derived_from<impl::ListTag> Self, typename Value, std::integral Key>
     requires (std::convertible_to<Value, typename Self::value_type>)
-struct __setitem__<Self, Key, Value>                         : Returns<void> {
+struct __setitem__<Self, Value, Key>                         : Returns<void> {
     static void operator()(Self& self, const Key& key, const Value& value) {
         Py_ssize_t size = PyList_GET_SIZE(ptr(self));
         Py_ssize_t norm = key + size * (key < 0);

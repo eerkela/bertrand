@@ -174,7 +174,6 @@ struct Traceback;
 template <typename T = Object>
 struct Type;
 struct BertrandMeta;
-struct TypeRegistry;
 template <typename Return>
 struct Iterator;
 template <StaticStr Name, typename T>
@@ -362,11 +361,10 @@ This class must be specialized for all types that wish to support multiple inher
 Doing so is rather tricky due to the circular dependency between the Object and its
 Interface, so here's a simple example to illustrate how it's done:
 
-    // forward declarations for Object wrapper and its Type
+    // forward declare the Object wrapper
     struct Wrapper;
-    template <>
-    struct Type<Wrapper>;
 
+    // define the wrapper's interface, mixing in the interfaces of its base classes
     template <>
     struct Interface<Wrapper> : Interface<Base1>, Interface<Base2>, ... {
         void foo();  // forward declarations for interface methods
@@ -374,15 +372,38 @@ Interface, so here's a simple example to illustrate how it's done:
         static std::string baz();
     };
 
-    template <>
-    struct Interface<Type<Wrapper>> : Interface<Type<Base1>>, Interface<Type<Base2>>, ... {
-        static void foo(auto& self);  // non-static methods gain an auto self parameter
-        static int bar(const auto& self);
-        static std::string baz();  // static methods stay the same
-    };
-
-    // define the wrapper itself
+    // define the wrapper, mixing the interface with Object
     struct Wrapper : Object, Interface<Wrapper> {
+        struct __python__ : def<__python__, Wrapper, SomeCppObj> {
+            static Type __export__(Bindings bindings) {
+                // export a C++ object's interface to Python.  The base classes
+                // reflect in Python the interface inheritance we defined here.
+                return bindings.template finalize<Base1, Base2, ...>();
+            }
+        };
+
+        // Alternatively, if the Wrapper represents a pure Python class:
+        struct __python__ : def<__python__, Wrapper>, PyObject {  // inherit from a PyObject type
+            // __export__() is not necessary in this case
+            static Type __import__() {
+                // get a reference to the external Python class, perhaps by importing
+                // a module and getting a reference to the class object
+            }
+        };
+
+        // You can also define a pure Python type directly inline:
+        struct __python__ : def<__python__, Wrapper>, PyObject {  // inherit from a PyObject type
+            std::unordered_map<std::string, int> foo;
+            std::vector<Object> bar;
+            // ... C++ fields are held within the object's Python representation
+
+            static Type __export__(Bindings bindings) {
+                // export the type's interface to Python
+                return bindings.template finalize<Base1, Base2, ...>();
+            }
+        };
+
+        // define standard Object constructors
         Wrapper(PyObject* h, borrowed_t t) : Object(h, t) {}
         Wrapper(PyObject* h, stolen_t t) : Object(h, t) {}
 
@@ -399,40 +420,18 @@ Interface, so here's a simple example to illustrate how it's done:
         ) {}
     };
 
-    // define the wrapper's Python type
+    // define the type's interface so that it mimics Python's MRO
     template <>
-    struct Type<Wrapper> : Object, Interface<Type<Wrapper>>, impl::TypeTag {
-        struct __python__ : TypeTag::def<__python__, Wrapper, SomeCppObj> {
-            static Type __export__(Bindings bindings) {
-                // export a C++ object's interface to Python.  The base classes
-                // reflect in Python the interface inheritance we defined here.
-                return bindings.template finalize<Base1, Base2, ...>();
-            }
-        };
-
-        // Alternatively, if the Wrapper represents a pure Python class:
-        struct __python__ : TypeTag::def<__python__, Wrapper> {
-            static Type __import__() {
-                // get a reference to the external Python class, perhaps by importing
-                // a module and getting a reference to the class object
-            }
-        };
-
-        Type(PyObject* h, borrowed_t t) : Object(h, t) {}
-        Type(PyObject* h, stolen_t t) : Object(h, t) {}
-
-        template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
-        Type(Args&&... args) : Object(
-            implicit_ctor<Type>{},
-            std::forward<Args>(args)...
-        ) {}
-
-        template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
-        explicit Type(Args&&... args) : Object(
-            explicit_ctor<Type>{},
-            std::forward<Args>(args)...
-        ) {}
-
+    struct Interface<Type<Wrapper>> : Interface<Type<Base1>>, Interface<Type<Base2>>, ... {
+        static void foo(auto& self) {  // non-static methods gain an auto self parameter
+            self.foo();
+        }
+        static int bar(const auto& self) {
+            return self.bar();
+        }
+        static std::string baz() {  // static methods stay the same
+            return Wrapper::baz();
+        }
     };
 
     // specialize the necessary control structures
@@ -471,8 +470,8 @@ Interface, so here's a simple example to illustrate how it's done:
     }
 
 This pattern is fairly rigid, as the forward declarations are necessary to prevent
-circular dependencies from causing compilation errors.  It also requires that the
-same interface be defined for both the Object and its Type, as well as its Python
+circular dependencies from causing compilation errors.  It also encourages the same
+interface to be defined for both the Object and its Type, as well as its Python
 representation, so that they can be treated symmetrically across all languages. 
 However, the upside is that once it has been set up, this block of code is fully
 self-contained, ensures that both the Python and C++ interfaces are kept in sync, and
@@ -1240,21 +1239,17 @@ namespace impl {
     concept dynamic_type = std::same_as<std::remove_cvref_t<T>, Object>;
 
     template <typename T>
-    concept originates_from_python =
-        std::derived_from<std::remove_cvref_t<T>, Object> &&
-        has_type<std::remove_cvref_t<T>> &&
-        is_type<Type<std::remove_cvref_t<T>>> &&
-        Type<std::remove_cvref_t<T>>::__python__::__origin__ == Origin::PYTHON;
-
-    template <typename T>
     concept cpp_like = !python_like<T>;
 
     template <typename T>
     concept originates_from_cpp =
-        std::derived_from<std::remove_cvref_t<T>, Object> &&
-        has_type<std::remove_cvref_t<T>> &&
-        is_type<Type<std::remove_cvref_t<T>>> &&
-        Type<std::remove_cvref_t<T>>::__python__::__origin__ == Origin::CPP;
+        std::derived_from<std::remove_cvref_t<T>, Object> && requires() {
+            { &std::remove_cvref_t<T>::__python__::__export__ };
+        };
+
+    template <typename T>
+    concept originates_from_python =
+        std::derived_from<std::remove_cvref_t<T>, Object> && !originates_from_cpp<T>;
 
     template <typename T>
     concept cpp_or_originates_from_cpp = cpp_like<T> || originates_from_cpp<T>;
@@ -1262,7 +1257,7 @@ namespace impl {
     template <typename T>
     struct cpp_type_helper { using type = T; };
     template <originates_from_cpp T>
-    struct cpp_type_helper<T> { using type = Type<T>::__python__::__cpp__; };
+    struct cpp_type_helper<T> { using type = T::__python__::__cpp__; };
     template <cpp_or_originates_from_cpp T>
     using cpp_type = cpp_type_helper<std::remove_cvref_t<T>>::type;
 

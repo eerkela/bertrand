@@ -98,16 +98,9 @@ namespace impl {
 }
 
 
-
 ////////////////////
 ////    TYPE    ////
 ////////////////////
-
-
-template <>
-struct Type<Object>;
-template <>
-struct Interface<Type<Object>> {};
 
 
 /* `Type<Object>` (the default specialization) refers to a dynamic type, which can be
@@ -117,6 +110,14 @@ runtime `issubclass()` check, and can potentially raise a `TypeError`, just like
 `py::Object`. */
 template <>
 struct Type<Object> : Object, Interface<Type<Object>> {
+    struct __python__ : def<__python__, Type>, PyTypeObject {   
+        static Type __import__() {
+            return reinterpret_borrow<Type>(
+                reinterpret_cast<PyObject*>(&PyBaseObject_Type)
+            );
+        }
+    };
+
     Type(PyObject* p, borrowed_t t) : Object(p, t) {}
     Type(PyObject* p, stolen_t t) : Object(p, t) {}
 
@@ -135,19 +136,22 @@ struct Type<Object> : Object, Interface<Type<Object>> {
 };
 
 
-/* Allow py::Type<> to be templated on arbitrary C++ types by redirecting to its Python
-equivalent (py::Type<int>() == py::Type<py::Int>()). */
-template <typename T> requires (__as_object__<T>::enable)
-struct Type<T> : Type<typename __as_object__<T>::type> {};
+/* Allow `Type<T>` to be templated on arbitrary C++ types by redirecting to their
+Python equivalents (py::Type<int>() == py::Type<py::Int>()). */
+template <typename T>
+    requires (
+        !std::derived_from<std::remove_cvref_t<T>, Object> &&
+        __as_object__<std::remove_cvref_t<T>>::enable
+    )
+struct Type<T> : Type<typename __as_object__<std::remove_cvref_t<T>>::type> {};
 
 
-/* Explicitly call py::Type(obj) to deduce the Python type of an arbitrary object. */
+/* Explicitly call `Type(obj)` to deduce the Python type of an arbitrary object. */
 template <typename T> requires (__as_object__<T>::enable)
 explicit Type(const T&) -> Type<typename __as_object__<T>::type>;
 
 
-/* All types are default-constructible by invoking the `__import__()` method, which
-ensures that the result always matches the current state of the Python interpreter. */
+/* All types are default-constructible by invoking the `__import__()` hook. */
 template <typename T>
 struct __init__<Type<T>> : Returns<Type<T>> {
     static auto operator()() {
@@ -156,8 +160,8 @@ struct __init__<Type<T>> : Returns<Type<T>> {
 };
 
 
-/* Metaclasses are represented as types of types, and are constructible by recursively
-calling `Py_TYPE(cls)` on the inner type until we reach a concrete implementation. */
+/* Metaclasses are represented as Types of Types, and are constructible by recursively
+calling `Py_TYPE(cls)` on the inner Type until we reach a concrete implementation. */
 template <typename T>
 struct __init__<Type<Type<T>>> : Returns<Type<Type<T>>> {
     static auto operator()() {
@@ -168,7 +172,7 @@ struct __init__<Type<Type<T>>> : Returns<Type<Type<T>>> {
 };
 
 
-/* Implement the CTAD guide by default-initializing the corresponding py::Type. */
+/* Implement the CTAD guide by default-initializing the corresponding Type. */
 template <typename T> requires (__as_object__<T>::enable)
 struct __explicit_init__<Type<typename __as_object__<T>::type>, T> :
     Returns<Type<typename __as_object__<T>::type>>
@@ -182,7 +186,7 @@ struct __explicit_init__<Type<typename __as_object__<T>::type>, T> :
 /// NOTE: additional metaclass constructors for py::Type are defined in common.h
 
 
-/* Calling a py::Type is the same as invoking the inner type's constructor. */
+/* Calling a Type is the same as invoking the inner type's constructor. */
 template <typename T, typename... Args> requires (std::constructible_from<T, Args...>)
 struct __call__<Type<T>, Args...> : Returns<T> {
     static auto operator()(const Type<T>& self, Args&&... args) {
@@ -191,7 +195,7 @@ struct __call__<Type<T>, Args...> : Returns<T> {
 };
 
 
-/* `isinstance()` is already implemented for all `py::Type` specializations by
+/* `isinstance()` is already implemented for all `Type<T>` specializations by
 recurring on the templated type. */
 template <typename T, typename Cls>
 struct __isinstance__<T, Type<Cls>> : Returns<bool> {
@@ -233,7 +237,7 @@ struct __isinstance__<T, Type<Cls>> : Returns<bool> {
 };
 
 
-/* `issubclass()` is already implemented for all `py::Type` specializations by
+/* `issubclass()` is already implemented for all `Type<T>` specializations by
 recurring on the templated type. */
 template <typename T, typename Cls>
 struct __issubclass__<T, Type<Cls>> : Returns<bool> {
@@ -256,12 +260,12 @@ struct __issubclass__<T, Type<Cls>> : Returns<bool> {
 };
 
 
-/* Implicitly convert the py::Type of a subclass into one of its parent classes or
-a type of the same category. */
+/* Implicitly convert the Type of a subclass into one of its parent classes or an
+equivalent C++ alias. */
 template <typename From, typename To> requires (
     std::derived_from<
-        typename __as_object__<From>::type,
-        typename __as_object__<To>::type
+        Interface<typename __as_object__<From>::type>,
+        Interface<typename __as_object__<To>::type>
     >
 )
 struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
@@ -274,7 +278,7 @@ struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
 };
 
 
-/* Implicitly convert the py::Type of a parent class into one of its subclasses by
+/* Implicitly convert the Type of a parent class into one of its subclasses by
 applying a runtime `issubclass()` check. */
 template <typename From, typename To> requires (
     !std::same_as<
@@ -282,8 +286,8 @@ template <typename From, typename To> requires (
         typename __as_object__<From>::type
     > &&
     std::derived_from<
-        typename __as_object__<To>::type,
-        typename __as_object__<From>::type
+        Interface<typename __as_object__<To>::type>,
+        Interface<typename __as_object__<From>::type>
     >
 )
 struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
@@ -316,9 +320,6 @@ struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
 };
 
 
-/// NOTE: forward the BertrandMeta interface below if the type originates from C++.
-
-
 ////////////////////
 ////    META    ////
 ////////////////////
@@ -334,33 +335,11 @@ template <>
 struct Interface<Type<BertrandMeta>> {};
 
 
-/* An instance of Bertrand's metatype, which is used to represent all C++ types that
-have been exposed to Python. */
+/* Bertrand's metaclass, which is used to expose C++ classes to Python and simplify the
+binding process.  Any type which includes an `__export__()` method will be exposed as
+an instance of this class. */
 struct BertrandMeta : Object, Interface<BertrandMeta> {
-
-    BertrandMeta(PyObject* p, borrowed_t t) : Object(p, t) {}
-    BertrandMeta(PyObject* p, stolen_t t) : Object(p, t) {}
-
-    template <typename... Args> requires (implicit_ctor<BertrandMeta>::enable<Args...>)
-    BertrandMeta(Args&&... args) : Object(
-        implicit_ctor<BertrandMeta>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<BertrandMeta>::enable<Args...>)
-    explicit BertrandMeta(Args&&... args) : Object(
-        explicit_ctor<BertrandMeta>{},
-        std::forward<Args>(args)...
-    ) {}
-
-};
-
-
-/* Bertrand's metatype, which is used to expose C++ classes to Python and simplify the
-binding process. */
-template <>
-struct Type<BertrandMeta> : Object, Interface<Type<BertrandMeta>>, impl::TypeTag {
-    struct __python__ : PyTypeObject, def<__python__, BertrandMeta> {
+    struct __python__ : def<__python__, BertrandMeta>, PyTypeObject {
         static constexpr StaticStr __doc__ =
 R"doc(A shared metaclass for all Bertrand extension types.
 
@@ -583,7 +562,7 @@ Instances of this class cannot be created any other way.)doc";
         lenfunc base_mp_length = nullptr;
         binaryfunc base_mp_subscript = nullptr;
         objobjargproc base_mp_ass_subscript = nullptr;
-        objobjargproc base_sq_contains = nullptr;
+        objobjproc base_sq_contains = nullptr;
         unaryfunc base_am_await = nullptr;
         unaryfunc base_am_aiter = nullptr;
         unaryfunc base_am_anext = nullptr;
@@ -626,11 +605,70 @@ Instances of this class cannot be created any other way.)doc";
         binaryfunc base_nb_inplace_matrix_multiply = nullptr;
 
         __python__(const std::string& demangled) {
-            std::string s = "<class '" + demangled + "'>";
-            this->demangled = PyUnicode_FromStringAndSize(s.c_str(), s.size());
+            this->demangled = PyUnicode_FromStringAndSize(
+                demangled.c_str(),
+                demangled.size()
+            );
             if (this->demangled == nullptr) {
                 Exception::from_python();
             }
+            base_tp_repr = tp_repr;
+            base_tp_hash = tp_hash;
+            base_tp_call = tp_call;
+            base_tp_str = tp_str;
+            base_tp_getattro = tp_getattro;
+            base_tp_setattro = tp_setattro;
+            base_tp_richcompare = tp_richcompare;
+            base_tp_iter = tp_iter;
+            base_tp_iternext = tp_iternext;
+            base_tp_descr_get = tp_descr_get;
+            base_tp_descr_set = tp_descr_set;
+            base_tp_init = tp_init;
+            base_tp_new = tp_new;
+            base_mp_length = tp_as_mapping->mp_length;
+            base_mp_subscript = tp_as_mapping->mp_subscript;
+            base_mp_ass_subscript = tp_as_mapping->mp_ass_subscript;
+            base_sq_contains = tp_as_sequence->sq_contains;
+            base_am_await = tp_as_async->am_await;
+            base_am_aiter = tp_as_async->am_aiter;
+            base_am_anext = tp_as_async->am_anext;
+            base_bf_getbuffer = tp_as_buffer->bf_getbuffer;
+            base_bf_releasebuffer = tp_as_buffer->bf_releasebuffer;
+            base_nb_add = tp_as_number->nb_add;
+            base_nb_inplace_add = tp_as_number->nb_inplace_add;
+            base_nb_subtract = tp_as_number->nb_subtract;
+            base_nb_inplace_subtract = tp_as_number->nb_inplace_subtract;
+            base_nb_multiply = tp_as_number->nb_multiply;
+            base_nb_inplace_multiply = tp_as_number->nb_inplace_multiply;
+            base_nb_remainder = tp_as_number->nb_remainder;
+            base_nb_inplace_remainder = tp_as_number->nb_inplace_remainder;
+            base_nb_divmod = tp_as_number->nb_divmod;
+            base_nb_power = tp_as_number->nb_power;
+            base_nb_inplace_power = tp_as_number->nb_inplace_power;
+            base_nb_negative = tp_as_number->nb_negative;
+            base_nb_positive = tp_as_number->nb_positive;
+            base_nb_absolute = tp_as_number->nb_absolute;
+            base_nb_bool = tp_as_number->nb_bool;
+            base_nb_invert = tp_as_number->nb_invert;
+            base_nb_lshift = tp_as_number->nb_lshift;
+            base_nb_inplace_lshift = tp_as_number->nb_inplace_lshift;
+            base_nb_rshift = tp_as_number->nb_rshift;
+            base_nb_inplace_rshift = tp_as_number->nb_inplace_rshift;
+            base_nb_and = tp_as_number->nb_and;
+            base_nb_inplace_and = tp_as_number->nb_inplace_and;
+            base_nb_xor = tp_as_number->nb_xor;
+            base_nb_inplace_xor = tp_as_number->nb_inplace_xor;
+            base_nb_or = tp_as_number->nb_or;
+            base_nb_inplace_or = tp_as_number->nb_inplace_or;
+            base_nb_int = tp_as_number->nb_int;
+            base_nb_float = tp_as_number->nb_float;
+            base_nb_floor_divide = tp_as_number->nb_floor_divide;
+            base_nb_inplace_floor_divide = tp_as_number->nb_inplace_floor_divide;
+            base_nb_true_divide = tp_as_number->nb_true_divide;
+            base_nb_inplace_true_divide = tp_as_number->nb_inplace_true_divide;
+            base_nb_index = tp_as_number->nb_index;
+            base_nb_matrix_multiply = tp_as_number->nb_matrix_multiply;
+            base_nb_inplace_matrix_multiply = tp_as_number->nb_inplace_matrix_multiply;
         }
 
         ~__python__() noexcept {
@@ -898,7 +936,15 @@ Instances of this class cannot be created any other way.)doc";
 
         /* `repr(cls)` displays the type's demangled C++ name.  */
         static PyObject* class_repr(__python__* cls) {
-            return Py_XNewRef(cls->demangled);
+            Py_ssize_t size;
+            const char* data = PyUnicode_AsUTF8AndSize(cls->demangled, &size);
+            if (data == nullptr) {
+                return nullptr;
+            }
+            std::string s = "<class '";
+            s += data;
+            s += "'>";
+            return PyUnicode_FromStringAndSize(s.data(), s.size());
         }
 
         /* `len(cls)` yields the number of template instantiations registered to this
@@ -925,8 +971,6 @@ Instances of this class cannot be created any other way.)doc";
         /* `cls[]` allows navigation of the C++ template hierarchy. */
         static PyObject* class_getitem(__python__* cls, PyObject* key) {
             if (cls->templates == nullptr) {
-                /// TODO: maybe this can more efficiently check whether the
-                /// __class_getitem__ overload set exists?
                 if (PyObject_HasAttr(
                     reinterpret_cast<PyObject*>(cls),
                     impl::TemplateString<"__class_getitem__">::ptr
@@ -958,33 +1002,32 @@ Instances of this class cannot be created any other way.)doc";
             try {
                 PyObject* value = PyDict_GetItem(cls->templates, key);
                 if (value == nullptr) {
-                    const char* demangled = PyUnicode_AsUTF8(cls->demangled);
-                    if (demangled == nullptr) {
-                        Py_DECREF(key);
-                        return nullptr;
-                    }
                     std::string message = "class template has not been instantiated: ";
-                    message += demangled;
-                    PyObject* py_repr = PyObject_Repr(key);
-                    if (py_repr == nullptr) {
+                    Py_ssize_t len;
+                    const char* data = PyUnicode_AsUTF8AndSize(
+                        cls->demangled,
+                        &len
+                    );
+                    if (data == nullptr) {
                         Py_DECREF(key);
                         return nullptr;
                     }
+                    message += std::string_view(data, len);
+                    message += "[";
+                    PyObject* rep = PyObject_Repr(key);
                     Py_DECREF(key);
-                    Py_ssize_t py_len;
-                    const char* py_str = PyUnicode_AsUTF8AndSize(
-                        py_repr,
-                        &py_len
-                    );
-                    if (py_str == nullptr) {
-                        Py_DECREF(py_repr);
+                    if (rep == nullptr) {
                         return nullptr;
                     }
-                    std::string key_repr(py_str, py_len);
-                    Py_DECREF(py_repr);
-                    message += "[";
-                    message += key_repr.substr(1, key_repr.size() - 2);
+                    data = PyUnicode_AsUTF8AndSize(rep, &len);
+                    if (data == nullptr) {
+                        Py_DECREF(rep);
+                        return nullptr;
+                    }
+                    std::string_view filter(data, len);
+                    message += filter.substr(1, filter.size() - 2);  // strip parens
                     message += "]";
+                    Py_DECREF(rep);
                     PyErr_SetString(PyExc_TypeError, message.c_str());
                     return nullptr;
                 }
@@ -998,68 +1041,7 @@ Instances of this class cannot be created any other way.)doc";
 
         /* The metaclass's __doc__ string defaults to a getset descriptor that appends
         the type's template instantiations to the normal `tp_doc` slot. */
-        static PyObject* class_doc(__python__* cls, void*) {
-            std::string doc = cls->tp_doc;
-            if (cls->templates) {
-                if (!doc.ends_with("\n")) {
-                    doc += "\n";
-                }
-                doc += "\n";
-                std::string header = "Instantations (" + std::to_string(PyDict_Size(
-                    cls->templates
-                )) + ")";
-                doc += header + "\n" + std::string(header.size() - 1, '-') + "\n";
-
-                std::string prefix = "    " + std::string(cls->tp_name) + "[";
-                PyObject* key;
-                PyObject* value;
-                Py_ssize_t pos = 0;
-                while (PyDict_Next(
-                    cls->templates,
-                    &pos,
-                    &key,
-                    &value
-                )) {
-                    std::string key_string = prefix;
-                    size_t i = 0;
-                    size_t size = PyTuple_GET_SIZE(key);
-                    while (i < size) {
-                        PyObject* item = PyTuple_GET_ITEM(key, i);
-                        int rc = PyObject_IsInstance(
-                            item,
-                            ptr(Type<BertrandMeta>())
-                        );
-                        if (rc < 0) {
-                            Exception::from_python();
-                        } else if (rc) {
-                            const char* demangled_key = PyUnicode_AsUTF8(
-                                reinterpret_cast<__python__*>(item)->demangled
-                            );
-                            if (demangled_key == nullptr) {
-                                Exception::from_python();
-                            }
-                            doc += demangled_key;
-                        } else {
-                            doc += reinterpret_cast<PyTypeObject*>(item)->tp_name;
-                        }
-                        if (++i < size) {
-                            doc += ", ";
-                        }
-                    }
-                    key_string += "]";
-
-                    const char* demangled_value = PyUnicode_AsUTF8(
-                        reinterpret_cast<__python__*>(value)->demangled
-                    );
-                    if (demangled_value == nullptr) {
-                        Exception::from_python();
-                    }
-
-                    doc += key_string + " -> " + demangled_value + "\n";
-                }
-            }
-            return PyUnicode_FromStringAndSize(doc.c_str(), doc.size());
-        }
+        static PyObject* class_doc(__python__* cls, void*);
 
         /* `cls.` allows access to class-level variables with shared state, and
         otherwise falls back to ordinary Python attribute access. */
@@ -1069,8 +1051,9 @@ Instances of this class cannot be created any other way.)doc";
             if (name == nullptr) {
                 return nullptr;
             }
-            std::string_view view {name, static_cast<size_t>(size)};
-            auto it = cls->class_getters.find(view);
+            auto it = cls->class_getters.find(
+                std::string_view(name, static_cast<size_t>(size))
+            );
             if (it != cls->class_getters.end()) {
                 return it->second.func(
                     reinterpret_cast<PyObject*>(cls),
@@ -1087,8 +1070,9 @@ Instances of this class cannot be created any other way.)doc";
             if (name == nullptr) {
                 return -1;
             }
-            std::string_view view {name, static_cast<size_t>(size)};
-            auto it = cls->class_setters.find(view);
+            auto it = cls->class_setters.find(
+                std::string_view(name, static_cast<size_t>(size))
+            );
             if (it != cls->class_setters.end()) {
                 return it->second.func(
                     reinterpret_cast<PyObject*>(cls),
@@ -1128,46 +1112,11 @@ Instances of this class cannot be created any other way.)doc";
         /* The metaclass can't use Bindings, since they depend on the metaclass to
         function.  The logic is fundamentally the same, however. */
         template <StaticStr ModName>
-        static Type __export__(Module<ModName> module) {
-            static PyType_Slot slots[] = {
-                {Py_tp_doc, const_cast<char*>(__doc__.buffer)},
-                {Py_tp_dealloc, reinterpret_cast<void*>(__dealloc__)},
-                {Py_tp_traverse, reinterpret_cast<void*>(__traverse__)},
-                {Py_tp_clear, reinterpret_cast<void*>(__clear__)},
-                {Py_tp_repr, reinterpret_cast<void*>(class_repr)},
-                {Py_tp_getattro, reinterpret_cast<void*>(class_getattro)},
-                {Py_tp_setattro, reinterpret_cast<void*>(class_setattro)},
-                {Py_tp_iter, reinterpret_cast<void*>(class_iter)},
-                {Py_mp_length, reinterpret_cast<void*>(class_len)},
-                {Py_mp_subscript, reinterpret_cast<void*>(class_getitem)},
-                {Py_tp_methods, methods},
-                {Py_tp_getset, getset},
-                {0, nullptr}
-            };
-            static PyType_Spec spec = {
-                .name = ModName + ".Meta",
-                .basicsize = sizeof(BertrandMeta),
-                .itemsize = 0,
-                .flags =
-                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC |
-                    Py_TPFLAGS_MANAGED_WEAKREF | Py_TPFLAGS_MANAGED_DICT |
-                    Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_TYPE_SUBCLASS,
-                .slots = slots
-            };
-            PyObject* cls = PyType_FromModuleAndSpec(
-                ptr(module),
-                &spec,
-                &PyType_Type
-            );
-            if (cls == nullptr) {
-                Exception::from_python();
-            }
-            return reinterpret_steal<Type>(cls);
-        }
+        static Type<BertrandMeta> __export__(Module<ModName> module);
 
         /* Get a new reference to the metatype from the global `bertrand.python`
         module. */
-        static Type __import__();  // TODO: defined in __init__.h alongside "bertrand.python" module {
+        static Type<BertrandMeta> __import__();  // TODO: defined in __init__.h alongside "bertrand.python" module {
         //     return impl::get_type<BertrandMeta>(Module<"bertrand.python">());
         // }
 
@@ -1176,58 +1125,7 @@ Instances of this class cannot be created any other way.)doc";
         except to provide access to its C++ instantiations, as well as efficient type
         checks against them and a central point for documentation. */
         template <StaticStr Name, StaticStr ModName>
-        static BertrandMeta stub_type(Module<ModName>& module) {
-            static std::string docstring;
-            static bool doc_initialized = false;
-            if (!doc_initialized) {
-                docstring = "A public interface for the '" + ModName + "." + Name;
-                docstring += "' template hierarchy.\n\n";
-                docstring +=
-R"doc(This type cannot be used directly, but indexing it with one or more Python
-types allows access to individual instantiations with the same syntax as C++.
-Note that due to its dynamic nature, Python cannot create any new instantiations
-of a C++ template - this class merely navigates the existing instantiations at
-the C++ level and retrieves their corresponding Python types.)doc";
-                doc_initialized = true;
-            }
-            static PyType_Slot slots[] = {
-                {Py_tp_doc, const_cast<char*>(docstring.c_str())},
-                {0, nullptr}
-            };
-            static PyType_Spec spec = {
-                .name = Name,
-                .basicsize = sizeof(__python__),
-                .itemsize = 0,
-                .flags =
-                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE |
-                    Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_DISALLOW_INSTANTIATION |
-                    Py_TPFLAGS_IMMUTABLETYPE,
-                .slots = slots
-            };
-
-            __python__* cls = reinterpret_cast<__python__*>(PyType_FromMetaclass(
-                reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>())),
-                ptr(module),
-                &spec,
-                nullptr
-            ));
-            if (cls == nullptr) {
-                Exception::from_python();
-            }
-            try {
-                new (cls) __python__(Name);
-                cls->instancecheck = template_instancecheck;
-                cls->subclasscheck = template_subclasscheck;
-                cls->templates = PyDict_New();
-                if (cls->templates == nullptr) {
-                    Exception::from_python();
-                }
-                return reinterpret_steal<BertrandMeta>(reinterpret_cast<PyObject*>(cls));
-            } catch (...) {
-                Py_DECREF(cls);
-                throw;
-            }
-        }
+        static BertrandMeta stub_type(Module<ModName>& module);
 
     private:
 
@@ -1283,15 +1181,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
             PyObject* args,
             PyObject* kwargs
         ) {
-            // allocate dynamic array with `self` as first argument
-            Py_ssize_t args_size = 0;
-            Py_ssize_t kwargs_size = 0;
-            if (args) {
-                args_size = PyTuple_GET_SIZE(args);
-            }
-            if (kwargs) {
-                kwargs_size = PyDict_Size(kwargs);
-            }
+            Py_ssize_t args_size = args ? PyTuple_GET_SIZE(args) : 0;
+            Py_ssize_t kwargs_size = kwargs ? PyDict_Size(kwargs) : 0;
             PyObject** forward = new PyObject*[1 + args_size + kwargs_size];
             forward[0] = self;
 
@@ -1314,7 +1205,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 PyObject* value;
                 Py_ssize_t pos = 0;
                 while (PyDict_Next(kwargs, &pos, &key, &value)) {
-                    PyTuple_SET_ITEM(kwnames, pos, key);
+                    PyTuple_SET_ITEM(kwnames, pos, Py_NewRef(key));
                     forward[i++] = value;
                 }
             }
@@ -1327,15 +1218,8 @@ the C++ level and retrieves their corresponding Python types.)doc";
             PyObject* args,
             PyObject* kwargs
         ) {
-            // allocate dynamic array
-            Py_ssize_t args_size = 0;
-            Py_ssize_t kwargs_size = 0;
-            if (args) {
-                args_size = PyTuple_GET_SIZE(args);
-            }
-            if (kwargs) {
-                kwargs_size = PyDict_Size(kwargs);
-            }
+            Py_ssize_t args_size = args ? PyTuple_GET_SIZE(args) : 0;
+            Py_ssize_t kwargs_size = kwargs ? PyDict_Size(kwargs) : 0;
             PyObject** forward = new PyObject*[args_size + kwargs_size];
 
             // insert positional args
@@ -1356,7 +1240,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 PyObject* value;
                 Py_ssize_t pos = 0;
                 while (PyDict_Next(kwargs, &pos, &key, &value)) {
-                    PyTuple_SET_ITEM(kwnames, pos, key);
+                    PyTuple_SET_ITEM(kwnames, pos, Py_NewRef(key));
                     forward[i++] = value;
                 }
             }
@@ -1364,9 +1248,48 @@ the C++ level and retrieves their corresponding Python types.)doc";
             return {forward, i, kwnames};
         }
 
-        /* All of the above slots are implemented as getset descriptors on the
-        metaclass so as to intercept the standard assignment operator and update the
-        internal C++ function pointers. */
+        template <StaticStr Name>
+        static PyObject* search_mro(__python__* cls) {
+            // search instance dictionary first
+            PyObject* dict = PyType_GetDict(cls);
+            if (dict) {
+                PyObject* value = PyDict_GetItem(
+                    dict,
+                    impl::TemplateString<Name>::ptr
+                );
+                if (value) {
+                    return Py_NewRef(value);
+                }
+            }
+
+            // traverse the MRO
+            PyObject* mro = cls->tp_mro;
+            if (mro != nullptr) {
+                Py_ssize_t size = PyTuple_GET_SIZE(mro);
+                for (Py_ssize_t i = 1; i < size; ++i) {
+                    PyObject* type = PyTuple_GET_ITEM(mro, i);
+                    if (PyObject_HasAttr(
+                        type,
+                        impl::TemplateString<Name>::ptr
+                    )) {
+                        return PyObject_GetAttr(
+                            type,
+                            impl::TemplateString<Name>::ptr
+                        );
+                    }
+                }
+            }
+
+            PyErr_Format(
+                PyExc_AttributeError,
+                "type object '%U' has no attribute " + Name,
+                cls->demangled
+            );
+            return nullptr;
+        }
+
+        /* A collection of getset descriptors on the metaclass that intercept the
+        standard assignment operator and update the internal C++ function pointers. */
         struct Descr {
 
             /// TODO: all of the compile time signature checks should be moved to
@@ -1396,46 +1319,6 @@ the C++ level and retrieves their corresponding Python types.)doc";
             /// corresponding slot with a new function pointer that delegates to the
             /// overload set.  Deleting the overload set should revert the slot back to
             /// its original behavior.
-
-            template <StaticStr Name>
-            static PyObject* search_mro(__python__* cls) {
-                // search the instance dictionary first
-                PyObject* dict = PyType_GetDict(cls);
-                if (dict) {
-                    PyObject* value = PyDict_GetItem(
-                        dict,
-                        impl::TemplateString<Name>::ptr
-                    );
-                    if (value) {
-                        return Py_NewRef(value);
-                    }
-                }
-
-                // traverse the MRO
-                PyObject* mro = cls->tp_mro;
-                if (mro != nullptr) {
-                    Py_ssize_t size = PyTuple_GET_SIZE(mro);
-                    for (Py_ssize_t i = 1; i < size; ++i) {
-                        PyObject* type = PyTuple_GET_ITEM(mro, i);
-                        if (PyObject_HasAttr(
-                            type,
-                            impl::TemplateString<Name>::ptr
-                        )) {
-                            return PyObject_GetAttr(
-                                type,
-                                impl::TemplateString<Name>::ptr
-                            );
-                        }
-                    }
-                }
-
-                PyErr_Format(
-                    PyExc_AttributeError,
-                    "type object '%U' has no attribute " + Name,
-                    cls->demangled
-                );
-                return nullptr;
-            }
 
             struct __new__ {
                 static PyObject* get(__python__* cls, void*) {
@@ -2319,11 +2202,10 @@ the C++ level and retrieves their corresponding Python types.)doc";
         /// That would prevent the binary operators from needing to import the metaclass
         /// every time they are called.
 
-        /* Wrappers for all of the Python slots that can delegate to a corresponding
-        overload set when called.  The getset descriptors will replace the type's
-        base slots with these implementations as long as a corresponding overload set
-        is present.  When the overload set is deleted, the slot will be reset to its
-        original value. */
+        /* A collection of wrappers for all of the Python slots that delegate to a
+        corresponding overload set held within the metaclass.  These will be inserted
+        into the corresponding slot on the type object whenever a dunder method is
+        assigned to, and reset to its original value when the method is deleted. */
         struct Slots {
 
             static PyObject* tp_repr(PyObject* self) {
@@ -2909,43 +2791,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 return 0;
             }
 
-            static PyObject* nb_add(PyObject* lhs, PyObject* rhs) {
-                PyTypeObject* lhs_type = Py_TYPE(lhs);
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(lhs_type);
-                    if (meta->__add__) {
-                        PyObject* const forward[] = {lhs, rhs};
-                        result = PyObject_Vectorcall(
-                            meta->__add__,
-                            forward,
-                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_add) {
-                        result = meta->base_nb_add(lhs, rhs);
-                    }
-                    if (result != Py_NotImplemented) {
-                        return result;
-                    }
-                }
-                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
-                if (meta->__radd__) {
-                    PyObject* const forward[] = {rhs, lhs};
-                    return PyObject_Vectorcall(
-                        meta->__radd__,
-                        forward,
-                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                } else if (meta->base_nb_add) {
-                    return meta->base_nb_add(rhs, lhs);
-                }
-                Py_RETURN_NOTIMPLEMENTED;
-            }
+            static PyObject* nb_add(PyObject* lhs, PyObject* rhs);
 
             static PyObject* nb_inplace_add(PyObject* self, PyObject* other) {
                 PyObject* const forward[] = {self, other};
@@ -2957,43 +2803,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 );
             }
 
-            static PyObject* nb_subtract(PyObject* lhs, PyObject* rhs) {
-                PyTypeObject* lhs_type = Py_TYPE(lhs);
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(lhs_type);
-                    if (meta->__sub__) {
-                        PyObject* const forward[] = {lhs, rhs};
-                        result = PyObject_Vectorcall(
-                            meta->__sub__,
-                            forward,
-                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_subtract) {
-                        result = meta->base_nb_subtract(lhs, rhs);
-                    }
-                    if (result != Py_NotImplemented) {
-                        return result;
-                    }
-                }
-                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
-                if (meta->__rsub__) {
-                    PyObject* const forward[] = {rhs, lhs};
-                    return PyObject_Vectorcall(
-                        meta->__rsub__,
-                        forward,
-                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                } else if (meta->base_nb_subtract) {
-                    return meta->base_nb_subtract(rhs, lhs);
-                }
-                Py_RETURN_NOTIMPLEMENTED;
-            }
+            static PyObject* nb_subtract(PyObject* lhs, PyObject* rhs);
 
             static PyObject* nb_inplace_subtract(PyObject* self, PyObject* other) {
                 PyObject* const forward[] = {self, other};
@@ -3005,43 +2815,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 );
             }
 
-            static PyObject* nb_multiply(PyObject* lhs, PyObject* rhs) {
-                PyTypeObject* lhs_type = Py_TYPE(lhs);
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(lhs_type);
-                    if (meta->__mul__) {
-                        PyObject* const forward[] = {lhs, rhs};
-                        result = PyObject_Vectorcall(
-                            meta->__mul__,
-                            forward,
-                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_multiply) {
-                        result = meta->base_nb_multiply(lhs, rhs);
-                    }
-                    if (result != Py_NotImplemented) {
-                        return result;
-                    }
-                }
-                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
-                if (meta->__rmul__) {
-                    PyObject* const forward[] = {rhs, lhs};
-                    return PyObject_Vectorcall(
-                        meta->__rmul__,
-                        forward,
-                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                } else if (meta->base_nb_multiply) {
-                    return meta->base_nb_multiply(rhs, lhs);
-                }
-                Py_RETURN_NOTIMPLEMENTED;
-            }
+            static PyObject* nb_multiply(PyObject* lhs, PyObject* rhs);
 
             static PyObject* nb_inplace_multiply(PyObject* self, PyObject* other) {
                 PyObject* const forward[] = {self, other};
@@ -3053,43 +2827,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 );
             }
 
-            static PyObject* nb_remainder(PyObject* lhs, PyObject* rhs) {
-                PyTypeObject* lhs_type = Py_TYPE(lhs);
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(lhs_type);
-                    if (meta->__mod__) {
-                        PyObject* const forward[] = {lhs, rhs};
-                        result = PyObject_Vectorcall(
-                            meta->__mod__,
-                            forward,
-                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_remainder) {
-                        result = meta->base_nb_remainder(lhs, rhs);
-                    }
-                    if (result != Py_NotImplemented) {
-                        return result;
-                    }
-                }
-                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
-                if (meta->__rmod__) {
-                    PyObject* const forward[] = {rhs, lhs};
-                    return PyObject_Vectorcall(
-                        meta->__rmod__,
-                        forward,
-                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                } else if (meta->base_nb_remainder) {
-                    return meta->base_nb_remainder(rhs, lhs);
-                }
-                Py_RETURN_NOTIMPLEMENTED;
-            }
+            static PyObject* nb_remainder(PyObject* lhs, PyObject* rhs);
 
             static PyObject* nb_inplace_remainder(PyObject* self, PyObject* other) {
                 PyObject* const forward[] = {self, other};
@@ -3101,104 +2839,9 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 );
             }
 
-            static PyObject* nb_divmod(PyObject* lhs, PyObject* rhs) {
-                PyTypeObject* lhs_type = Py_TYPE(lhs);
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(lhs_type);
-                    if (meta->__divmod__) {
-                        PyObject* const forward[] = {lhs, rhs};
-                        result = PyObject_Vectorcall(
-                            meta->__divmod__,
-                            forward,
-                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_divmod) {
-                        result = meta->base_nb_divmod(lhs, rhs);
-                    }
-                    if (result != Py_NotImplemented) {
-                        return result;
-                    }
-                }
-                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
-                if (meta->__rdivmod__) {
-                    PyObject* const forward[] = {rhs, lhs};
-                    return PyObject_Vectorcall(
-                        meta->__rdivmod__,
-                        forward,
-                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                } else if (meta->base_nb_divmod) {
-                    return meta->base_nb_divmod(rhs, lhs);
-                }
-                Py_RETURN_NOTIMPLEMENTED;
-            }
+            static PyObject* nb_divmod(PyObject* lhs, PyObject* rhs);
 
-            static PyObject* nb_power(PyObject* base, PyObject* exp, PyObject* mod) {
-                Type<BertrandMeta> meta_type;
-                PyTypeObject* base_type = Py_TYPE(base);
-                if (PyType_IsSubtype(
-                    Py_TYPE(base_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(meta_type))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(base_type);
-                    if (meta->__pow__) {
-                        PyObject* const forward[] = {base, exp, mod};
-                        result = PyObject_Vectorcall(
-                            meta->__pow__,
-                            forward,
-                            2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_power) {
-                        result = meta->base_nb_power(base, exp, mod);
-                    }
-                    if (result != Py_NotImplemented) {
-                        return result;
-                    }
-                }
-                PyTypeObject* exp_type = Py_TYPE(exp);
-                if (PyType_IsSubtype(
-                    Py_TYPE(exp_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(meta_type))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(exp_type);
-                    if (meta->__rpow__) {
-                        PyObject* const forward[] = {exp, base, mod};
-                        result = PyObject_Vectorcall(
-                            meta->__rpow__,
-                            forward,
-                            2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_power) {
-                        result = meta->base_nb_power(exp, base, mod);
-                    }
-                    if (result != Py_NotImplemented) {
-                        return result;
-                    }
-                }
-                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(mod));
-                if (meta->__pow__) {
-                    PyObject* const forward[] = {mod, base, exp};
-                    return PyObject_Vectorcall(
-                        meta->__pow__,
-                        forward,
-                        2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                } else if (meta->base_nb_power) {
-                    return meta->base_nb_power(mod, base, exp);
-                }
-                Py_RETURN_NOTIMPLEMENTED;
-            }
+            static PyObject* nb_power(PyObject* base, PyObject* exp, PyObject* mod);
 
             static PyObject* nb_inplace_power(PyObject* self, PyObject* exp, PyObject* mod) {
                 PyObject* const forward[] = {self, exp, mod};
@@ -3261,43 +2904,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 );
             }
 
-            static PyObject* nb_lshift(PyObject* lhs, PyObject* rhs) {
-                PyTypeObject* lhs_type = Py_TYPE(lhs);
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(lhs_type);
-                    if (meta->__lshift__) {
-                        PyObject* const forward[] = {lhs, rhs};
-                        result = PyObject_Vectorcall(
-                            meta->__lshift__,
-                            forward,
-                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_lshift) {
-                        result = meta->base_nb_lshift(lhs, rhs);
-                    }
-                    if (result != Py_NotImplemented) {
-                        return result;
-                    }
-                }
-                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
-                if (meta->__rlshift__) {
-                    PyObject* const forward[] = {rhs, lhs};
-                    return PyObject_Vectorcall(
-                        meta->__rlshift__,
-                        forward,
-                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                } else if (meta->base_nb_lshift) {
-                    return meta->base_nb_lshift(rhs, lhs);
-                }
-                Py_RETURN_NOTIMPLEMENTED;
-            }
+            static PyObject* nb_lshift(PyObject* lhs, PyObject* rhs);
 
             static PyObject* nb_inplace_lshift(PyObject* self, PyObject* other) {
                 PyObject* const forward[] = {self, other};
@@ -3309,43 +2916,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 );
             }
 
-            static PyObject* nb_rshift(PyObject* lhs, PyObject* rhs) {
-                PyTypeObject* lhs_type = Py_TYPE(lhs);
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(lhs_type);
-                    if (meta->__rshift__) {
-                        PyObject* const forward[] = {lhs, rhs};
-                        result = PyObject_Vectorcall(
-                            meta->__rshift__,
-                            forward,
-                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_rshift) {
-                        result = meta->base_nb_rshift(lhs, rhs);
-                    }
-                    if (result != Py_NotImplemented) {
-                        return result;
-                    }
-                }
-                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
-                if (meta->__rrshift__) {
-                    PyObject* const forward[] = {rhs, lhs};
-                    return PyObject_Vectorcall(
-                        meta->__rrshift__,
-                        forward,
-                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                } else if (meta->base_nb_rshift) {
-                    return meta->base_nb_rshift(rhs, lhs);
-                }
-                Py_RETURN_NOTIMPLEMENTED;
-            }
+            static PyObject* nb_rshift(PyObject* lhs, PyObject* rhs);
 
             static PyObject* nb_inplace_rshift(PyObject* self, PyObject* other) {
                 PyObject* const forward[] = {self, other};
@@ -3357,43 +2928,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 );
             }
 
-            static PyObject* nb_and(PyObject* lhs, PyObject* rhs) {
-                PyTypeObject* lhs_type = Py_TYPE(lhs);
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(lhs_type);
-                    if (meta->__and__) {
-                        PyObject* const forward[] = {lhs, rhs};
-                        result = PyObject_Vectorcall(
-                            meta->__and__,
-                            forward,
-                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_and) {
-                        result = meta->base_nb_and(lhs, rhs);
-                    }
-                    if (result != Py_NotImplemented) {
-                        return result;
-                    }
-                }
-                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
-                if (meta->__rand__) {
-                    PyObject* const forward[] = {rhs, lhs};
-                    return PyObject_Vectorcall(
-                        meta->__rand__,
-                        forward,
-                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                } else if (meta->base_nb_and) {
-                    return meta->base_nb_and(rhs, lhs);
-                }
-                Py_RETURN_NOTIMPLEMENTED;
-            }
+            static PyObject* nb_and(PyObject* lhs, PyObject* rhs);
 
             static PyObject* nb_inplace_and(PyObject* self, PyObject* other) {
                 PyObject* const forward[] = {self, other};
@@ -3405,43 +2940,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 );
             }
 
-            static PyObject* nb_xor(PyObject* lhs, PyObject* rhs) {
-                PyTypeObject* lhs_type = Py_TYPE(lhs);
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(lhs_type);
-                    if (meta->__xor__) {
-                        PyObject* const forward[] = {lhs, rhs};
-                        result = PyObject_Vectorcall(
-                            meta->__xor__,
-                            forward,
-                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_xor) {
-                        result = meta->base_nb_xor(lhs, rhs);
-                    }
-                    if (result != Py_NotImplemented) {
-                        return result;
-                    }
-                }
-                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
-                if (meta->__rxor__) {
-                    PyObject* const forward[] = {rhs, lhs};
-                    return PyObject_Vectorcall(
-                        meta->__rxor__,
-                        forward,
-                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                } else if (meta->base_nb_xor) {
-                    return meta->base_nb_xor(rhs, lhs);
-                }
-                Py_RETURN_NOTIMPLEMENTED;
-            }
+            static PyObject* nb_xor(PyObject* lhs, PyObject* rhs);
 
             static PyObject* nb_inplace_xor(PyObject* self, PyObject* other) {
                 PyObject* const forward[] = {self, other};
@@ -3453,43 +2952,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 );
             }
 
-            static PyObject* nb_or(PyObject* lhs, PyObject* rhs) {
-                PyTypeObject* lhs_type = Py_TYPE(lhs);
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(lhs_type);
-                    if (meta->__or__) {
-                        PyObject* const forward[] = {lhs, rhs};
-                        result = PyObject_Vectorcall(
-                            meta->__or__,
-                            forward,
-                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_or) {
-                        result = meta->base_nb_or(lhs, rhs);
-                    }
-                    if (result != Py_NotImplemented) {
-                        return result;
-                    }
-                }
-                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
-                if (meta->__ror__) {
-                    PyObject* const forward[] = {rhs, lhs};
-                    return PyObject_Vectorcall(
-                        meta->__ror__,
-                        forward,
-                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                } else if (meta->base_nb_or) {
-                    return meta->base_nb_or(rhs, lhs);
-                }
-                Py_RETURN_NOTIMPLEMENTED;
-            }
+            static PyObject* nb_or(PyObject* lhs, PyObject* rhs);
 
             static PyObject* nb_inplace_or(PyObject* self, PyObject* other) {
                 PyObject* const forward[] = {self, other};
@@ -3519,41 +2982,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 );
             }
 
-            static PyObject* nb_floor_divide(PyObject* lhs, PyObject* rhs) {
-                PyTypeObject* lhs_type = Py_TYPE(lhs);
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(lhs_type);
-                    if (meta->__floordiv__) {
-                        PyObject* const forward[] = {lhs, rhs};
-                        result = PyObject_Vectorcall(
-                            meta->__floordiv__,
-                            forward,
-                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_floor_divide) {
-                        result = meta->base_nb_floor_divide(lhs, rhs);
-                    }
-                    Py_RETURN_NOTIMPLEMENTED;
-                }
-                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
-                if (meta->__rfloordiv__) {
-                    PyObject* const forward[] = {rhs, lhs};
-                    return PyObject_Vectorcall(
-                        meta->__rfloordiv__,
-                        forward,
-                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                } else if (meta->base_nb_floor_divide) {
-                    return meta->base_nb_floor_divide(rhs, lhs);
-                }
-                Py_RETURN_NOTIMPLEMENTED;
-            }
+            static PyObject* nb_floor_divide(PyObject* lhs, PyObject* rhs);
 
             static PyObject* nb_inplace_floor_divide(PyObject* self, PyObject* other) {
                 PyObject* const forward[] = {self, other};
@@ -3565,43 +2994,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 );
             }
 
-            static PyObject* nb_true_divide(PyObject* lhs, PyObject* rhs) {
-                PyTypeObject* lhs_type = Py_TYPE(lhs);
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(lhs_type);
-                    if (meta->__truediv__) {
-                        PyObject* const forward[] = {lhs, rhs};
-                        result = PyObject_Vectorcall(
-                            meta->__truediv__,
-                            forward,
-                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_true_divide) {
-                        result = meta->base_nb_true_divide(lhs, rhs);
-                    }
-                    if (result != Py_NotImplemented) {
-                        return result;
-                    }
-                }
-                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
-                if (meta->__rtruediv__) {
-                    PyObject* const forward[] = {rhs, lhs};
-                    return PyObject_Vectorcall(
-                        meta->__rtruediv__,
-                        forward,
-                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                } else if (meta->base_nb_true_divide) {
-                    return meta->base_nb_true_divide(rhs, lhs);
-                }
-                Py_RETURN_NOTIMPLEMENTED;
-            }
+            static PyObject* nb_true_divide(PyObject* lhs, PyObject* rhs);
 
             static PyObject* nb_inplace_true_divide(PyObject* self, PyObject* other) {
                 PyObject* const forward[] = {self, other};
@@ -3622,43 +3015,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 );
             }
 
-            static PyObject* nb_matrix_multiply(PyObject* lhs, PyObject* rhs) {
-                PyTypeObject* lhs_type = Py_TYPE(lhs);
-                if (PyType_IsSubtype(
-                    Py_TYPE(lhs_type),
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
-                )) {
-                    PyObject* result;
-                    __python__* meta = reinterpret_cast<__python__*>(lhs_type);
-                    if (meta->__matmul__) {
-                        PyObject* const forward[] = {lhs, rhs};
-                        result = PyObject_Vectorcall(
-                            meta->__matmul__,
-                            forward,
-                            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            nullptr
-                        );
-                    } else if (meta->base_nb_matrix_multiply) {
-                        result = meta->base_nb_matrix_multiply(lhs, rhs);
-                    }
-                    if (result != Py_NotImplemented) {
-                        return result;
-                    }
-                }
-                __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
-                if (meta->__rmatmul__) {
-                    PyObject* const forward[] = {rhs, lhs};
-                    return PyObject_Vectorcall(
-                        meta->__rmatmul__,
-                        forward,
-                        1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        nullptr
-                    );
-                } else if (meta->base_nb_matrix_multiply) {
-                    return meta->base_nb_matrix_multiply(rhs, lhs);
-                }
-                Py_RETURN_NOTIMPLEMENTED;
-            }
+            static PyObject* nb_matrix_multiply(PyObject* lhs, PyObject* rhs);
 
             static PyObject* nb_inplace_matrix_multiply(PyObject* self, PyObject* other) {
                 PyObject* const forward[] = {self, other};
@@ -3677,7 +3034,7 @@ the C++ level and retrieves their corresponding Python types.)doc";
                 .ml_name = "__instancecheck__",
                 .ml_meth = reinterpret_cast<PyCFunction>(class_instancecheck),
                 .ml_flags = METH_O,
-                .ml_doc =
+                .ml_doc = PyDoc_STR(
 R"doc(Determine if an object is an instance of the class or its subclasses.
 
 Parameters
@@ -3695,12 +3052,13 @@ Notes
 This method is called automatically by Python when using the `isinstance()` function to
 test against this type.  It is equivalent to a C++ `py::isinstance()` call, which can
 be customize by specializing the `__isinstance__` control struct.)doc"
+                )
             },
             {
                 .ml_name = "__subclasscheck__",
                 .ml_meth = reinterpret_cast<PyCFunction>(class_subclasscheck),
                 .ml_flags = METH_O,
-                .ml_doc =
+                .ml_doc = PyDoc_STR(
 R"doc(Determine if a class is a subclass of this class.
 
 Parameters
@@ -3718,737 +3076,2130 @@ Notes
 This method is called automatically by Python when using the `issubclass()` function
 to test against this type.  It is equivalent to a C++ `py::issubclass()` call, which
 can be customize by specializing the `__issubclass__` control struct.)doc"
+                )
             },
             {nullptr, nullptr, 0, nullptr}
         };
-
-        /// TODO: document all the descriptors
 
         inline static PyGetSetDef getset[] = {
             {
                 .name = "__doc__",
                 .get = reinterpret_cast<getter>(class_doc),
                 .set = nullptr,
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(The class's documentation string.
+
+See Also
+--------
+object.__doc__ : Python's built-in documentation string attribute.
+
+Notes
+-----
+The metaclass adds a list of template instantiations to the end of the docstring, if
+any are present.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__new__",
                 .get = reinterpret_cast<getter>(Descr::__new__::get),
                 .set = reinterpret_cast<setter>(Descr::__new__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Instance creation operator.
+
+See Also
+--------
+object.__new__ : Python's built-in instance creation operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__init__",
                 .get = reinterpret_cast<getter>(Descr::__init__::get),
                 .set = reinterpret_cast<setter>(Descr::__init__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Instance initialization operator.
+
+See Also
+--------
+object.__init__ : Python's built-in instance initialization operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__del__",
                 .get = reinterpret_cast<getter>(Descr::__del__::get),
                 .set = reinterpret_cast<setter>(Descr::__del__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Instance deallocation operator.
+
+See Also
+--------
+object.__del__ : Python's built-in instance deallocation operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.
+
+This method should never need to be overridden, as the default `tp_dealloc` slot will
+call the class's C++ destructor like normal.  Any custom deallocation logic should be
+placed there instead, which is much safer and less error-prone.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__repr__",
                 .get = reinterpret_cast<getter>(Descr::__repr__::get),
                 .set = reinterpret_cast<setter>(Descr::__repr__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(String representation operator.
+
+See Also
+--------
+object.__repr__ : Python's built-in string representation operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__str__",
                 .get = reinterpret_cast<getter>(Descr::__str__::get),
                 .set = reinterpret_cast<setter>(Descr::__str__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(String conversion operator.
+
+See Also
+--------
+object.__str__ : Python's built-in string conversion operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__bytes__",
                 .get = reinterpret_cast<getter>(Descr::__bytes__::get),
                 .set = reinterpret_cast<setter>(Descr::__bytes__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Bytes conversion operator.
+
+See Also
+--------
+object.__bytes__ : Python's built-in bytes conversion operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__format__",
                 .get = reinterpret_cast<getter>(Descr::__format__::get),
                 .set = reinterpret_cast<setter>(Descr::__format__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(f-string formatting operator.
+
+See Also
+--------
+object.__format__ : Python's built-in f-string formatting operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__lt__",
                 .get = reinterpret_cast<getter>(Descr::__lt__::get),
                 .set = reinterpret_cast<setter>(Descr::__lt__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Less-than comparison operator.
+
+See Also
+--------
+object.__lt__ : Python's built-in less-than comparison operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__le__",
                 .get = reinterpret_cast<getter>(Descr::__le__::get),
                 .set = reinterpret_cast<setter>(Descr::__le__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Less-than-or-equal comparison operator.
+
+See Also
+--------
+object.__le__ : Python's built-in less-than-or-equal comparison operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__eq__",
                 .get = reinterpret_cast<getter>(Descr::__eq__::get),
                 .set = reinterpret_cast<setter>(Descr::__eq__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Equality operator.
+
+See Also
+--------
+object.__eq__ : Python's built-in equality operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__ne__",
                 .get = reinterpret_cast<getter>(Descr::__ne__::get),
                 .set = reinterpret_cast<setter>(Descr::__ne__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Inequality operator.
+
+See Also
+--------
+object.__ne__ : Python's built-in inequality operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__ge__",
                 .get = reinterpret_cast<getter>(Descr::__ge__::get),
                 .set = reinterpret_cast<setter>(Descr::__ge__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Greater-than-or-equal operator
+
+See Also
+--------
+object.__ge__ : Python's built-in greater-than-or-equal operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__gt__",
                 .get = reinterpret_cast<getter>(Descr::__gt__::get),
                 .set = reinterpret_cast<setter>(Descr::__gt__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Greater-than operator.
+
+See Also
+--------
+object.__gt__ : Python's built-in greater-than operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__hash__",
                 .get = reinterpret_cast<getter>(Descr::__hash__::get),
                 .set = reinterpret_cast<setter>(Descr::__hash__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Hash operator.
+
+See Also
+--------
+object.__hash__ : Python's built-in hash operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__bool__",
                 .get = reinterpret_cast<getter>(Descr::__bool__::get),
                 .set = reinterpret_cast<setter>(Descr::__bool__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Boolean conversion operator.
+
+See Also
+--------
+object.__bool__ : Python's built-in boolean conversion operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__getattr__",
                 .get = reinterpret_cast<getter>(Descr::__getattr__::get),
                 .set = reinterpret_cast<setter>(Descr::__getattr__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Attribute lookup operator.
+
+See Also
+--------
+object.__getattr__ : Python's built-in attribute lookup operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.
+
+This method is distinct from `__getattribute__` in that it will only be called if the
+latter raises an `AttributeError` after exhausting all other options.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__getattribute__",
                 .get = reinterpret_cast<getter>(Descr::__getattribute__::get),
                 .set = reinterpret_cast<setter>(Descr::__getattribute__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Attribute access operator.
+
+See Also
+--------
+object.__getattribute__ : Python's built-in attribute access operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.
+
+This method is distinct from `__getattr__` in that it will be called greedily on every
+attribute access, before searching for descriptors or within the instance dictionary,
+MRO, etc.  It's generally not recommended to override this method, as it can easily
+lead to infinite recursion or unexpected behavior if not done carefully.  `__getattr__`
+is much more stable in this regard.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__setattr__",
                 .get = reinterpret_cast<getter>(Descr::__setattr__::get),
                 .set = reinterpret_cast<setter>(Descr::__setattr__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Attribute assignment operator.
+
+See Also
+--------
+object.__setattr__ : Python's built-in attribute assignment operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__delattr__",
                 .get = reinterpret_cast<getter>(Descr::__delattr__::get),
                 .set = reinterpret_cast<setter>(Descr::__delattr__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Attribute deletion operator.
+
+See Also
+--------
+object.__delattr__ : Python's built-in attribute deletion operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__dir__",
                 .get = reinterpret_cast<getter>(Descr::__dir__::get),
                 .set = reinterpret_cast<setter>(Descr::__dir__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Return a list of valid attributes for the object.
+
+See Also
+--------
+object.__dir__ : Python's built-in attribute listing operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__get__",
                 .get = reinterpret_cast<getter>(Descr::__get__::get),
                 .set = reinterpret_cast<setter>(Descr::__get__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Descriptor access operator.
+
+See Also
+--------
+object.__get__ : Python's built-in descriptor access operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__set__",
                 .get = reinterpret_cast<getter>(Descr::__set__::get),
                 .set = reinterpret_cast<setter>(Descr::__set__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Descriptor assignment operator.
+
+See Also
+--------
+object.__set__ : Python's built-in descriptor assignment operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__delete__",
                 .get = reinterpret_cast<getter>(Descr::__delete__::get),
                 .set = reinterpret_cast<setter>(Descr::__delete__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Descriptor deletion operator.
+
+See Also
+--------
+object.__delete__ : Python's built-in descriptor deletion operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__init_subclass__",
                 .get = reinterpret_cast<getter>(Descr::__init_subclass__::get),
                 .set = reinterpret_cast<setter>(Descr::__init_subclass__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Subclass initialization operator.
+
+See Also
+--------
+object.__init_subclass__ : Python's built-in subclass initialization operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__set_name__",
                 .get = reinterpret_cast<getter>(Descr::__set_name__::get),
                 .set = reinterpret_cast<setter>(Descr::__set_name__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Attribute naming operator.
+
+See Also
+--------
+object.__set_name__ : Python's built-in attribute naming operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__mro_entries__",
                 .get = reinterpret_cast<getter>(Descr::__mro_entries__::get),
                 .set = reinterpret_cast<setter>(Descr::__mro_entries__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Inheritable base substitution operator.
+
+See Also
+--------
+object.__mro_entries__ : Python's built-in base substitution operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__instancecheck__",
                 .get = reinterpret_cast<getter>(Descr::__instancecheck__::get),
                 .set = reinterpret_cast<setter>(Descr::__instancecheck__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Instance type check operator.
+
+See Also
+--------
+object.__instancecheck__ : Python's built-in instance type check operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__subclasscheck__",
                 .get = reinterpret_cast<getter>(Descr::__subclasscheck__::get),
                 .set = reinterpret_cast<setter>(Descr::__subclasscheck__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Subclass type check operator.
+
+See Also
+--------
+object.__subclasscheck__ : Python's built-in subclass type check operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__class_getitem__",
                 .get = reinterpret_cast<getter>(Descr::__class_getitem__::get),
                 .set = reinterpret_cast<setter>(Descr::__class_getitem__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Class subscript operator.
+
+See Also
+--------
+object.__class_getitem__ : Python's built-in class subscript operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.
+
+Note that this method has lower precedence than the `__getitem__` slot of the
+metaclass itself, which is used to navigate template hierarchies from Python.  This
+should not be a problem in practice, as that method is only called when indexing a
+template interface type, which otherwise has no usable interface.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__call__",
                 .get = reinterpret_cast<getter>(Descr::__call__::get),
                 .set = reinterpret_cast<setter>(Descr::__call__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Instance call operator.
+
+See Also
+--------
+object.__call__ : Python's built-in instance call operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__len__",
                 .get = reinterpret_cast<getter>(Descr::__len__::get),
                 .set = reinterpret_cast<setter>(Descr::__len__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Sequence length operator.
+
+See Also
+--------
+object.__len__ : Python's built-in sequence length operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__length_hint__",
                 .get = reinterpret_cast<getter>(Descr::__length_hint__::get),
                 .set = reinterpret_cast<setter>(Descr::__length_hint__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Iterator length hint operator.
+
+See Also
+--------
+object.__length_hint__ : Python's built-in iterator length hint operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.
+
+This method is distinct from `__len__` in that it will only be called if the latter is
+unavailable, and only as an optimization when a container of indeterminate length is
+being iterated over.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__getitem__",
                 .get = reinterpret_cast<getter>(Descr::__getitem__::get),
                 .set = reinterpret_cast<setter>(Descr::__getitem__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Instance subscript operator.
+
+See Also
+--------
+object.__getitem__ : Python's built-in instance subscript operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__setitem__",
                 .get = reinterpret_cast<getter>(Descr::__setitem__::get),
                 .set = reinterpret_cast<setter>(Descr::__setitem__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Instance subscript assignment operator.
+
+See Also
+--------
+object.__setitem__ : Python's built-in instance subscript assignment operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__delitem__",
                 .get = reinterpret_cast<getter>(Descr::__delitem__::get),
                 .set = reinterpret_cast<setter>(Descr::__delitem__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Instance subscript deletion operator.
+
+See Also
+--------
+object.__delitem__ : Python's built-in instance subscript deletion operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__missing__",
                 .get = reinterpret_cast<getter>(Descr::__missing__::get),
                 .set = reinterpret_cast<setter>(Descr::__missing__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Fallback instance subscript operator.
+
+See Also
+--------
+object.__missing__ : Python's built-in fallback instance subscript operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.
+
+This method is called by `dict.__getitem__()` to implement `self[key]` when the key is
+not found in the dictionary.  It is not called under any other circumstances.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__iter__",
                 .get = reinterpret_cast<getter>(Descr::__iter__::get),
                 .set = reinterpret_cast<setter>(Descr::__iter__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Iteration operator.
+
+See Also
+--------
+object.__iter__ : Python's built-in iteration operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__next__",
                 .get = reinterpret_cast<getter>(Descr::__next__::get),
                 .set = reinterpret_cast<setter>(Descr::__next__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Iterator increment operator.
+
+See Also
+--------
+object.__next__ : Python's built-in iterator increment operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__reversed__",
                 .get = reinterpret_cast<getter>(Descr::__reversed__::get),
                 .set = reinterpret_cast<setter>(Descr::__reversed__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Reverse iteration operator.
+
+See Also
+--------
+object.__reversed__ : Python's built-in reverse iteration operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__contains__",
                 .get = reinterpret_cast<getter>(Descr::__contains__::get),
                 .set = reinterpret_cast<setter>(Descr::__contains__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Membership test operator.
+
+See Also
+--------
+object.__contains__ : Python's built-in membership test operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__add__",
                 .get = reinterpret_cast<getter>(Descr::__add__::get),
                 .set = reinterpret_cast<setter>(Descr::__add__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Addition operator.
+
+See Also
+--------
+object.__add__ : Python's built-in addition operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__sub__",
                 .get = reinterpret_cast<getter>(Descr::__sub__::get),
                 .set = reinterpret_cast<setter>(Descr::__sub__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Subtraction operator.
+
+See Also
+--------
+object.__sub__ : Python's built-in subtraction operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__mul__",
                 .get = reinterpret_cast<getter>(Descr::__mul__::get),
                 .set = reinterpret_cast<setter>(Descr::__mul__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Multiplication operator.
+
+See Also
+--------
+object.__mul__ : Python's built-in multiplication operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__matmul__",
                 .get = reinterpret_cast<getter>(Descr::__matmul__::get),
                 .set = reinterpret_cast<setter>(Descr::__matmul__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Matrix multiplication operator.
+
+See Also
+--------
+object.__matmul__ : Python's built-in matrix multiplication operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__truediv__",
                 .get = reinterpret_cast<getter>(Descr::__truediv__::get),
                 .set = reinterpret_cast<setter>(Descr::__truediv__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(True division operator.
+
+See Also
+--------
+object.__truediv__ : Python's built-in true division operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__floordiv__",
                 .get = reinterpret_cast<getter>(Descr::__floordiv__::get),
                 .set = reinterpret_cast<setter>(Descr::__floordiv__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Floor division operator.
+
+See Also
+--------
+object.__floordiv__ : Python's built-in floor division operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__mod__",
                 .get = reinterpret_cast<getter>(Descr::__mod__::get),
                 .set = reinterpret_cast<setter>(Descr::__mod__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Modulus operator.
+
+See Also
+--------
+object.__mod__ : Python's built-in modulus operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__divmod__",
                 .get = reinterpret_cast<getter>(Descr::__divmod__::get),
                 .set = reinterpret_cast<setter>(Descr::__divmod__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Combined floor division and modulus operator.
+
+See Also
+--------
+object.__divmod__ : Python's built-in combined floor division and modulus operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__pow__",
                 .get = reinterpret_cast<getter>(Descr::__pow__::get),
                 .set = reinterpret_cast<setter>(Descr::__pow__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Exponentiation operator.
+
+See Also
+--------
+object.__pow__ : Python's built-in exponentiation operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__lshift__",
                 .get = reinterpret_cast<getter>(Descr::__lshift__::get),
                 .set = reinterpret_cast<setter>(Descr::__lshift__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Binary left-shift operator.
+
+See Also
+--------
+object.__lshift__ : Python's built-in binary left-shift operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__rshift__",
                 .get = reinterpret_cast<getter>(Descr::__rshift__::get),
                 .set = reinterpret_cast<setter>(Descr::__rshift__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Binary right-shift operator.
+
+See Also
+--------
+object.__rshift__ : Python's built-in binary right-shift operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__and__",
                 .get = reinterpret_cast<getter>(Descr::__and__::get),
                 .set = reinterpret_cast<setter>(Descr::__and__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Bitwise AND operator.
+
+See Also
+--------
+object.__and__ : Python's built-in bitwise AND operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__xor__",
                 .get = reinterpret_cast<getter>(Descr::__xor__::get),
                 .set = reinterpret_cast<setter>(Descr::__xor__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Bitwise XOR operator.
+
+See Also
+--------
+object.__xor__ : Python's built-in bitwise XOR operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__or__",
                 .get = reinterpret_cast<getter>(Descr::__or__::get),
                 .set = reinterpret_cast<setter>(Descr::__or__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Bitwise OR operator.
+
+See Also
+--------
+object.__or__ : Python's built-in bitwise OR operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__radd__",
                 .get = reinterpret_cast<getter>(Descr::__radd__::get),
                 .set = reinterpret_cast<setter>(Descr::__radd__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Reverse addition operator.
+
+See Also
+--------
+object.__radd__ : Python's built-in reverse addition operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__rsub__",
                 .get = reinterpret_cast<getter>(Descr::__rsub__::get),
                 .set = reinterpret_cast<setter>(Descr::__rsub__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Reverse subtraction operator.
+
+See Also
+--------
+object.__rsub__ : Python's built-in reverse subtraction operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__rmul__",
                 .get = reinterpret_cast<getter>(Descr::__rmul__::get),
                 .set = reinterpret_cast<setter>(Descr::__rmul__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Reverse multiplication operator.
+
+See Also
+--------
+object.__rmul__ : Python's built-in reverse multiplication operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__rmatmul__",
                 .get = reinterpret_cast<getter>(Descr::__rmatmul__::get),
                 .set = reinterpret_cast<setter>(Descr::__rmatmul__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Reverse matrix multiplication operator.
+
+See Also
+--------
+object.__rmatmul__ : Python's built-in reverse matrix multiplication operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__rtruediv__",
                 .get = reinterpret_cast<getter>(Descr::__rtruediv__::get),
                 .set = reinterpret_cast<setter>(Descr::__rtruediv__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Reverse true division operator.
+
+See Also
+--------
+object.__rtruediv__ : Python's built-in reverse true division operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__rfloordiv__",
                 .get = reinterpret_cast<getter>(Descr::__rfloordiv__::get),
                 .set = reinterpret_cast<setter>(Descr::__rfloordiv__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Reverse floor division operator.
+
+See Also
+--------
+object.__rfloordiv__ : Python's built-in reverse floor division operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__rmod__",
                 .get = reinterpret_cast<getter>(Descr::__rmod__::get),
                 .set = reinterpret_cast<setter>(Descr::__rmod__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Reverse modulus operator.
+
+See Also
+--------
+object.__rmod__ : Python's built-in reverse modulus operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__rdivmod__",
                 .get = reinterpret_cast<getter>(Descr::__rdivmod__::get),
                 .set = reinterpret_cast<setter>(Descr::__rdivmod__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Combined and reversed floor division and modulus operator.
+
+See Also
+--------
+object.__rdivmod__ : Python's built-in reversed floor division and modulus operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__rpow__",
                 .get = reinterpret_cast<getter>(Descr::__rpow__::get),
                 .set = reinterpret_cast<setter>(Descr::__rpow__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Reverse exponentiation operator.
+
+See Also
+--------
+object.__rpow__ : Python's built-in reverse exponentiation operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__rlshift__",
                 .get = reinterpret_cast<getter>(Descr::__rlshift__::get),
                 .set = reinterpret_cast<setter>(Descr::__rlshift__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Reverse binary left-shift operator.
+
+See Also
+--------
+object.__rlshift__ : Python's built-in reverse binary left-shift operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__rrshift__",
                 .get = reinterpret_cast<getter>(Descr::__rrshift__::get),
                 .set = reinterpret_cast<setter>(Descr::__rrshift__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Reverse binary right-shift operator.
+
+See Also
+--------
+object.__rrshift__ : Python's built-in reverse binary right-shift operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__rand__",
                 .get = reinterpret_cast<getter>(Descr::__rand__::get),
                 .set = reinterpret_cast<setter>(Descr::__rand__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Reverse bitwise AND operator.
+
+See Also
+--------
+object.__rand__ : Python's built-in reverse bitwise AND operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__rxor__",
                 .get = reinterpret_cast<getter>(Descr::__rxor__::get),
                 .set = reinterpret_cast<setter>(Descr::__rxor__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Reverse bitwise XOR operator.
+
+See Also
+--------
+object.__rxor__ : Python's built-in reverse bitwise XOR operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__ror__",
                 .get = reinterpret_cast<getter>(Descr::__ror__::get),
                 .set = reinterpret_cast<setter>(Descr::__ror__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Reverse bitwise OR operator.
+
+See Also
+--------
+object.__ror__ : Python's built-in reverse bitwise OR operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__iadd__",
                 .get = reinterpret_cast<getter>(Descr::__iadd__::get),
                 .set = reinterpret_cast<setter>(Descr::__iadd__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(In-place addition operator.
+
+See Also
+--------
+object.__iadd__ : Python's built-in in-place addition operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__isub__",
                 .get = reinterpret_cast<getter>(Descr::__isub__::get),
                 .set = reinterpret_cast<setter>(Descr::__isub__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(In-place subtraction operator.
+
+See Also
+--------
+object.__isub__ : Python's built-in in-place subtraction operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__imul__",
                 .get = reinterpret_cast<getter>(Descr::__imul__::get),
                 .set = reinterpret_cast<setter>(Descr::__imul__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(In-place multiplication operator.
+
+See Also
+--------
+object.__imul__ : Python's built-in in-place multiplication operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__imatmul__",
                 .get = reinterpret_cast<getter>(Descr::__imatmul__::get),
                 .set = reinterpret_cast<setter>(Descr::__imatmul__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(In-place matrix multiplication operator.
+
+See Also
+--------
+object.__imatmul__ : Python's built-in in-place matrix multiplication operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__itruediv__",
                 .get = reinterpret_cast<getter>(Descr::__itruediv__::get),
                 .set = reinterpret_cast<setter>(Descr::__itruediv__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(In-place true division operator.
+
+See Also
+--------
+object.__itruediv__ : Python's built-in in-place true division operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__ifloordiv__",
                 .get = reinterpret_cast<getter>(Descr::__ifloordiv__::get),
                 .set = reinterpret_cast<setter>(Descr::__ifloordiv__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(In-place floor division operator.
+
+See Also
+--------
+object.__ifloordiv__ : Python's built-in in-place floor division operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__imod__",
                 .get = reinterpret_cast<getter>(Descr::__imod__::get),
                 .set = reinterpret_cast<setter>(Descr::__imod__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(In-place modulus operator.
+
+See Also
+--------
+object.__imod__ : Python's built-in in-place modulus operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__ipow__",
                 .get = reinterpret_cast<getter>(Descr::__ipow__::get),
                 .set = reinterpret_cast<setter>(Descr::__ipow__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(In-place exponentiation operator.
+
+See Also
+--------
+object.__ipow__ : Python's built-in in-place exponentiation operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__ilshift__",
                 .get = reinterpret_cast<getter>(Descr::__ilshift__::get),
                 .set = reinterpret_cast<setter>(Descr::__ilshift__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(In-place binary left-shift operator.
+
+See Also
+--------
+object.__ilshift__ : Python's built-in in-place binary left-shift operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__irshift__",
                 .get = reinterpret_cast<getter>(Descr::__irshift__::get),
                 .set = reinterpret_cast<setter>(Descr::__irshift__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(In-place binary right-shift operator.
+
+See Also
+--------
+object.__irshift__ : Python's built-in in-place binary right-shift operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__iand__",
                 .get = reinterpret_cast<getter>(Descr::__iand__::get),
                 .set = reinterpret_cast<setter>(Descr::__iand__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(In-place bitwise AND operator.
+
+See Also
+--------
+object.__iand__ : Python's built-in in-place bitwise AND operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__ixor__",
                 .get = reinterpret_cast<getter>(Descr::__ixor__::get),
                 .set = reinterpret_cast<setter>(Descr::__ixor__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(In-place bitwise XOR operator.
+
+See Also
+--------
+object.__ixor__ : Python's built-in in-place bitwise XOR operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__ior__",
                 .get = reinterpret_cast<getter>(Descr::__ior__::get),
                 .set = reinterpret_cast<setter>(Descr::__ior__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(In-place bitwise OR operator.
+
+See Also
+--------
+object.__ior__ : Python's built-in in-place bitwise OR operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__neg__",
                 .get = reinterpret_cast<getter>(Descr::__neg__::get),
                 .set = reinterpret_cast<setter>(Descr::__neg__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Unary negative operator.
+
+See Also
+--------
+object.__neg__ : Python's built-in unary negative operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__pos__",
                 .get = reinterpret_cast<getter>(Descr::__pos__::get),
                 .set = reinterpret_cast<setter>(Descr::__pos__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Unary positive operator.
+
+See Also
+--------
+object.__pos__ : Python's built-in unary positive operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__abs__",
                 .get = reinterpret_cast<getter>(Descr::__abs__::get),
                 .set = reinterpret_cast<setter>(Descr::__abs__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Absolute value operator.
+
+See Also
+--------
+object.__abs__ : Python's built-in absolute value operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__invert__",
                 .get = reinterpret_cast<getter>(Descr::__invert__::get),
                 .set = reinterpret_cast<setter>(Descr::__invert__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Unary bitwise NOT operator.
+
+See Also
+--------
+object.__invert__ : Python's built-in unary bitwise NOT operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__complex__",
                 .get = reinterpret_cast<getter>(Descr::__complex_py__::get),
                 .set = reinterpret_cast<setter>(Descr::__complex_py__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Complex conversion operator.
+
+See Also
+--------
+object.__complex__ : Python's built-in complex conversion operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__int__",
                 .get = reinterpret_cast<getter>(Descr::__int__::get),
                 .set = reinterpret_cast<setter>(Descr::__int__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Integer conversion operator.
+
+See Also
+--------
+object.__int__ : Python's built-in integer conversion operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__float__",
                 .get = reinterpret_cast<getter>(Descr::__float__::get),
                 .set = reinterpret_cast<setter>(Descr::__float__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Floating point conversion operator.
+
+See Also
+--------
+object.__float__ : Python's built-in floating point conversion operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__index__",
                 .get = reinterpret_cast<getter>(Descr::__index__::get),
                 .set = reinterpret_cast<setter>(Descr::__index__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Generalized integer conversion operator.
+
+See Also
+--------
+object.__index__ : Python's built-in generalized integer conversion operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.
+
+This method is distinct from `__int__()` in that it is generally used in the context of
+indexing, such as in a slice or array subscript.  It is more permissive than the latter
+method, however, and will be used in a variety of other contexts where an integer-like
+object is expected.  See the Python docs for more detail.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__round__",
                 .get = reinterpret_cast<getter>(Descr::__round__::get),
                 .set = reinterpret_cast<setter>(Descr::__round__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Numeric rounding operator.
+
+See Also
+--------
+object.__round__ : Python's built-in rounding operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__trunc__",
                 .get = reinterpret_cast<getter>(Descr::__trunc__::get),
                 .set = reinterpret_cast<setter>(Descr::__trunc__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Numeric truncation operator.
+
+See Also
+--------
+object.__trunc__ : Python's built-in truncation operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__floor__",
                 .get = reinterpret_cast<getter>(Descr::__floor__::get),
                 .set = reinterpret_cast<setter>(Descr::__floor__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Numeric floor operator.
+
+See Also
+--------
+object.__floor__ : Python's built-in floor operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__ceil__",
                 .get = reinterpret_cast<getter>(Descr::__ceil__::get),
                 .set = reinterpret_cast<setter>(Descr::__ceil__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Numeric ceiling operator.
+
+See Also
+--------
+object.__ceil__ : Python's built-in ceiling operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__enter__",
                 .get = reinterpret_cast<getter>(Descr::__enter__::get),
                 .set = reinterpret_cast<setter>(Descr::__enter__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Context manager entry operator.
+
+See Also
+--------
+object.__enter__ : Python's built-in context manager entry operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__exit__",
                 .get = reinterpret_cast<getter>(Descr::__exit__::get),
                 .set = reinterpret_cast<setter>(Descr::__exit__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Context manager exit operator.
+
+See Also
+--------
+object.__exit__ : Python's built-in context manager exit operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__buffer__",
                 .get = reinterpret_cast<getter>(Descr::__buffer__::get),
                 .set = reinterpret_cast<setter>(Descr::__buffer__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Buffer acquisition operator.
+
+See Also
+--------
+object.__buffer__ : Python's built-in buffer acquisition operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__release_buffer__",
                 .get = reinterpret_cast<getter>(Descr::__release_buffer__::get),
                 .set = reinterpret_cast<setter>(Descr::__release_buffer__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Buffer release operator.
+
+See Also
+--------
+object.__release_buffer__ : Python's built-in buffer release operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__await__",
                 .get = reinterpret_cast<getter>(Descr::__await__::get),
                 .set = reinterpret_cast<setter>(Descr::__await__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Async await operator.
+
+See Also
+--------
+object.__await__ : Python's built-in async await operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__aiter__",
                 .get = reinterpret_cast<getter>(Descr::__aiter__::get),
                 .set = reinterpret_cast<setter>(Descr::__aiter__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Async iteration operator.
+
+See Also
+--------
+object.__aiter__ : Python's built-in async iteration operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__anext__",
                 .get = reinterpret_cast<getter>(Descr::__anext__::get),
                 .set = reinterpret_cast<setter>(Descr::__anext__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Async iterator increment operator.
+
+See Also
+--------
+object.__anext__ : Python's built-in async iterator increment operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__aenter__",
                 .get = reinterpret_cast<getter>(Descr::__aenter__::get),
                 .set = reinterpret_cast<setter>(Descr::__aenter__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Async context manager entry operator.
+
+See Also
+--------
+object.__aenter__ : Python's built-in async context manager entry operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {
                 .name = "__aexit__",
                 .get = reinterpret_cast<getter>(Descr::__aexit__::get),
                 .set = reinterpret_cast<setter>(Descr::__aexit__::set),
-                .doc = nullptr,
+                .doc = PyDoc_STR(
+R"doc(Async context manager exit operator.
+
+See Also
+--------
+object.__aexit__ : Python's built-in async context manager exit operator.
+
+Notes
+-----
+When assigned to, the metaclass will store this method in an internal overload set,
+which allows it to be overloaded equivalently from both languages.  Otherwise, the
+metaclass will traverse the MRO to give the same result as base Python.  If the method
+is deleted, the metaclass will reset the slot to its original value.)doc"
+                ),
                 .closure = nullptr
             },
             {nullptr, nullptr, nullptr, nullptr, nullptr}
         };
 
+    };
+
+    BertrandMeta(PyObject* p, borrowed_t t) : Object(p, t) {}
+    BertrandMeta(PyObject* p, stolen_t t) : Object(p, t) {}
+
+    template <typename... Args> requires (implicit_ctor<BertrandMeta>::enable<Args...>)
+    BertrandMeta(Args&&... args) : Object(
+        implicit_ctor<BertrandMeta>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<BertrandMeta>::enable<Args...>)
+    explicit BertrandMeta(Args&&... args) : Object(
+        explicit_ctor<BertrandMeta>{},
+        std::forward<Args>(args)...
+    ) {}
+
+};
+
+
+/* The type object associated with Bertrand's metaclass.  This has to be separate
+specialization to prevent Bertrand's generic `Type<T>` implementation from attempting
+to make this an instance of itself, which would cause a circular dependency. */
+template <>
+struct Type<BertrandMeta> : Object, Interface<Type<BertrandMeta>>, impl::TypeTag {
+    struct __python__ : def<__python__, Type>, PyTypeObject {
+        static Type __import__();
     };
 
     Type(PyObject* p, borrowed_t t) : Object(p, t) {}
@@ -4487,9 +5238,7 @@ struct __isinstance__<T, BertrandMeta> : Returns<bool> {
     }
     static constexpr bool operator()(const T& obj, const BertrandMeta& cls) {
         if constexpr (impl::python_like<T>) {
-            using Meta = Type<BertrandMeta>::__python__;
-            Meta* meta = reinterpret_cast<Meta*>(ptr(cls));
-            return meta->instancecheck(meta, ptr(obj));
+            return ptr(cls)->instancecheck(ptr(cls), ptr(obj));
         } else {
             return false;
         }
@@ -4514,9 +5263,7 @@ struct __issubclass__<T, BertrandMeta> : Returns<bool> {
     }
     static bool operator()(const T& obj, const BertrandMeta& cls) {
         if constexpr (impl::python_like<T>) {
-            using Meta = Type<BertrandMeta>::__python__;
-            Meta* meta = reinterpret_cast<Meta*>(ptr(cls));
-            return meta->subclasscheck(meta, ptr(obj));
+            return ptr(cls)->subclasscheck(ptr(cls), ptr(obj));
         } else {
             return false;
         }
@@ -4531,16 +5278,14 @@ struct __iter__<BertrandMeta>                               : Returns<BertrandMe
 template <typename... T>
 struct __getitem__<BertrandMeta, Type<T>...>                : Returns<BertrandMeta> {
     static auto operator()(const BertrandMeta& cls, const Type<T>&... key) {
-        using Meta = Type<BertrandMeta>::__python__;
-        Meta* meta = reinterpret_cast<Meta*>(ptr(cls));
-        if (meta->templates == nullptr) {
+        if (ptr(cls)->templates == nullptr) {
             throw TypeError("class has no template instantiations");
         }
         PyObject* tuple = PyTuple_Pack(sizeof...(T), ptr(key)...);
         if (tuple == nullptr) {
             Exception::from_python();
         }
-        PyObject* value = PyDict_GetItem(meta->templates, tuple);
+        PyObject* value = PyDict_GetItem(ptr(cls)->templates, tuple);
         Py_DECREF(tuple);
         if (value == nullptr) {
             Exception::from_python();
@@ -4557,16 +5302,14 @@ struct __iter__<Type<T>>                                    : Returns<BertrandMe
 template <impl::originates_from_cpp T, typename... U>
 struct __getitem__<Type<T>, Type<U>...>                     : Returns<BertrandMeta> {
     static auto operator()(const Type<T>& cls, const Type<U>&... key) {
-        using Meta = Type<BertrandMeta>::__python__;
-        Meta* meta = reinterpret_cast<Meta*>(ptr(cls));
-        if (meta->templates == nullptr) {
+        if (ptr(cls)->templates == nullptr) {
             throw TypeError("class has no template instantiations");
         }
         PyObject* tuple = PyTuple_Pack(sizeof...(U), ptr(key)...);
         if (tuple == nullptr) {
             Exception::from_python();
         }
-        PyObject* value = PyDict_GetItem(meta->templates, tuple);
+        PyObject* value = PyDict_GetItem(ptr(cls)->templates, tuple);
         Py_DECREF(tuple);
         if (value == nullptr) {
             Exception::from_python();
@@ -4576,126 +5319,897 @@ struct __getitem__<Type<T>, Type<U>...>                     : Returns<BertrandMe
 };
 
 
-////////////////////////
-////    REGISTRY    ////
-////////////////////////
+/// TODO: __call__, __cast__.  Calling an instance of the metaclass will produce an
+/// Object.  Casting a metaclass to a specific type will incur an `issubclass()` check.
+/// similar to Type<Object>
 
 
-// template <>
-// struct Type<TypeRegistry>;
+/* Implicitly convert an instance of the metaclass to a specific `Type<T>`
+specialization by applying a dynamic `issubclass()` check. */
+template <impl::originates_from_cpp To>
+struct __cast__<BertrandMeta, Type<To>>                     : Returns<Type<To>> {
+    static auto operator()(const Type<From>& from) {
+        if (issubclass<
+            typename __as_object__<To>::type,
+            typename __as_object__<From>::type
+        >()) {
+            return reinterpret_borrow<Type<To>>(ptr(from));
+        } else {
+            throw TypeError(
+                "cannot convert Python type from '" + repr(Type<From>()) +
+                 "' to '" + repr(Type<To>()) + "'"
+            );
+        }
+    }
+    static auto operator()(Type<From>&& from) {
+        if (issubclass<
+            typename __as_object__<To>::type,
+            typename __as_object__<From>::type
+        >()) {
+            return reinterpret_steal<Type<To>>(release(from));
+        } else {
+            throw TypeError(
+                "cannot convert Python type from '" + repr(Type<From>()) +
+                 "' to '" + repr(Type<To>()) + "'"
+            );
+        }
+    }
+};
 
 
-// template <>
-// struct Interface<TypeRegistry> {};
-// template <>
-// struct Interface<Type<TypeRegistry>> {};
+/* Generic `Type<T>` specialization delegates to `T::__python__` and sets the type's
+metaclass accordingly.  If the wrapper's `__python__` type implements `__export__()`,
+then the metaclass will be set to `BertrandMeta::__python__`.  Otherwise, it defaults
+to `PyTypeObject`. */
+template <std::derived_from<Object> Wrapper>
+struct Type<Wrapper> : Object, Interface<Type<Wrapper>> {
+private:
+
+    template <typename T>
+    static constexpr bool has_export = requires() {
+        { &T::__export__ };
+    };
+
+    using metaclass = std::conditional_t<
+        has_export<typename Wrapper::__python__>,
+        BertrandMeta::__python__,
+        PyTypeObject
+    >;
+
+public:
+    struct __python__ : def<__python__, Type>, metaclass {
+        static Type __import__() {
+            return Wrapper::__python__::__import__();
+        }
+    };
+
+    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
+    Type(PyObject* p, stolen_t t) : Object(p, t) {}
+
+    template <typename... Args> requires (implicit_ctor<Type>::template enable<Args...>)
+    Type(Args&&... args) : Object(
+        implicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+    template <typename... Args> requires (explicit_ctor<Type>::template enable<Args...>)
+    explicit Type(Args&&... args) : Object(
+        explicit_ctor<Type>{},
+        std::forward<Args>(args)...
+    ) {}
+
+};
 
 
-// /* A registry of all the types that are being tracked by Bertrand, which allows
-// searches from both sides of the language divide. */
-// struct TypeRegistry : Object, Interface<TypeRegistry> {
-
-//     TypeRegistry(PyObject* p, borrowed_t t) : Object(p, t) {}
-//     TypeRegistry(PyObject* p, stolen_t t) : Object(p, t) {}
-
-//     template <typename... Args> requires (implicit_ctor<TypeRegistry>::enable<Args...>)
-//     TypeRegistry(Args&&... args) : Object(
-//         implicit_ctor<TypeRegistry>{},
-//         std::forward<Args>(args)...
-//     ) {}
-
-//     template <typename... Args> requires (explicit_ctor<TypeRegistry>::enable<Args...>)
-//     explicit TypeRegistry(Args&&... args) : Object(
-//         explicit_ctor<TypeRegistry>{},
-//         std::forward<Args>(args)...
-//     ) {}
-
-// };
+inline Type<Object> Object::__python__::__import__() {
+    return reinterpret_borrow<Type<Object>>(reinterpret_cast<PyObject*>(
+        &PyBaseObject_Type
+    ));
+}
 
 
-
-// // namespace impl {
-
-// //     struct TypeRegistry {
-// //         struct Context {
-// //             PyTypeObject* py_type;
-// //             Type<BertrandMeta>::__python__* parent;
-// //         };
-
-// //         std::unordered_map<std::type_index, Context> cpp_map;
-// //         std::unordered_map<PyTypeObject*, Context> py_map;
-
-// //         template <
-
-// //         Context get(const Type<Object>& type) {
-// //             auto it = py_map.find(
-// //                 reinterpret_cast<PyTypeObject*>(ptr(type))
-// //             );
-// //             if (it == py_map.end()) {
-// //                 throw KeyError(type);
-// //             }
-// //             return it->second;
-// //         }
-
-// //     };
-
-// // }
+inline Type<Code> Code::__python__::__import__() {
+    return reinterpret_borrow<Type<Code>>(reinterpret_cast<PyObject*>(&PyCode_Type));
+}
 
 
-// /* Bertrand's metatype, which is used to expose C++ classes to Python and simplify the
-// binding process. */
-// template <>
-// struct Type<TypeRegistry> : Object, Interface<Type<TypeRegistry>>, impl::TypeTag {
-//     struct __python__ : TypeTag::def<__python__, TypeRegistry> {
+inline Type<Frame> Frame::__python__::__import__() {
+    return reinterpret_borrow<Type<Frame>>(
+        reinterpret_cast<PyObject*>(&PyFrame_Type)
+    );
+}
 
-//         template <StaticStr ModName>
-//         Type __export__(Bindings<ModName> bind) {
-//             bind.method<"get">(&__python__::get);
-//             return bind.finalize();
-//         }
 
-//         Type __import__() {
-//             PyObject* module = PyImport_Import(
-//                 impl::TemplateString<"bertrand.python">::ptr
-//             );
-//             if (module == nullptr) {
-//                 Exception::from_python();
-//             }
-//             PyObject* type = PyObject_GetAttr(
-//                 module,
-//                 impl::TemplateString<"TypeRegistry">::ptr
-//             );
-//             Py_DECREF(module);
-//             if (type == nullptr) {
-//                 Exception::from_python();
-//             }
-//             return reinterpret_steal<Type>(type);
-//         }
+inline Type<Traceback> Traceback::__python__::__import__() {
+    return reinterpret_borrow<Type<Traceback>>(
+        reinterpret_cast<PyObject*>(&PyTraceBack_Type)
+    );
+}
 
-//         /// TODO: Context should be convertible to a namedtuple?
-//         struct Context {
-//             PyTypeObject* py_type;
-//             Type<BertrandMeta>::__python__* parent;
-//         };
 
-//         PyObject_HEAD
-//         std::unordered_map<std::type_index, Context> cpp_map;
-//         std::unordered_map<PyTypeObject*, Context> py_map;
+#define IMPORT_EXCEPTION(CLS, PYTYPE)                                                   \
+    inline Type<CLS> CLS::__python__::__import__() {                                    \
+        return reinterpret_borrow<Type<CLS>>(PYTYPE);                                   \
+    }
 
-//         Context get(const Type<Object>& type) {
-//             auto it = py_map.find(
-//                 reinterpret_cast<PyTypeObject*>(ptr(type))
-//             );
-//             if (it == py_map.end()) {
-//                 throw KeyError(type);
-//             }
-//             return it->second;
-//         }
 
-//     };
+IMPORT_EXCEPTION(Exception, PyExc_Exception)
+IMPORT_EXCEPTION(ArithmeticError, PyExc_ArithmeticError)
+    IMPORT_EXCEPTION(FloatingPointError, PyExc_FloatingPointError)
+    IMPORT_EXCEPTION(OverflowError, PyExc_OverflowError)
+    IMPORT_EXCEPTION(ZeroDivisionError, PyExc_ZeroDivisionError)
+IMPORT_EXCEPTION(AssertionError, PyExc_AssertionError)
+IMPORT_EXCEPTION(AttributeError, PyExc_AttributeError)
+IMPORT_EXCEPTION(BufferError, PyExc_BufferError)
+IMPORT_EXCEPTION(EOFError, PyExc_EOFError)
+IMPORT_EXCEPTION(ImportError, PyExc_ImportError)
+    IMPORT_EXCEPTION(ModuleNotFoundError, PyExc_ModuleNotFoundError)
+IMPORT_EXCEPTION(LookupError, PyExc_LookupError)
+    IMPORT_EXCEPTION(IndexError, PyExc_IndexError)
+    IMPORT_EXCEPTION(KeyError, PyExc_KeyError)
+IMPORT_EXCEPTION(MemoryError, PyExc_MemoryError)
+IMPORT_EXCEPTION(NameError, PyExc_NameError)
+    IMPORT_EXCEPTION(UnboundLocalError, PyExc_UnboundLocalError)
+IMPORT_EXCEPTION(OSError, PyExc_OSError)
+    IMPORT_EXCEPTION(BlockingIOError, PyExc_BlockingIOError)
+    IMPORT_EXCEPTION(ChildProcessError, PyExc_ChildProcessError)
+    IMPORT_EXCEPTION(ConnectionError, PyExc_ConnectionError)
+        IMPORT_EXCEPTION(BrokenPipeError, PyExc_BrokenPipeError)
+        IMPORT_EXCEPTION(ConnectionAbortedError, PyExc_ConnectionAbortedError)
+        IMPORT_EXCEPTION(ConnectionRefusedError, PyExc_ConnectionRefusedError)
+        IMPORT_EXCEPTION(ConnectionResetError, PyExc_ConnectionResetError)
+    IMPORT_EXCEPTION(FileExistsError, PyExc_FileExistsError)
+    IMPORT_EXCEPTION(FileNotFoundError, PyExc_FileNotFoundError)
+    IMPORT_EXCEPTION(InterruptedError, PyExc_InterruptedError)
+    IMPORT_EXCEPTION(IsADirectoryError, PyExc_IsADirectoryError)
+    IMPORT_EXCEPTION(NotADirectoryError, PyExc_NotADirectoryError)
+    IMPORT_EXCEPTION(PermissionError, PyExc_PermissionError)
+    IMPORT_EXCEPTION(ProcessLookupError, PyExc_ProcessLookupError)
+    IMPORT_EXCEPTION(TimeoutError, PyExc_TimeoutError)
+IMPORT_EXCEPTION(ReferenceError, PyExc_ReferenceError)
+IMPORT_EXCEPTION(RuntimeError, PyExc_RuntimeError)
+    IMPORT_EXCEPTION(NotImplementedError, PyExc_NotImplementedError)
+    IMPORT_EXCEPTION(RecursionError, PyExc_RecursionError)
+IMPORT_EXCEPTION(StopAsyncIteration, PyExc_StopAsyncIteration)
+IMPORT_EXCEPTION(StopIteration, PyExc_StopIteration)
+IMPORT_EXCEPTION(SyntaxError, PyExc_SyntaxError)
+    IMPORT_EXCEPTION(IndentationError, PyExc_IndentationError)
+        IMPORT_EXCEPTION(TabError, PyExc_TabError)
+IMPORT_EXCEPTION(SystemError, PyExc_SystemError)
+IMPORT_EXCEPTION(TypeError, PyExc_TypeError)
+IMPORT_EXCEPTION(ValueError, PyExc_ValueError)
+    IMPORT_EXCEPTION(UnicodeError, PyExc_UnicodeError)
+        IMPORT_EXCEPTION(UnicodeDecodeError, PyExc_UnicodeDecodeError)
+        IMPORT_EXCEPTION(UnicodeEncodeError, PyExc_UnicodeEncodeError)
+        IMPORT_EXCEPTION(UnicodeTranslateError, PyExc_UnicodeTranslateError)
 
-// };
 
+#undef IMPORT_EXCEPTION
+
+
+inline PyObject* BertrandMeta::__python__::class_doc(__python__* cls, void*) {
+    std::string doc = cls->tp_doc;
+    if (cls->templates) {
+        if (!doc.ends_with("\n")) {
+            doc += "\n";
+        }
+        doc += "\n";
+        std::string header = "Instantations (" + std::to_string(PyDict_Size(
+            cls->templates
+        )) + ")";
+        doc += header + "\n" + std::string(header.size() - 1, '-') + "\n";
+
+        std::string prefix = "    " + std::string(cls->tp_name) + "[";
+        PyObject* key;
+        PyObject* value;
+        Py_ssize_t pos = 0;
+        while (PyDict_Next(
+            cls->templates,
+            &pos,
+            &key,
+            &value
+        )) {
+            std::string key_string = prefix;
+            size_t i = 0;
+            size_t size = PyTuple_GET_SIZE(key);
+            while (i < size) {
+                PyObject* item = PyTuple_GET_ITEM(key, i);
+                int rc = PyObject_IsInstance(
+                    item,
+                    reinterpret_cast<PyObject*>(ptr(Type<BertrandMeta>()))
+                );
+                if (rc < 0) {
+                    Exception::from_python();
+                } else if (rc) {
+                    const char* demangled_key = PyUnicode_AsUTF8(
+                        reinterpret_cast<__python__*>(item)->demangled
+                    );
+                    if (demangled_key == nullptr) {
+                        Exception::from_python();
+                    }
+                    doc += demangled_key;
+                } else {
+                    doc += reinterpret_cast<PyTypeObject*>(item)->tp_name;
+                }
+                if (++i < size) {
+                    doc += ", ";
+                }
+            }
+            key_string += "]";
+
+            const char* demangled_value = PyUnicode_AsUTF8(
+                reinterpret_cast<__python__*>(value)->demangled
+            );
+            if (demangled_value == nullptr) {
+                Exception::from_python();
+            }
+
+            doc += key_string + " -> " + demangled_value + "\n";
+        }
+    }
+    return PyUnicode_FromStringAndSize(doc.c_str(), doc.size());
+}
+
+
+template <StaticStr ModName>
+inline Type<BertrandMeta> BertrandMeta::__python__::__export__(Module<ModName> module) {
+    static PyType_Slot slots[] = {
+        {Py_tp_doc, const_cast<char*>(__doc__.buffer)},
+        {Py_tp_dealloc, reinterpret_cast<void*>(__dealloc__)},
+        {Py_tp_traverse, reinterpret_cast<void*>(__traverse__)},
+        {Py_tp_clear, reinterpret_cast<void*>(__clear__)},
+        {Py_tp_repr, reinterpret_cast<void*>(class_repr)},
+        {Py_tp_getattro, reinterpret_cast<void*>(class_getattro)},
+        {Py_tp_setattro, reinterpret_cast<void*>(class_setattro)},
+        {Py_tp_iter, reinterpret_cast<void*>(class_iter)},
+        {Py_mp_length, reinterpret_cast<void*>(class_len)},
+        {Py_mp_subscript, reinterpret_cast<void*>(class_getitem)},
+        {Py_tp_methods, methods},
+        {Py_tp_getset, getset},
+        {0, nullptr}
+    };
+    static PyType_Spec spec = {
+        .name = ModName + ".Meta",
+        .basicsize = sizeof(BertrandMeta),
+        .itemsize = 0,
+        .flags =
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC |
+            Py_TPFLAGS_MANAGED_WEAKREF | Py_TPFLAGS_MANAGED_DICT |
+            Py_TPFLAGS_DISALLOW_INSTANTIATION | Py_TPFLAGS_TYPE_SUBCLASS,
+        .slots = slots
+    };
+    PyObject* cls = PyType_FromModuleAndSpec(
+        ptr(module),
+        &spec,
+        &PyType_Type
+    );
+    if (cls == nullptr) {
+        Exception::from_python();
+    }
+    return reinterpret_steal<Type<BertrandMeta>>(cls);
+}
+
+
+template <StaticStr Name, StaticStr ModName>
+inline BertrandMeta BertrandMeta::__python__::stub_type(Module<ModName>& module) {
+    static std::string docstring;
+    static bool doc_initialized = false;
+    if (!doc_initialized) {
+        docstring = "A public interface for the '" + ModName + "." + Name;
+        docstring += "' template hierarchy.\n\n";
+        docstring +=
+R"doc(This type cannot be used directly, but indexing it with one or more Python
+types allows access to individual instantiations with the same syntax as C++.
+Note that due to its dynamic nature, Python cannot create any new instantiations
+of a C++ template - this class merely navigates the existing instantiations at
+the C++ level and retrieves their corresponding Python types.)doc";
+        doc_initialized = true;
+    }
+    static PyType_Slot slots[] = {
+        {Py_tp_doc, const_cast<char*>(docstring.c_str())},
+        {0, nullptr}
+    };
+    static PyType_Spec spec = {
+        .name = Name,
+        .basicsize = sizeof(__python__),
+        .itemsize = 0,
+        .flags =
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE |
+            Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_DISALLOW_INSTANTIATION |
+            Py_TPFLAGS_IMMUTABLETYPE,
+        .slots = slots
+    };
+
+    __python__* cls = reinterpret_cast<__python__*>(PyType_FromMetaclass(
+        reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>())),
+        ptr(module),
+        &spec,
+        nullptr
+    ));
+    if (cls == nullptr) {
+        Exception::from_python();
+    }
+    try {
+        new (cls) __python__(Name);
+        cls->instancecheck = template_instancecheck;
+        cls->subclasscheck = template_subclasscheck;
+        cls->templates = PyDict_New();
+        if (cls->templates == nullptr) {
+            Exception::from_python();
+        }
+        return reinterpret_steal<BertrandMeta>(reinterpret_cast<PyObject*>(cls));
+    } catch (...) {
+        Py_DECREF(cls);
+        throw;
+    }
+}
+
+
+inline PyObject* BertrandMeta::__python__::Slots::nb_add(PyObject* lhs, PyObject* rhs) {
+    PyTypeObject* lhs_type = Py_TYPE(lhs);
+    if (PyType_IsSubtype(
+        Py_TYPE(lhs_type),
+        reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(lhs_type);
+        if (meta->__add__) {
+            PyObject* const forward[] = {lhs, rhs};
+            result = PyObject_Vectorcall(
+                meta->__add__,
+                forward,
+                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_add) {
+            result = meta->base_nb_add(lhs, rhs);
+        }
+        if (result != Py_NotImplemented) {
+            return result;
+        }
+    }
+    __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
+    if (meta->__radd__) {
+        PyObject* const forward[] = {rhs, lhs};
+        return PyObject_Vectorcall(
+            meta->__radd__,
+            forward,
+            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            nullptr
+        );
+    } else if (meta->base_nb_add) {
+        return meta->base_nb_add(rhs, lhs);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
+
+inline PyObject* BertrandMeta::__python__::Slots::nb_subtract(PyObject* lhs, PyObject* rhs) {
+    PyTypeObject* lhs_type = Py_TYPE(lhs);
+    if (PyType_IsSubtype(
+        Py_TYPE(lhs_type),
+        reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(lhs_type);
+        if (meta->__sub__) {
+            PyObject* const forward[] = {lhs, rhs};
+            result = PyObject_Vectorcall(
+                meta->__sub__,
+                forward,
+                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_subtract) {
+            result = meta->base_nb_subtract(lhs, rhs);
+        }
+        if (result != Py_NotImplemented) {
+            return result;
+        }
+    }
+    __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
+    if (meta->__rsub__) {
+        PyObject* const forward[] = {rhs, lhs};
+        return PyObject_Vectorcall(
+            meta->__rsub__,
+            forward,
+            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            nullptr
+        );
+    } else if (meta->base_nb_subtract) {
+        return meta->base_nb_subtract(rhs, lhs);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
+
+inline PyObject* BertrandMeta::__python__::Slots::nb_multiply(PyObject* lhs, PyObject* rhs) {
+    PyTypeObject* lhs_type = Py_TYPE(lhs);
+    if (PyType_IsSubtype(
+        Py_TYPE(lhs_type),
+        reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(lhs_type);
+        if (meta->__mul__) {
+            PyObject* const forward[] = {lhs, rhs};
+            result = PyObject_Vectorcall(
+                meta->__mul__,
+                forward,
+                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_multiply) {
+            result = meta->base_nb_multiply(lhs, rhs);
+        }
+        if (result != Py_NotImplemented) {
+            return result;
+        }
+    }
+    __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
+    if (meta->__rmul__) {
+        PyObject* const forward[] = {rhs, lhs};
+        return PyObject_Vectorcall(
+            meta->__rmul__,
+            forward,
+            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            nullptr
+        );
+    } else if (meta->base_nb_multiply) {
+        return meta->base_nb_multiply(rhs, lhs);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
+
+inline PyObject* BertrandMeta::__python__::Slots::nb_remainder(PyObject* lhs, PyObject* rhs) {
+    PyTypeObject* lhs_type = Py_TYPE(lhs);
+    if (PyType_IsSubtype(
+        Py_TYPE(lhs_type),
+        reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(lhs_type);
+        if (meta->__mod__) {
+            PyObject* const forward[] = {lhs, rhs};
+            result = PyObject_Vectorcall(
+                meta->__mod__,
+                forward,
+                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_remainder) {
+            result = meta->base_nb_remainder(lhs, rhs);
+        }
+        if (result != Py_NotImplemented) {
+            return result;
+        }
+    }
+    __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
+    if (meta->__rmod__) {
+        PyObject* const forward[] = {rhs, lhs};
+        return PyObject_Vectorcall(
+            meta->__rmod__,
+            forward,
+            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            nullptr
+        );
+    } else if (meta->base_nb_remainder) {
+        return meta->base_nb_remainder(rhs, lhs);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
+
+inline PyObject* BertrandMeta::__python__::Slots::nb_divmod(PyObject* lhs, PyObject* rhs) {
+    PyTypeObject* lhs_type = Py_TYPE(lhs);
+    if (PyType_IsSubtype(
+        Py_TYPE(lhs_type),
+        reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(lhs_type);
+        if (meta->__divmod__) {
+            PyObject* const forward[] = {lhs, rhs};
+            result = PyObject_Vectorcall(
+                meta->__divmod__,
+                forward,
+                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_divmod) {
+            result = meta->base_nb_divmod(lhs, rhs);
+        }
+        if (result != Py_NotImplemented) {
+            return result;
+        }
+    }
+    __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
+    if (meta->__rdivmod__) {
+        PyObject* const forward[] = {rhs, lhs};
+        return PyObject_Vectorcall(
+            meta->__rdivmod__,
+            forward,
+            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            nullptr
+        );
+    } else if (meta->base_nb_divmod) {
+        return meta->base_nb_divmod(rhs, lhs);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
+
+inline PyObject* BertrandMeta::__python__::Slots::nb_power(PyObject* base, PyObject* exp, PyObject* mod) {
+    Type<BertrandMeta> meta_type;
+    PyTypeObject* base_type = Py_TYPE(base);
+    if (PyType_IsSubtype(
+        Py_TYPE(base_type),
+        reinterpret_cast<PyTypeObject*>(ptr(meta_type))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(base_type);
+        if (meta->__pow__) {
+            PyObject* const forward[] = {base, exp, mod};
+            result = PyObject_Vectorcall(
+                meta->__pow__,
+                forward,
+                2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_power) {
+            result = meta->base_nb_power(base, exp, mod);
+        }
+        if (result != Py_NotImplemented) {
+            return result;
+        }
+    }
+    PyTypeObject* exp_type = Py_TYPE(exp);
+    if (PyType_IsSubtype(
+        Py_TYPE(exp_type),
+        reinterpret_cast<PyTypeObject*>(ptr(meta_type))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(exp_type);
+        if (meta->__rpow__) {
+            PyObject* const forward[] = {exp, base, mod};
+            result = PyObject_Vectorcall(
+                meta->__rpow__,
+                forward,
+                2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_power) {
+            result = meta->base_nb_power(exp, base, mod);
+        }
+        if (result != Py_NotImplemented) {
+            return result;
+        }
+    }
+    __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(mod));
+    if (meta->__pow__) {
+        PyObject* const forward[] = {mod, base, exp};
+        return PyObject_Vectorcall(
+            meta->__pow__,
+            forward,
+            2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            nullptr
+        );
+    } else if (meta->base_nb_power) {
+        return meta->base_nb_power(mod, base, exp);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
+
+inline PyObject* BertrandMeta::__python__::Slots::nb_lshift(PyObject* lhs, PyObject* rhs) {
+    PyTypeObject* lhs_type = Py_TYPE(lhs);
+    if (PyType_IsSubtype(
+        Py_TYPE(lhs_type),
+        reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(lhs_type);
+        if (meta->__lshift__) {
+            PyObject* const forward[] = {lhs, rhs};
+            result = PyObject_Vectorcall(
+                meta->__lshift__,
+                forward,
+                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_lshift) {
+            result = meta->base_nb_lshift(lhs, rhs);
+        }
+        if (result != Py_NotImplemented) {
+            return result;
+        }
+    }
+    __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
+    if (meta->__rlshift__) {
+        PyObject* const forward[] = {rhs, lhs};
+        return PyObject_Vectorcall(
+            meta->__rlshift__,
+            forward,
+            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            nullptr
+        );
+    } else if (meta->base_nb_lshift) {
+        return meta->base_nb_lshift(rhs, lhs);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
+
+inline PyObject* BertrandMeta::__python__::Slots::nb_rshift(PyObject* lhs, PyObject* rhs) {
+    PyTypeObject* lhs_type = Py_TYPE(lhs);
+    if (PyType_IsSubtype(
+        Py_TYPE(lhs_type),
+        reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(lhs_type);
+        if (meta->__rshift__) {
+            PyObject* const forward[] = {lhs, rhs};
+            result = PyObject_Vectorcall(
+                meta->__rshift__,
+                forward,
+                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_rshift) {
+            result = meta->base_nb_rshift(lhs, rhs);
+        }
+        if (result != Py_NotImplemented) {
+            return result;
+        }
+    }
+    __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
+    if (meta->__rrshift__) {
+        PyObject* const forward[] = {rhs, lhs};
+        return PyObject_Vectorcall(
+            meta->__rrshift__,
+            forward,
+            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            nullptr
+        );
+    } else if (meta->base_nb_rshift) {
+        return meta->base_nb_rshift(rhs, lhs);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
+
+inline PyObject* BertrandMeta::__python__::Slots::nb_and(PyObject* lhs, PyObject* rhs) {
+    PyTypeObject* lhs_type = Py_TYPE(lhs);
+    if (PyType_IsSubtype(
+        Py_TYPE(lhs_type),
+        reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(lhs_type);
+        if (meta->__and__) {
+            PyObject* const forward[] = {lhs, rhs};
+            result = PyObject_Vectorcall(
+                meta->__and__,
+                forward,
+                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_and) {
+            result = meta->base_nb_and(lhs, rhs);
+        }
+        if (result != Py_NotImplemented) {
+            return result;
+        }
+    }
+    __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
+    if (meta->__rand__) {
+        PyObject* const forward[] = {rhs, lhs};
+        return PyObject_Vectorcall(
+            meta->__rand__,
+            forward,
+            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            nullptr
+        );
+    } else if (meta->base_nb_and) {
+        return meta->base_nb_and(rhs, lhs);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
+
+inline PyObject* BertrandMeta::__python__::Slots::nb_xor(PyObject* lhs, PyObject* rhs) {
+    PyTypeObject* lhs_type = Py_TYPE(lhs);
+    if (PyType_IsSubtype(
+        Py_TYPE(lhs_type),
+        reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(lhs_type);
+        if (meta->__xor__) {
+            PyObject* const forward[] = {lhs, rhs};
+            result = PyObject_Vectorcall(
+                meta->__xor__,
+                forward,
+                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_xor) {
+            result = meta->base_nb_xor(lhs, rhs);
+        }
+        if (result != Py_NotImplemented) {
+            return result;
+        }
+    }
+    __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
+    if (meta->__rxor__) {
+        PyObject* const forward[] = {rhs, lhs};
+        return PyObject_Vectorcall(
+            meta->__rxor__,
+            forward,
+            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            nullptr
+        );
+    } else if (meta->base_nb_xor) {
+        return meta->base_nb_xor(rhs, lhs);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
+
+inline PyObject* BertrandMeta::__python__::Slots::nb_or(PyObject* lhs, PyObject* rhs) {
+    PyTypeObject* lhs_type = Py_TYPE(lhs);
+    if (PyType_IsSubtype(
+        Py_TYPE(lhs_type),
+        reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(lhs_type);
+        if (meta->__or__) {
+            PyObject* const forward[] = {lhs, rhs};
+            result = PyObject_Vectorcall(
+                meta->__or__,
+                forward,
+                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_or) {
+            result = meta->base_nb_or(lhs, rhs);
+        }
+        if (result != Py_NotImplemented) {
+            return result;
+        }
+    }
+    __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
+    if (meta->__ror__) {
+        PyObject* const forward[] = {rhs, lhs};
+        return PyObject_Vectorcall(
+            meta->__ror__,
+            forward,
+            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            nullptr
+        );
+    } else if (meta->base_nb_or) {
+        return meta->base_nb_or(rhs, lhs);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
+
+inline PyObject* BertrandMeta::__python__::Slots::nb_floor_divide(PyObject* lhs, PyObject* rhs) {
+    PyTypeObject* lhs_type = Py_TYPE(lhs);
+    if (PyType_IsSubtype(
+        Py_TYPE(lhs_type),
+        reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(lhs_type);
+        if (meta->__floordiv__) {
+            PyObject* const forward[] = {lhs, rhs};
+            result = PyObject_Vectorcall(
+                meta->__floordiv__,
+                forward,
+                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_floor_divide) {
+            result = meta->base_nb_floor_divide(lhs, rhs);
+        }
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
+    if (meta->__rfloordiv__) {
+        PyObject* const forward[] = {rhs, lhs};
+        return PyObject_Vectorcall(
+            meta->__rfloordiv__,
+            forward,
+            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            nullptr
+        );
+    } else if (meta->base_nb_floor_divide) {
+        return meta->base_nb_floor_divide(rhs, lhs);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
+
+inline PyObject* BertrandMeta::__python__::Slots::nb_true_divide(PyObject* lhs, PyObject* rhs) {
+    PyTypeObject* lhs_type = Py_TYPE(lhs);
+    if (PyType_IsSubtype(
+        Py_TYPE(lhs_type),
+        reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(lhs_type);
+        if (meta->__truediv__) {
+            PyObject* const forward[] = {lhs, rhs};
+            result = PyObject_Vectorcall(
+                meta->__truediv__,
+                forward,
+                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_true_divide) {
+            result = meta->base_nb_true_divide(lhs, rhs);
+        }
+        if (result != Py_NotImplemented) {
+            return result;
+        }
+    }
+    __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
+    if (meta->__rtruediv__) {
+        PyObject* const forward[] = {rhs, lhs};
+        return PyObject_Vectorcall(
+            meta->__rtruediv__,
+            forward,
+            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            nullptr
+        );
+    } else if (meta->base_nb_true_divide) {
+        return meta->base_nb_true_divide(rhs, lhs);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
+
+inline PyObject* BertrandMeta::__python__::Slots::nb_matrix_multiply(PyObject* lhs, PyObject* rhs) {
+    PyTypeObject* lhs_type = Py_TYPE(lhs);
+    if (PyType_IsSubtype(
+        Py_TYPE(lhs_type),
+        reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>()))
+    )) {
+        PyObject* result;
+        __python__* meta = reinterpret_cast<__python__*>(lhs_type);
+        if (meta->__matmul__) {
+            PyObject* const forward[] = {lhs, rhs};
+            result = PyObject_Vectorcall(
+                meta->__matmul__,
+                forward,
+                1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                nullptr
+            );
+        } else if (meta->base_nb_matrix_multiply) {
+            result = meta->base_nb_matrix_multiply(lhs, rhs);
+        }
+        if (result != Py_NotImplemented) {
+            return result;
+        }
+    }
+    __python__* meta = reinterpret_cast<__python__*>(Py_TYPE(rhs));
+    if (meta->__rmatmul__) {
+        PyObject* const forward[] = {rhs, lhs};
+        return PyObject_Vectorcall(
+            meta->__rmatmul__,
+            forward,
+            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            nullptr
+        );
+    } else if (meta->base_nb_matrix_multiply) {
+        return meta->base_nb_matrix_multiply(rhs, lhs);
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
 
 
 ////////////////////////
@@ -4703,1810 +6217,1816 @@ struct __getitem__<Type<T>, Type<U>...>                     : Returns<BertrandMe
 ////////////////////////
 
 
-namespace impl {
+template <typename CRTP, typename Wrapper, typename CppType>
+template <StaticStr ModName>
+struct Object::BaseDef<CRTP, Wrapper, CppType>::Bindings {
+private:
+    using Meta = BertrandMeta::__python__;
+    inline static std::vector<PyMethodDef> tp_methods;
+    inline static std::vector<PyGetSetDef> tp_getset;
+    inline static std::vector<PyMemberDef> tp_members;
 
-    template <typename CRTP, typename Wrapper, typename CppType>
-    template <StaticStr ModName>
-    struct TypeTag::BaseDef<CRTP, Wrapper, CppType>::Bindings {
-    private:
-        using Meta = Type<BertrandMeta>::__python__;
-        inline static std::vector<PyMethodDef> tp_methods;
-        inline static std::vector<PyGetSetDef> tp_getset;
-        inline static std::vector<PyMemberDef> tp_members;
+    /* This function is stored as a pointer in the metaclass's C++ members and
+    called whenever a Python-level `isinstance()` check is made against this class.
+    It will delegate to an `__isinstance__<Object, Wrapper>` specialization if one
+    exists.  Otherwise it will default to standard Python behavior. */
+    static bool instancecheck(Meta* cls, PyObject* instance) {
+        if constexpr (std::is_invocable_v<
+            __isinstance__<Object, Wrapper>,
+            const Object&
+        >) {
+            return __isinstance__<Object, Wrapper>{}(
+                reinterpret_borrow<Object>(instance)
+            );
+        } else {
+            return PyType_IsSubtype(
+                Py_TYPE(instance),
+                reinterpret_cast<PyTypeObject*>(cls)
+            );
+        }
+    }
 
-        /* This function is stored as a pointer in the metaclass's C++ members and
-        called whenever a Python-level `isinstance()` check is made against this class.
-        It will delegate to an `__isinstance__<Object, Wrapper>` specialization if one
-        exists.  Otherwise it will default to standard Python behavior. */
-        static bool instancecheck(Meta* cls, PyObject* instance) {
-            if constexpr (std::is_invocable_v<
-                __isinstance__<Object, Wrapper>,
-                const Object&
-            >) {
-                return __isinstance__<Object, Wrapper>{}(
-                    reinterpret_borrow<Object>(instance)
-                );
-            } else {
+    /* This function is stored as a pointer in the metaclass's C++ members and
+    called whenever a Python-level `issubclass()` check is made against this calss.
+    It will delegate to an `__issubclass__<Object, Wrapper>` specialization if one
+    exists.  Otherwise it will default to standard Python behavior. */
+    static bool subclasscheck(Meta* cls, PyObject* subclass) {
+        if constexpr (std::is_invocable_v<
+            __issubclass__<Object, Wrapper>,
+            const Object&
+        >) {
+            return __issubclass__<Object, Wrapper>{}(
+                reinterpret_borrow<Object>(subclass)
+            );
+        } else {
+            if (PyType_Check(subclass)) {
                 return PyType_IsSubtype(
-                    Py_TYPE(instance),
+                    reinterpret_cast<PyTypeObject*>(subclass),
                     reinterpret_cast<PyTypeObject*>(cls)
                 );
-            }
-        }
-
-        /* This function is stored as a pointer in the metaclass's C++ members and
-        called whenever a Python-level `issubclass()` check is made against this calss.
-        It will delegate to an `__issubclass__<Object, Wrapper>` specialization if one
-        exists.  Otherwise it will default to standard Python behavior. */
-        static bool subclasscheck(Meta* cls, PyObject* subclass) {
-            if constexpr (std::is_invocable_v<
-                __issubclass__<Object, Wrapper>,
-                const Object&
-            >) {
-                return __issubclass__<Object, Wrapper>{}(
-                    reinterpret_borrow<Object>(subclass)
-                );
             } else {
-                if (PyType_Check(subclass)) {
-                    return PyType_IsSubtype(
-                        reinterpret_cast<PyTypeObject*>(subclass),
-                        reinterpret_cast<PyTypeObject*>(cls)
-                    );
-                } else {
-                    throw TypeError(
-                        "issubclass() arg 1 must be a class"
-                    );
-                }
-            }
-        }
-
-        struct Context {
-            bool is_member_var = false;
-            bool is_class_var = false;
-            bool is_property = false;
-            bool is_class_property = false;
-            bool is_type = false;
-            bool is_template_interface = false;
-            bool is_method = false;
-            bool is_classmethod = false;
-            bool is_staticmethod = false;
-            std::vector<std::function<void(Type<Wrapper>&)>> callbacks;
-        };
-
-        /// TODO: Perhaps the way to implement register_type is to use a C++ unordered
-        /// map that maps std::type_index to a context object that contains all the
-        /// information needed to generate bindings for that type.  In fact, that
-        /// might directly reference the type's template instantiations, which
-        /// can be dynamically inserted into during the module's export process.
-
-        /* Insert a Python type into the global `bertrand.python.types` registry, so
-        that it can be mapped to its C++ equivalent and used when generating Python
-        bindings. */
-        template <typename Cls>
-        static void register_type(Module<ModName>& mod, PyTypeObject* type);
-
-
-        template <typename T>
-        void register_iterator(Type<Wrapper>& type) {
-            static PyType_Slot slots[] = {
-                {
-                    Py_tp_iter,
-                    reinterpret_cast<void*>(PyObject_SelfIter)
-                },
-                {
-                    Py_tp_iternext,
-                    reinterpret_cast<void*>(T::__next__)
-                },
-                {0, nullptr}
-            };
-            static PyType_Spec spec = {
-                .name = typeid(T).name(),
-                .basicsize = sizeof(T),
-                .itemsize = 0,
-                .flags =
-                    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE |
-                    Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_IMMUTABLETYPE |
-                    Py_TPFLAGS_DISALLOW_INSTANTIATION,
-                .slots = slots
-            };
-            PyObject* cls = PyType_FromModuleAndSpec(
-                ptr(module),
-                &spec,
-                nullptr
-            );
-            if (cls == nullptr) {
-                Exception::from_python();
-            }
-            int rc = PyObject_SetAttrString(ptr(type), typeid(T).name(), cls);
-            Py_DECREF(cls);
-            if (rc) {
-                Exception::from_python();
-            }
-        }
-
-        // auto result = Base::finalize(tp_flags);
-        // if constexpr (impl::iterable<CppType>) {
-        //     register_iterator<Iterator<
-        //         decltype(std::ranges::begin(std::declval<CppType>())),
-        //         decltype(std::ranges::end(std::declval<CppType>()))
-        //     >>(result);
-        // }
-        // if constexpr (impl::iterable<const CppType>) {
-        //     register_iterator<Iterator<
-        //         decltype(std::ranges::begin(std::declval<const CppType>())),
-        //         decltype(std::ranges::end(std::declval<const CppType>()))
-        //     >>(result);
-        // }
-        // if constexpr (impl::reverse_iterable<CppType>) {
-        //     register_iterator<Iterator<
-        //         decltype(std::ranges::rbegin(std::declval<CppType>())),
-        //         decltype(std::ranges::rend(std::declval<CppType>()))
-        //     >>(result);
-        // }
-        // if constexpr (impl::reverse_iterable<const CppType>) {
-        //     register_iterator<Iterator<
-        //         decltype(std::ranges::rbegin(std::declval<const CppType>())),
-        //         decltype(std::ranges::rend(std::declval<const CppType>()))
-        //     >>(result);
-        // }
-        // return result;
-
-        template <typename Binding>
-        struct signature {
-
-            template <typename Return, typename Func, typename... Args>
-            static constexpr bool static_invocable = false;
-            template <
-                typename Return,
-                typename R,
-                typename... A,
-                typename... Args
-            >
-            static constexpr bool static_invocable<
-                Return,
-                R(*)(A...),
-                Args...
-            > = std::is_invocable_r_v<
-                Return,
-                R(*)(A...),
-                Args...
-            >;
-            template <typename Return, typename R, typename... A, typename... Args>
-            static constexpr bool static_invocable<
-                Return,
-                R(*)(A...) noexcept,
-                Args...
-            > = std::is_invocable_r_v<
-                Return,
-                R(*)(A...) noexcept,
-                Args...
-            >;
-
-            template <typename Return, typename Func, typename... Args>
-            static constexpr bool member_invocable = false;
-            template <
-                typename Return,
-                typename R,
-                typename T,
-                typename... A,
-                typename... Args
-            >
-            static constexpr bool member_invocable<
-                Return,
-                R(T::*)(A...),
-                Args...
-            > = std::is_invocable_r_v<
-                Return,
-                R(T::*)(A...),
-                Args...
-            >;
-            template <typename Return, typename R, typename T, typename... A, typename... Args>
-            static constexpr bool member_invocable<
-                Return,
-                R(T::*)(A...) volatile,
-                Args...
-            > = std::is_invocable_r_v<
-                Return,
-                R(T::*)(A...) volatile,
-                Args...
-            >;
-            template <typename Return, typename R, typename T, typename... A, typename... Args>
-            static constexpr bool member_invocable<
-                Return,
-                R(T::*)(A...) noexcept,
-                Args...
-            > = std::is_invocable_r_v<
-                Return,
-                R(T::*)(A...) noexcept,
-                Args...
-            >;
-            template <typename Return, typename R, typename T, typename... A, typename... Args>
-            static constexpr bool member_invocable<
-                Return,
-                R(T::*)(A...) volatile noexcept,
-                Args...
-            > = std::is_invocable_r_v<
-                Return,
-                R(T::*)(A...) volatile noexcept,
-                Args...
-            >;
-
-            template <typename Return, typename Func, typename... Args>
-            static constexpr bool const_member_invocable = false;
-            template <typename Return, typename R, typename T, typename... A, typename... Args>
-            static constexpr bool const_member_invocable<
-                Return,
-                R(T::*)(A...) const,
-                Args...
-            > = std::is_invocable_r_v<
-                Return,
-                R(T::*)(A...) const,
-                Args...
-            >;
-            template <typename Return, typename R, typename T, typename... A, typename... Args>
-            static constexpr bool const_member_invocable<
-                Return,
-                R(T::*)(A...) const volatile,
-                Args...
-            > = std::is_invocable_r_v<
-                Return,
-                R(T::*)(A...) const volatile,
-                Args...
-            >;
-            template <typename Return, typename R, typename T, typename... A, typename... Args>
-            static constexpr bool const_member_invocable<
-                Return,
-                R(T::*)(A...) const noexcept,
-                Args...
-            > = std::is_invocable_r_v<
-                Return,
-                R(T::*)(A...) const noexcept,
-                Args...
-            >;
-            template <typename Return, typename R, typename T, typename... A, typename... Args>
-            static constexpr bool const_member_invocable<
-                Return,
-                R(T::*)(A...) const volatile noexcept,
-                Args...
-            > = std::is_invocable_r_v<
-                Return,
-                R(T::*)(A...) const volatile noexcept,
-                Args...
-            >;
-
-            template <StaticStr Name>
-            struct check {
-                template <typename T>
-                static constexpr bool value = false;
-
-                template <typename R, typename... Ts>
-                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
-                static constexpr bool value<R(*)(Ts...)> = true;
-
-                template <typename R, typename T, typename... Ts>
-                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
-                static constexpr bool value<R(T::*)(Ts...)> = true;
-
-                template <typename R, typename T, typename... Ts>
-                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
-                static constexpr bool value<R(T::*)(Ts...) const> = true;
-
-                template <typename R, typename T, typename... Ts>
-                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
-                static constexpr bool value<R(T::*)(Ts...) volatile> = true;
-
-                template <typename R, typename T, typename... Ts>
-                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
-                static constexpr bool value<R(T::*)(Ts...) const volatile> = true;
-
-                template <typename R, typename... Ts>
-                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
-                static constexpr bool value<R(*)(Ts...) noexcept> = true;
-
-                template <typename R, typename T, typename... Ts>
-                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
-                static constexpr bool value<R(T::*)(Ts...) noexcept> = true;
-
-                template <typename R, typename T, typename... Ts>
-                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
-                static constexpr bool value<R(T::*)(Ts...) const noexcept> = true;
-
-                template <typename R, typename T, typename... Ts>
-                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
-                static constexpr bool value<R(T::*)(Ts...) volatile noexcept> = true;
-
-                template <typename R, typename T, typename... Ts>
-                    requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
-                static constexpr bool value<R(T::*)(Ts...) const volatile noexcept> = true;
-
-            };
-
-            template <>
-            struct check<"__new__"> {
-                template <typename T>
-                static constexpr bool value = false;
-
-                template <typename... Ts>
-                static constexpr bool value<Binding(*)(Ts...)> =
-                    (std::convertible_to<Object, Ts> && ...);
-                template <typename... Ts>
-                static constexpr bool value<Binding(*)(Ts...) noexcept> =
-                    (std::convertible_to<Object, Ts> && ...);
-            };
-
-            template <>
-            struct check<"__init__"> {
-                template <typename T>
-                static constexpr bool value = false;
-
-                template <typename T, typename... Ts>
-                static constexpr bool value<void(*)(T, Ts...)> =
-                    std::is_invocable_v<void(*)(T, Ts...), Binding, Ts...> &&
-                    (std::convertible_to<Object, Ts> && ...);
-                template <typename T, typename... Ts>
-                static constexpr bool value<void(*)(T, Ts...) noexcept> =
-                    std::is_invocable_v<void(*)(T, Ts...) noexcept, Binding, Ts...> &&
-                    (std::convertible_to<Object, Ts> && ...);
-
-                template <typename... Ts>
-                static constexpr bool value<void(Binding::*)(Ts...)> =
-                    (std::convertible_to<Object, Ts> && ...);
-                template <typename... Ts>
-                static constexpr bool value<void(Binding::*)(Ts...) volatile> =
-                    (std::convertible_to<Object, Ts> && ...);
-                template <typename... Ts>
-                static constexpr bool value<void(Binding::*)(Ts...) noexcept> =
-                    (std::convertible_to<Object, Ts> && ...);
-                template <typename... Ts>
-                static constexpr bool value<void(Binding::*)(Ts...) volatile noexcept> =
-                    (std::convertible_to<Object, Ts> && ...);
-            };
-
-            template <>
-            struct check<"__del__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<void, Binding, T> ||
-                    member_invocable<void, T>;
-            };
-
-            template <>
-            struct check<"__repr__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Str, Binding, T> ||
-                    member_invocable<Str, T> ||
-                    const_member_invocable<Str, T>;
-            };
-
-            template <>
-            struct check<"__str__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Str, Binding, T> ||
-                    member_invocable<Str, T> ||
-                    const_member_invocable<Str, T>;
-            };
-
-            template <>
-            struct check<"__bytes__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Bytes, Binding, T> ||
-                    member_invocable<Bytes, T> ||
-                    const_member_invocable<Bytes, T>;
-            };
-
-            template <>
-            struct check<"__format__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Str, T, Binding, Str> ||
-                    member_invocable<Str, T, Str> ||
-                    const_member_invocable<Str, T, Str>;
-            };
-
-            template <>
-            struct check<"__lt__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Bool, T, Binding, Object> ||
-                    member_invocable<Bool, T, Object> ||
-                    const_member_invocable<Bool, T, Object>;
-            };
-
-            template <>
-            struct check<"__le__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Bool, T, Binding, Object> ||
-                    member_invocable<Bool, T, Object> ||
-                    const_member_invocable<Bool, T, Object>;
-            };
-
-            template <>
-            struct check<"__eq__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Bool, T, Binding, Object> ||
-                    member_invocable<Bool, T, Object> ||
-                    const_member_invocable<Bool, T, Object>;
-            };
-
-            template <>
-            struct check<"__ne__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Bool, T, Binding, Object> ||
-                    member_invocable<Bool, T, Object> ||
-                    const_member_invocable<Bool, T, Object>;
-            };
-
-            template <>
-            struct check<"__ge__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Bool, T, Binding, Object> ||
-                    member_invocable<Bool, T, Object> ||
-                    const_member_invocable<Bool, T, Object>;
-            };
-
-            template <>
-            struct check<"__gt__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Bool, T, Binding, Object> ||
-                    member_invocable<Bool, T, Object> ||
-                    const_member_invocable<Bool, T, Object>;
-            };
-
-            template <>
-            struct check<"__hash__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Int, T, Binding> ||
-                    member_invocable<Int, T> ||
-                    const_member_invocable<Int, T>;
-            };
-
-            template <>
-            struct check<"__bool__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Bool, T, Binding> ||
-                    member_invocable<Bool, T> ||
-                    const_member_invocable<Bool, T>;
-            };
-
-            template <>
-            struct check<"__getattr__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Str> ||
-                    member_invocable<Object, T, Str> ||
-                    const_member_invocable<Object, T, Str>;
-            };
-
-            template <>
-            struct check<"__getattribute__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Str> ||
-                    member_invocable<Object, T, Str> ||
-                    const_member_invocable<Object, T, Str>;
-            };
-
-            template <>
-            struct check<"__setattr__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<void, T, Binding, Str, Object> ||
-                    member_invocable<void, T, Str, Object> ||
-                    const_member_invocable<void, T, Str, Object>;
-            };
-
-            template <>
-            struct check<"__delattr__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<void, T, Binding, Str> ||
-                    member_invocable<void, T, Str> ||
-                    const_member_invocable<void, T, Str>;
-            };
-
-            template <>
-            struct check<"__dir__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<List<Str>, T, Binding> ||
-                    member_invocable<List<Str>, T> ||
-                    const_member_invocable<List<Str>, T>;
-            };
-
-            template <>
-            struct check<"__get__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object, Type<Object>> ||
-                    member_invocable<Object, T, Object, Type<Object>> ||
-                    const_member_invocable<Object, T, Object, Type<Object>>;
-            };
-
-            template <>
-            struct check<"__set__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<void, T, Binding, Object, Object> ||
-                    member_invocable<void, T, Object, Object> ||
-                    const_member_invocable<void, T, Object, Object>;
-            };
-
-            template <>
-            struct check<"__delete__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<void, T, Binding, Object> ||
-                    member_invocable<void, T, Object> ||
-                    const_member_invocable<void, T, Object>;
-            };
-
-            template <>
-            struct check<"__init_subclass__"> {
-                template <typename T>
-                static constexpr bool value = false;
-
-                template <typename T, typename... Ts>
-                static constexpr bool value<void(*)(T, Ts...)> =
-                    std::is_invocable_v<void(*)(T, Ts...), Binding, Ts...> &&
-                    (std::convertible_to<Object, Ts> && ...);
-                template <typename T, typename... Ts>
-                static constexpr bool value<void(*)(T, Ts...) noexcept> =
-                    std::is_invocable_v<void(*)(T, Ts...) noexcept, Binding, Ts...> &&
-                    (std::convertible_to<Object, Ts> && ...);
-            };
-
-            template <>
-            struct check<"__set_name__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<void, T, Binding, Type<Object>, Str> ||
-                    member_invocable<void, T, Type<Object>, Str> ||
-                    const_member_invocable<void, T, Type<Object>, Str>;
-            };
-
-            template <>
-            struct check<"__mro_entries__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Tuple<Type<Object>>, T, Binding, Tuple<Type<Object>>> ||
-                    member_invocable<Tuple<Type<Object>>, T, Tuple<Type<Object>>> ||
-                    const_member_invocable<Tuple<Type<Object>>, T, Tuple<Type<Object>>>;
-            };
-
-            template <>
-            struct check<"__instancecheck__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Bool, T, Binding, Object> ||
-                    member_invocable<Bool, T, Object> ||
-                    const_member_invocable<Bool, T, Object>;
-            };
-
-            template <>
-            struct check<"__subclasscheck__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Bool, T, Binding, Object> ||
-                    member_invocable<Bool, T, Object> ||
-                    const_member_invocable<Bool, T, Object>;
-            };
-
-            template <>
-            struct check<"__class_getitem__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__call__"> {
-                template <typename T>
-                static constexpr bool value = false;
-
-                template <typename R, typename T, typename... Ts>
-                static constexpr bool value<R(*)(T, Ts...)> =
-                    std::is_invocable_v<R(*)(T, Ts...), Binding, Ts...> &&
-                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
-                    (std::convertible_to<Object, Ts> && ...);
-                template <typename R, typename T, typename... Ts>
-                static constexpr bool value<R(*)(T, Ts...) noexcept> =
-                    std::is_invocable_v<R(*)(T, Ts...) noexcept, Binding, Ts...> &&
-                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
-                    (std::convertible_to<Object, Ts> && ...);
-
-                template <typename R, typename... Ts>
-                static constexpr bool value<R(Binding::*)(Ts...)> =
-                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
-                    (std::convertible_to<Object, Ts> && ...);
-                template <typename R, typename... Ts>
-                static constexpr bool value<R(Binding::*)(Ts...) volatile> =
-                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
-                    (std::convertible_to<Object, Ts> && ...);
-                template <typename R, typename... Ts>
-                static constexpr bool value<R(Binding::*)(Ts...) noexcept> =
-                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
-                    (std::convertible_to<Object, Ts> && ...);
-                template <typename R, typename... Ts>
-                static constexpr bool value<R(Binding::*)(Ts...) volatile noexcept> =
-                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
-                    (std::convertible_to<Object, Ts> && ...);
-
-                template <typename R, typename... Ts>
-                static constexpr bool value<R(Binding::*)(Ts...) const> =
-                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
-                    (std::convertible_to<Object, Ts> && ...);
-                template <typename R, typename... Ts>
-                static constexpr bool value<R(Binding::*)(Ts...) const volatile> =
-                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
-                    (std::convertible_to<Object, Ts> && ...);
-                template <typename R, typename... Ts>
-                static constexpr bool value<R(Binding::*)(Ts...) const noexcept> =
-                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
-                    (std::convertible_to<Object, Ts> && ...);
-                template <typename R, typename... Ts>
-                static constexpr bool value<R(Binding::*)(Ts...) const volatile noexcept> =
-                    (std::is_void_v<R> || std::convertible_to<R, Object>) &&
-                    (std::convertible_to<Object, Ts> && ...);
-            };
-
-            template <>
-            struct check<"__len__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Int, T, Binding> ||
-                    member_invocable<Int, T> ||
-                    const_member_invocable<Int, T>;
-            };
-
-            template <>
-            struct check<"__length_hint__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Int, T, Binding> ||
-                    member_invocable<Int, T> ||
-                    const_member_invocable<Int, T>;
-            };
-
-            template <>
-            struct check<"__getitem__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__setitem__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<void, T, Binding, Object, Object> ||
-                    member_invocable<void, T, Object, Object> ||
-                    const_member_invocable<void, T, Object, Object>;
-            };
-
-            template <>
-            struct check<"__delitem__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<void, T, Binding, Object> ||
-                    member_invocable<void, T, Object> ||
-                    const_member_invocable<void, T, Object>;
-            };
-
-            template <>
-            struct check<"__missing__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            // template <>
-            // struct check<"__iter__"> {
-            //     template <typename T>
-            //     static constexpr bool value =
-            //         static_invocable<Object, T, Binding> ||
-            //         member_invocable<Object, T> ||
-            //         const_member_invocable<Object, T>;
-            // };
-
-            template <>
-            struct check<"__next__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding> ||
-                    member_invocable<Object, T>;
-            };
-
-            // template <>
-            // struct check<"__reversed__"> {
-            //     template <typename T>
-            //     static constexpr bool value =
-            //         static_invocable<Object, T, Binding> ||
-            //         member_invocable<Object, T> ||
-            //         const_member_invocable<Object, T>;
-            // };
-
-            template <>
-            struct check<"__contains__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Bool, T, Binding, Object> ||
-                    member_invocable<Bool, T, Object> ||
-                    const_member_invocable<Bool, T, Object>;
-            };
-
-            template <>
-            struct check<"__add__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__sub__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__mul__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Int> ||
-                    member_invocable<Object, T, Int> ||
-                    const_member_invocable<Object, T, Int>;
-            };
-
-            template <>
-            struct check<"__matmul__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__truediv__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__floordiv__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__mod__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__divmod__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Tuple<Object>, T, Binding, Object> ||
-                    member_invocable<Tuple<Object>, T, Object> ||
-                    const_member_invocable<Tuple<Object>, T, Object>;
-            };
-
-            template <>
-            struct check<"__pow__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object, Object> ||
-                    member_invocable<Object, T, Object, Object> ||
-                    const_member_invocable<Object, T, Object, Object>;
-            };
-
-            template <>
-            struct check<"__lshift__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Int> ||
-                    member_invocable<Object, T, Int> ||
-                    const_member_invocable<Object, T, Int>;
-            };
-
-            template <>
-            struct check<"__rshift__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Int> ||
-                    member_invocable<Object, T, Int> ||
-                    const_member_invocable<Object, T, Int>;
-            };
-
-            template <>
-            struct check<"__and__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__xor__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__or__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__radd__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__rsub__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__rmul__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Int> ||
-                    member_invocable<Object, T, Int> ||
-                    const_member_invocable<Object, T, Int>;
-            };
-
-            template <>
-            struct check<"__rmatmul__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__rtruediv__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__rfloordiv__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__rmod__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__rdivmod__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Tuple<Object>, T, Binding, Object> ||
-                    member_invocable<Tuple<Object>, T, Object> ||
-                    const_member_invocable<Tuple<Object>, T, Object>;
-            };
-
-            template <>
-            struct check<"__rpow__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object, Object> ||
-                    member_invocable<Object, T, Object, Object> ||
-                    const_member_invocable<Object, T, Object, Object>;
-            };
-
-            template <>
-            struct check<"__rlshift__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Int> ||
-                    member_invocable<Object, T, Int> ||
-                    const_member_invocable<Object, T, Int>;
-            };
-
-            template <>
-            struct check<"__rrshift__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Int> ||
-                    member_invocable<Object, T, Int> ||
-                    const_member_invocable<Object, T, Int>;
-            };
-
-            template <>
-            struct check<"__rand__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__rxor__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__ror__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object> ||
-                    const_member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__iadd__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__isub__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__imul__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Int> ||
-                    member_invocable<Object, T, Int>;
-            };
-
-            template <>
-            struct check<"__imatmul__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__itruediv__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__ifloordiv__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__imod__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__ipow__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object, Object> ||
-                    member_invocable<Object, T, Object, Object>;
-            };
-
-            template <>
-            struct check<"__ilshift__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Int> ||
-                    member_invocable<Object, T, Int>;
-            };
-
-            template <>
-            struct check<"__irshift__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Int> ||
-                    member_invocable<Object, T, Int>;
-            };
-
-            template <>
-            struct check<"__iand__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__ixor__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__ior__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Object> ||
-                    member_invocable<Object, T, Object>;
-            };
-
-            template <>
-            struct check<"__neg__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding> ||
-                    member_invocable<Object, T> ||
-                    const_member_invocable<Object, T>;
-            };
-
-            template <>
-            struct check<"__pos__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding> ||
-                    member_invocable<Object, T> ||
-                    const_member_invocable<Object, T>;
-            };
-
-            template <>
-            struct check<"__abs__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding> ||
-                    member_invocable<Object, T> ||
-                    const_member_invocable<Object, T>;
-            };
-
-            template <>
-            struct check<"__invert__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding> ||
-                    member_invocable<Object, T> ||
-                    const_member_invocable<Object, T>;
-            };
-
-            template <>
-            struct check<"__complex__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Complex, T, Binding> ||
-                    member_invocable<Complex, T> ||
-                    const_member_invocable<Complex, T>;
-            };
-
-            template <>
-            struct check<"__int__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Int, T, Binding> ||
-                    member_invocable<Int, T> ||
-                    const_member_invocable<Int, T>;
-            };
-
-            template <>
-            struct check<"__float__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Float, T, Binding> ||
-                    member_invocable<Float, T> ||
-                    const_member_invocable<Float, T>;
-            };
-
-            template <>
-            struct check<"__index__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Int, T, Binding> ||
-                    member_invocable<Int, T> ||
-                    const_member_invocable<Int, T>;
-            };
-
-            template <>
-            struct check<"__round__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Int> ||
-                    member_invocable<Object, T, Int> ||
-                    const_member_invocable<Object, T, Int>;
-            };
-
-            template <>
-            struct check<"__trunc__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding> ||
-                    member_invocable<Object, T> ||
-                    const_member_invocable<Object, T>;
-            };
-
-            template <>
-            struct check<"__floor__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding> ||
-                    member_invocable<Object, T> ||
-                    const_member_invocable<Object, T>;
-            };
-
-            template <>
-            struct check<"__ceil__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding> ||
-                    member_invocable<Object, T> ||
-                    const_member_invocable<Object, T>;
-            };
-
-            template <>
-            struct check<"__enter__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding> ||
-                    member_invocable<Object, T> ||
-                    const_member_invocable<Object, T>;
-            };
-
-            template <>
-            struct check<"__exit__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<void, T, Binding, Type<Exception>, Exception, Traceback> ||
-                    member_invocable<void, T, Type<Exception>, Exception, Traceback> ||
-                    const_member_invocable<void, T, Type<Exception>, Exception, Traceback>;
-            };
-
-            template <>
-            struct check<"__buffer__"> {
-                /// TODO: this should return specifically a MemoryView?
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding, Int> ||
-                    member_invocable<Object, T, Int> ||
-                    const_member_invocable<Object, T, Int>;
-            };
-
-            template <>
-            struct check<"__release_buffer__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<void, T, Binding, Object> ||
-                    member_invocable<void, T, Object> ||
-                    const_member_invocable<void, T, Object>;
-            };
-
-            template <>
-            struct check<"__await__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding> ||
-                    member_invocable<Object, T> ||
-                    const_member_invocable<Object, T>;
-            };
-
-            // template <>
-            // struct check<"__aiter__"> {
-            //     template <typename T>
-            //     static constexpr bool value =
-            //         static_invocable<Object, T, Binding> ||
-            //         member_invocable<Object, T> ||
-            //         const_member_invocable<Object, T>;
-            // };
-
-            template <>
-            struct check<"__anext__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding> ||
-                    member_invocable<Object, T>;
-            };
-
-            template <>
-            struct check<"__aenter__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<Object, T, Binding> ||
-                    member_invocable<Object, T> ||
-                    const_member_invocable<Object, T>;
-            };
-
-            template <>
-            struct check<"__aexit__"> {
-                template <typename T>
-                static constexpr bool value =
-                    static_invocable<void, T, Binding, Type<Exception>, Exception, Traceback> ||
-                    member_invocable<void, T, Type<Exception>, Exception, Traceback> ||
-                    const_member_invocable<void, T, Type<Exception>, Exception, Traceback>;
-            };
-
-        };
-
-    public:
-        using t_cpp = CppType;
-
-        Module<ModName> module;
-        std::unordered_map<std::string, Context> context;
-        Meta::ClassGetters class_getters;
-        Meta::ClassSetters class_setters;
-
-        Bindings(const Module<ModName>& mod) : module(mod) {}
-        Bindings(const Bindings&) = delete;
-        Bindings(Bindings&&) = delete;
-
-        /* Expose an immutable static variable to Python using the `__getattr__()`
-        slot of the metatype, which synchronizes its state. */
-        template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
-        void var(const T& value) {
-            if (context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            context[Name] = {
-                .is_class_var = true,
-            };
-            static auto get = [](PyObject* cls, void* closure) -> PyObject* {
-                try {
-                    const T* value = reinterpret_cast<const T*>(closure);
-                    if constexpr (impl::python_like<T>) {
-                        return Py_NewRef(ptr(*value));
-                    } else {
-                        return release(wrap(*value));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-                std::string msg = "variable '" + Name + "' of type '" +
-                    impl::demangle(typeid(Wrapper).name()) + "' is immutable.";
-                PyErr_SetString(PyExc_TypeError, msg.c_str());
-                return -1;
-            };
-            class_getters[Name] = {
-                +get,
-                const_cast<void*>(reinterpret_cast<const void*>(&value))
-            };
-            class_setters[Name] = {
-                +set,
-                const_cast<void*>(reinterpret_cast<const void*>(&value))
-            };
-        }
-
-        /* Expose a mutable static variable to Python using the `__getattr__()` and
-        `__setattr__()` slots of the metatype, which synchronizes its state.  */
-        template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
-        void var(T& value) {
-            if (context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            context[Name] = {
-                .is_class_var = true,
-            };
-            static auto get = [](PyObject* self, void* value) -> PyObject* {
-                try {
-                    T* value = reinterpret_cast<T*>(value);
-                    if constexpr (impl::python_like<T>) {
-                        return Py_NewRef(ptr(*value));
-                    } else {
-                        return release(wrap(*value));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            static auto set = [](PyObject* self, PyObject* new_val, void* value) -> int {
-                if (new_val == nullptr) {
-                    std::string msg = "variable '" + Name + "' of type '" +
-                        impl::demangle(typeid(Wrapper).name()) +
-                        "' cannot be deleted.";
-                    PyErr_SetString(PyExc_TypeError, msg.c_str());
-                    return -1;
-                }
-                try {
-                    *reinterpret_cast<T*>(value) = static_cast<T>(
-                        reinterpret_borrow<Object>(new_val)
-                    );
-                    return 0;
-                } catch (...) {
-                    Exception::to_python();
-                    return -1;
-                }
-            };
-            class_getters[Name] = {+get, reinterpret_cast<void*>(&value)};
-            class_setters[Name] = {+set, reinterpret_cast<void*>(&value)};
-        }
-
-        /* Expose a C++-style static getter to Python using the `__getattr__()`
-        slot of the metatype. */
-        template <StaticStr Name, typename Return> requires (__as_object__<Return>::enable)
-        void property(Return(*getter)()) {
-            if (context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            context[Name] = {
-                .is_class_property = true,
-            };
-            static auto get = [](PyObject* cls, void* closure) -> PyObject* {
-                try {
-                    Return(*func)() = reinterpret_cast<Return(*)()>(closure);
-                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                        if constexpr (impl::python_like<Return>) {
-                            return Py_NewRef(ptr(func()));
-                        } else {
-                            return release(wrap(func()));
-                        }
-                    } else {
-                        return release(as_object(func()));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            class_getters[Name] = {+get, reinterpret_cast<void*>(getter)};
-        }
-
-        /* Expose a C++-style static getter/setter pair to Python using the
-        `__getattr__()` and `__setattr__()` slots of the metatype. */
-        template <StaticStr Name, typename Return, typename Value>
-            requires (__as_object__<Return>::enable && __as_object__<Value>::enable)
-        void property(Return(*getter)(), void(*setter)(Value&&)) {
-            if (context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            context[Name] = {
-                .is_class_property = true,
-            };
-            static struct Closure {
-                Return(*getter)();
-                void(*setter)(Value&&);
-            } closure = {getter, setter};
-            static auto get = [](PyObject* cls, void* closure) -> PyObject* {
-                try {
-                    Closure* ctx = reinterpret_cast<Closure*>(closure);
-                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                        if constexpr (impl::python_like<Return>) {
-                            return Py_NewRef(ptr(ctx->getter()));
-                        } else {
-                            return release(wrap(ctx->getter()));
-                        }
-                    } else {
-                        return release(as_object(ctx->getter()));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            static auto set = [](PyObject* cls, PyObject* new_val, void* closure) -> int {
-                if (new_val == nullptr) {
-                    std::string msg = "variable '" + Name + "' of type '" +
-                        impl::demangle(typeid(Wrapper).name()) +
-                        "' cannot be deleted.";
-                    PyErr_SetString(PyExc_TypeError, msg.c_str());
-                    return -1;
-                }
-                try {
-                    reinterpret_cast<Closure*>(closure)->setter(static_cast<Value>(
-                        reinterpret_borrow<Object>(new_val)
-                    ));
-                    return 0;
-                } catch (...) {
-                    Exception::to_python();
-                    return -1;
-                }
-            };
-            class_getters[Name] = {+get, reinterpret_cast<void*>(&closure)};
-            class_setters[Name] = {+set, reinterpret_cast<void*>(&closure)};
-        }
-
-        /// TODO: __iter__ and __reversed__ need special treatment, and require two
-        /// functions to be supplied
-
-        /// TODO: all of the methods need the signature check to be implemented
-
-        /* Expose a C++ static method to Python as a static method, which can be
-        overloaded from either side of the language boundary.  */
-        template <StaticStr Name, typename Return, typename... Target>
-            requires (
-                __as_object__<std::remove_cvref_t<Return>>::enable &&
-                (__as_object__<std::remove_cvref_t<Target>>::enable && ...)
-            )
-        void method(Return(*func)(Target...)) {
-
-        }
-
-        /* Expose a nested py::Object type to Python. */
-        template <
-            StaticStr Name,
-            std::derived_from<Object> Cls,
-            std::derived_from<Object>... Bases
-        > requires (
-            !impl::is_generic<Cls> &&
-            (impl::has_type<Cls> && impl::is_type<Type<Cls>>) &&
-            ((impl::has_type<Bases> && impl::is_type<Type<Bases>>) && ...)
-        )
-        void type(std::string&& doc = "") {
-            if (context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            static std::string docstring = std::move(doc);
-            context[Name] = {
-                .is_type = true,
-                .callbacks = {
-                    [](Type<Wrapper>& type) {
-                        Module<ModName> mod = reinterpret_steal<Module<ModName>>(
-                            PyType_GetModule(ptr(type))
-                        );
-                        if (ptr(mod) == nullptr) {
-                            Exception::from_python();
-                        }
-                        Type<Cls> cls = Type<Cls>::__python__::__export__(mod);
-
-                        if (PyObject_SetAttr(ptr(type), Name, ptr(cls))) {
-                            Exception::from_python();
-                        }
-
-                        // insert into the module's C++ type map for fast lookup
-                        // using C++ template syntax
-                        using Mod = Module<ModName>::__python__;
-                        reinterpret_cast<Mod*>(ptr(mod))->type_map[typeid(Cls)] =
-                            reinterpret_cast<PyTypeObject*>(ptr(cls));
-
-                        // insert into the global type map for use when generating
-                        // C++ bindings from Python type hints
-                        register_type<Cls>(
-                            mod,
-                            reinterpret_cast<PyTypeObject*>(ptr(cls))
-                        );
-                    }
-                }
-            };
-        }
-
-        /* Expose a nested and templated py::Object type to Python. */
-        template <
-            StaticStr Name,
-            template <typename...> typename Cls
-        >
-        void type() {
-            if (context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            context[Name] = {
-                .is_type = true,
-                .is_template_interface = true,
-                .callbacks = {
-                    [](Type<Wrapper>& type) {
-                        Module<ModName> mod = reinterpret_steal<Module<ModName>>(
-                            PyType_GetModule(ptr(type))
-                        );
-                        if (ptr(mod) == nullptr) {
-                            Exception::from_python();
-                        }
-                        BertrandMeta stub = Meta::stub_type<Name>(mod);
-                        if (PyObject_SetAttr(ptr(type), Name, ptr(stub))) {
-                            Exception::from_python();
-                        }
-                    }
-                }
-            };
-        }
-
-        /* Expose a template instantiation of a nested py::Object type to Python. */
-        template <
-            StaticStr Name,
-            std::derived_from<Object> Cls,
-            std::derived_from<Object>... Bases
-        > requires (
-            impl::is_generic<Cls> &&
-            (impl::has_type<Cls> && impl::is_type<Type<Cls>>) &&
-            ((impl::has_type<Bases> && impl::is_type<Type<Bases>>) && ...)
-        )
-        void type() {
-            auto it = context.find(Name);
-            if (it == context.end()) {
                 throw TypeError(
-                    "No template interface found for type '" + Name + "' in "
-                    "class '" + impl::demangle(typeid(Wrapper).name()) + "' "
-                    "with specialization '" +
-                    impl::demangle(typeid(Cls).name()) + "'.  Did you "
-                    "forget to register the unspecialized template first?"
-                );
-            } else if (!it->second.is_template_interface) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) + "' "
-                    "already has an attribute named '" + Name + "'."
+                    "issubclass() arg 1 must be a class"
                 );
             }
-            it->second.callbacks.push_back([](Type<Wrapper>& type) {
-                // get the template interface with the same name
-                BertrandMeta existing = reinterpret_steal<BertrandMeta>(
-                    PyObject_GetAttr(
-                        ptr(type),
-                        impl::TemplateString<Name>::ptr
-                    )
-                );
-                if (ptr(existing) == nullptr) {
-                    Exception::from_python();
-                }
-
-                // call the type's __export__() method
-                Module<ModName> mod = reinterpret_steal<Module<ModName>>(
-                    PyType_GetModule(ptr(type))
-                );
-                if (ptr(mod) == nullptr) {
-                    Exception::from_python();
-                }
-                Type<Cls> cls = Type<Cls>::__python__::__export__(mod);
-
-                // Insert the template interface into the type's __bases__
-                PyTypeObject* pycls = reinterpret_cast<PyTypeObject*>(ptr(cls));
-                PyObject* curr_bases = pycls->tp_bases;
-                PyObject* add_base = PyTuple_Pack(1, ptr(existing));
-                if (add_base == nullptr) {
-                    Exception::from_python();
-                }
-                PyObject* new_bases = PySequence_Concat(curr_bases, add_base);
-                Py_DECREF(add_base);
-                if (new_bases == nullptr) {
-                    Exception::from_python();
-                }
-                pycls->tp_bases = new_bases;
-                Py_DECREF(curr_bases);
-                PyType_Modified(pycls);
-
-                // insert into the template interface's __getitem__ dict
-                PyObject* key = PyTuple_Pack(
-                    sizeof...(Bases) + 1,
-                    ptr(Type<Bases>())...
-                );
-                if (key == nullptr) {
-                    Exception::from_python();
-                }
-                if (PyDict_SetItem(
-                    reinterpret_cast<typename Type<BertrandMeta>::__python__*>(
-                        ptr(existing)
-                    )->templates,
-                    key,
-                    ptr(cls)
-                )) {
-                    Py_DECREF(key);
-                    Exception::from_python();
-                }
-                Py_DECREF(key);
-
-                // insert into the module's C++ type map for fast lookup
-                // using C++ template syntax
-                reinterpret_cast<CRTP*>(ptr(mod))->type_map[typeid(Cls)] =
-                    reinterpret_cast<PyTypeObject*>(ptr(cls));
-
-                // insert into the global type map for use when generating C++
-                // bindings from Python type hints
-                register_type<Cls>(
-                    mod,
-                    reinterpret_cast<PyTypeObject*>(ptr(cls))
-                );
-            });
         }
+    }
 
-        /* Finalize a type definition and produce a corresponding type object.  This
-        method should always be called in the return statement of an `__export__()`
-        script, which automates the import process.
+    struct Context {
+        bool is_member_var = false;
+        bool is_class_var = false;
+        bool is_property = false;
+        bool is_class_property = false;
+        bool is_type = false;
+        bool is_template_interface = false;
+        bool is_method = false;
+        bool is_classmethod = false;
+        bool is_staticmethod = false;
+        std::vector<std::function<void(Type<Wrapper>&)>> callbacks;
+    };
 
-        The argument is a bitmask of Python flags that control various aspects of the
-        type's behavior.  By default, the final type supports inheritance, weak
-        references, and possesses an instance dictionary, just like normal Python
-        classes.  Note that the `Py_TPFLAGS_DEFAULT`, `Py_TPFLAGS_HEAPTYPE`, and
-        `Py_TPFLAGS_HAVE_GC` flags are always set and cannot be overridden.  These are
-        required for Bertrand types to function correctly with respect to the Python
-        interpreter. */
-        template <std::derived_from<Object>... Bases>
-        Type<Wrapper> finalize(unsigned int tp_flags =
-            Py_TPFLAGS_BASETYPE | Py_TPFLAGS_MANAGED_WEAKREF | Py_TPFLAGS_MANAGED_DICT
-        ) {
-            /// TODO: initialize the type object without any slots, then record them
-            /// in the metaclass and replace with the slots defined above, and then
-            /// call PyType_Modified().
-            static unsigned int flags =
-                Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC;
-            static std::vector<PyType_Slot> slots {
-                {Py_tp_dealloc, reinterpret_cast<void*>(__dealloc__)},
-                {0, nullptr}
-            };
-            static bool initialized = false;
-            if (!initialized) {
-                flags |= tp_flags;
-                if (tp_methods.size()) {
-                    tp_methods.push_back({
-                        nullptr,
-                        nullptr,
-                        0,
-                        nullptr
-                    });
-                    slots.push_back({
-                        Py_tp_methods,
-                        tp_methods.data()
-                    });
-                }
-                if (tp_members.size()) {
-                    tp_members.push_back({
-                        nullptr,
-                        0,
-                        0,
-                        0,
-                        nullptr
-                    });
-                    slots.push_back({
-                        Py_tp_members,
-                        tp_members.data()
-                    });
-                }
-                if (tp_getset.size()) {
-                    tp_getset.push_back({
-                        nullptr,
-                        nullptr,
-                        nullptr,
-                        nullptr,
-                        nullptr
-                    });
-                    slots.push_back({
-                        Py_tp_getset,
-                        tp_getset.data()
-                    });
-                }
-                slots.push_back({0, nullptr});
-                initialized = true;
-            }
-            static PyType_Spec spec = {
-                .name = typeid(Wrapper).name(),
-                .basicsize = sizeof(CRTP),
-                .itemsize = 0,
-                .flags = flags,
-                .slots = slots.data()
-            };
+    /// TODO: Perhaps the way to implement register_type is to use a C++ unordered
+    /// map that maps std::type_index to a context object that contains all the
+    /// information needed to generate bindings for that type.  In fact, that
+    /// might directly reference the type's template instantiations, which
+    /// can be dynamically inserted into during the module's export process.
+    /// -> Such a map can be added to the bertrand.python module in per-module
+    /// state.
 
-            // instantiate the type object
-            PyObject* bases = nullptr;
-            if constexpr (sizeof...(Bases)) {
-                bases = PyTuple_Pack(sizeof...(Bases), ptr(Type<Bases>())...);
-                if (bases == nullptr) {
-                    Exception::from_python();
-                }
-            }
-            Type<Wrapper> cls = reinterpret_steal<Type<Wrapper>>(
-                PyType_FromMetaclass(
-                    reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>())),
-                    ptr(module),
-                    &spec,
-                    bases
-                )
-            );
-            Py_XDECREF(bases);
-            if (ptr(cls) == nullptr) {
-                Exception::from_python();
-            }
+    /* Insert a Python type into the global `bertrand.python.types` registry, so
+    that it can be mapped to its C++ equivalent and used when generating Python
+    bindings. */
+    template <typename Cls>
+    static void register_type(Module<ModName>& mod, PyTypeObject* type);
 
-            // initialize the metaclass fields
-            Meta* meta = reinterpret_cast<Meta*>(ptr(cls));
-            new (meta) Meta(impl::demangle(typeid(Wrapper).name()));
-            meta->instancecheck = instancecheck;
-            meta->subclasscheck = subclasscheck;
-            meta->class_getters = std::move(class_getters);
-            meta->class_setters = std::move(class_setters);
-
-            // execute the callbacks to populate the type object
-            for (auto&& [name, ctx] : context) {
-                for (auto&& callback : ctx.callbacks) {
-                    callback(cls);
-                }
-            }
-
-            // insert into the global type map for use when generating bindings
-            register_type<Wrapper>(
-                module,
-                reinterpret_cast<PyTypeObject*>(ptr(cls))
-            );
-
-            return cls;
+    /// TODO: register_iterator is likely not needed.
+    template <typename T>
+    void register_iterator(Type<Wrapper>& type) {
+        static PyType_Slot slots[] = {
+            {
+                Py_tp_iter,
+                reinterpret_cast<void*>(PyObject_SelfIter)
+            },
+            {
+                Py_tp_iternext,
+                reinterpret_cast<void*>(T::__next__)
+            },
+            {0, nullptr}
+        };
+        static PyType_Spec spec = {
+            .name = typeid(T).name(),
+            .basicsize = sizeof(T),
+            .itemsize = 0,
+            .flags =
+                Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE |
+                Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_IMMUTABLETYPE |
+                Py_TPFLAGS_DISALLOW_INSTANTIATION,
+            .slots = slots
+        };
+        PyObject* cls = PyType_FromModuleAndSpec(
+            ptr(module),
+            &spec,
+            nullptr
+        );
+        if (cls == nullptr) {
+            Exception::from_python();
         }
+        int rc = PyObject_SetAttrString(ptr(type), typeid(T).name(), cls);
+        Py_DECREF(cls);
+        if (rc) {
+            Exception::from_python();
+        }
+    }
+
+    // auto result = Base::finalize(tp_flags);
+    // if constexpr (impl::iterable<CppType>) {
+    //     register_iterator<Iterator<
+    //         decltype(std::ranges::begin(std::declval<CppType>())),
+    //         decltype(std::ranges::end(std::declval<CppType>()))
+    //     >>(result);
+    // }
+    // if constexpr (impl::iterable<const CppType>) {
+    //     register_iterator<Iterator<
+    //         decltype(std::ranges::begin(std::declval<const CppType>())),
+    //         decltype(std::ranges::end(std::declval<const CppType>()))
+    //     >>(result);
+    // }
+    // if constexpr (impl::reverse_iterable<CppType>) {
+    //     register_iterator<Iterator<
+    //         decltype(std::ranges::rbegin(std::declval<CppType>())),
+    //         decltype(std::ranges::rend(std::declval<CppType>()))
+    //     >>(result);
+    // }
+    // if constexpr (impl::reverse_iterable<const CppType>) {
+    //     register_iterator<Iterator<
+    //         decltype(std::ranges::rbegin(std::declval<const CppType>())),
+    //         decltype(std::ranges::rend(std::declval<const CppType>()))
+    //     >>(result);
+    // }
+    // return result;
+
+    /* A collection of template constraints for the `method<"name">(&func)` helper
+    that forces compatibility with Python's dunder interface. */
+    template <typename Cls>
+    struct signature {
+
+        template <typename Return, typename Func, typename... Args>
+        static constexpr bool static_invocable = false;
+        template <
+            typename Return,
+            typename R,
+            typename... A,
+            typename... Args
+        >
+        static constexpr bool static_invocable<
+            Return,
+            R(*)(A...),
+            Args...
+        > = std::is_invocable_r_v<
+            Return,
+            R(*)(A...),
+            Args...
+        >;
+        template <typename Return, typename R, typename... A, typename... Args>
+        static constexpr bool static_invocable<
+            Return,
+            R(*)(A...) noexcept,
+            Args...
+        > = std::is_invocable_r_v<
+            Return,
+            R(*)(A...) noexcept,
+            Args...
+        >;
+
+        template <typename Return, typename Func, typename... Args>
+        static constexpr bool member_invocable = false;
+        template <
+            typename Return,
+            typename R,
+            typename T,
+            typename... A,
+            typename... Args
+        >
+        static constexpr bool member_invocable<
+            Return,
+            R(T::*)(A...),
+            Args...
+        > = std::is_invocable_r_v<
+            Return,
+            R(T::*)(A...),
+            Args...
+        >;
+        template <typename Return, typename R, typename T, typename... A, typename... Args>
+        static constexpr bool member_invocable<
+            Return,
+            R(T::*)(A...) volatile,
+            Args...
+        > = std::is_invocable_r_v<
+            Return,
+            R(T::*)(A...) volatile,
+            Args...
+        >;
+        template <typename Return, typename R, typename T, typename... A, typename... Args>
+        static constexpr bool member_invocable<
+            Return,
+            R(T::*)(A...) noexcept,
+            Args...
+        > = std::is_invocable_r_v<
+            Return,
+            R(T::*)(A...) noexcept,
+            Args...
+        >;
+        template <typename Return, typename R, typename T, typename... A, typename... Args>
+        static constexpr bool member_invocable<
+            Return,
+            R(T::*)(A...) volatile noexcept,
+            Args...
+        > = std::is_invocable_r_v<
+            Return,
+            R(T::*)(A...) volatile noexcept,
+            Args...
+        >;
+
+        template <typename Return, typename Func, typename... Args>
+        static constexpr bool const_member_invocable = false;
+        template <typename Return, typename R, typename T, typename... A, typename... Args>
+        static constexpr bool const_member_invocable<
+            Return,
+            R(T::*)(A...) const,
+            Args...
+        > = std::is_invocable_r_v<
+            Return,
+            R(T::*)(A...) const,
+            Args...
+        >;
+        template <typename Return, typename R, typename T, typename... A, typename... Args>
+        static constexpr bool const_member_invocable<
+            Return,
+            R(T::*)(A...) const volatile,
+            Args...
+        > = std::is_invocable_r_v<
+            Return,
+            R(T::*)(A...) const volatile,
+            Args...
+        >;
+        template <typename Return, typename R, typename T, typename... A, typename... Args>
+        static constexpr bool const_member_invocable<
+            Return,
+            R(T::*)(A...) const noexcept,
+            Args...
+        > = std::is_invocable_r_v<
+            Return,
+            R(T::*)(A...) const noexcept,
+            Args...
+        >;
+        template <typename Return, typename R, typename T, typename... A, typename... Args>
+        static constexpr bool const_member_invocable<
+            Return,
+            R(T::*)(A...) const volatile noexcept,
+            Args...
+        > = std::is_invocable_r_v<
+            Return,
+            R(T::*)(A...) const volatile noexcept,
+            Args...
+        >;
+
+        template <StaticStr Name>
+        struct check {
+            template <typename T>
+            static constexpr bool value = false;
+
+            template <typename R, typename... Ts>
+                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+            static constexpr bool value<R(*)(Ts...)> = true;
+
+            template <typename R, typename T, typename... Ts>
+                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+            static constexpr bool value<R(T::*)(Ts...)> = true;
+
+            template <typename R, typename T, typename... Ts>
+                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+            static constexpr bool value<R(T::*)(Ts...) const> = true;
+
+            template <typename R, typename T, typename... Ts>
+                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+            static constexpr bool value<R(T::*)(Ts...) volatile> = true;
+
+            template <typename R, typename T, typename... Ts>
+                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+            static constexpr bool value<R(T::*)(Ts...) const volatile> = true;
+
+            template <typename R, typename... Ts>
+                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+            static constexpr bool value<R(*)(Ts...) noexcept> = true;
+
+            template <typename R, typename T, typename... Ts>
+                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+            static constexpr bool value<R(T::*)(Ts...) noexcept> = true;
+
+            template <typename R, typename T, typename... Ts>
+                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+            static constexpr bool value<R(T::*)(Ts...) const noexcept> = true;
+
+            template <typename R, typename T, typename... Ts>
+                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+            static constexpr bool value<R(T::*)(Ts...) volatile noexcept> = true;
+
+            template <typename R, typename T, typename... Ts>
+                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+            static constexpr bool value<R(T::*)(Ts...) const volatile noexcept> = true;
+
+        };
+
+        template <>
+        struct check<"__new__"> {
+            template <typename T>
+            static constexpr bool value = false;
+
+            template <typename... Ts>
+            static constexpr bool value<Cls(*)(Ts...)> =
+                (std::convertible_to<Object, Ts> && ...);
+            template <typename... Ts>
+            static constexpr bool value<Cls(*)(Ts...) noexcept> =
+                (std::convertible_to<Object, Ts> && ...);
+        };
+
+        template <>
+        struct check<"__init__"> {
+            template <typename T>
+            static constexpr bool value = false;
+
+            template <typename T, typename... Ts>
+            static constexpr bool value<void(*)(T, Ts...)> =
+                std::is_invocable_v<void(*)(T, Ts...), Cls, Ts...> &&
+                (std::convertible_to<Object, Ts> && ...);
+            template <typename T, typename... Ts>
+            static constexpr bool value<void(*)(T, Ts...) noexcept> =
+                std::is_invocable_v<void(*)(T, Ts...) noexcept, Cls, Ts...> &&
+                (std::convertible_to<Object, Ts> && ...);
+
+            template <typename... Ts>
+            static constexpr bool value<void(Cls::*)(Ts...)> =
+                (std::convertible_to<Object, Ts> && ...);
+            template <typename... Ts>
+            static constexpr bool value<void(Cls::*)(Ts...) volatile> =
+                (std::convertible_to<Object, Ts> && ...);
+            template <typename... Ts>
+            static constexpr bool value<void(Cls::*)(Ts...) noexcept> =
+                (std::convertible_to<Object, Ts> && ...);
+            template <typename... Ts>
+            static constexpr bool value<void(Cls::*)(Ts...) volatile noexcept> =
+                (std::convertible_to<Object, Ts> && ...);
+        };
+
+        template <>
+        struct check<"__del__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<void, Cls, T> ||
+                member_invocable<void, T>;
+        };
+
+        template <>
+        struct check<"__repr__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Str, Cls, T> ||
+                member_invocable<Str, T> ||
+                const_member_invocable<Str, T>;
+        };
+
+        template <>
+        struct check<"__str__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Str, Cls, T> ||
+                member_invocable<Str, T> ||
+                const_member_invocable<Str, T>;
+        };
+
+        template <>
+        struct check<"__bytes__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Bytes, Cls, T> ||
+                member_invocable<Bytes, T> ||
+                const_member_invocable<Bytes, T>;
+        };
+
+        template <>
+        struct check<"__format__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Str, T, Cls, Str> ||
+                member_invocable<Str, T, Str> ||
+                const_member_invocable<Str, T, Str>;
+        };
+
+        template <>
+        struct check<"__lt__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Bool, T, Cls, Object> ||
+                member_invocable<Bool, T, Object> ||
+                const_member_invocable<Bool, T, Object>;
+        };
+
+        template <>
+        struct check<"__le__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Bool, T, Cls, Object> ||
+                member_invocable<Bool, T, Object> ||
+                const_member_invocable<Bool, T, Object>;
+        };
+
+        template <>
+        struct check<"__eq__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Bool, T, Cls, Object> ||
+                member_invocable<Bool, T, Object> ||
+                const_member_invocable<Bool, T, Object>;
+        };
+
+        template <>
+        struct check<"__ne__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Bool, T, Cls, Object> ||
+                member_invocable<Bool, T, Object> ||
+                const_member_invocable<Bool, T, Object>;
+        };
+
+        template <>
+        struct check<"__ge__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Bool, T, Cls, Object> ||
+                member_invocable<Bool, T, Object> ||
+                const_member_invocable<Bool, T, Object>;
+        };
+
+        template <>
+        struct check<"__gt__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Bool, T, Cls, Object> ||
+                member_invocable<Bool, T, Object> ||
+                const_member_invocable<Bool, T, Object>;
+        };
+
+        template <>
+        struct check<"__hash__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Int, T, Cls> ||
+                member_invocable<Int, T> ||
+                const_member_invocable<Int, T>;
+        };
+
+        template <>
+        struct check<"__bool__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Bool, T, Cls> ||
+                member_invocable<Bool, T> ||
+                const_member_invocable<Bool, T>;
+        };
+
+        template <>
+        struct check<"__getattr__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Str> ||
+                member_invocable<Object, T, Str> ||
+                const_member_invocable<Object, T, Str>;
+        };
+
+        template <>
+        struct check<"__getattribute__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Str> ||
+                member_invocable<Object, T, Str> ||
+                const_member_invocable<Object, T, Str>;
+        };
+
+        template <>
+        struct check<"__setattr__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<void, T, Cls, Str, Object> ||
+                member_invocable<void, T, Str, Object> ||
+                const_member_invocable<void, T, Str, Object>;
+        };
+
+        template <>
+        struct check<"__delattr__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<void, T, Cls, Str> ||
+                member_invocable<void, T, Str> ||
+                const_member_invocable<void, T, Str>;
+        };
+
+        template <>
+        struct check<"__dir__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<List<Str>, T, Cls> ||
+                member_invocable<List<Str>, T> ||
+                const_member_invocable<List<Str>, T>;
+        };
+
+        template <>
+        struct check<"__get__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object, Type<Object>> ||
+                member_invocable<Object, T, Object, Type<Object>> ||
+                const_member_invocable<Object, T, Object, Type<Object>>;
+        };
+
+        template <>
+        struct check<"__set__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<void, T, Cls, Object, Object> ||
+                member_invocable<void, T, Object, Object> ||
+                const_member_invocable<void, T, Object, Object>;
+        };
+
+        template <>
+        struct check<"__delete__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<void, T, Cls, Object> ||
+                member_invocable<void, T, Object> ||
+                const_member_invocable<void, T, Object>;
+        };
+
+        template <>
+        struct check<"__init_subclass__"> {
+            template <typename T>
+            static constexpr bool value = false;
+
+            template <typename T, typename... Ts>
+            static constexpr bool value<void(*)(T, Ts...)> =
+                std::is_invocable_v<void(*)(T, Ts...), Cls, Ts...> &&
+                (std::convertible_to<Object, Ts> && ...);
+            template <typename T, typename... Ts>
+            static constexpr bool value<void(*)(T, Ts...) noexcept> =
+                std::is_invocable_v<void(*)(T, Ts...) noexcept, Cls, Ts...> &&
+                (std::convertible_to<Object, Ts> && ...);
+        };
+
+        template <>
+        struct check<"__set_name__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<void, T, Cls, Type<Object>, Str> ||
+                member_invocable<void, T, Type<Object>, Str> ||
+                const_member_invocable<void, T, Type<Object>, Str>;
+        };
+
+        template <>
+        struct check<"__mro_entries__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Tuple<Type<Object>>, T, Cls, Tuple<Type<Object>>> ||
+                member_invocable<Tuple<Type<Object>>, T, Tuple<Type<Object>>> ||
+                const_member_invocable<Tuple<Type<Object>>, T, Tuple<Type<Object>>>;
+        };
+
+        template <>
+        struct check<"__instancecheck__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Bool, T, Cls, Object> ||
+                member_invocable<Bool, T, Object> ||
+                const_member_invocable<Bool, T, Object>;
+        };
+
+        template <>
+        struct check<"__subclasscheck__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Bool, T, Cls, Object> ||
+                member_invocable<Bool, T, Object> ||
+                const_member_invocable<Bool, T, Object>;
+        };
+
+        template <>
+        struct check<"__class_getitem__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__call__"> {
+            template <typename T>
+            static constexpr bool value = false;
+
+            template <typename R, typename T, typename... Ts>
+            static constexpr bool value<R(*)(T, Ts...)> =
+                std::is_invocable_v<R(*)(T, Ts...), Cls, Ts...> &&
+                (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                (std::convertible_to<Object, Ts> && ...);
+            template <typename R, typename T, typename... Ts>
+            static constexpr bool value<R(*)(T, Ts...) noexcept> =
+                std::is_invocable_v<R(*)(T, Ts...) noexcept, Cls, Ts...> &&
+                (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                (std::convertible_to<Object, Ts> && ...);
+
+            template <typename R, typename... Ts>
+            static constexpr bool value<R(Cls::*)(Ts...)> =
+                (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                (std::convertible_to<Object, Ts> && ...);
+            template <typename R, typename... Ts>
+            static constexpr bool value<R(Cls::*)(Ts...) volatile> =
+                (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                (std::convertible_to<Object, Ts> && ...);
+            template <typename R, typename... Ts>
+            static constexpr bool value<R(Cls::*)(Ts...) noexcept> =
+                (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                (std::convertible_to<Object, Ts> && ...);
+            template <typename R, typename... Ts>
+            static constexpr bool value<R(Cls::*)(Ts...) volatile noexcept> =
+                (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                (std::convertible_to<Object, Ts> && ...);
+
+            template <typename R, typename... Ts>
+            static constexpr bool value<R(Cls::*)(Ts...) const> =
+                (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                (std::convertible_to<Object, Ts> && ...);
+            template <typename R, typename... Ts>
+            static constexpr bool value<R(Cls::*)(Ts...) const volatile> =
+                (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                (std::convertible_to<Object, Ts> && ...);
+            template <typename R, typename... Ts>
+            static constexpr bool value<R(Cls::*)(Ts...) const noexcept> =
+                (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                (std::convertible_to<Object, Ts> && ...);
+            template <typename R, typename... Ts>
+            static constexpr bool value<R(Cls::*)(Ts...) const volatile noexcept> =
+                (std::is_void_v<R> || std::convertible_to<R, Object>) &&
+                (std::convertible_to<Object, Ts> && ...);
+        };
+
+        template <>
+        struct check<"__len__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Int, T, Cls> ||
+                member_invocable<Int, T> ||
+                const_member_invocable<Int, T>;
+        };
+
+        template <>
+        struct check<"__length_hint__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Int, T, Cls> ||
+                member_invocable<Int, T> ||
+                const_member_invocable<Int, T>;
+        };
+
+        template <>
+        struct check<"__getitem__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__setitem__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<void, T, Cls, Object, Object> ||
+                member_invocable<void, T, Object, Object> ||
+                const_member_invocable<void, T, Object, Object>;
+        };
+
+        template <>
+        struct check<"__delitem__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<void, T, Cls, Object> ||
+                member_invocable<void, T, Object> ||
+                const_member_invocable<void, T, Object>;
+        };
+
+        template <>
+        struct check<"__missing__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        /// TODO: figure out how to handle overloading __iter__/__reversed__/__aiter__
+        // template <>
+        // struct check<"__iter__"> {
+        //     template <typename T>
+        //     static constexpr bool value =
+        //         static_invocable<Object, T, Cls> ||
+        //         member_invocable<Object, T> ||
+        //         const_member_invocable<Object, T>;
+        // };
+
+        template <>
+        struct check<"__next__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls> ||
+                member_invocable<Object, T>;
+        };
+
+        // template <>
+        // struct check<"__reversed__"> {
+        //     template <typename T>
+        //     static constexpr bool value =
+        //         static_invocable<Object, T, Cls> ||
+        //         member_invocable<Object, T> ||
+        //         const_member_invocable<Object, T>;
+        // };
+
+        template <>
+        struct check<"__contains__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Bool, T, Cls, Object> ||
+                member_invocable<Bool, T, Object> ||
+                const_member_invocable<Bool, T, Object>;
+        };
+
+        template <>
+        struct check<"__add__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__sub__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__mul__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Int> ||
+                member_invocable<Object, T, Int> ||
+                const_member_invocable<Object, T, Int>;
+        };
+
+        template <>
+        struct check<"__matmul__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__truediv__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__floordiv__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__mod__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__divmod__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Tuple<Object>, T, Cls, Object> ||
+                member_invocable<Tuple<Object>, T, Object> ||
+                const_member_invocable<Tuple<Object>, T, Object>;
+        };
+
+        template <>
+        struct check<"__pow__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object, Object> ||
+                member_invocable<Object, T, Object, Object> ||
+                const_member_invocable<Object, T, Object, Object>;
+        };
+
+        template <>
+        struct check<"__lshift__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Int> ||
+                member_invocable<Object, T, Int> ||
+                const_member_invocable<Object, T, Int>;
+        };
+
+        template <>
+        struct check<"__rshift__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Int> ||
+                member_invocable<Object, T, Int> ||
+                const_member_invocable<Object, T, Int>;
+        };
+
+        template <>
+        struct check<"__and__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__xor__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__or__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__radd__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__rsub__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__rmul__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Int> ||
+                member_invocable<Object, T, Int> ||
+                const_member_invocable<Object, T, Int>;
+        };
+
+        template <>
+        struct check<"__rmatmul__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__rtruediv__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__rfloordiv__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__rmod__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__rdivmod__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Tuple<Object>, T, Cls, Object> ||
+                member_invocable<Tuple<Object>, T, Object> ||
+                const_member_invocable<Tuple<Object>, T, Object>;
+        };
+
+        template <>
+        struct check<"__rpow__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object, Object> ||
+                member_invocable<Object, T, Object, Object> ||
+                const_member_invocable<Object, T, Object, Object>;
+        };
+
+        template <>
+        struct check<"__rlshift__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Int> ||
+                member_invocable<Object, T, Int> ||
+                const_member_invocable<Object, T, Int>;
+        };
+
+        template <>
+        struct check<"__rrshift__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Int> ||
+                member_invocable<Object, T, Int> ||
+                const_member_invocable<Object, T, Int>;
+        };
+
+        template <>
+        struct check<"__rand__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__rxor__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__ror__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object> ||
+                const_member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__iadd__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__isub__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__imul__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Int> ||
+                member_invocable<Object, T, Int>;
+        };
+
+        template <>
+        struct check<"__imatmul__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__itruediv__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__ifloordiv__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__imod__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__ipow__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object, Object> ||
+                member_invocable<Object, T, Object, Object>;
+        };
+
+        template <>
+        struct check<"__ilshift__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Int> ||
+                member_invocable<Object, T, Int>;
+        };
+
+        template <>
+        struct check<"__irshift__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Int> ||
+                member_invocable<Object, T, Int>;
+        };
+
+        template <>
+        struct check<"__iand__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__ixor__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__ior__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Object> ||
+                member_invocable<Object, T, Object>;
+        };
+
+        template <>
+        struct check<"__neg__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls> ||
+                member_invocable<Object, T> ||
+                const_member_invocable<Object, T>;
+        };
+
+        template <>
+        struct check<"__pos__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls> ||
+                member_invocable<Object, T> ||
+                const_member_invocable<Object, T>;
+        };
+
+        template <>
+        struct check<"__abs__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls> ||
+                member_invocable<Object, T> ||
+                const_member_invocable<Object, T>;
+        };
+
+        template <>
+        struct check<"__invert__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls> ||
+                member_invocable<Object, T> ||
+                const_member_invocable<Object, T>;
+        };
+
+        template <>
+        struct check<"__complex__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Complex, T, Cls> ||
+                member_invocable<Complex, T> ||
+                const_member_invocable<Complex, T>;
+        };
+
+        template <>
+        struct check<"__int__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Int, T, Cls> ||
+                member_invocable<Int, T> ||
+                const_member_invocable<Int, T>;
+        };
+
+        template <>
+        struct check<"__float__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Float, T, Cls> ||
+                member_invocable<Float, T> ||
+                const_member_invocable<Float, T>;
+        };
+
+        template <>
+        struct check<"__index__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Int, T, Cls> ||
+                member_invocable<Int, T> ||
+                const_member_invocable<Int, T>;
+        };
+
+        template <>
+        struct check<"__round__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Int> ||
+                member_invocable<Object, T, Int> ||
+                const_member_invocable<Object, T, Int>;
+        };
+
+        template <>
+        struct check<"__trunc__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls> ||
+                member_invocable<Object, T> ||
+                const_member_invocable<Object, T>;
+        };
+
+        template <>
+        struct check<"__floor__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls> ||
+                member_invocable<Object, T> ||
+                const_member_invocable<Object, T>;
+        };
+
+        template <>
+        struct check<"__ceil__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls> ||
+                member_invocable<Object, T> ||
+                const_member_invocable<Object, T>;
+        };
+
+        template <>
+        struct check<"__enter__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls> ||
+                member_invocable<Object, T> ||
+                const_member_invocable<Object, T>;
+        };
+
+        template <>
+        struct check<"__exit__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<void, T, Cls, Type<Exception>, Exception, Traceback> ||
+                member_invocable<void, T, Type<Exception>, Exception, Traceback> ||
+                const_member_invocable<void, T, Type<Exception>, Exception, Traceback>;
+        };
+
+        template <>
+        struct check<"__buffer__"> {
+            /// TODO: this should return specifically a MemoryView?
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls, Int> ||
+                member_invocable<Object, T, Int> ||
+                const_member_invocable<Object, T, Int>;
+        };
+
+        template <>
+        struct check<"__release_buffer__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<void, T, Cls, Object> ||
+                member_invocable<void, T, Object> ||
+                const_member_invocable<void, T, Object>;
+        };
+
+        template <>
+        struct check<"__await__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls> ||
+                member_invocable<Object, T> ||
+                const_member_invocable<Object, T>;
+        };
+
+        // template <>
+        // struct check<"__aiter__"> {
+        //     template <typename T>
+        //     static constexpr bool value =
+        //         static_invocable<Object, T, Cls> ||
+        //         member_invocable<Object, T> ||
+        //         const_member_invocable<Object, T>;
+        // };
+
+        template <>
+        struct check<"__anext__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls> ||
+                member_invocable<Object, T>;
+        };
+
+        template <>
+        struct check<"__aenter__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<Object, T, Cls> ||
+                member_invocable<Object, T> ||
+                const_member_invocable<Object, T>;
+        };
+
+        template <>
+        struct check<"__aexit__"> {
+            template <typename T>
+            static constexpr bool value =
+                static_invocable<void, T, Cls, Type<Exception>, Exception, Traceback> ||
+                member_invocable<void, T, Type<Exception>, Exception, Traceback> ||
+                const_member_invocable<void, T, Type<Exception>, Exception, Traceback>;
+        };
 
     };
+
+public:
+    using t_cpp = CppType;
+
+    Module<ModName> module;
+    std::unordered_map<std::string, Context> context;
+    Meta::ClassGetters class_getters;
+    Meta::ClassSetters class_setters;
+
+    Bindings(const Module<ModName>& mod) : module(mod) {}
+    Bindings(const Bindings&) = delete;
+    Bindings(Bindings&&) = delete;
+
+    /* Expose an immutable static variable to Python using the `__getattr__()`
+    slot of the metatype, which synchronizes its state. */
+    template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
+    void var(const T& value) {
+        if (context.contains(Name)) {
+            throw AttributeError(
+                "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                "' already has an attribute named '" + Name + "'."
+            );
+        }
+        context[Name] = {
+            .is_class_var = true,
+        };
+        static auto get = [](PyObject* cls, void* closure) -> PyObject* {
+            try {
+                const T* value = reinterpret_cast<const T*>(closure);
+                if constexpr (impl::python_like<T>) {
+                    return Py_NewRef(ptr(*value));
+                } else {
+                    return release(wrap(*value));
+                }
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        };
+        static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
+            std::string msg = "variable '" + Name + "' of type '" +
+                impl::demangle(typeid(Wrapper).name()) + "' is immutable.";
+            PyErr_SetString(PyExc_TypeError, msg.c_str());
+            return -1;
+        };
+        class_getters[Name] = {
+            +get,
+            const_cast<void*>(reinterpret_cast<const void*>(&value))
+        };
+        class_setters[Name] = {
+            +set,
+            const_cast<void*>(reinterpret_cast<const void*>(&value))
+        };
+    }
+
+    /* Expose a mutable static variable to Python using the `__getattr__()` and
+    `__setattr__()` slots of the metatype, which synchronizes its state.  */
+    template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
+    void var(T& value) {
+        if (context.contains(Name)) {
+            throw AttributeError(
+                "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                "' already has an attribute named '" + Name + "'."
+            );
+        }
+        context[Name] = {
+            .is_class_var = true,
+        };
+        static auto get = [](PyObject* self, void* value) -> PyObject* {
+            try {
+                T* value = reinterpret_cast<T*>(value);
+                if constexpr (impl::python_like<T>) {
+                    return Py_NewRef(ptr(*value));
+                } else {
+                    return release(wrap(*value));
+                }
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        };
+        static auto set = [](PyObject* self, PyObject* new_val, void* value) -> int {
+            if (new_val == nullptr) {
+                std::string msg = "variable '" + Name + "' of type '" +
+                    impl::demangle(typeid(Wrapper).name()) +
+                    "' cannot be deleted.";
+                PyErr_SetString(PyExc_TypeError, msg.c_str());
+                return -1;
+            }
+            try {
+                *reinterpret_cast<T*>(value) = static_cast<T>(
+                    reinterpret_borrow<Object>(new_val)
+                );
+                return 0;
+            } catch (...) {
+                Exception::to_python();
+                return -1;
+            }
+        };
+        class_getters[Name] = {+get, reinterpret_cast<void*>(&value)};
+        class_setters[Name] = {+set, reinterpret_cast<void*>(&value)};
+    }
+
+    /* Expose a C++-style static getter to Python using the `__getattr__()`
+    slot of the metatype. */
+    template <StaticStr Name, typename Return> requires (__as_object__<Return>::enable)
+    void property(Return(*getter)()) {
+        if (context.contains(Name)) {
+            throw AttributeError(
+                "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                "' already has an attribute named '" + Name + "'."
+            );
+        }
+        context[Name] = {
+            .is_class_property = true,
+        };
+        static auto get = [](PyObject* cls, void* closure) -> PyObject* {
+            try {
+                Return(*func)() = reinterpret_cast<Return(*)()>(closure);
+                if constexpr (std::is_lvalue_reference_v<Return>) {
+                    if constexpr (impl::python_like<Return>) {
+                        return Py_NewRef(ptr(func()));
+                    } else {
+                        return release(wrap(func()));
+                    }
+                } else {
+                    return release(as_object(func()));
+                }
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        };
+        class_getters[Name] = {+get, reinterpret_cast<void*>(getter)};
+    }
+
+    /* Expose a C++-style static getter/setter pair to Python using the
+    `__getattr__()` and `__setattr__()` slots of the metatype. */
+    template <StaticStr Name, typename Return, typename Value>
+        requires (__as_object__<Return>::enable && __as_object__<Value>::enable)
+    void property(Return(*getter)(), void(*setter)(Value&&)) {
+        if (context.contains(Name)) {
+            throw AttributeError(
+                "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                "' already has an attribute named '" + Name + "'."
+            );
+        }
+        context[Name] = {
+            .is_class_property = true,
+        };
+        static struct Closure {
+            Return(*getter)();
+            void(*setter)(Value&&);
+        } closure = {getter, setter};
+        static auto get = [](PyObject* cls, void* closure) -> PyObject* {
+            try {
+                Closure* ctx = reinterpret_cast<Closure*>(closure);
+                if constexpr (std::is_lvalue_reference_v<Return>) {
+                    if constexpr (impl::python_like<Return>) {
+                        return Py_NewRef(ptr(ctx->getter()));
+                    } else {
+                        return release(wrap(ctx->getter()));
+                    }
+                } else {
+                    return release(as_object(ctx->getter()));
+                }
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        };
+        static auto set = [](PyObject* cls, PyObject* new_val, void* closure) -> int {
+            if (new_val == nullptr) {
+                std::string msg = "variable '" + Name + "' of type '" +
+                    impl::demangle(typeid(Wrapper).name()) +
+                    "' cannot be deleted.";
+                PyErr_SetString(PyExc_TypeError, msg.c_str());
+                return -1;
+            }
+            try {
+                reinterpret_cast<Closure*>(closure)->setter(static_cast<Value>(
+                    reinterpret_borrow<Object>(new_val)
+                ));
+                return 0;
+            } catch (...) {
+                Exception::to_python();
+                return -1;
+            }
+        };
+        class_getters[Name] = {+get, reinterpret_cast<void*>(&closure)};
+        class_setters[Name] = {+set, reinterpret_cast<void*>(&closure)};
+    }
+
+    /// TODO: __iter__ and __reversed__ need special treatment, and require two
+    /// functions to be supplied
+
+    /// TODO: all of the methods need the signature check to be implemented
+
+    /* Expose a C++ static method to Python as a static method, which can be
+    overloaded from either side of the language boundary.  */
+    template <StaticStr Name, typename Return, typename... Target>
+        requires (
+            __as_object__<std::remove_cvref_t<Return>>::enable &&
+            (__as_object__<std::remove_cvref_t<Target>>::enable && ...)
+        )
+    void method(Return(*func)(Target...)) {
+        /// TODO: function refactor
+    }
+
+    /* Expose a nested py::Object type to Python. */
+    template <
+        StaticStr Name,
+        std::derived_from<Object> Cls,
+        std::derived_from<Object>... Bases
+    > requires (
+        !impl::is_generic<Cls> &&
+        (impl::has_type<Cls> && impl::is_type<Type<Cls>>) &&
+        ((impl::has_type<Bases> && impl::is_type<Type<Bases>>) && ...)
+    )
+    void type(std::string&& doc = "") {
+        if (context.contains(Name)) {
+            throw AttributeError(
+                "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                "' already has an attribute named '" + Name + "'."
+            );
+        }
+        static std::string docstring = std::move(doc);
+        context[Name] = {
+            .is_type = true,
+            .callbacks = {
+                [](Type<Wrapper>& type) {
+                    Module<ModName> mod = reinterpret_steal<Module<ModName>>(
+                        PyType_GetModule(ptr(type))
+                    );
+                    if (ptr(mod) == nullptr) {
+                        Exception::from_python();
+                    }
+                    Type<Cls> cls = Type<Cls>::__python__::__export__(mod);
+
+                    if (PyObject_SetAttr(ptr(type), Name, ptr(cls))) {
+                        Exception::from_python();
+                    }
+
+                    // insert into the module's C++ type map for fast lookup
+                    // using C++ template syntax
+                    using Mod = Module<ModName>::__python__;
+                    reinterpret_cast<Mod*>(ptr(mod))->type_map[typeid(Cls)] =
+                        reinterpret_cast<PyTypeObject*>(ptr(cls));
+
+                    // insert into the global type map for use when generating
+                    // C++ bindings from Python type hints
+                    register_type<Cls>(
+                        mod,
+                        reinterpret_cast<PyTypeObject*>(ptr(cls))
+                    );
+                }
+            }
+        };
+    }
+
+    /* Expose a nested and templated py::Object type to Python. */
+    template <
+        StaticStr Name,
+        template <typename...> typename Cls
+    >
+    void type() {
+        if (context.contains(Name)) {
+            throw AttributeError(
+                "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                "' already has an attribute named '" + Name + "'."
+            );
+        }
+        context[Name] = {
+            .is_type = true,
+            .is_template_interface = true,
+            .callbacks = {
+                [](Type<Wrapper>& type) {
+                    Module<ModName> mod = reinterpret_steal<Module<ModName>>(
+                        PyType_GetModule(ptr(type))
+                    );
+                    if (ptr(mod) == nullptr) {
+                        Exception::from_python();
+                    }
+                    BertrandMeta stub = Meta::stub_type<Name>(mod);
+                    if (PyObject_SetAttr(ptr(type), Name, ptr(stub))) {
+                        Exception::from_python();
+                    }
+                }
+            }
+        };
+    }
+
+    /* Expose a template instantiation of a nested py::Object type to Python. */
+    template <
+        StaticStr Name,
+        std::derived_from<Object> Cls,
+        std::derived_from<Object>... Bases
+    > requires (
+        impl::is_generic<Cls> &&
+        (impl::has_type<Cls> && impl::is_type<Type<Cls>>) &&
+        ((impl::has_type<Bases> && impl::is_type<Type<Bases>>) && ...)
+    )
+    void type() {
+        auto it = context.find(Name);
+        if (it == context.end()) {
+            throw TypeError(
+                "No template interface found for type '" + Name + "' in "
+                "class '" + impl::demangle(typeid(Wrapper).name()) + "' "
+                "with specialization '" +
+                impl::demangle(typeid(Cls).name()) + "'.  Did you "
+                "forget to register the unspecialized template first?"
+            );
+        } else if (!it->second.is_template_interface) {
+            throw AttributeError(
+                "Class '" + impl::demangle(typeid(Wrapper).name()) + "' "
+                "already has an attribute named '" + Name + "'."
+            );
+        }
+        it->second.callbacks.push_back([](Type<Wrapper>& type) {
+            // get the template interface with the same name
+            BertrandMeta existing = reinterpret_steal<BertrandMeta>(
+                PyObject_GetAttr(
+                    ptr(type),
+                    impl::TemplateString<Name>::ptr
+                )
+            );
+            if (ptr(existing) == nullptr) {
+                Exception::from_python();
+            }
+
+            // call the type's __export__() method
+            Module<ModName> mod = reinterpret_steal<Module<ModName>>(
+                PyType_GetModule(ptr(type))
+            );
+            if (ptr(mod) == nullptr) {
+                Exception::from_python();
+            }
+            Type<Cls> cls = Type<Cls>::__python__::__export__(mod);
+
+            // Insert the template interface into the type's __bases__
+            PyTypeObject* pycls = reinterpret_cast<PyTypeObject*>(ptr(cls));
+            PyObject* curr_bases = pycls->tp_bases;
+            PyObject* add_base = PyTuple_Pack(1, ptr(existing));
+            if (add_base == nullptr) {
+                Exception::from_python();
+            }
+            PyObject* new_bases = PySequence_Concat(curr_bases, add_base);
+            Py_DECREF(add_base);
+            if (new_bases == nullptr) {
+                Exception::from_python();
+            }
+            pycls->tp_bases = new_bases;
+            Py_DECREF(curr_bases);
+            PyType_Modified(pycls);
+
+            // insert into the template interface's __getitem__ dict
+            PyObject* key = PyTuple_Pack(
+                sizeof...(Bases) + 1,
+                ptr(Type<Bases>())...
+            );
+            if (key == nullptr) {
+                Exception::from_python();
+            }
+            if (PyDict_SetItem(
+                reinterpret_cast<typename Type<BertrandMeta>::__python__*>(
+                    ptr(existing)
+                )->templates,
+                key,
+                ptr(cls)
+            )) {
+                Py_DECREF(key);
+                Exception::from_python();
+            }
+            Py_DECREF(key);
+
+            // insert into the module's C++ type map for fast lookup
+            // using C++ template syntax
+            reinterpret_cast<CRTP*>(ptr(mod))->type_map[typeid(Cls)] =
+                reinterpret_cast<PyTypeObject*>(ptr(cls));
+
+            // insert into the global type map for use when generating C++
+            // bindings from Python type hints
+            register_type<Cls>(
+                mod,
+                reinterpret_cast<PyTypeObject*>(ptr(cls))
+            );
+        });
+    }
+
+    /* Finalize a type definition and produce a corresponding type object.  This
+    method should always be called in the return statement of an `__export__()`
+    script, which automates the import process.
+
+    The argument is a bitmask of Python flags that control various aspects of the
+    type's behavior.  By default, the final type supports inheritance, weak
+    references, and possesses an instance dictionary, just like normal Python
+    classes.  Note that the `Py_TPFLAGS_DEFAULT`, `Py_TPFLAGS_HEAPTYPE`, and
+    `Py_TPFLAGS_HAVE_GC` flags are always set and cannot be overridden.  These are
+    required for Bertrand types to function correctly with respect to the Python
+    interpreter. */
+    template <std::derived_from<Object>... Bases>
+    Type<Wrapper> finalize(unsigned int tp_flags =
+        Py_TPFLAGS_BASETYPE | Py_TPFLAGS_MANAGED_WEAKREF | Py_TPFLAGS_MANAGED_DICT
+    ) {
+        static unsigned int flags =
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC;
+        static std::vector<PyType_Slot> slots {
+            {Py_tp_dealloc, reinterpret_cast<void*>(CRTP::__dealloc__)},
+            {Py_tp_traverse, reinterpret_cast<void*>(CRTP::__traverse__)},
+            {Py_tp_clear, reinterpret_cast<void*>(CRTP::__clear__)},
+            {0, nullptr}
+        };
+        static bool initialized = false;
+        if (!initialized) {
+            flags |= tp_flags;
+            if (tp_methods.size()) {
+                tp_methods.push_back({
+                    nullptr,
+                    nullptr,
+                    0,
+                    nullptr
+                });
+                slots.push_back({
+                    Py_tp_methods,
+                    tp_methods.data()
+                });
+            }
+            if (tp_members.size()) {
+                tp_members.push_back({
+                    nullptr,
+                    0,
+                    0,
+                    0,
+                    nullptr
+                });
+                slots.push_back({
+                    Py_tp_members,
+                    tp_members.data()
+                });
+            }
+            if (tp_getset.size()) {
+                tp_getset.push_back({
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    nullptr
+                });
+                slots.push_back({
+                    Py_tp_getset,
+                    tp_getset.data()
+                });
+            }
+            slots.push_back({0, nullptr});
+            initialized = true;
+        }
+        static PyType_Spec spec = {
+            .name = typeid(Wrapper).name(),
+            .basicsize = sizeof(CRTP),
+            .itemsize = 0,
+            .flags = flags,
+            .slots = slots.data()
+        };
+
+        // instantiate the type object
+        PyObject* bases = nullptr;
+        if constexpr (sizeof...(Bases)) {
+            bases = PyTuple_Pack(sizeof...(Bases), ptr(Type<Bases>())...);
+            if (bases == nullptr) {
+                Exception::from_python();
+            }
+        }
+        Type<Wrapper> cls = reinterpret_steal<Type<Wrapper>>(
+            PyType_FromMetaclass(
+                reinterpret_cast<PyTypeObject*>(ptr(Type<BertrandMeta>())),
+                ptr(module),
+                &spec,
+                bases
+            )
+        );
+        Py_XDECREF(bases);
+        if (ptr(cls) == nullptr) {
+            Exception::from_python();
+        }
+
+        // initialize the metaclass fields
+        new (ptr(cls)) Meta(impl::demangle(typeid(Wrapper).name()));
+        ptr(cls)->instancecheck = instancecheck;
+        ptr(cls)->subclasscheck = subclasscheck;
+        ptr(cls)->class_getters = std::move(class_getters);
+        ptr(cls)->class_setters = std::move(class_setters);
+
+        // execute the callbacks to populate the type object
+        for (auto&& [name, ctx] : context) {
+            for (auto&& callback : ctx.callbacks) {
+                callback(cls);
+            }
+        }
+
+        // insert into the global type map for use when generating bindings
+        register_type<Wrapper>(
+            module,
+            reinterpret_cast<PyTypeObject*>(ptr(cls))
+        );
+
+        return cls;
+    }
+
+};
+
+
+namespace impl {
+
+
 
     template <typename CRTP, typename Wrapper>
     template <StaticStr ModName>
@@ -7831,331 +9351,6 @@ template <typename L, typename R>
         impl::has_ixor<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __ixor__<L, R> : Returns<impl::ixor_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
-
-
-///////////////////////////////
-////    EXCEPTION TYPES    ////
-///////////////////////////////
-
-
-template <>
-struct Type<Exception>;
-
-
-template <>
-struct Interface<Type<Exception>> {
-    [[noreturn, clang::noinline]] static void from_python();  // defined in __init__.h
-    static void to_python();
-};
-
-
-template <>
-struct Type<Exception> : Object, Interface<Type<Exception>>, impl::TypeTag {
-    struct __python__ : TypeTag::def<__python__, Type> {
-        static Type __import__() {
-            return reinterpret_borrow<Type>(PyExc_Exception);
-        }
-    };
-
-    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
-    Type(PyObject* p, stolen_t t) : Object(p, t) {}
-
-    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
-    Type(Args&&... args) : Object(
-        implicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
-    explicit Type(Args&&... args) : Object(
-        explicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-};
-
-
-inline void Interface<Type<Exception>>::to_python() {
-    Exception::to_python();
-}
-
-
-#define BUILTIN_EXCEPTION_TYPE(CLS, BASE, PYTYPE)                                       \
-    template <>                                                                         \
-    struct Type<CLS>;                                                                   \
-                                                                                        \
-    template <>                                                                         \
-    struct Interface<Type<CLS>> : Interface<Type<BASE>> {};                             \
-                                                                                        \
-    template <>                                                                         \
-    struct Type<CLS> : Object, Interface<Type<CLS>>, impl::TypeTag {                    \
-        struct __python__ : TypeTag::def<__python__, CLS> {                             \
-            static Type __import__() {                                                  \
-                return reinterpret_borrow<Type>(PYTYPE);                                \
-            }                                                                           \
-        };                                                                              \
-                                                                                        \
-        Type(PyObject* p, borrowed_t t) : Object(p, t) {}                               \
-        Type(PyObject* p, stolen_t t) : Object(p, t) {}                                 \
-                                                                                        \
-        template <typename... Args>                                                     \
-            requires (implicit_ctor<Type>::template enable<Args...>)                    \
-        Type(Args&&... args) : Object(                                                  \
-            implicit_ctor<Type>{},                                                      \
-            std::forward<Args>(args)...                                                 \
-        ) {}                                                                            \
-                                                                                        \
-        template <typename... Args>                                                     \
-            requires (explicit_ctor<Type>::template enable<Args...>)                    \
-        explicit Type(Args&&... args) : Object(                                         \
-            explicit_ctor<Type>{},                                                      \
-            std::forward<Args>(args)...                                                 \
-        ) {}                                                                            \
-    };
-
-
-BUILTIN_EXCEPTION_TYPE(ArithmeticError, Exception, PyExc_ArithmeticError)
-    BUILTIN_EXCEPTION_TYPE(FloatingPointError, ArithmeticError, PyExc_FloatingPointError)
-    BUILTIN_EXCEPTION_TYPE(OverflowError, ArithmeticError, PyExc_OverflowError)
-    BUILTIN_EXCEPTION_TYPE(ZeroDivisionError, ArithmeticError, PyExc_ZeroDivisionError)
-BUILTIN_EXCEPTION_TYPE(AssertionError, Exception, PyExc_AssertionError)
-BUILTIN_EXCEPTION_TYPE(AttributeError, Exception, PyExc_AttributeError)
-BUILTIN_EXCEPTION_TYPE(BufferError, Exception, PyExc_BufferError)
-BUILTIN_EXCEPTION_TYPE(EOFError, Exception, PyExc_EOFError)
-BUILTIN_EXCEPTION_TYPE(ImportError, Exception, PyExc_ImportError)
-    BUILTIN_EXCEPTION_TYPE(ModuleNotFoundError, ImportError, PyExc_ModuleNotFoundError)
-BUILTIN_EXCEPTION_TYPE(LookupError, Exception, PyExc_LookupError)
-    BUILTIN_EXCEPTION_TYPE(IndexError, LookupError, PyExc_IndexError)
-    BUILTIN_EXCEPTION_TYPE(KeyError, LookupError, PyExc_KeyError)
-BUILTIN_EXCEPTION_TYPE(MemoryError, Exception, PyExc_MemoryError)
-BUILTIN_EXCEPTION_TYPE(NameError, Exception, PyExc_NameError)
-    BUILTIN_EXCEPTION_TYPE(UnboundLocalError, NameError, PyExc_UnboundLocalError)
-BUILTIN_EXCEPTION_TYPE(OSError, Exception, PyExc_OSError)
-    BUILTIN_EXCEPTION_TYPE(BlockingIOError, OSError, PyExc_BlockingIOError)
-    BUILTIN_EXCEPTION_TYPE(ChildProcessError, OSError, PyExc_ChildProcessError)
-    BUILTIN_EXCEPTION_TYPE(ConnectionError, OSError, PyExc_ConnectionError)
-        BUILTIN_EXCEPTION_TYPE(BrokenPipeError, ConnectionError, PyExc_BrokenPipeError)
-        BUILTIN_EXCEPTION_TYPE(ConnectionAbortedError, ConnectionError, PyExc_ConnectionAbortedError)
-        BUILTIN_EXCEPTION_TYPE(ConnectionRefusedError, ConnectionError, PyExc_ConnectionRefusedError)
-        BUILTIN_EXCEPTION_TYPE(ConnectionResetError, ConnectionError, PyExc_ConnectionResetError)
-    BUILTIN_EXCEPTION_TYPE(FileExistsError, OSError, PyExc_FileExistsError)
-    BUILTIN_EXCEPTION_TYPE(FileNotFoundError, OSError, PyExc_FileNotFoundError)
-    BUILTIN_EXCEPTION_TYPE(InterruptedError, OSError, PyExc_InterruptedError)
-    BUILTIN_EXCEPTION_TYPE(IsADirectoryError, OSError, PyExc_IsADirectoryError)
-    BUILTIN_EXCEPTION_TYPE(NotADirectoryError, OSError, PyExc_NotADirectoryError)
-    BUILTIN_EXCEPTION_TYPE(PermissionError, OSError, PyExc_PermissionError)
-    BUILTIN_EXCEPTION_TYPE(ProcessLookupError, OSError, PyExc_ProcessLookupError)
-    BUILTIN_EXCEPTION_TYPE(TimeoutError, OSError, PyExc_TimeoutError)
-BUILTIN_EXCEPTION_TYPE(ReferenceError, Exception, PyExc_ReferenceError)
-BUILTIN_EXCEPTION_TYPE(RuntimeError, Exception, PyExc_RuntimeError)
-    BUILTIN_EXCEPTION_TYPE(NotImplementedError, RuntimeError, PyExc_NotImplementedError)
-    BUILTIN_EXCEPTION_TYPE(RecursionError, RuntimeError, PyExc_RecursionError)
-BUILTIN_EXCEPTION_TYPE(StopAsyncIteration, Exception, PyExc_StopAsyncIteration)
-BUILTIN_EXCEPTION_TYPE(StopIteration, Exception, PyExc_StopIteration)
-BUILTIN_EXCEPTION_TYPE(SyntaxError, Exception, PyExc_SyntaxError)
-    BUILTIN_EXCEPTION_TYPE(IndentationError, SyntaxError, PyExc_IndentationError)
-        BUILTIN_EXCEPTION_TYPE(TabError, IndentationError, PyExc_TabError)
-BUILTIN_EXCEPTION_TYPE(SystemError, Exception, PyExc_SystemError)
-BUILTIN_EXCEPTION_TYPE(TypeError, Exception, PyExc_TypeError)
-BUILTIN_EXCEPTION_TYPE(ValueError, Exception, PyExc_ValueError)
-    BUILTIN_EXCEPTION_TYPE(UnicodeError, ValueError, PyExc_UnicodeError)
-        // BUILTIN_EXCEPTION_TYPE(UnicodeDecodeError, PyExc_UnicodeDecodeError)
-        // BUILTIN_EXCEPTION_TYPE(UnicodeEncodeError, PyExc_UnicodeEncodeError)
-        // BUILTIN_EXCEPTION_TYPE(UnicodeTranslateError, PyExc_UnicodeTranslateError)
-
-
-#undef BUILTIN_EXCEPTION_TYPE
-
-
-template <>
-struct Type<UnicodeDecodeError>;
-
-
-template <>
-struct Interface<Type<UnicodeDecodeError>> : Interface<Type<UnicodeError>> {
-    [[nodiscard]] static std::string encoding(const auto& self);
-    [[nodiscard]] static std::string object(const auto& self);
-    [[nodiscard]] static Py_ssize_t start(const auto& self);
-    [[nodiscard]] static Py_ssize_t end(const auto& self);
-    [[nodiscard]] static std::string reason(const auto& self);
-};
-
-
-template <>
-struct Type<UnicodeDecodeError> : Object, Interface<Type<UnicodeDecodeError>>, impl::TypeTag {
-    struct __python__ : TypeTag::def<__python__, Type> {
-        static Type __import__() {
-            return reinterpret_borrow<Type>(PyExc_UnicodeDecodeError);
-        }
-    };
-
-    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
-    Type(PyObject* p, stolen_t t) : Object(p, t) {}
-
-    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
-    Type(Args&&... args) : Object(
-        implicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
-    explicit Type(Args&&... args) : Object(
-        explicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-};
-
-
-[[nodiscard]] inline std::string Interface<Type<UnicodeDecodeError>>::encoding(
-    const auto& self
-) {
-    return self.encoding;
-}
-[[nodiscard]] inline std::string Interface<Type<UnicodeDecodeError>>::object(
-    const auto& self
-) {
-    return self.object;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<UnicodeDecodeError>>::start(
-    const auto& self
-) {
-    return self.start;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<UnicodeDecodeError>>::end(
-    const auto& self
-) {
-    return self.end;
-}
-[[nodiscard]] inline std::string Interface<Type<UnicodeDecodeError>>::reason(
-    const auto& self
-) {
-    return self.reason;
-}
-
-
-template <>
-struct Type<UnicodeEncodeError>;
-
-
-template <>
-struct Interface<Type<UnicodeEncodeError>> : Interface<Type<UnicodeError>> {
-    [[nodiscard]] static std::string encoding(const auto& self);
-    [[nodiscard]] static std::string object(const auto& self);
-    [[nodiscard]] static Py_ssize_t start(const auto& self);
-    [[nodiscard]] static Py_ssize_t end(const auto& self);
-    [[nodiscard]] static std::string reason(const auto& self);
-};
-
-
-template <>
-struct Type<UnicodeEncodeError> : Object, Interface<Type<UnicodeEncodeError>>, impl::TypeTag {
-    struct __python__ : TypeTag::def<__python__, Type> {
-        static Type __import__() {
-            return reinterpret_borrow<Type>(PyExc_UnicodeEncodeError);
-        }
-    };
-
-    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
-    Type(PyObject* p, stolen_t t) : Object(p, t) {}
-
-    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
-    Type(Args&&... args) : Object(
-        implicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
-    explicit Type(Args&&... args) : Object(
-        explicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-};
-
-
-[[nodiscard]] inline std::string Interface<Type<UnicodeEncodeError>>::encoding(
-    const auto& self
-) {
-    return self.encoding;
-}
-[[nodiscard]] inline std::string Interface<Type<UnicodeEncodeError>>::object(
-    const auto& self
-) {
-    return self.object;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<UnicodeEncodeError>>::start(
-    const auto& self
-) {
-    return self.start;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<UnicodeEncodeError>>::end(
-    const auto& self
-) {
-    return self.end;
-}
-[[nodiscard]] inline std::string Interface<Type<UnicodeEncodeError>>::reason(
-    const auto& self
-) {
-    return self.reason;
-}
-
-
-template <>
-struct Type<UnicodeTranslateError>;
-
-
-template <>
-struct Interface<Type<UnicodeTranslateError>> : Interface<Type<UnicodeError>> {
-    [[nodiscard]] static std::string object(const auto& self);
-    [[nodiscard]] static Py_ssize_t start(const auto& self);
-    [[nodiscard]] static Py_ssize_t end(const auto& self);
-    [[nodiscard]] static std::string reason(const auto& self);
-};
-
-
-template <>
-struct Type<UnicodeTranslateError> : Object, Interface<Type<UnicodeTranslateError>>, impl::TypeTag {
-    struct __python__ : TypeTag::def<__python__, Type> {
-        static Type __import__() {
-            return reinterpret_borrow<Type>(PyExc_UnicodeTranslateError);
-        }
-    };
-
-    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
-    Type(PyObject* p, stolen_t t) : Object(p, t) {}
-
-    template <typename... Args> requires (implicit_ctor<Type>::enable<Args...>)
-    Type(Args&&... args) : Object(
-        implicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Type>::enable<Args...>)
-    explicit Type(Args&&... args) : Object(
-        explicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-};
-
-
-[[nodiscard]] inline std::string Interface<Type<UnicodeTranslateError>>::object(
-    const auto& self
-) {
-    return self.object;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<UnicodeTranslateError>>::start(
-    const auto& self
-) {
-    return self.start;
-}
-[[nodiscard]] inline Py_ssize_t Interface<Type<UnicodeTranslateError>>::end(
-    const auto& self
-) {
-    return self.end;
-}
-[[nodiscard]] inline std::string Interface<Type<UnicodeTranslateError>>::reason(
-    const auto& self
-) {
-    return self.reason;
-}
 
 
 }  // namespace py
