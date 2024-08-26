@@ -114,48 +114,8 @@ runtime `isinstance()` check, and raises a `TypeError` if the check fails. */
 struct Object : Interface<Object> {
 private:
 
-    template <typename CRTP, typename Derived, typename CppType>
-    struct BaseDef {
-    protected:
-
-        template <StaticStr ModName>
-        struct Bindings;
-
-    public:
-        using __object__ = Derived;
-        using __cpp__ = CppType;
-
-        /* Default `tp_dealloc` calls the Python type's C++ destructor. */
-        static void __dealloc__(CRTP* self) {
-            PyTypeObject* type = Py_TYPE(self);
-            if (type->tp_flags & Py_TPFLAGS_HAVE_GC) {
-                PyObject_GC_UnTrack(self);
-            }
-            self->~CRTP();  // cleans up all C++ resources
-            type->tp_free(self);
-            if (type->tp_flags & Py_TPFLAGS_HEAPTYPE) {
-                Py_DECREF(type);  // required for heap types
-            }
-        }
-
-        /* Default `tp_traverse` does nothing by default.  Users can override this
-        to implement a GC traversal function, but should always call the base
-        class's implementation in their return statement. */
-        static int __traverse__(CRTP* self, visitproc visit, void* arg) {
-            if (Py_TYPE(self)->tp_flags & Py_TPFLAGS_HEAPTYPE) {
-                Py_VISIT(Py_TYPE(self));  // required for heap types
-            }
-            return 0;
-        }
-
-        /* Default `tp_clear` does nothing by default.  Users can override this
-        to implement a GC clear function, but should always call the base class's
-        implementation in their return statement. */
-        static int __clear__(CRTP* self) {
-            return 0;
-        }
-
-    };
+    template <typename Cls, typename CRTP, typename Wrapper, StaticStr ModName>
+    struct Bindings;
 
 protected:
     PyObject* m_ptr;
@@ -229,7 +189,7 @@ protected:
     members.  It should only implement the `__export__()` script, which uses the
     binding helpers to expose the C++ type's interface to Python. */
     template <typename CRTP, typename Derived, typename CppType = void>
-    struct def : BaseDef<CRTP, Derived, CppType>, PyObject {
+    struct def : PyObject {
     protected:
         using Variant = std::variant<CppType, CppType*, const CppType*>;
 
@@ -240,9 +200,12 @@ protected:
             using Ts::operator()...;
         };
 
-        struct Bindings;
+        template <StaticStr ModName>
+        using Bindings = Object::Bindings<CppType, CRTP, Derived, ModName>;
 
     public:
+        using __object__ = Derived;
+        using __cpp__ = CppType;
         Variant m_cpp;
 
         template <typename... Args>
@@ -255,7 +218,7 @@ protected:
         This method must end with a call to `bind.finalize<Bases...>()`, which will
         instantiate a unique heap type for each module. */
         template <StaticStr ModName>
-        static Type<Derived> __export__(Bindings bind);  // defined in type.h {
+        static Type<Derived> __export__(Bindings<ModName> bind);  // defined in type.h {
         //     // bind.var<"foo">(&CppType::foo);
         //     // bind.method<"bar">("an example method", &CppType::bar);
         //     // bind.type<"Baz", CppType::Baz, Bases...>();
@@ -273,7 +236,39 @@ protected:
         static Type<Derived> __import__() {
             /// TODO: this can be defined by default using the global registry held
             /// within the bertrand.python module at the C++ level.
-            // return Module<"bertrand.python">().get_type<Derived>();
+            // return Module<"bertrand.python">().as_object<Derived>();
+            // return Module<"bertrand.python">().as_object(derived);  // python style
+            // return bertrand.python.as_object(derived);  // in Python
+        }
+
+        /* Default `tp_dealloc` calls the Python type's C++ destructor. */
+        static void __dealloc__(CRTP* self) {
+            PyTypeObject* type = Py_TYPE(self);
+            if (type->tp_flags & Py_TPFLAGS_HAVE_GC) {
+                PyObject_GC_UnTrack(self);
+            }
+            self->~CRTP();  // cleans up all C++ resources
+            type->tp_free(self);
+            if (type->tp_flags & Py_TPFLAGS_HEAPTYPE) {
+                Py_DECREF(type);  // required for heap types
+            }
+        }
+
+        /* Default `tp_traverse` does nothing by default.  Users can override this
+        to implement a GC traversal function, but should always call the base
+        class's implementation in their return statement. */
+        static int __traverse__(CRTP* self, visitproc visit, void* arg) {
+            if (Py_TYPE(self)->tp_flags & Py_TPFLAGS_HEAPTYPE) {
+                Py_VISIT(Py_TYPE(self));  // required for heap types
+            }
+            return 0;
+        }
+
+        /* Default `tp_clear` does nothing by default.  Users can override this
+        to implement a GC clear function, but should always call the base class's
+        implementation in their return statement. */
+        static int __clear__(CRTP* self) {
+            return 0;
         }
 
     private:
@@ -378,252 +373,15 @@ protected:
     methods as they see fit.  Bertrand will ensure that these hooks are called whenever
     the Python object is created, destroyed, or otherwise manipulated from Python. */
     template <typename CRTP, typename Derived>
-    struct def<CRTP, Derived, void> : BaseDef<CRTP, Derived, void> {
+    struct def<CRTP, Derived, void> {
     protected:
 
         template <StaticStr ModName>
-        struct Bindings {
-            // /* Expose an immutable member variable to Python as a getset descriptor,
-            // which synchronizes its state. */
-            // template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
-            // void var(const T CRTP::*value) {
-            //     if (Base::context.contains(Name)) {
-            //         throw AttributeError(
-            //             "Class '" + impl::demangle(typeid(Wrapper).name()) +
-            //             "' already has an attribute named '" + Name + "'."
-            //         );
-            //     }
-            //     Base::context[Name] = {
-            //         .is_member_var = true,
-            //     };
-            //     static bool skip = false;
-            //     if (skip) {
-            //         return;
-            //     }
-            //     static auto get = [](PyObject* self, void* closure) -> PyObject* {
-            //         try {
-            //             CRTP* obj = reinterpret_cast<CRTP*>(self);
-            //             auto member = reinterpret_cast<const T CRTP::*>(closure);
-            //             if constexpr (impl::python_like<T>) {
-            //                 return Py_NewRef(ptr(obj->*member));
-            //             } else {
-            //                 return release(wrap(obj->*member));
-            //             }
-            //         } catch (...) {
-            //             Exception::to_python();
-            //             return nullptr;
-            //         }
-            //     };
-            //     static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-            //         std::string msg = "variable '" + Name + "' of type '" +
-            //             impl::demangle(typeid(Wrapper).name()) + "' is immutable.";
-            //         PyErr_SetString(PyExc_TypeError, msg.c_str());
-            //         return -1;
-            //     };
-            //     Base::tp_getset.push_back({
-            //         Name,
-            //         +get,  // converts a stateless lambda to a function pointer
-            //         +set,
-            //         nullptr,
-            //         const_cast<void*>(reinterpret_cast<const void*>(value))
-            //     });
-            //     skip = true;
-            // }
-
-            // /* Expose a mutable member variable to Python as a getset descriptor, which
-            // synchronizes its state. */
-            // template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
-            // void var(T CRTP::*value) {
-            //     if (Base::context.contains(Name)) {
-            //         throw AttributeError(
-            //             "Class '" + impl::demangle(typeid(Wrapper).name()) +
-            //             "' already has an attribute named '" + Name + "'."
-            //         );
-            //     }
-            //     Base::context[Name] = {
-            //         .is_member_var = true,
-            //     };
-            //     static bool skip = false;
-            //     if (skip) {
-            //         return;
-            //     }
-            //     static auto get = [](PyObject* self, void* closure) -> PyObject* {
-            //         try {
-            //             CRTP* obj = reinterpret_cast<CRTP*>(self);
-            //             auto member = reinterpret_cast<T CRTP::*>(closure);
-            //             if constexpr (impl::python_like<T>) {
-            //                 return Py_NewRef(ptr(obj->*member));
-            //             } else {
-            //                 return release(wrap(obj->*member));
-            //             }
-            //         } catch (...) {
-            //             Exception::to_python();
-            //             return nullptr;
-            //         }
-            //     };
-            //     static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-            //         if (new_val == nullptr) {
-            //             std::string msg = "variable '" + Name + "' of type '" +
-            //                 impl::demangle(typeid(Wrapper).name()) +
-            //                 "' cannot be deleted.";
-            //             PyErr_SetString(PyExc_TypeError, msg.c_str());
-            //             return -1;
-            //         }
-            //         try {
-            //             CRTP* obj = reinterpret_cast<CRTP*>(self);
-            //             auto member = reinterpret_cast<T CRTP::*>(closure);
-            //             obj->*member = static_cast<T>(
-            //                 reinterpret_borrow<Object>(new_val)
-            //             );
-            //             return 0;
-            //         } catch (...) {
-            //             Exception::to_python();
-            //             return -1;
-            //         }
-            //     };
-            //     Base::tp_getset.push_back({
-            //         Name,
-            //         +get,  // converts a stateless lambda to a function pointer
-            //         +set,
-            //         nullptr,  // doc
-            //         reinterpret_cast<void*>(value)
-            //     });
-            //     skip = true;
-            // }
-
-            // /* Expose a C++-style const getter to Python as a getset descriptor. */
-            // template <StaticStr Name, typename Return> requires (__as_object__<Return>::enable)
-            // void property(Return(CRTP::*getter)() const) {
-            //     if (Base::context.contains(Name)) {
-            //         throw AttributeError(
-            //             "Class '" + impl::demangle(typeid(Wrapper).name()) +
-            //             "' already has an attribute named '" + Name + "'."
-            //         );
-            //     }
-            //     Base::context[Name] = {
-            //         .is_property = true,
-            //     };
-            //     static bool skip = false;
-            //     if (skip) {
-            //         return;
-            //     }
-            //     static auto get = [](PyObject* self, void* closure) -> PyObject* {
-            //         try {
-            //             CRTP* obj = reinterpret_cast<CRTP*>(self);
-            //             auto member = reinterpret_cast<Return(CRTP::*)() const>(closure);
-            //             if constexpr (std::is_lvalue_reference_v<Return>) {
-            //                 if constexpr (impl::python_like<Return>) {
-            //                     return Py_NewRef(ptr((obj->*member)()));
-            //                 } else {
-            //                     return release(wrap((obj->*member)()));
-            //                 }
-            //             } else {
-            //                 return release(as_object((obj->*member)()));
-            //             }
-            //         } catch (...) {
-            //             Exception::to_python();
-            //             return nullptr;
-            //         }
-            //     };
-            //     Base::tp_getset.push_back({
-            //         Name,
-            //         +get,  // converts a stateless lambda to a function pointer
-            //         nullptr,  // setter
-            //         nullptr,  // doc
-            //         const_cast<void*>(reinterpret_cast<const void*>(getter))
-            //     });
-            //     skip = true;
-            // }
-
-            // /* Expose a C++-style getter/setter pair to Python as a getset
-            // descriptor. */
-            // template <StaticStr Name, typename Return, typename Value>
-            //     requires (__as_object__<Return>::enable && __as_object__<Value>::enable)
-            // void property(
-            //     Return(CRTP::*getter)() const,
-            //     void(CRTP::*setter)(Value&&)
-            // ) {
-            //     if (Base::context.contains(Name)) {
-            //         throw AttributeError(
-            //             "Class '" + impl::demangle(typeid(Wrapper).name()) +
-            //             "' already has an attribute named '" + Name + "'."
-            //         );
-            //     }
-            //     Base::context[Name] = {
-            //         .is_property = true,
-            //     };
-            //     static bool skip = false;
-            //     if (skip) {
-            //         return;
-            //     }
-            //     static struct Closure {
-            //         Return(CRTP::*getter)() const;
-            //         void(CRTP::*setter)(Value&&);
-            //     } closure = {getter, setter};
-            //     static auto get = [](PyObject* self, void* closure) -> PyObject* {
-            //         try {
-            //             CRTP* obj = reinterpret_cast<CRTP*>(self);
-            //             Closure* ctx = reinterpret_cast<Closure*>(closure);
-            //             if constexpr (std::is_lvalue_reference_v<Return>) {
-            //                 if constexpr (impl::python_like<Return>) {
-            //                     return Py_NewRef(ptr((obj->*(ctx->getter))()));
-            //                 } else {
-            //                     return release(wrap((obj->*(ctx->getter))()));
-            //                 }
-            //             } else {
-            //                 return release(as_object((obj->*(ctx->getter))()));
-            //             }
-            //         } catch (...) {
-            //             Exception::to_python();
-            //             return nullptr;
-            //         }
-            //     };
-            //     static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-            //         if (new_val == nullptr) {
-            //             std::string msg = "variable '" + Name + "' of type '" +
-            //                 impl::demangle(typeid(Wrapper).name()) +
-            //                 "' cannot be deleted.";
-            //             PyErr_SetString(PyExc_TypeError, msg.c_str());
-            //             return -1;
-            //         }
-            //         try {
-            //             CRTP* obj = reinterpret_cast<CRTP*>(self);
-            //             Closure* ctx = reinterpret_cast<Closure*>(closure);
-            //             (obj->*(ctx->setter))(static_cast<Value>(
-            //                 reinterpret_borrow<Object>(new_val)
-            //             ));
-            //             return 0;
-            //         } catch (...) {
-            //             Exception::to_python();
-            //             return -1;
-            //         }
-            //     };
-            //     Base::tp_getset.push_back({
-            //         Name,
-            //         +get,  // converts a stateless lambda to a function pointer
-            //         +set,
-            //         nullptr,  // doc
-            //         &closure
-            //     });
-            //     skip = true;
-            // }
-
-            // /* Expose a C++ instance method to Python as an instance method, which can
-            // be overloaded from either side of the language boundary.  */
-            // template <StaticStr Name, typename Return, typename... Target>
-            //     requires (
-            //         __as_object__<std::remove_cvref_t<Return>>::enable &&
-            //         (__as_object__<std::remove_cvref_t<Target>>::enable && ...)
-            //     )
-            // void method(Return(CRTP::*func)(Target...)) {
-            //     // TODO: check for an existing overload set with the same name and
-            //     // insert into it, or create a new one if none exists.  Then, call
-            //     // PyObject_SetAttr() to insert the overload set into the class dict
-            //     // or invoke a metaclass descriptor to handle internal slots.
-            // }
-        };
+        using Bindings = Object::Bindings<CRTP, CRTP, Derived, ModName>;
 
     public:
+        using __object__ = Derived;
+        using __cpp__ = void;
 
         /// TODO: each type should only implement one of either __export__ or
         /// __import__.  If they define __export__, then a constexpr branch will be
@@ -646,14 +404,37 @@ protected:
         //     );
         // }
 
-    };
+        /* Default `tp_dealloc` calls the Python type's C++ destructor. */
+        static void __dealloc__(CRTP* self) {
+            PyTypeObject* type = Py_TYPE(self);
+            if (type->tp_flags & Py_TPFLAGS_HAVE_GC) {
+                PyObject_GC_UnTrack(self);
+            }
+            self->~CRTP();  // cleans up all C++ resources
+            type->tp_free(self);
+            if (type->tp_flags & Py_TPFLAGS_HEAPTYPE) {
+                Py_DECREF(type);  // required for heap types
+            }
+        }
 
-    /// TODO: maybe I need another specialization that applies to Type objects?
-    /// -> No.  Try to work on making the type objects completely invisible.  Ideally,
-    /// you don't even have to define them, which means the generic implementation
-    /// should cover all use cases.  You might still need to define their interface,
-    /// but that's it, and they would just be a series of static wrappers around the
-    /// instance members.  The control structures are also predefined.
+        /* Default `tp_traverse` does nothing by default.  Users can override this
+        to implement a GC traversal function, but should always call the base
+        class's implementation in their return statement. */
+        static int __traverse__(CRTP* self, visitproc visit, void* arg) {
+            if (Py_TYPE(self)->tp_flags & Py_TPFLAGS_HEAPTYPE) {
+                Py_VISIT(Py_TYPE(self));  // required for heap types
+            }
+            return 0;
+        }
+
+        /* Default `tp_clear` does nothing by default.  Users can override this
+        to implement a GC clear function, but should always call the base class's
+        implementation in their return statement. */
+        static int __clear__(CRTP* self) {
+            return 0;
+        }
+
+    };
 
     /* A CRTP base class that generates bindings for an importable Python module, which
     can contain any number of types, functions, variables, and submodules.
@@ -686,21 +467,55 @@ protected:
     and are therefore safe to access from multiple threads, provided that the user
     ensures that the data they reference is thread-safe. */
     template <typename CRTP, StaticStr Name>
-    struct def<CRTP, Module<Name>, void> : BaseDef<CRTP, Module<Name>, void> {
+    struct def<CRTP, Module<Name>, void> {
     protected:
 
-        struct Bindings;
+        template <StaticStr ModName>
+        using Bindings = Object::Bindings<CRTP, CRTP, Module<ModName>, ModName>;
 
     public:
+        using __object__ = Module<Name>;
+        using __cpp__ = void;
 
         /// TODO: docs
-        static Module<Name> __export__(Bindings bind);  // defined in type.h {
+        template <StaticStr ModName>
+        static Module<Name> __export__(Bindings<ModName> bind);  // defined in type.h {
         //     return CRTP::__import__();
         // }
 
         /// TODO: docs
         static PyObject* __import__() {
             /// TODO: return multi-phase initialization object
+        }
+
+        /* Default `tp_dealloc` calls the Python type's C++ destructor. */
+        static void __dealloc__(CRTP* self) {
+            PyTypeObject* type = Py_TYPE(self);
+            if (type->tp_flags & Py_TPFLAGS_HAVE_GC) {
+                PyObject_GC_UnTrack(self);
+            }
+            self->~CRTP();  // cleans up all C++ resources
+            type->tp_free(self);
+            if (type->tp_flags & Py_TPFLAGS_HEAPTYPE) {
+                Py_DECREF(type);  // required for heap types
+            }
+        }
+
+        /* Default `tp_traverse` does nothing by default.  Users can override this
+        to implement a GC traversal function, but should always call the base
+        class's implementation in their return statement. */
+        static int __traverse__(CRTP* self, visitproc visit, void* arg) {
+            if (Py_TYPE(self)->tp_flags & Py_TPFLAGS_HEAPTYPE) {
+                Py_VISIT(Py_TYPE(self));  // required for heap types
+            }
+            return 0;
+        }
+
+        /* Default `tp_clear` does nothing by default.  Users can override this
+        to implement a GC clear function, but should always call the base class's
+        implementation in their return statement. */
+        static int __clear__(CRTP* self) {
+            return 0;
         }
 
     };

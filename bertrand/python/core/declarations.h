@@ -175,7 +175,7 @@ template <typename T = Object>
 struct Type;
 struct BertrandMeta;
 template <typename Return>
-struct Iterator;
+struct Iterator;  /// TODO: template on begin and end iterator types, not the return type
 template <StaticStr Name, typename T>
 struct Arg;
 template <typename>
@@ -217,6 +217,58 @@ template <typename Map>
 struct ItemView;
 template <typename Map>
 struct MappingProxy;
+
+
+struct Exception;
+struct ArithmeticError;
+    struct FloatingPointError;
+    struct OverflowError;
+    struct ZeroDivisionError;
+struct AssertionError;
+struct AttributeError;
+struct BufferError;
+struct EOFError;
+struct ImportError;
+    struct ModuleNotFoundError;
+struct LookupError;
+    struct IndexError;
+    struct KeyError;
+struct MemoryError;
+struct NameError;
+    struct UnboundLocalError;
+struct OSError;
+    struct BlockingIOError;
+    struct ChildProcessError;
+    struct ConnectionError;
+        struct BrokenPipeError;
+        struct ConnectionAbortedError;
+        struct ConnectionRefusedError;
+        struct ConnectionResetError;
+    struct FileExistsError;
+    struct FileNotFoundError;
+    struct InterruptedError;
+    struct IsADirectoryError;
+    struct NotADirectoryError;
+    struct PermissionError;
+    struct ProcessLookupError;
+    struct TimeoutError;
+struct ReferenceError;
+struct RuntimeError;
+    struct NotImplementedError;
+    struct RecursionError;
+struct StopAsyncIteration;
+struct StopIteration;
+struct SyntaxError;
+    struct IndentationError;
+        struct TabError;
+struct SystemError;
+struct TypeError;
+struct ValueError;
+    struct UnicodeError;
+        struct UnicodeDecodeError;
+        struct UnicodeEncodeError;
+        struct UnicodeTranslateError;
+
 
 
 /* Base class for disabled control structures. */
