@@ -6252,6 +6252,11 @@ inline PyObject* BertrandMeta::__python__::Slots::nb_matrix_multiply(PyObject* l
 ////////////////////////
 
 
+/// TODO: Bindings should include a static assertion that each type implements a
+/// __python__ type whose ::__object__ member is the same as the type itself.  Types
+/// cannot be registered unless this is the case.
+
+
 template <typename Cls, typename CRTP, typename Wrapper, StaticStr ModName>
 struct Object::Bindings {
 private:
@@ -7518,9 +7523,186 @@ public:
     Bindings(const Bindings&) = delete;
     Bindings(Bindings&&) = delete;
 
-    /// TODO: these might genuinely need to be separated into instance and static
-    /// methods.  You might need to define a member method using a static method that
-    /// takes the instance as a first argument, in order to bind lambdas, etc.
+    /* Expose an immutable member variable to Python as a getset descriptor,
+    which synchronizes its state. */
+    template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
+    void var(const T Cls::*value) {
+        if (members.contains(Name)) {
+            throw AttributeError(
+                "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                "' already has an attribute named '" + Name + "'."
+            );
+        }
+        members[Name] = {
+            .var = true,
+        };
+        static bool skip = false;
+        if (skip) {
+            return;
+        }
+        static auto get = [](PyObject* self, void* closure) -> PyObject* {
+            try {
+                auto member = reinterpret_cast<const T Cls::*>(closure);
+                if constexpr (std::same_as<CRTP, Cls>) {
+                    if constexpr (impl::python_like<T>) {
+                        return Py_NewRef(ptr(reinterpret_cast<CRTP*>(self)->*member));
+                    } else {
+                        return release(wrap(reinterpret_cast<CRTP*>(self)->*member));
+                    }
+                } else {
+                    return std::visit(
+                        Visitor{
+                            [member](const Cls& obj) {
+                                if constexpr (impl::python_like<T>) {
+                                    return Py_NewRef(ptr(obj.*member));
+                                } else {
+                                    return release(wrap(obj.*member));
+                                }
+                            },
+                            [member](const Cls* obj) {
+                                if constexpr (impl::python_like<T>) {
+                                    return Py_NewRef(ptr(obj->*member));
+                                } else {
+                                    return release(wrap(obj->*member));
+                                }
+                            }
+                        },
+                        reinterpret_cast<CRTP*>(self)->m_cpp
+                    );
+                }
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        };
+        static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
+            std::string msg = "variable '" + Name + "' of type '" +
+                impl::demangle(typeid(Wrapper).name()) + "' is immutable.";
+            PyErr_SetString(PyExc_TypeError, msg.c_str());
+            return -1;
+        };
+        tp_getset.push_back({
+            Name,
+            +get,  // converts a stateless lambda to a function pointer
+            +set,
+            nullptr,
+            const_cast<void*>(reinterpret_cast<const void*>(value))
+        });
+        skip = true;
+    }
+
+    /* Expose a mutable member variable to Python as a getset descriptor, which
+    synchronizes its state. */
+    template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
+    void var(T Cls::*value) {
+        if (members.contains(Name)) {
+            throw AttributeError(
+                "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                "' already has an attribute named '" + Name + "'."
+            );
+        }
+        members[Name] = {
+            .var = true,
+        };
+        static bool skip = false;
+        if (skip) {
+            return;
+        }
+        static auto get = [](PyObject* self, void* closure) -> PyObject* {
+            try {
+                auto member = reinterpret_cast<T CRTP::*>(closure);
+                if constexpr (std::same_as<CRTP, Cls>) {
+                    if constexpr (impl::python_like<T>) {
+                        return Py_NewRef(ptr(reinterpret_cast<CRTP*>(self)->*member));
+                    } else {
+                        return release(wrap(reinterpret_cast<CRTP*>(self)->*member));
+                    }
+                } else {
+                    return std::visit(
+                        Visitor{
+                            [member](Cls& obj) {
+                                if constexpr (impl::python_like<T>) {
+                                    return Py_NewRef(ptr(obj.*member));
+                                } else {
+                                    return release(wrap(obj.*member));
+                                }
+                            },
+                            [member](Cls* obj) {
+                                if constexpr (impl::python_like<T>) {
+                                    return Py_NewRef(ptr(obj->*member));
+                                } else {
+                                    return release(wrap(obj->*member));
+                                }
+                            },
+                            [member](const Cls* obj) {
+                                if constexpr (impl::python_like<T>) {
+                                    return Py_NewRef(ptr(obj->*member));
+                                } else {
+                                    return release(wrap(obj->*member));
+                                }
+                            }
+                        },
+                        reinterpret_cast<CRTP*>(self)->m_cpp
+                    );
+                }
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        };
+        static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
+            if (new_val == nullptr) {
+                std::string msg = "variable '" + Name + "' of type '" +
+                    impl::demangle(typeid(Wrapper).name()) +
+                    "' cannot be deleted.";
+                PyErr_SetString(PyExc_TypeError, msg.c_str());
+                return -1;
+            }
+            try {
+                auto member = reinterpret_cast<T CRTP::*>(closure);
+                if constexpr (std::same_as<CRTP, Cls>) {
+                    reinterpret_cast<CRTP*>(self)->*member = static_cast<T>(
+                        reinterpret_borrow<Object>(new_val)
+                    );
+                } else {
+                    std::visit(
+                        Visitor{
+                            [member, new_val](Cls& obj) {
+                                obj.*member = static_cast<T>(
+                                    reinterpret_borrow<Object>(new_val)
+                                );
+                            },
+                            [member, new_val](Cls* obj) {
+                                obj->*member = static_cast<T>(
+                                    reinterpret_borrow<Object>(new_val)
+                                );
+                            },
+                            [new_val](const Cls* obj) {
+                                throw TypeError(
+                                    "variable '" + Name + "' of type '" +
+                                    impl::demangle(typeid(Wrapper).name()) +
+                                    "' is immutable."
+                                );
+                            }
+                        },
+                        reinterpret_cast<CRTP*>(self)->m_cpp
+                    );
+                }
+                return 0;
+            } catch (...) {
+                Exception::to_python();
+                return -1;
+            }
+        };
+        tp_getset.push_back({
+            Name,
+            +get,  // converts a stateless lambda to a function pointer
+            +set,
+            nullptr,  // doc
+            reinterpret_cast<void*>(value)
+        });
+        skip = true;
+    }
 
     /* Expose an immutable static variable to Python using the `__getattr__()`
     slot of the metatype, which synchronizes its state. */
@@ -7610,6 +7792,222 @@ public:
         };
         class_getters[Name] = {+get, reinterpret_cast<void*>(&value)};
         class_setters[Name] = {+set, reinterpret_cast<void*>(&value)};
+    }
+
+    /// TODO: property() should be able to accept non-member methods that take the
+    /// instance as a first argument.
+
+    /* Expose a C++-style const getter to Python as a getset descriptor. */
+    template <StaticStr Name, typename Return> requires (__as_object__<Return>::enable)
+    void property(Return(Cls::*getter)() const) {
+        if (members.contains(Name)) {
+            throw AttributeError(
+                "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                "' already has an attribute named '" + Name + "'."
+            );
+        }
+        members[Name] = {
+            .property = true,
+        };
+        static bool skip = false;
+        if (skip) {
+            return;
+        }
+        static auto get = [](PyObject* self, void* closure) -> PyObject* {
+            try {
+                auto member = reinterpret_cast<Return(CRTP::*)() const>(closure);
+                if constexpr (std::same_as<CRTP, Cls>) {
+                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                        if constexpr (impl::python_like<Return>) {
+                            return Py_NewRef(ptr((reinterpret_cast<CRTP*>(self)->*member)()));
+                        } else {
+                            return release(wrap((reinterpret_cast<CRTP*>(self)->*member)()));
+                        }
+                    } else {
+                        return release(as_object((reinterpret_cast<CRTP*>(self)->*member)()));
+                    }
+                } else {
+                    return release(wrap(std::visit(
+                        Visitor{
+                            [member](const Cls& obj) {
+                                if constexpr (std::is_lvalue_reference_v<Return>) {
+                                    if constexpr (impl::python_like<Return>) {
+                                        return Py_NewRef(ptr((obj.*member)()));
+                                    } else {
+                                        return release(wrap((obj.*member)()));
+                                    }
+                                } else {
+                                    return release(as_object((obj.*member)()));
+                                }
+                            },
+                            [member](const Cls* obj) {
+                                if constexpr (std::is_lvalue_reference_v<Return>) {
+                                    if constexpr (impl::python_like<Return>) {
+                                        return Py_NewRef(ptr((obj->*member)()));
+                                    } else {
+                                        return release(wrap((obj->*member)()));
+                                    }
+                                } else {
+                                    return release(as_object((obj->*member)()));
+                                }
+                            }
+                        },
+                        reinterpret_cast<CRTP*>(self)->m_cpp
+                    )));
+                }
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        };
+        tp_getset.push_back({
+            Name,
+            +get,  // converts a stateless lambda to a function pointer
+            nullptr,
+            nullptr,
+            const_cast<void*>(reinterpret_cast<const void*>(getter))
+        });
+        skip = true;
+    }
+
+    /* Expose a C++-style getter/setter pair to Python as a getset
+    descriptor. */
+    template <StaticStr Name, typename Return, typename Value>
+        requires (__as_object__<Return>::enable && __as_object__<Value>::enable)
+    void property(
+        Return(Cls::*getter)() const,
+        void(Cls::*setter)(Value&&)
+    ) {
+        if (members.contains(Name)) {
+            throw AttributeError(
+                "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                "' already has an attribute named '" + Name + "'."
+            );
+        }
+        members[Name] = {
+            .property = true,
+        };
+        static bool skip = false;
+        if (skip) {
+            return;
+        }
+
+        // getter and setter are stored together in the descriptor's closure
+        static struct Closure {
+            Return(CRTP::*getter)() const;
+            void(CRTP::*setter)(Value&&);
+        } closure = {getter, setter};
+
+        static auto get = [](PyObject* self, void* closure) -> PyObject* {
+            try {
+                Closure* ctx = reinterpret_cast<Closure*>(closure);
+                if constexpr (std::same_as<CRTP, Cls>) {
+                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                        if constexpr (impl::python_like<Return>) {
+                            return Py_NewRef(ptr((reinterpret_cast<CRTP*>(self)->*(ctx->getter))()));
+                        } else {
+                            return release(wrap((reinterpret_cast<CRTP*>(self)->*(ctx->getter))()));
+                        }
+                    } else {
+                        return release(as_object((reinterpret_cast<CRTP*>(self)->*(ctx->getter))()));
+                    }
+                } else {
+                    return release(wrap(std::visit(
+                        Visitor{
+                            [ctx](Cls& obj) {
+                                if constexpr (std::is_lvalue_reference_v<Return>) {
+                                    if constexpr (impl::python_like<Return>) {
+                                        return Py_NewRef(ptr((obj.*(ctx->getter))()));
+                                    } else {
+                                        return release(wrap((obj.*(ctx->getter))()));
+                                    }
+                                } else {
+                                    return release(as_object((obj.*(ctx->getter))()));
+                                }
+                            },
+                            [ctx](Cls* obj) {
+                                if constexpr (std::is_lvalue_reference_v<Return>) {
+                                    if constexpr (impl::python_like<Return>) {
+                                        return Py_NewRef(ptr((obj->*(ctx->getter))()));
+                                    } else {
+                                        return release(wrap((obj->*(ctx->getter))()));
+                                    }
+                                } else {
+                                    return release(as_object((obj->*(ctx->getter))()));
+                                }
+                            },
+                            [ctx](const Cls* obj) {
+                                if constexpr (std::is_lvalue_reference_v<Return>) {
+                                    if constexpr (impl::python_like<Return>) {
+                                        return Py_NewRef(ptr((obj->*(ctx->getter))()));
+                                    } else {
+                                        return release(wrap((obj->*(ctx->getter))()));
+                                    }
+                                } else {
+                                    return release(as_object((obj->*(ctx->getter))()));
+                                }
+                            }
+                        },
+                        reinterpret_cast<CRTP*>(self)->m_cpp
+                    )));
+                }
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        };
+        static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
+            if (new_val == nullptr) {
+                std::string msg = "variable '" + Name + "' of type '" +
+                    impl::demangle(typeid(Wrapper).name()) +
+                    "' cannot be deleted.";
+                PyErr_SetString(PyExc_TypeError, msg.c_str());
+                return -1;
+            }
+            try {
+                Closure* ctx = reinterpret_cast<Closure*>(closure);
+                if constexpr (std::same_as<CRTP, Cls>) {
+                    (reinterpret_cast<CRTP*>(self)->*(ctx->setter))(static_cast<Value>(
+                        reinterpret_borrow<Object>(new_val)
+                    ));
+                } else {
+                    std::visit(
+                        Visitor{
+                            [ctx, new_val](Cls& obj) {
+                                obj.*(ctx->setter)(static_cast<Value>(
+                                    reinterpret_borrow<Object>(new_val)
+                                ));
+                            },
+                            [ctx, new_val](Cls* obj) {
+                                obj->*(ctx->setter)(static_cast<Value>(
+                                    reinterpret_borrow<Object>(new_val)
+                                ));
+                            },
+                            [new_val](const Cls* obj) {
+                                throw TypeError(
+                                    "variable '" + Name + "' of type '" +
+                                    impl::demangle(typeid(Wrapper).name()) +
+                                    "' is immutable."
+                                );
+                            }
+                        },
+                        reinterpret_cast<CRTP*>(self)->m_cpp
+                    );
+                }
+                return 0;
+            } catch (...) {
+                Exception::to_python();
+                return -1;
+            }
+        };
+        tp_getset.push_back({
+            Name,
+            +get,  // converts a stateless lambda to a function pointer
+            +set,
+            nullptr,  // doc
+            &closure
+        });
+        skip = true;
     }
 
     /* Expose a C++-style static getter to Python using the `__getattr__()`
@@ -7703,6 +8101,27 @@ public:
         };
         class_getters[Name] = {+get, reinterpret_cast<void*>(&closure)};
         class_setters[Name] = {+set, reinterpret_cast<void*>(&closure)};
+    }
+
+    /// TODO: method() should also be able to accept non-member methods that take
+    /// self as a first argument.
+
+    /* Expose a C++ instance method to Python as an instance method, which can
+    be overloaded from either side of the language boundary.  */
+    template <StaticStr Name, typename Return, typename... Target>
+        requires (
+            __as_object__<std::remove_cvref_t<Return>>::enable &&
+            (__as_object__<std::remove_cvref_t<Target>>::enable && ...)
+        )
+    void method(Return(Cls::*func)(Target...)) {
+        /// TODO: check for an existing overload set with the same name and
+        /// insert into it, or create a new one if none exists.  Then, call
+        /// PyObject_SetAttr() to insert the overload set into the class dict
+        /// or invoke a metaclass descriptor to handle internal slots.
+
+        /// func is a pointer to a member function of CppType, which can be
+        /// called like this:
+        ///      obj.*func(std::forward<Args>(args)...);
     }
 
     /// TODO: __iter__ and __reversed__ need special treatment, and require two
@@ -8017,890 +8436,13 @@ public:
         return cls;
     }
 
-
-    // /* Expose an immutable member variable to Python as a getset descriptor,
-    // which synchronizes its state. */
-    // template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
-    // void var(const T CRTP::*value) {
-    //     if (Base::context.contains(Name)) {
-    //         throw AttributeError(
-    //             "Class '" + impl::demangle(typeid(Wrapper).name()) +
-    //             "' already has an attribute named '" + Name + "'."
-    //         );
-    //     }
-    //     Base::context[Name] = {
-    //         .is_member_var = true,
-    //     };
-    //     static bool skip = false;
-    //     if (skip) {
-    //         return;
-    //     }
-    //     static auto get = [](PyObject* self, void* closure) -> PyObject* {
-    //         try {
-    //             CRTP* obj = reinterpret_cast<CRTP*>(self);
-    //             auto member = reinterpret_cast<const T CRTP::*>(closure);
-    //             if constexpr (impl::python_like<T>) {
-    //                 return Py_NewRef(ptr(obj->*member));
-    //             } else {
-    //                 return release(wrap(obj->*member));
-    //             }
-    //         } catch (...) {
-    //             Exception::to_python();
-    //             return nullptr;
-    //         }
-    //     };
-    //     static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-    //         std::string msg = "variable '" + Name + "' of type '" +
-    //             impl::demangle(typeid(Wrapper).name()) + "' is immutable.";
-    //         PyErr_SetString(PyExc_TypeError, msg.c_str());
-    //         return -1;
-    //     };
-    //     Base::tp_getset.push_back({
-    //         Name,
-    //         +get,  // converts a stateless lambda to a function pointer
-    //         +set,
-    //         nullptr,
-    //         const_cast<void*>(reinterpret_cast<const void*>(value))
-    //     });
-    //     skip = true;
-    // }
-
-    // /* Expose a mutable member variable to Python as a getset descriptor, which
-    // synchronizes its state. */
-    // template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
-    // void var(T CRTP::*value) {
-    //     if (Base::context.contains(Name)) {
-    //         throw AttributeError(
-    //             "Class '" + impl::demangle(typeid(Wrapper).name()) +
-    //             "' already has an attribute named '" + Name + "'."
-    //         );
-    //     }
-    //     Base::context[Name] = {
-    //         .is_member_var = true,
-    //     };
-    //     static bool skip = false;
-    //     if (skip) {
-    //         return;
-    //     }
-    //     static auto get = [](PyObject* self, void* closure) -> PyObject* {
-    //         try {
-    //             CRTP* obj = reinterpret_cast<CRTP*>(self);
-    //             auto member = reinterpret_cast<T CRTP::*>(closure);
-    //             if constexpr (impl::python_like<T>) {
-    //                 return Py_NewRef(ptr(obj->*member));
-    //             } else {
-    //                 return release(wrap(obj->*member));
-    //             }
-    //         } catch (...) {
-    //             Exception::to_python();
-    //             return nullptr;
-    //         }
-    //     };
-    //     static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-    //         if (new_val == nullptr) {
-    //             std::string msg = "variable '" + Name + "' of type '" +
-    //                 impl::demangle(typeid(Wrapper).name()) +
-    //                 "' cannot be deleted.";
-    //             PyErr_SetString(PyExc_TypeError, msg.c_str());
-    //             return -1;
-    //         }
-    //         try {
-    //             CRTP* obj = reinterpret_cast<CRTP*>(self);
-    //             auto member = reinterpret_cast<T CRTP::*>(closure);
-    //             obj->*member = static_cast<T>(
-    //                 reinterpret_borrow<Object>(new_val)
-    //             );
-    //             return 0;
-    //         } catch (...) {
-    //             Exception::to_python();
-    //             return -1;
-    //         }
-    //     };
-    //     Base::tp_getset.push_back({
-    //         Name,
-    //         +get,  // converts a stateless lambda to a function pointer
-    //         +set,
-    //         nullptr,  // doc
-    //         reinterpret_cast<void*>(value)
-    //     });
-    //     skip = true;
-    // }
-
-    // /* Expose a C++-style const getter to Python as a getset descriptor. */
-    // template <StaticStr Name, typename Return> requires (__as_object__<Return>::enable)
-    // void property(Return(CRTP::*getter)() const) {
-    //     if (Base::context.contains(Name)) {
-    //         throw AttributeError(
-    //             "Class '" + impl::demangle(typeid(Wrapper).name()) +
-    //             "' already has an attribute named '" + Name + "'."
-    //         );
-    //     }
-    //     Base::context[Name] = {
-    //         .is_property = true,
-    //     };
-    //     static bool skip = false;
-    //     if (skip) {
-    //         return;
-    //     }
-    //     static auto get = [](PyObject* self, void* closure) -> PyObject* {
-    //         try {
-    //             CRTP* obj = reinterpret_cast<CRTP*>(self);
-    //             auto member = reinterpret_cast<Return(CRTP::*)() const>(closure);
-    //             if constexpr (std::is_lvalue_reference_v<Return>) {
-    //                 if constexpr (impl::python_like<Return>) {
-    //                     return Py_NewRef(ptr((obj->*member)()));
-    //                 } else {
-    //                     return release(wrap((obj->*member)()));
-    //                 }
-    //             } else {
-    //                 return release(as_object((obj->*member)()));
-    //             }
-    //         } catch (...) {
-    //             Exception::to_python();
-    //             return nullptr;
-    //         }
-    //     };
-    //     Base::tp_getset.push_back({
-    //         Name,
-    //         +get,  // converts a stateless lambda to a function pointer
-    //         nullptr,  // setter
-    //         nullptr,  // doc
-    //         const_cast<void*>(reinterpret_cast<const void*>(getter))
-    //     });
-    //     skip = true;
-    // }
-
-    // /* Expose a C++-style getter/setter pair to Python as a getset
-    // descriptor. */
-    // template <StaticStr Name, typename Return, typename Value>
-    //     requires (__as_object__<Return>::enable && __as_object__<Value>::enable)
-    // void property(
-    //     Return(CRTP::*getter)() const,
-    //     void(CRTP::*setter)(Value&&)
-    // ) {
-    //     if (Base::context.contains(Name)) {
-    //         throw AttributeError(
-    //             "Class '" + impl::demangle(typeid(Wrapper).name()) +
-    //             "' already has an attribute named '" + Name + "'."
-    //         );
-    //     }
-    //     Base::context[Name] = {
-    //         .is_property = true,
-    //     };
-    //     static bool skip = false;
-    //     if (skip) {
-    //         return;
-    //     }
-    //     static struct Closure {
-    //         Return(CRTP::*getter)() const;
-    //         void(CRTP::*setter)(Value&&);
-    //     } closure = {getter, setter};
-    //     static auto get = [](PyObject* self, void* closure) -> PyObject* {
-    //         try {
-    //             CRTP* obj = reinterpret_cast<CRTP*>(self);
-    //             Closure* ctx = reinterpret_cast<Closure*>(closure);
-    //             if constexpr (std::is_lvalue_reference_v<Return>) {
-    //                 if constexpr (impl::python_like<Return>) {
-    //                     return Py_NewRef(ptr((obj->*(ctx->getter))()));
-    //                 } else {
-    //                     return release(wrap((obj->*(ctx->getter))()));
-    //                 }
-    //             } else {
-    //                 return release(as_object((obj->*(ctx->getter))()));
-    //             }
-    //         } catch (...) {
-    //             Exception::to_python();
-    //             return nullptr;
-    //         }
-    //     };
-    //     static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-    //         if (new_val == nullptr) {
-    //             std::string msg = "variable '" + Name + "' of type '" +
-    //                 impl::demangle(typeid(Wrapper).name()) +
-    //                 "' cannot be deleted.";
-    //             PyErr_SetString(PyExc_TypeError, msg.c_str());
-    //             return -1;
-    //         }
-    //         try {
-    //             CRTP* obj = reinterpret_cast<CRTP*>(self);
-    //             Closure* ctx = reinterpret_cast<Closure*>(closure);
-    //             (obj->*(ctx->setter))(static_cast<Value>(
-    //                 reinterpret_borrow<Object>(new_val)
-    //             ));
-    //             return 0;
-    //         } catch (...) {
-    //             Exception::to_python();
-    //             return -1;
-    //         }
-    //     };
-    //     Base::tp_getset.push_back({
-    //         Name,
-    //         +get,  // converts a stateless lambda to a function pointer
-    //         +set,
-    //         nullptr,  // doc
-    //         &closure
-    //     });
-    //     skip = true;
-    // }
-
-    // /* Expose a C++ instance method to Python as an instance method, which can
-    // be overloaded from either side of the language boundary.  */
-    // template <StaticStr Name, typename Return, typename... Target>
-    //     requires (
-    //         __as_object__<std::remove_cvref_t<Return>>::enable &&
-    //         (__as_object__<std::remove_cvref_t<Target>>::enable && ...)
-    //     )
-    // void method(Return(CRTP::*func)(Target...)) {
-    //     // TODO: check for an existing overload set with the same name and
-    //     // insert into it, or create a new one if none exists.  Then, call
-    //     // PyObject_SetAttr() to insert the overload set into the class dict
-    //     // or invoke a metaclass descriptor to handle internal slots.
-    // }
-
 };
 
 
 namespace impl {
 
-
-
-    template <typename CRTP, typename Wrapper>
-    template <StaticStr ModName>
-    struct TypeTag::def<CRTP, Wrapper, void>::Bindings :
-        BaseDef<CRTP, Wrapper, void>::template Bindings<ModName>
-    {
-    private:
-        using Base = BaseDef<CRTP, Wrapper, void>::template Bindings<ModName>;
-
-    public:
-        using Base::Base;
-        using Base::var;
-        using Base::property;
-        using Base::method;
-
-        /* Expose an immutable member variable to Python as a getset descriptor,
-        which synchronizes its state. */
-        template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
-        void var(const T CRTP::*value) {
-            if (Base::context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            Base::context[Name] = {
-                .is_member_var = true,
-            };
-            static bool skip = false;
-            if (skip) {
-                return;
-            }
-            static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                try {
-                    CRTP* obj = reinterpret_cast<CRTP*>(self);
-                    auto member = reinterpret_cast<const T CRTP::*>(closure);
-                    if constexpr (impl::python_like<T>) {
-                        return Py_NewRef(ptr(obj->*member));
-                    } else {
-                        return release(wrap(obj->*member));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-                std::string msg = "variable '" + Name + "' of type '" +
-                    impl::demangle(typeid(Wrapper).name()) + "' is immutable.";
-                PyErr_SetString(PyExc_TypeError, msg.c_str());
-                return -1;
-            };
-            Base::tp_getset.push_back({
-                Name,
-                +get,  // converts a stateless lambda to a function pointer
-                +set,
-                nullptr,
-                const_cast<void*>(reinterpret_cast<const void*>(value))
-            });
-            skip = true;
-        }
-
-        /* Expose a mutable member variable to Python as a getset descriptor, which
-        synchronizes its state. */
-        template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
-        void var(T CRTP::*value) {
-            if (Base::context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            Base::context[Name] = {
-                .is_member_var = true,
-            };
-            static bool skip = false;
-            if (skip) {
-                return;
-            }
-            static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                try {
-                    CRTP* obj = reinterpret_cast<CRTP*>(self);
-                    auto member = reinterpret_cast<T CRTP::*>(closure);
-                    if constexpr (impl::python_like<T>) {
-                        return Py_NewRef(ptr(obj->*member));
-                    } else {
-                        return release(wrap(obj->*member));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-                if (new_val == nullptr) {
-                    std::string msg = "variable '" + Name + "' of type '" +
-                        impl::demangle(typeid(Wrapper).name()) +
-                        "' cannot be deleted.";
-                    PyErr_SetString(PyExc_TypeError, msg.c_str());
-                    return -1;
-                }
-                try {
-                    CRTP* obj = reinterpret_cast<CRTP*>(self);
-                    auto member = reinterpret_cast<T CRTP::*>(closure);
-                    obj->*member = static_cast<T>(
-                        reinterpret_borrow<Object>(new_val)
-                    );
-                    return 0;
-                } catch (...) {
-                    Exception::to_python();
-                    return -1;
-                }
-            };
-            Base::tp_getset.push_back({
-                Name,
-                +get,  // converts a stateless lambda to a function pointer
-                +set,
-                nullptr,  // doc
-                reinterpret_cast<void*>(value)
-            });
-            skip = true;
-        }
-
-        /* Expose a C++-style const getter to Python as a getset descriptor. */
-        template <StaticStr Name, typename Return> requires (__as_object__<Return>::enable)
-        void property(Return(CRTP::*getter)() const) {
-            if (Base::context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            Base::context[Name] = {
-                .is_property = true,
-            };
-            static bool skip = false;
-            if (skip) {
-                return;
-            }
-            static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                try {
-                    CRTP* obj = reinterpret_cast<CRTP*>(self);
-                    auto member = reinterpret_cast<Return(CRTP::*)() const>(closure);
-                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                        if constexpr (impl::python_like<Return>) {
-                            return Py_NewRef(ptr((obj->*member)()));
-                        } else {
-                            return release(wrap((obj->*member)()));
-                        }
-                    } else {
-                        return release(as_object((obj->*member)()));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            Base::tp_getset.push_back({
-                Name,
-                +get,  // converts a stateless lambda to a function pointer
-                nullptr,  // setter
-                nullptr,  // doc
-                const_cast<void*>(reinterpret_cast<const void*>(getter))
-            });
-            skip = true;
-        }
-
-        /* Expose a C++-style getter/setter pair to Python as a getset
-        descriptor. */
-        template <StaticStr Name, typename Return, typename Value>
-            requires (__as_object__<Return>::enable && __as_object__<Value>::enable)
-        void property(
-            Return(CRTP::*getter)() const,
-            void(CRTP::*setter)(Value&&)
-        ) {
-            if (Base::context.contains(Name)) {
-                throw AttributeError(
-                    "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                    "' already has an attribute named '" + Name + "'."
-                );
-            }
-            Base::context[Name] = {
-                .is_property = true,
-            };
-            static bool skip = false;
-            if (skip) {
-                return;
-            }
-            static struct Closure {
-                Return(CRTP::*getter)() const;
-                void(CRTP::*setter)(Value&&);
-            } closure = {getter, setter};
-            static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                try {
-                    CRTP* obj = reinterpret_cast<CRTP*>(self);
-                    Closure* ctx = reinterpret_cast<Closure*>(closure);
-                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                        if constexpr (impl::python_like<Return>) {
-                            return Py_NewRef(ptr((obj->*(ctx->getter))()));
-                        } else {
-                            return release(wrap((obj->*(ctx->getter))()));
-                        }
-                    } else {
-                        return release(as_object((obj->*(ctx->getter))()));
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            };
-            static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-                if (new_val == nullptr) {
-                    std::string msg = "variable '" + Name + "' of type '" +
-                        impl::demangle(typeid(Wrapper).name()) +
-                        "' cannot be deleted.";
-                    PyErr_SetString(PyExc_TypeError, msg.c_str());
-                    return -1;
-                }
-                try {
-                    CRTP* obj = reinterpret_cast<CRTP*>(self);
-                    Closure* ctx = reinterpret_cast<Closure*>(closure);
-                    (obj->*(ctx->setter))(static_cast<Value>(
-                        reinterpret_borrow<Object>(new_val)
-                    ));
-                    return 0;
-                } catch (...) {
-                    Exception::to_python();
-                    return -1;
-                }
-            };
-            Base::tp_getset.push_back({
-                Name,
-                +get,  // converts a stateless lambda to a function pointer
-                +set,
-                nullptr,  // doc
-                &closure
-            });
-            skip = true;
-        }
-
-        /* Expose a C++ instance method to Python as an instance method, which can
-        be overloaded from either side of the language boundary.  */
-        template <StaticStr Name, typename Return, typename... Target>
-            requires (
-                __as_object__<std::remove_cvref_t<Return>>::enable &&
-                (__as_object__<std::remove_cvref_t<Target>>::enable && ...)
-            )
-        void method(Return(CRTP::*func)(Target...)) {
-            /// TODO: check for an existing overload set with the same name and
-            /// insert into it, or create a new one if none exists.  Then, call
-            /// PyObject_SetAttr() to insert the overload set into the class dict
-            /// or invoke a metaclass descriptor to handle internal slots.
-        }
-
-    };
-
     template <typename CRTP, typename Wrapper, typename CppType>
     struct TypeTag::def : BaseDef<CRTP, Wrapper, CppType> {
-
-    protected:
-        
-
-
-
-        template <StaticStr ModName>
-        struct Bindings : BaseDef<CRTP, Wrapper, CppType>::template Bindings<ModName> {
-        private:
-            using Base = BaseDef<CRTP, Wrapper, CppType>::template Bindings<ModName>;
-
-        public:
-            using Base::Base;
-            using Base::var;
-            using Base::property;
-            using Base::method;
-
-            /* Expose an immutable member variable to Python as a getset descriptor,
-            which synchronizes its state. */
-            template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
-            void var(const T CppType::*value) {
-                if (Base::context.contains(Name)) {
-                    throw AttributeError(
-                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                        "' already has an attribute named '" + Name + "'."
-                    );
-                }
-                Base::context[Name] = {
-                    .is_member_var = true,
-                };
-                static bool skip = false;
-                if (skip) {
-                    return;
-                }
-                static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                    try {
-                        auto member = reinterpret_cast<const T CppType::*>(closure);
-                        return std::visit(
-                            Visitor{
-                                [member](const CppType& obj) {
-                                    if constexpr (impl::python_like<T>) {
-                                        return Py_NewRef(ptr(obj.*member));
-                                    } else {
-                                        return release(wrap(obj.*member));
-                                    }
-                                },
-                                [member](const CppType* obj) {
-                                    if constexpr (impl::python_like<T>) {
-                                        return Py_NewRef(ptr(obj->*member));
-                                    } else {
-                                        return release(wrap(obj->*member));
-                                    }
-                                }
-                            },
-                            reinterpret_cast<CRTP*>(self)->m_cpp
-                        );
-                    } catch (...) {
-                        Exception::to_python();
-                        return nullptr;
-                    }
-                };
-                static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-                    std::string msg = "variable '" + Name + "' of type '" +
-                        impl::demangle(typeid(Wrapper).name()) + "' is immutable.";
-                    PyErr_SetString(PyExc_TypeError, msg.c_str());
-                    return -1;
-                };
-                Base::tp_getset.push_back({
-                    Name,
-                    +get,  // converts a stateless lambda to a function pointer
-                    +set,
-                    nullptr,
-                    const_cast<void*>(reinterpret_cast<const void*>(value))
-                });
-                skip = true;
-            }
-
-            /* Expose a mutable member variable to Python as a getset descriptor, which
-            synchronizes its state. */
-            template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
-            void var(T CppType::*value) {
-                if (Base::context.contains(Name)) {
-                    throw AttributeError(
-                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                        "' already has an attribute named '" + Name + "'."
-                    );
-                }
-                Base::context[Name] = {
-                    .is_member_var = true,
-                };
-                static bool skip = false;
-                if (skip) {
-                    return;
-                }
-                static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                    try {
-                        auto member = reinterpret_cast<T CppType::*>(closure);
-                        return std::visit(
-                            Visitor{
-                                [member](CppType& obj) {
-                                    if constexpr (impl::python_like<T>) {
-                                        return Py_NewRef(ptr(obj.*member));
-                                    } else {
-                                        return release(wrap(obj.*member));
-                                    }
-                                },
-                                [member](CppType* obj) {
-                                    if constexpr (impl::python_like<T>) {
-                                        return Py_NewRef(ptr(obj->*member));
-                                    } else {
-                                        return release(wrap(obj->*member));
-                                    }
-                                },
-                                [member](const CppType* obj) {
-                                    if constexpr (impl::python_like<T>) {
-                                        return Py_NewRef(ptr(obj->*member));
-                                    } else {
-                                        return release(wrap(obj->*member));
-                                    }
-                                }
-                            },
-                            reinterpret_cast<CRTP*>(self)->m_cpp
-                        );
-                    } catch (...) {
-                        Exception::to_python();
-                        return nullptr;
-                    }
-                };
-                static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-                    if (new_val == nullptr) {
-                        std::string msg = "variable '" + Name + "' of type '" +
-                            impl::demangle(typeid(Wrapper).name()) +
-                            "' cannot be deleted.";
-                        PyErr_SetString(PyExc_TypeError, msg.c_str());
-                        return -1;
-                    }
-                    try {
-                        auto member = reinterpret_cast<T CppType::*>(closure);
-                        std::visit(
-                            Visitor{
-                                [member, new_val](CppType& obj) {
-                                    obj.*member = static_cast<T>(
-                                        reinterpret_borrow<Object>(new_val)
-                                    );
-                                },
-                                [member, new_val](CppType* obj) {
-                                    obj->*member = static_cast<T>(
-                                        reinterpret_borrow<Object>(new_val)
-                                    );
-                                },
-                                [new_val](const CppType* obj) {
-                                    throw TypeError(
-                                        "variable '" + Name + "' of type '" +
-                                        impl::demangle(typeid(Wrapper).name()) +
-                                        "' is immutable."
-                                    );
-                                }
-                            },
-                            reinterpret_cast<CRTP*>(self)->m_cpp
-                        );
-                        return 0;
-                    } catch (...) {
-                        Exception::to_python();
-                        return -1;
-                    }
-                };
-                Base::tp_getset.push_back({
-                    Name,
-                    +get,  // converts a stateless lambda to a function pointer
-                    +set,
-                    nullptr,  // doc
-                    reinterpret_cast<void*>(value)
-                });
-                skip = true;
-            }
-
-            /* Expose a C++-style const getter to Python as a getset descriptor. */
-            template <StaticStr Name, typename Return> requires (__as_object__<Return>::enable)
-            void property(Return(CppType::*getter)() const) {
-                if (Base::context.contains(Name)) {
-                    throw AttributeError(
-                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                        "' already has an attribute named '" + Name + "'."
-                    );
-                }
-                Base::context[Name] = {
-                    .is_property = true,
-                };
-                static bool skip = false;
-                if (skip) {
-                    return;
-                }
-                static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                    try {
-                        auto member = reinterpret_cast<Return(CppType::*)() const>(closure);
-                        return release(wrap(std::visit(
-                            Visitor{
-                                [member](const CppType& obj) {
-                                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                                        if constexpr (impl::python_like<Return>) {
-                                            return Py_NewRef(ptr((obj.*member)()));
-                                        } else {
-                                            return release(wrap((obj.*member)()));
-                                        }
-                                    } else {
-                                        return release(as_object((obj.*member)()));
-                                    }
-                                },
-                                [member](const CppType* obj) {
-                                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                                        if constexpr (impl::python_like<Return>) {
-                                            return Py_NewRef(ptr((obj->*member)()));
-                                        } else {
-                                            return release(wrap((obj->*member)()));
-                                        }
-                                    } else {
-                                        return release(as_object((obj->*member)()));
-                                    }
-                                }
-                            },
-                            reinterpret_cast<CRTP*>(self)->m_cpp
-                        )));
-                    } catch (...) {
-                        Exception::to_python();
-                        return nullptr;
-                    }
-                };
-                Base::tp_getset.push_back({
-                    Name,
-                    +get,  // converts a stateless lambda to a function pointer
-                    nullptr,  // setter
-                    nullptr,  // doc
-                    const_cast<void*>(reinterpret_cast<const void*>(getter))
-                });
-                skip = true;
-            }
-
-            /* Expose a C++-style getter/setter pair to Python as a getset
-            descriptor. */
-            template <StaticStr Name, typename Return, typename Value>
-                requires (__as_object__<Return>::enable && __as_object__<Value>::enable)
-            void property(
-                Return(CppType::*getter)() const,
-                void(CppType::*setter)(Value&&)
-            ) {
-                if (Base::context.contains(Name)) {
-                    throw AttributeError(
-                        "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                        "' already has an attribute named '" + Name + "'."
-                    );
-                }
-                Base::context[Name] = {
-                    .is_property = true,
-                };
-                static bool skip = false;
-                if (skip) {
-                    return;
-                }
-                static struct Closure {
-                    Return(CppType::*getter)() const;
-                    void(CppType::*setter)(Value&&);
-                } closure = {getter, setter};
-                static auto get = [](PyObject* self, void* closure) -> PyObject* {
-                    try {
-                        Closure* ctx = reinterpret_cast<Closure*>(closure);
-                        return release(wrap(std::visit(
-                            Visitor{
-                                [ctx](CppType& obj) {
-                                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                                        if constexpr (impl::python_like<Return>) {
-                                            return Py_NewRef(ptr((obj.*(ctx->getter))()));
-                                        } else {
-                                            return release(wrap((obj.*(ctx->getter))()));
-                                        }
-                                    } else {
-                                        return release(as_object((obj.*(ctx->getter))()));
-                                    }
-                                },
-                                [ctx](CppType* obj) {
-                                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                                        if constexpr (impl::python_like<Return>) {
-                                            return Py_NewRef(ptr((obj->*(ctx->getter))()));
-                                        } else {
-                                            return release(wrap((obj->*(ctx->getter))()));
-                                        }
-                                    } else {
-                                        return release(as_object((obj->*(ctx->getter))()));
-                                    }
-                                },
-                                [ctx](const CppType* obj) {
-                                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                                        if constexpr (impl::python_like<Return>) {
-                                            return Py_NewRef(ptr((obj->*(ctx->getter))()));
-                                        } else {
-                                            return release(wrap((obj->*(ctx->getter))()));
-                                        }
-                                    } else {
-                                        return release(as_object((obj->*(ctx->getter))()));
-                                    }
-                                }
-                            },
-                            reinterpret_cast<CRTP*>(self)->m_cpp
-                        )));
-                    } catch (...) {
-                        Exception::to_python();
-                        return nullptr;
-                    }
-                };
-                static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-                    if (new_val == nullptr) {
-                        std::string msg = "variable '" + Name + "' of type '" +
-                            impl::demangle(typeid(Wrapper).name()) +
-                            "' cannot be deleted.";
-                        PyErr_SetString(PyExc_TypeError, msg.c_str());
-                        return -1;
-                    }
-                    try {
-                        Closure* ctx = reinterpret_cast<Closure*>(closure);
-                        std::visit(
-                            Visitor{
-                                [ctx, new_val](CppType& obj) {
-                                    obj.*(ctx->setter)(static_cast<Value>(
-                                        reinterpret_borrow<Object>(new_val)
-                                    ));
-                                },
-                                [ctx, new_val](CppType* obj) {
-                                    obj->*(ctx->setter)(static_cast<Value>(
-                                        reinterpret_borrow<Object>(new_val)
-                                    ));
-                                },
-                                [new_val](const CppType* obj) {
-                                    throw TypeError(
-                                        "variable '" + Name + "' of type '" +
-                                        impl::demangle(typeid(Wrapper).name()) +
-                                        "' is immutable."
-                                    );
-                                }
-                            },
-                            reinterpret_cast<CRTP*>(self)->m_cpp
-                        );
-                        return 0;
-                    } catch (...) {
-                        Exception::to_python();
-                        return -1;
-                    }
-                };
-                Base::tp_getset.push_back({
-                    Name,
-                    +get,  // converts a stateless lambda to a function pointer
-                    +set,
-                    nullptr,  // doc
-                    &closure
-                });
-                skip = true;
-            }
-
-            /* Expose a C++ instance method to Python as an instance method, which can
-            be overloaded from either side of the language boundary.  */
-            template <StaticStr Name, typename Return, typename... Target>
-                requires (
-                    __as_object__<std::remove_cvref_t<Return>>::enable &&
-                    (__as_object__<std::remove_cvref_t<Target>>::enable && ...)
-                )
-            void method(Return(CppType::*func)(Target...)) {
-                /// TODO: check for an existing overload set with the same name and
-                /// insert into it, or create a new one if none exists.  Then, call
-                /// PyObject_SetAttr() to insert the overload set into the class dict
-                /// or invoke a metaclass descriptor to handle internal slots.
-
-                /// func is a pointer to a member function of CppType, which can be
-                /// called like this:
-                ///      obj.*func(std::forward<Args>(args)...);
-            }
-
-        };
-
-    public:
-        using t_cpp = CppType;
-
-        static constexpr Origin __origin__ = Origin::CPP;
         static constexpr StaticStr __doc__ = [] {
             return (
                 "A Bertrand-generated Python wrapper for the '" +

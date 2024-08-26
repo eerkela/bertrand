@@ -114,6 +114,13 @@ runtime `isinstance()` check, and raises a `TypeError` if the check fails. */
 struct Object : Interface<Object> {
 private:
 
+    /* A convenience struct implementing the overload pattern for visiting a
+    std::variant. */
+    template <typename... Ts>
+    struct Visitor : Ts... {
+        using Ts::operator()...;
+    };
+
     template <typename Cls, typename CRTP, typename Wrapper, StaticStr ModName>
     struct Bindings;
 
@@ -193,12 +200,8 @@ protected:
     protected:
         using Variant = std::variant<CppType, CppType*, const CppType*>;
 
-        /* A convenience struct implementing the overload pattern for visiting a
-        std::variant. */
         template <typename... Ts>
-        struct Visitor : Ts... {
-            using Ts::operator()...;
-        };
+        using Visitor = Visitor<Ts...>;
 
         template <StaticStr ModName>
         using Bindings = Object::Bindings<CppType, CRTP, Derived, ModName>;
