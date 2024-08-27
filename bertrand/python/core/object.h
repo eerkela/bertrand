@@ -121,6 +121,13 @@ private:
         using Ts::operator()...;
     };
 
+    /* A helper class that simplifies the creation of new Python types within a
+    `def::__export__()` script, which exposes the type's interface to Python.  `Cls`
+    refers to the type being exposed, and may refer to either an external C++ type or
+    the CRTP type in the case of inline Python types.  All bound methods/variables must
+    either originate from that class or use a non-member method which takes the class
+    as its first argument, unless the method/variable is static and unassociated with
+    any instance. */
     template <typename Cls, typename CRTP, typename Wrapper, StaticStr ModName>
     struct Bindings;
 

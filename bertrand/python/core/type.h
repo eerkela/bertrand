@@ -6365,6 +6365,152 @@ private:
     // }
     // return result;
 
+    template <
+        StaticStr Name,
+        typename Return,
+        typename Value,
+        typename Getter,
+        typename Setter
+    >
+    void bind_member_property(Getter&& getter, Setter&& setter) {
+        if (members.contains(Name)) {
+            throw AttributeError(
+                "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                "' already has an attribute named '" + Name + "'."
+            );
+        }
+        members[Name] = {
+            .property = true,
+        };
+        static bool skip = false;
+        if (skip) {
+            return;
+        }
+
+        // getter and setter are stored together in the descriptor's closure
+        static struct Closure {
+            Getter getter;
+            Setter setter;
+        } closure = {getter, setter};
+
+        static auto get = [](PyObject* self, void* closure) -> PyObject* {
+            try {
+                Closure* ctx = reinterpret_cast<Closure*>(closure);
+                if constexpr (std::same_as<CRTP, Cls>) {
+                    if constexpr (std::is_lvalue_reference_v<Return>) {
+                        if constexpr (impl::python_like<Return>) {
+                            return Py_NewRef(ptr(
+                                (reinterpret_cast<CRTP*>(self)->*(ctx->getter))()
+                            ));
+                        } else {
+                            return release(wrap(
+                                (reinterpret_cast<CRTP*>(self)->*(ctx->getter))()
+                            ));
+                        }
+                    } else {
+                        return release(as_object(
+                            (reinterpret_cast<CRTP*>(self)->*(ctx->getter))()
+                        ));
+                    }
+                } else {
+                    return release(wrap(std::visit(
+                        Visitor{
+                            [ctx](Cls& obj) {
+                                if constexpr (std::is_lvalue_reference_v<Return>) {
+                                    if constexpr (impl::python_like<Return>) {
+                                        return Py_NewRef(ptr((obj.*(ctx->getter))()));
+                                    } else {
+                                        return release(wrap((obj.*(ctx->getter))()));
+                                    }
+                                } else {
+                                    return release(as_object((obj.*(ctx->getter))()));
+                                }
+                            },
+                            [ctx](Cls* obj) {
+                                if constexpr (std::is_lvalue_reference_v<Return>) {
+                                    if constexpr (impl::python_like<Return>) {
+                                        return Py_NewRef(ptr((obj->*(ctx->getter))()));
+                                    } else {
+                                        return release(wrap((obj->*(ctx->getter))()));
+                                    }
+                                } else {
+                                    return release(as_object((obj->*(ctx->getter))()));
+                                }
+                            },
+                            [ctx](const Cls* obj) {
+                                if constexpr (std::is_lvalue_reference_v<Return>) {
+                                    if constexpr (impl::python_like<Return>) {
+                                        return Py_NewRef(ptr((obj->*(ctx->getter))()));
+                                    } else {
+                                        return release(wrap((obj->*(ctx->getter))()));
+                                    }
+                                } else {
+                                    return release(as_object((obj->*(ctx->getter))()));
+                                }
+                            }
+                        },
+                        reinterpret_cast<CRTP*>(self)->m_cpp
+                    )));
+                }
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+        };
+        static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
+            if (new_val == nullptr) {
+                std::string msg = "variable '" + Name + "' of type '" +
+                    impl::demangle(typeid(Wrapper).name()) +
+                    "' cannot be deleted.";
+                PyErr_SetString(PyExc_TypeError, msg.c_str());
+                return -1;
+            }
+            try {
+                Closure* ctx = reinterpret_cast<Closure*>(closure);
+                if constexpr (std::same_as<CRTP, Cls>) {
+                    (reinterpret_cast<CRTP*>(self)->*(ctx->setter))(static_cast<Value>(
+                        reinterpret_borrow<Object>(new_val)
+                    ));
+                } else {
+                    std::visit(
+                        Visitor{
+                            [ctx, new_val](Cls& obj) {
+                                obj.*(ctx->setter)(static_cast<Value>(
+                                    reinterpret_borrow<Object>(new_val)
+                                ));
+                            },
+                            [ctx, new_val](Cls* obj) {
+                                obj->*(ctx->setter)(static_cast<Value>(
+                                    reinterpret_borrow<Object>(new_val)
+                                ));
+                            },
+                            [new_val](const Cls* obj) {
+                                throw TypeError(
+                                    "variable '" + Name + "' of type '" +
+                                    impl::demangle(typeid(Wrapper).name()) +
+                                    "' is immutable."
+                                );
+                            }
+                        },
+                        reinterpret_cast<CRTP*>(self)->m_cpp
+                    );
+                }
+                return 0;
+            } catch (...) {
+                Exception::to_python();
+                return -1;
+            }
+        };
+        tp_getset.push_back({
+            Name,
+            +get,  // converts a stateless lambda to a function pointer
+            +set,
+            nullptr,
+            &closure
+        });
+        skip = true;
+    }
+ 
     /* A collection of template constraints for the `method<"name">(&func)` helper
     that forces compatibility with Python's dunder interface. */
     struct dunder {
@@ -7513,6 +7659,387 @@ private:
 
     };
 
+    struct constraints {
+
+        template <typename T>
+        struct static_getter {
+            static constexpr bool value = false;
+        };
+
+        template <typename T>
+            requires (
+                !std::is_member_function_pointer_v<T> &&
+                std::is_invocable_v<T, const Cls&> &&
+                !std::is_invocable_v<T, Cls&>
+            )
+        struct static_getter<T> {
+            using type = std::invoke_result_t<T, const Cls&>;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = true;
+        };
+
+        template <typename T>
+            requires (
+                !std::is_member_function_pointer_v<T> &&
+                !std::is_invocable_v<T, const Cls&> &&
+                std::is_invocable_v<T, Cls&>
+            )
+        struct static_getter<T> {
+            using type = std::invoke_result_t<T, Cls&>;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = false;
+        };
+
+        template <typename T>
+        struct member_getter {
+            static constexpr bool value = false;
+        };
+
+        template <typename R>
+        struct member_getter<R(Cls::*)()> {
+            using type = R;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = false;
+            
+        };
+
+        template <typename R>
+        struct member_getter<R(Cls::*)() const> {
+            using type = R;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = true;
+        };
+
+        template <typename R>
+        struct member_getter<R(Cls::*)() volatile> {
+            using type = R;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = false;
+        };
+
+        template <typename R>
+        struct member_getter<R(Cls::*)() const volatile> {
+            using type = R;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = true;
+        };
+
+        template <typename R>
+        struct member_getter<R(Cls::*)() noexcept> {
+            using type = R;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = false;
+        };
+
+        template <typename R>
+        struct member_getter<R(Cls::*)() const noexcept> {
+            using type = R;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = true;
+        };
+
+        template <typename R>
+        struct member_getter<R(Cls::*)() volatile noexcept> {
+            using type = R;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = false;
+        };
+
+        template <typename R>
+        struct member_getter<R(Cls::*)() const volatile noexcept> {
+            using type = R;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = true;
+        };
+
+        template <typename T>
+        struct static_setter {
+            static constexpr bool value = false;
+        };
+
+        template <typename T>
+        struct static_setter<void(*)(Cls&, T)> {
+            using type = T;
+            static constexpr bool value = __as_object__<type>::enable;
+        };
+
+        template <typename T> requires (impl::has_call_operator<T>)
+        struct static_setter<T> {
+            template <typename U>
+            struct call_operator {
+                using type = void;
+                static constexpr bool value = false;
+            };
+            template <typename U, typename V> requires (std::convertible_to<T, U>)
+            struct call_operator<void(*)(U, V)> {  // static call operator
+                using type = V;
+                static constexpr bool value = __as_object__<type>::enable;
+            };
+            template <typename V>
+            struct call_operator<void(T::*)(V)> {  // member call operator
+                using type = V;
+                static constexpr bool value = __as_object__<type>::enable;
+            };
+            template <typename V>
+            struct call_operator<void(T::*)(V) const> {
+                using type = V;
+                static constexpr bool value = __as_object__<type>::enable;
+            };
+            template <typename V>
+            struct call_operator<void(T::*)(V) volatile> {
+                using type = V;
+                static constexpr bool value = __as_object__<type>::enable;
+            };
+            template <typename V>
+            struct call_operator<void(T::*)(V) const volatile> {
+                using type = V;
+                static constexpr bool value = __as_object__<type>::enable;
+            };
+            template <typename V>
+            struct call_operator<void(T::*)(V) noexcept> {
+                using type = V;
+                static constexpr bool value = __as_object__<type>::enable;
+            };
+            template <typename V>
+            struct call_operator<void(T::*)(V) const noexcept> {
+                using type = V;
+                static constexpr bool value = __as_object__<type>::enable;
+            };
+            template <typename V>
+            struct call_operator<void(T::*)(V) volatile noexcept> {
+                using type = V;
+                static constexpr bool value = __as_object__<type>::enable;
+            };
+            template <typename V>
+            struct call_operator<void(T::*)(V) const volatile noexcept> {
+                using type = V;
+                static constexpr bool value = __as_object__<type>::enable;
+            };
+
+            static constexpr bool value = call_operator<decltype(&T::operator())>::value;
+            using type = typename call_operator<decltype(&T::operator())>::type;
+        };
+
+        template <typename T>
+        struct member_setter {
+            static constexpr bool value = false;
+        };
+
+        template <typename V>
+        struct member_setter<void(Cls::*)(V)> {
+            using type = V;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = false;
+        };
+
+        template <typename V>
+        struct member_setter<void(Cls::*)(V) const> {
+            using type = V;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = true;
+        };
+
+        template <typename V>
+        struct member_setter<void(Cls::*)(V) volatile> {
+            using type = V;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = false;
+        };
+
+        template <typename V>
+        struct member_setter<void(Cls::*)(V) const volatile> {
+            using type = V;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = true;
+        };
+
+        template <typename V>
+        struct member_setter<void(Cls::*)(V) noexcept> {
+            using type = V;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = false;
+        };
+
+        template <typename V>
+        struct member_setter<void(Cls::*)(V) const noexcept> {
+            using type = V;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = true;
+        };
+
+        template <typename V>
+        struct member_setter<void(Cls::*)(V) volatile noexcept> {
+            using type = V;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = false;
+        };
+
+        template <typename V>
+        struct member_setter<void(Cls::*)(V) const volatile noexcept> {
+            using type = V;
+            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool is_const = true;
+        };
+
+    };
+
+    template <typename Getter, typename Setter>
+    struct GetSetClosure {
+        Getter* getter;
+        Setter* setter;
+    };
+
+    template <typename Getter, typename Deleter>
+    struct GetDelClosure {
+        Getter* getter;
+        Deleter* deleter;
+    };
+
+    template <typename Setter, typename Deleter>
+    struct SetDelClosure {
+        Setter* setter;
+        Deleter* deleter;
+    };
+
+    template <typename Getter, typename Setter, typename Deleter>
+    struct GetSetDelClosure {
+        Getter* getter;
+        Setter* setter;
+        Deleter* deleter;
+    };
+
+    template <typename T>
+    struct IsPropertyClosure {
+        static constexpr bool value = false;
+    };
+    template <typename Get, typename Set>
+    struct IsPropertyClosure<GetSetClosure<Get, Set>> {
+        static constexpr bool value = true;
+        static constexpr bool has_getter = true;
+        static constexpr bool has_setter = true;
+        static constexpr bool has_deleter = false;
+        using Getter = Get;
+        using Setter = Set;
+    };
+    template <typename Get, typename Del>
+    struct IsPropertyClosure<GetDelClosure<Get, Del>> {
+        static constexpr bool value = true;
+        static constexpr bool has_getter = true;
+        static constexpr bool has_setter = false;
+        static constexpr bool has_deleter = true;
+        using Getter = Get;
+        using Deleter = Del;
+    };
+    template <typename Set, typename Del>
+    struct IsPropertyClosure<SetDelClosure<Set, Del>> {
+        static constexpr bool value = true;
+        static constexpr bool has_getter = false;
+        static constexpr bool has_setter = true;
+        static constexpr bool has_deleter = true;
+        using Setter = Set;
+        using Deleter = Del;
+    };
+    template <typename Get, typename Set, typename Del>
+    struct IsPropertyClosure<GetSetDelClosure<Get, Set, Del>> {
+        static constexpr bool value = true;
+        static constexpr bool has_getter = true;
+        static constexpr bool has_setter = true;
+        static constexpr bool has_deleter = true;
+        using Getter = Get;
+        using Setter = Set;
+        using Deleter = Del;
+    };
+
+    template <StaticStr Name, typename Closure>
+    static PyObject* python_getter(CRTP* self, void* closure) {
+        using Getter = std::conditional_t<
+            IsPropertyClosure<Closure>::value,
+            typename IsPropertyClosure<Closure>::Getter,
+            Closure
+        >;
+        Getter* func;
+        if constexpr (IsPropertyClosure<Closure>::value) {
+            func = reinterpret_cast<Closure*>(closure)->getter;
+        } else {
+            func = reinterpret_cast<Getter*>(closure);
+        }
+
+        auto get = [](Getter* func, auto& obj) {
+            if constexpr (constraints::template member_getter<Getter>::value) {
+                using Return = constraints::template member_getter<Getter>::type;
+                if constexpr (std::is_lvalue_reference_v<Return>) {
+                    if constexpr (impl::python_like<Return>) {
+                        return Py_NewRef(ptr(obj.*(*func)()));
+                    } else {
+                        return release(wrap(obj.*(*func)()));
+                    }
+                } else {
+                    return release(as_object(obj.*(*func)()));
+                }
+            } else {
+                using Return = constraints::template static_getter<Getter>::type;
+                if constexpr (std::is_lvalue_reference_v<Return>) {
+                    if constexpr (impl::python_like<Return>) {
+                        return Py_NewRef(ptr((*func)(obj)));
+                    } else {
+                        return release(wrap((*func)(obj)));
+                    }
+                } else {
+                    return release(as_object((*func)(obj)));
+                }
+            }
+        };
+
+        try {
+            if constexpr (std::same_as<Cls, CRTP>) {
+                return get(func, *self);
+            } else {
+                return std::visit(
+                    Visitor{
+                        [func, get](Cls& obj) {
+                            return get(func, obj);
+                        },
+                        [func, get](const Cls* obj) {
+                            if constexpr (
+                                !constraints::template static_getter<Getter>::is_const
+                            ) {
+                                throw TypeError(
+                                    "variable '" + Name + "' of type '" +
+                                    impl::demangle(typeid(Wrapper).name()) +
+                                    "' is immutable."
+                                );
+                            } else {
+                                return get(func, *obj);
+                            }
+                        },
+                        [func, get](Cls* obj) {
+                            return get(func, *obj);
+                        }
+                    },
+                    self->m_cpp
+                );
+            }
+        } catch (...) {
+            Exception::to_python();
+            return nullptr;
+        }
+    }
+
+    template <StaticStr Name, typename Setter, bool closure_struct>
+    static int python_setter(CRTP* self, PyObject* value, void* closure) {
+        try {
+            if constexpr (std::same_as<CRTP, Cls>) {
+
+            } else {
+
+            }
+            return 0;
+        } catch (...) {
+            Exception::to_python();
+            return -1;
+        }
+    }
+
 public:
     Module<ModName> module;
     std::unordered_map<std::string, Member> members;
@@ -7533,9 +8060,7 @@ public:
                 "' already has an attribute named '" + Name + "'."
             );
         }
-        members[Name] = {
-            .var = true,
-        };
+        members[Name] = { .var = true };
         static bool skip = false;
         if (skip) {
             return;
@@ -7601,9 +8126,7 @@ public:
                 "' already has an attribute named '" + Name + "'."
             );
         }
-        members[Name] = {
-            .var = true,
-        };
+        members[Name] = { .var = true };
         static bool skip = false;
         if (skip) {
             return;
@@ -7714,9 +8237,7 @@ public:
                 "' already has an attribute named '" + Name + "'."
             );
         }
-        members[Name] = {
-            .class_var = true,
-        };
+        members[Name] = { .class_var = true };
         static auto get = [](PyObject* cls, void* closure) -> PyObject* {
             try {
                 const T* value = reinterpret_cast<const T*>(closure);
@@ -7756,9 +8277,7 @@ public:
                 "' already has an attribute named '" + Name + "'."
             );
         }
-        members[Name] = {
-            .class_var = true,
-        };
+        members[Name] = { .class_var = true };
         static auto get = [](PyObject* self, void* value) -> PyObject* {
             try {
                 T* value = reinterpret_cast<T*>(value);
@@ -7794,218 +8313,128 @@ public:
         class_setters[Name] = {+set, reinterpret_cast<void*>(&value)};
     }
 
-    /// TODO: property() should be able to accept non-member methods that take the
-    /// instance as a first argument.
-
-    /* Expose a C++-style const getter to Python as a getset descriptor. */
-    template <StaticStr Name, typename Return> requires (__as_object__<Return>::enable)
-    void property(Return(Cls::*getter)() const) {
-        if (members.contains(Name)) {
-            throw AttributeError(
-                "Class '" + impl::demangle(typeid(Wrapper).name()) +
-                "' already has an attribute named '" + Name + "'."
-            );
-        }
-        members[Name] = {
-            .property = true,
-        };
-        static bool skip = false;
-        if (skip) {
-            return;
-        }
-        static auto get = [](PyObject* self, void* closure) -> PyObject* {
-            try {
-                auto member = reinterpret_cast<Return(CRTP::*)() const>(closure);
-                if constexpr (std::same_as<CRTP, Cls>) {
-                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                        if constexpr (impl::python_like<Return>) {
-                            return Py_NewRef(ptr((reinterpret_cast<CRTP*>(self)->*member)()));
-                        } else {
-                            return release(wrap((reinterpret_cast<CRTP*>(self)->*member)()));
-                        }
-                    } else {
-                        return release(as_object((reinterpret_cast<CRTP*>(self)->*member)()));
-                    }
-                } else {
-                    return release(wrap(std::visit(
-                        Visitor{
-                            [member](const Cls& obj) {
-                                if constexpr (std::is_lvalue_reference_v<Return>) {
-                                    if constexpr (impl::python_like<Return>) {
-                                        return Py_NewRef(ptr((obj.*member)()));
-                                    } else {
-                                        return release(wrap((obj.*member)()));
-                                    }
-                                } else {
-                                    return release(as_object((obj.*member)()));
-                                }
-                            },
-                            [member](const Cls* obj) {
-                                if constexpr (std::is_lvalue_reference_v<Return>) {
-                                    if constexpr (impl::python_like<Return>) {
-                                        return Py_NewRef(ptr((obj->*member)()));
-                                    } else {
-                                        return release(wrap((obj->*member)()));
-                                    }
-                                } else {
-                                    return release(as_object((obj->*member)()));
-                                }
-                            }
-                        },
-                        reinterpret_cast<CRTP*>(self)->m_cpp
-                    )));
-                }
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        };
-        tp_getset.push_back({
-            Name,
-            +get,  // converts a stateless lambda to a function pointer
-            nullptr,
-            nullptr,
-            const_cast<void*>(reinterpret_cast<const void*>(getter))
-        });
-        skip = true;
-    }
-
-    /* Expose a C++-style getter/setter pair to Python as a getset
-    descriptor. */
-    template <StaticStr Name, typename Return, typename Value>
-        requires (__as_object__<Return>::enable && __as_object__<Value>::enable)
+    /* Expose a non-member getter/setter pair to Python as a getset descriptor. */
+    template <
+        StaticStr Name,
+        typename Getter = std::nullptr_t,
+        typename Setter = std::nullptr_t,
+        typename Deleter = std::nullptr_t
+    >
+        requires ((
+            std::is_null_pointer_v<Getter> ||
+            constraints::template static_getter<std::decay_t<Getter>>::value ||
+            constraints::template member_getter<std::decay_t<Getter>>::value
+        ) && (
+            std::is_null_pointer_v<Setter> ||
+            constraints::template static_setter<std::decay_t<Setter>>::value ||
+            constraints::template member_setter<std::decay_t<Setter>>::value
+        ) && (
+            std::is_null_pointer_v<Deleter> ||
+            constraints::template static_deleter<std::decay_t<Deleter>>::value ||
+            constraints::template member_deleter<std::decay_t<Deleter>>::value
+        ))
     void property(
-        Return(Cls::*getter)() const,
-        void(Cls::*setter)(Value&&)
+        const std::string& doc,
+        Getter&& getter = nullptr,
+        Setter&& setter = nullptr,
+        Deleter&& deleter = nullptr
     ) {
+        using G = std::decay_t<Getter>;
+        using S = std::decay_t<Setter>;
+        using D = std::decay_t<Deleter>;
+
         if (members.contains(Name)) {
             throw AttributeError(
                 "Class '" + impl::demangle(typeid(Wrapper).name()) +
                 "' already has an attribute named '" + Name + "'."
             );
         }
-        members[Name] = {
-            .property = true,
-        };
+        members[Name] = { .property = true };
         static bool skip = false;
         if (skip) {
             return;
         }
 
-        // getter and setter are stored together in the descriptor's closure
-        static struct Closure {
-            Return(CRTP::*getter)() const;
-            void(CRTP::*setter)(Value&&);
-        } closure = {getter, setter};
+        auto func_ptr = []<typename T>(T&& func) -> std::decay_t<T>* {
+            using U = std::decay_t<T>;
+            if constexpr (
+                std::is_function_v<std::remove_pointer_t<U>> ||
+                std::is_member_function_pointer_v<U>
+            ) {
+                return &func;
+            } else {
+                static U f = std::forward<T>(func);
+                return &f;
+            }
+        };
 
-        static auto get = [](PyObject* self, void* closure) -> PyObject* {
-            try {
-                Closure* ctx = reinterpret_cast<Closure*>(closure);
-                if constexpr (std::same_as<CRTP, Cls>) {
-                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                        if constexpr (impl::python_like<Return>) {
-                            return Py_NewRef(ptr((reinterpret_cast<CRTP*>(self)->*(ctx->getter))()));
-                        } else {
-                            return release(wrap((reinterpret_cast<CRTP*>(self)->*(ctx->getter))()));
-                        }
-                    } else {
-                        return release(as_object((reinterpret_cast<CRTP*>(self)->*(ctx->getter))()));
-                    }
+        static std::string doc_str = doc;
+        ::getter py_getter = nullptr;
+        ::setter py_setter = nullptr;
+        void* closure = nullptr;
+        if constexpr (std::is_null_pointer_v<G>) {
+            if constexpr (std::is_null_pointer_v<S>) {
+                if constexpr (std::is_null_pointer_v<D>) {
+                    // do nothing
                 } else {
-                    return release(wrap(std::visit(
-                        Visitor{
-                            [ctx](Cls& obj) {
-                                if constexpr (std::is_lvalue_reference_v<Return>) {
-                                    if constexpr (impl::python_like<Return>) {
-                                        return Py_NewRef(ptr((obj.*(ctx->getter))()));
-                                    } else {
-                                        return release(wrap((obj.*(ctx->getter))()));
-                                    }
-                                } else {
-                                    return release(as_object((obj.*(ctx->getter))()));
-                                }
-                            },
-                            [ctx](Cls* obj) {
-                                if constexpr (std::is_lvalue_reference_v<Return>) {
-                                    if constexpr (impl::python_like<Return>) {
-                                        return Py_NewRef(ptr((obj->*(ctx->getter))()));
-                                    } else {
-                                        return release(wrap((obj->*(ctx->getter))()));
-                                    }
-                                } else {
-                                    return release(as_object((obj->*(ctx->getter))()));
-                                }
-                            },
-                            [ctx](const Cls* obj) {
-                                if constexpr (std::is_lvalue_reference_v<Return>) {
-                                    if constexpr (impl::python_like<Return>) {
-                                        return Py_NewRef(ptr((obj->*(ctx->getter))()));
-                                    } else {
-                                        return release(wrap((obj->*(ctx->getter))()));
-                                    }
-                                } else {
-                                    return release(as_object((obj->*(ctx->getter))()));
-                                }
-                            }
-                        },
-                        reinterpret_cast<CRTP*>(self)->m_cpp
-                    )));
-                }
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        };
-        static auto set = [](PyObject* self, PyObject* new_val, void* closure) -> int {
-            if (new_val == nullptr) {
-                std::string msg = "variable '" + Name + "' of type '" +
-                    impl::demangle(typeid(Wrapper).name()) +
-                    "' cannot be deleted.";
-                PyErr_SetString(PyExc_TypeError, msg.c_str());
-                return -1;
-            }
-            try {
-                Closure* ctx = reinterpret_cast<Closure*>(closure);
-                if constexpr (std::same_as<CRTP, Cls>) {
-                    (reinterpret_cast<CRTP*>(self)->*(ctx->setter))(static_cast<Value>(
-                        reinterpret_borrow<Object>(new_val)
+                    closure = const_cast<void*>(reinterpret_cast<const void*>(
+                        func_ptr(deleter)
                     ));
-                } else {
-                    std::visit(
-                        Visitor{
-                            [ctx, new_val](Cls& obj) {
-                                obj.*(ctx->setter)(static_cast<Value>(
-                                    reinterpret_borrow<Object>(new_val)
-                                ));
-                            },
-                            [ctx, new_val](Cls* obj) {
-                                obj->*(ctx->setter)(static_cast<Value>(
-                                    reinterpret_borrow<Object>(new_val)
-                                ));
-                            },
-                            [new_val](const Cls* obj) {
-                                throw TypeError(
-                                    "variable '" + Name + "' of type '" +
-                                    impl::demangle(typeid(Wrapper).name()) +
-                                    "' is immutable."
-                                );
-                            }
-                        },
-                        reinterpret_cast<CRTP*>(self)->m_cpp
-                    );
+                    py_setter = reinterpret_cast<::setter>(&python_setter<Name, D>);
                 }
-                return 0;
-            } catch (...) {
-                Exception::to_python();
-                return -1;
+            } else {
+                if constexpr (std::is_null_pointer_v<Deleter>) {
+                    closure = const_cast<void*>(reinterpret_cast<const void*>(
+                        func_ptr(setter)
+                    ));
+                    py_setter = reinterpret_cast<::setter>(&python_setter<Name, S>);
+                } else {
+                    using Closure = SetDelClosure<S, D>;
+                    static Closure context = {func_ptr(setter), func_ptr(deleter)};
+                    closure = const_cast<void*>(reinterpret_cast<const void*>(&context));
+                    py_setter = reinterpret_cast<::setter>(&python_setter<Name, Closure>);
+                }
             }
-        };
+        } else {
+            if constexpr (std::is_null_pointer_v<Setter>) {
+                if constexpr (std::is_null_pointer_v<Deleter>) {
+                    closure = const_cast<void*>(reinterpret_cast<const void*>(
+                        func_ptr(getter)
+                    ));
+                    py_getter = reinterpret_cast<::getter>(&python_getter<Name, G>);
+                } else {
+                    using Closure = GetDelClosure<G, D>;
+                    static Closure context = {func_ptr(getter), func_ptr(deleter)};
+                    closure = const_cast<void*>(reinterpret_cast<const void*>(&context));
+                    py_getter = reinterpret_cast<::getter>(&python_getter<Name, Closure>);
+                    py_setter = reinterpret_cast<::setter>(&python_setter<Name, Closure>);
+                }
+            } else {
+                if constexpr (std::is_null_pointer_v<Deleter>) {
+                    using Closure = GetSetClosure<G, S>;
+                    static Closure context = {func_ptr(getter), func_ptr(setter)};
+                    closure = const_cast<void*>(reinterpret_cast<const void*>(&context));
+                    py_getter = reinterpret_cast<::getter>(&python_getter<Name, Closure>);
+                    py_setter = reinterpret_cast<::setter>(&python_setter<Name, Closure>);
+                } else {
+                    using Closure = GetSetDelClosure<G, S, D>;
+                    static Closure context = {
+                        func_ptr(getter),
+                        func_ptr(setter),
+                        func_ptr(deleter)
+                    };
+                    closure = const_cast<void*>(reinterpret_cast<const void*>(&context));
+                    py_getter = reinterpret_cast<::getter>(&python_getter<Name, Closure>);
+                    py_setter = reinterpret_cast<::setter>(&python_setter<Name, Closure>);
+                }
+            }
+        }
         tp_getset.push_back({
             Name,
-            +get,  // converts a stateless lambda to a function pointer
-            +set,
-            nullptr,  // doc
-            &closure
+            py_getter,
+            py_setter,
+            PyDoc_STR(doc_str.c_str()),
+            closure
         });
         skip = true;
     }
