@@ -34,6 +34,12 @@ template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_borrow(PyObject* obj);
 
 
+/// TODO: wrap()/unwrap() should be less obfuscated, and should accound for the fact
+/// the __origin__ member has been removed.  It needs to differentiate between inline
+/// Python types and external C++ types, and should be able to handle both mutable and
+/// immutable references.
+
+
 /* Wrap a non-owning, mutable reference to a C++ object into a `py::Object` proxy that
 exposes it to Python.  Note that this only works if a corresponding `py::Object`
 subclass exists, which was declared using the `__python__` CRTP helper, and whose C++

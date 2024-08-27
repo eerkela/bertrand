@@ -1102,15 +1102,13 @@ struct Type<Module<"bertrand.python">> :
     Interface<Type<Module<"bertrand.python">>>,
     impl::TypeTag
 {
-    struct __python__ : def<__python__, Module<"bertrand.python">> {
-
+    struct __python__ : def<__python__, Module<"bertrand.python">>, PyModuleObject {
         struct Context {
             std::string demangled_name;
             std::function<void(PyObject*)> exception_callback;
             Type<BertrandMeta>::__python__* template_interface;
         };
 
-        PyObject_HEAD
         std::unordered_map<std::type_index, Context> cpp_types;
         std::unordered_map<PyTypeObject*, Context> py_types;
 
