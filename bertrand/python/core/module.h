@@ -25,6 +25,13 @@
 // be kind of nice.
 
 
+
+/// TODO: Module<"name">::def::Bindings should work the same way as for any other type,
+/// with the addition of a `function()` method that aliases to `static_method()` and
+/// `submodule()` which allows for nested namespaces.  Otherwise, it should work as
+/// similarly as possible to all other types.
+
+
 namespace py {
 
 

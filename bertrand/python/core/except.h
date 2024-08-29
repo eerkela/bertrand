@@ -582,7 +582,7 @@ struct __init__<Exc> : Returns<Exc> {
 inline void Interface<Exception>::to_python() {
     try {
         throw;
-    } catch (const Exception& err) {
+    } catch (Exception& err) {
         PyThreadState_Get()->current_exception = reinterpret_cast<PyObject*>(
             release(err)
         );
@@ -1470,6 +1470,86 @@ struct __explicit_init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reaso
 //////////////////////
 ////    OBJECT    ////
 //////////////////////
+
+
+template <typename T>
+    requires (
+        __as_object__<T>::enable &&
+        impl::has_cpp<typename __as_object__<T>::type> &&
+        std::same_as<T, impl::cpp_type<typename __as_object__<T>::type>>
+    )
+[[nodiscard]] auto wrap(T& obj) -> __as_object__<T>::type {
+    using Wrapper = __as_object__<T>::type;
+    using Variant = decltype(ptr(std::declval<Wrapper>())->m_cpp);
+    Type<Wrapper> type;
+    PyTypeObject* type_ptr = ptr(type);
+    PyObject* self = type_ptr->tp_alloc(type_ptr, 0);
+    if (self == nullptr) {
+        Exception::from_python();
+    }
+    new (&reinterpret_cast<typename Wrapper::__python__*>(self)->m_cpp) Variant(&obj);
+    return reinterpret_steal<Wrapper>(self);
+}
+
+
+template <typename T>
+    requires (
+        __as_object__<T>::enable &&
+        impl::has_cpp<typename __as_object__<T>::type> &&
+        std::same_as<T, impl::cpp_type<typename __as_object__<T>::type>>
+    )
+[[nodiscard]] auto wrap(const T& obj) -> __as_object__<T>::type {
+    using Wrapper = __as_object__<T>::type;
+    using Variant = decltype(ptr(std::declval<Wrapper>())->m_cpp);
+    Type<Wrapper> type;
+    PyTypeObject* type_ptr = ptr(type);
+    PyObject* self = type_ptr->tp_alloc(type_ptr, 0);
+    if (self == nullptr) {
+        Exception::from_python();
+    }
+    new (&reinterpret_cast<typename Wrapper::__python__*>(self)->m_cpp) Variant(&obj);
+    return reinterpret_steal<Wrapper>(self);
+}
+
+
+template <typename T>
+[[nodiscard]] auto& unwrap(T& obj) {
+    if constexpr (impl::has_cpp<T>) {
+        using CppType = impl::cpp_type<T>;
+        return std::visit(
+            Object::Visitor{
+                [](CppType& cpp) -> CppType& { return cpp; },
+                [](CppType* cpp) -> CppType& { return *cpp; },
+                [&obj](const CppType* cpp) -> CppType& {
+                    throw TypeError(
+                        "requested a mutable reference to const object: " +
+                        repr(obj)
+                    );
+                }
+            },
+            ptr(obj)->m_cpp
+        );
+    } else {
+        return obj;
+    }
+}
+
+
+template <typename T>
+[[nodiscard]] const auto& unwrap(const T& obj) {
+    if constexpr (impl::has_cpp<T>) {
+        using CppType = impl::cpp_type<T>;
+        return std::visit(
+            Object::Visitor{
+                [](const CppType& cpp) -> const CppType& { return cpp; },
+                [](const CppType* cpp) -> const CppType& { return *cpp; }
+            },
+            ptr(obj)->m_cpp
+        );
+    } else {
+        return obj;
+    }
+}
 
 
 template <typename T>

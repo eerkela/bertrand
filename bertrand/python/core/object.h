@@ -14,13 +14,11 @@ template <std::derived_from<Object> T>
 
 /* Cause a Python object to relinquish ownership over its backing pointer, and then
 return the raw pointer. */
-template <std::derived_from<Object> T>
-[[nodiscard]] T::__python__* release(T& obj);
-
-
-/* Cause a Python object to relinquish ownership over its backing pointer, and then
-return the raw pointer. */
-template <std::derived_from<Object> T> requires (!std::is_const_v<T>)
+template <typename T>
+    requires (
+        std::derived_from<std::remove_cvref_t<T>, Object> &&
+        !std::is_const_v<std::remove_reference_t<T>>
+    )
 [[nodiscard]] std::remove_cvref_t<T>::__python__* release(T&& obj);
 
 
@@ -32,12 +30,6 @@ template <std::derived_from<Object> T>
 /* Borrow a reference to a raw Python object. */
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_borrow(PyObject* obj);
-
-
-/// TODO: wrap()/unwrap() should be less obfuscated, and should accound for the fact
-/// the __origin__ member has been removed.  It needs to differentiate between inline
-/// Python types and external C++ types, and should be able to handle both mutable and
-/// immutable references.
 
 
 /* Wrap a non-owning, mutable reference to a C++ object into a `py::Object` proxy that
@@ -52,12 +44,10 @@ expose shared state to Python, for instance to model exported global variables. 
 template <typename T>
     requires (
         __as_object__<T>::enable &&
-        impl::originates_from_cpp<typename __as_object__<T>::type> &&
+        impl::has_cpp<typename __as_object__<T>::type> &&
         std::same_as<T, impl::cpp_type<typename __as_object__<T>::type>>
     )
-[[nodiscard]] auto wrap(T& obj) -> __as_object__<T>::type {
-    return T::__python__::_wrap(obj);
-}
+[[nodiscard]] auto wrap(T& obj) -> __as_object__<T>::type;
 
 
 /* Wrap a non-owning, immutable reference to a C++ object into a `py::Object` proxy
@@ -72,46 +62,30 @@ expose shared state to Python, for instance to model exported global variables. 
 template <typename T>
     requires (
         __as_object__<T>::enable &&
-        impl::originates_from_cpp<typename __as_object__<T>::type> &&
+        impl::has_cpp<typename __as_object__<T>::type> &&
         std::same_as<T, impl::cpp_type<typename __as_object__<T>::type>>
     )
-[[nodiscard]] auto wrap(const T& obj) -> __as_object__<T>::type {
-    return T::__python__::_wrap(obj);
-}
+[[nodiscard]] auto wrap(const T& obj) -> __as_object__<T>::type;
 
 
-/* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper.
-Note that this only works if the wrapper was declared using the `__python__` CRTP
-helper.  If the wrapper does not own the backing object, this method will follow the
-pointer to resolve the reference. */
-template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
-[[nodiscard]] auto& unwrap(T& obj) {
-    if constexpr (impl::cpp_like<T>) {
-        return obj;
-    } else {
-        return T::__python__::_unwrap(obj);
-    }
-}
+/* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper,
+if such an object exists.  Does nothing if called on a pure Python or naked C++
+object.  If the wrapper does not own the backing object, this method will follow the
+internal pointer to resolve the reference. */
+template <typename T>
+[[nodiscard]] auto& unwrap(T& obj);
 
 
-/* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper.
-Note that this only works if the wrapper was declared using the `__python__` CRTP
-helper.  If the wrapper does not own the backing object, this method will follow the
-pointer to resolve the reference. */
-template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
-[[nodiscard]] const auto& unwrap(const T& obj) {
-    if constexpr (impl::cpp_like<T>) {
-        return obj;
-    } else {
-        return T::__python__::_unwrap(obj);
-    }
-}
+/* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper,
+if such an object exists.  Does nothing if called on a pure Python or naked C++
+object.  If the wrapper does not own the backing object, this method will follow the
+internal pointer to resolve the reference. */
+template <typename T>
+[[nodiscard]] const auto& unwrap(const T& obj);
 
 
 template <>
 struct Interface<Object> {};
-template <>
-struct Interface<Type<Object>> {};
 
 
 /* An owning reference to a dynamically-typed Python object.  More specialized types
@@ -144,15 +118,21 @@ protected:
     struct stolen_t {};
 
     template <std::derived_from<Object> T>
-    friend T::__python__* ptr(const T&);
-    template <std::derived_from<Object> T>
-    friend T::__python__* release(T&);
-    template <std::derived_from<Object> T> requires (!std::is_const_v<T>)
-    friend std::remove_cvref_t<T>::__python__* release(T&&);
-    template <std::derived_from<Object> T>
     friend T reinterpret_borrow(PyObject*);
     template <std::derived_from<Object> T>
     friend T reinterpret_steal(PyObject*);
+    template <std::derived_from<Object> T>
+    friend T::__python__* ptr(const T&);
+    template <typename T>
+        requires (
+            std::derived_from<std::remove_cvref_t<T>, Object> &&
+            !std::is_const_v<std::remove_reference_t<T>>
+        )
+    friend std::remove_cvref_t<T>::__python__* release(T&&);
+    template <typename T>
+    friend auto& unwrap(T& obj);
+    template <typename T>
+    friend const auto& unwrap(const T& obj);
 
     template <typename T>
     struct implicit_ctor {
@@ -201,7 +181,7 @@ protected:
         );
     }
 
-    /* A CRTP base class that generates bindings for a new Python type which wraps an
+    /* A CRTP base class that generates bindings for a new Python type that wraps an
     external C++ type.
 
     This class stores a variant containing either a full instance of or a (possibly
@@ -211,7 +191,6 @@ protected:
     template <typename CRTP, typename Derived, typename CppType = void>
     struct def : PyObject {
     protected:
-        using Variant = std::variant<CppType, CppType*, const CppType*>;
 
         template <typename... Ts>
         using Visitor = Visitor<Ts...>;
@@ -222,7 +201,7 @@ protected:
     public:
         using __object__ = Derived;
         using __cpp__ = CppType;
-        Variant m_cpp;
+        std::variant<CppType, CppType*, const CppType*> m_cpp;
 
         template <typename... Args>
         def(Args&&... args) : m_cpp(std::forward<Args>(args)...) {}
@@ -285,81 +264,6 @@ protected:
         implementation in their return statement. */
         static int __clear__(CRTP* self) {
             return 0;
-        }
-
-    private:
-
-        template <typename T>
-            requires (
-                __as_object__<T>::enable &&
-                impl::originates_from_cpp<typename __as_object__<T>::type> &&
-                std::same_as<T, impl::cpp_type<typename __as_object__<T>::type>>
-            )
-        friend auto wrap(const T& obj) -> __as_object__<T>::type;
-        template <typename T>
-            requires (
-                __as_object__<T>::enable &&
-                impl::originates_from_cpp<typename __as_object__<T>::type> &&
-                std::same_as<T, impl::cpp_type<typename __as_object__<T>::type>>
-            )
-        friend auto wrap(T& obj) -> __as_object__<T>::type;
-        template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
-        friend auto& unwrap(T& obj);
-        template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
-        friend auto& unwrap(const T& obj);
-
-        /* Implements py::wrap() for immutable references. */
-        static Derived _wrap(const CppType& cpp);  // defined in except.h {
-        //     Type<Derived> type;
-        //     PyTypeObject* type_ptr = ptr(type);
-        //     PyObject* self = type_ptr->tp_alloc(type_ptr, 0);
-        //     if (self == nullptr) {
-        //         Exception::from_python();
-        //     }
-        //     new (&reinterpret_cast<CRTP*>(self)->m_cpp) Variant(&cpp);
-        //     return reinterpret_steal<Derived>(self);
-        // }
-
-        /* Implements py::wrap() for mutable references. */
-        static Derived _wrap(CppType& cpp);  // defined in except.h {
-        //     Type<Derived> type;
-        //     PyTypeObject* type_ptr = ptr(type);
-        //     PyObject* self = type_ptr->tp_alloc(type_ptr, 0);
-        //     if (self == nullptr) {
-        //         Exception::from_python();
-        //     }
-        //     new (&reinterpret_cast<CRTP*>(self)->m_cpp) Variant(&cpp);
-        //     return reinterpret_steal<Derived>(self);
-        // }
-
-        /* Implements py::unwrap() for immutable wrappers. */
-        static const CppType& _unwrap(const Derived& obj) {
-            return std::visit(Visitor{
-                [](const CppType& cpp) {
-                    return cpp;
-                },
-                [](const CppType* cpp) {
-                    return *cpp;
-                }
-            }, ptr(obj)->m_cpp);
-        }
-
-        /* Implements py::unwrap() for mutable wrappers. */
-        static CppType& _unwrap(Derived& obj) {
-            return std::visit(Visitor{
-                [](CppType& cpp) {
-                    return cpp;
-                },
-                [](CppType* cpp) {
-                    return *cpp;
-                },
-                [&obj](const CppType* cpp) {
-                    throw TypeError(
-                        "requested a mutable reference to const object: " +
-                        repr(obj)
-                    );
-                }
-            }, ptr(obj)->m_cpp);
         }
 
     };
@@ -654,14 +558,11 @@ public:
         if constexpr (impl::has_call_operator<call>) {
             return call{}(std::forward<Self>(self), std::forward<Args>(args)...);
 
-        } else if constexpr (
-            impl::originates_from_cpp<Self> &&
-            (impl::cpp_or_originates_from_cpp<std::decay_t<Args>> && ...)
-        ) {
+        } else if constexpr (impl::has_cpp<Self>) {
             static_assert(
                 std::is_invocable_r_v<Return, impl::cpp_type<Self>, Args...>,
                 "__call__<Self, Args...> is enabled for operands whose C++ "
-                "representations have no viable overload for `Self(Key, Args...)`"
+                "representations have no viable overload for `Self(Args...)`"
             );
             if constexpr (std::is_void_v<Return>) {
                 unwrap(self)(std::forward<Args>(args)...);
@@ -693,26 +594,8 @@ public:
 };
 
 
-template <std::derived_from<Object> T>
-[[nodiscard]] T::__python__* ptr(const T& obj) {
-    return static_cast<T::__python__*>(obj.m_ptr);
-}
-
-
-template <std::derived_from<Object> T>
-[[nodiscard]] T::__python__* release(T& obj) {
-    PyObject* temp = obj.m_ptr;
-    obj.m_ptr = nullptr;
-    return static_cast<T::__python__*>(temp);
-}
-
-
-template <std::derived_from<Object> T> requires (!std::is_const_v<T>)
-[[nodiscard]] std::remove_cvref_t<T>::__python__* release(T&& obj) {
-    PyObject* temp = obj.m_ptr;
-    obj.m_ptr = nullptr;
-    return static_cast<std::remove_cvref_t<T>::__python__*>(temp);
-}
+template <>
+struct Interface<Type<Object>> {};
 
 
 template <std::derived_from<Object> T>
@@ -724,6 +607,24 @@ template <std::derived_from<Object> T>
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_steal(PyObject* ptr) {
     return T(ptr, Object::stolen_t{});
+}
+
+
+template <std::derived_from<Object> T>
+[[nodiscard]] T::__python__* ptr(const T& obj) {
+    return static_cast<T::__python__*>(obj.m_ptr);
+}
+
+
+template <typename T>
+    requires (
+        std::derived_from<std::remove_cvref_t<T>, Object> &&
+        !std::is_const_v<std::remove_reference_t<T>>
+    )
+[[nodiscard]] std::remove_cvref_t<T>::__python__* release(T&& obj) {
+    PyObject* temp = obj.m_ptr;
+    obj.m_ptr = nullptr;
+    return static_cast<std::remove_cvref_t<T>::__python__*>(temp);
 }
 
 

@@ -20,14 +20,13 @@ namespace impl {
     initialization. */
     template <typename Wrapper, typename... Args>
         requires (
-            has_type<Wrapper> &&
-            is_type<Type<Wrapper>> &&
-            std::constructible_from<typename Type<Wrapper>::__python__, Args...>
+            has_python<Wrapper> &&
+            std::constructible_from<typename Wrapper::__python__, Args...>
         )
     static Wrapper construct(Args&&... args) {
-        using Self = Type<Wrapper>::__python__;
+        using Self = Wrapper::__python__;
         Type<Wrapper> type;
-        PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(ptr(type));
+        PyTypeObject* cls = ptr(type);
         Self* self = reinterpret_cast<Self*>(cls->tp_alloc(cls, 0));
         if (self == nullptr) {
             Exception::from_python();
@@ -43,57 +42,6 @@ namespace impl {
         }
         return reinterpret_steal<Wrapper>(self);
     }
-
-    /* Marks a py::Object subclass as a type object, and exposes several helpers to
-    make writing custom types as easy as possible.  Every specialization of `Type<>`
-    should inherit from this class and implement a public `__python__` struct that
-    inherits from its CRTP helpers. */
-    struct TypeTag : BertrandTag {
-    protected:
-
-        template <typename Begin, std::sentinel_for<Begin> End>
-        struct Iterator {
-            PyObject_HEAD
-            Begin begin;
-            End end;
-
-            static void __dealloc__(Iterator* self) {
-                PyObject_GC_UnTrack(self);
-                self->begin.~Begin();
-                self->end.~End();
-                PyTypeObject* type = Py_TYPE(self);
-                type->tp_free(self);
-                Py_DECREF(type);
-            }
-
-            static int __traverse__(Iterator* self, visitproc visit, void* arg) {
-                Py_VISIT(Py_TYPE(self));
-                return 0;
-            }
-
-            static PyObject* __next__(Iterator* self) {
-                try {
-                    if (self->begin == self->end) {
-                        return nullptr;
-                    }
-                    if constexpr (std::is_lvalue_reference_v<decltype(*(self->begin))>) {
-                        auto result = wrap(*(self->begin));  // non-owning obj
-                        ++(self->begin);
-                        return release(result);
-                    } else {
-                        auto result = as_object(*(self->begin));  // owning obj
-                        ++(self->begin);
-                        return release(result);
-                    }
-                } catch (...) {
-                    Exception::to_python();
-                    return nullptr;
-                }
-            }
-
-        };
-
-    };
 
 }
 
@@ -292,28 +240,22 @@ template <typename From, typename To> requires (
 )
 struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
     static auto operator()(const Type<From>& from) {
-        if (issubclass<
-            typename __as_object__<To>::type,
-            typename __as_object__<From>::type
-        >()) {
+        if (issubclass<typename __as_object__<To>::type>(from)) {
             return reinterpret_borrow<Type<To>>(ptr(from));
         } else {
             throw TypeError(
-                "cannot convert Python type from '" + repr(Type<From>()) +
-                 "' to '" + repr(Type<To>()) + "'"
+                "cannot convert Python type from '" + repr(from) + "' to '" +
+                repr(Type<To>()) + "'"
             );
         }
     }
     static auto operator()(Type<From>&& from) {
-        if (issubclass<
-            typename __as_object__<To>::type,
-            typename __as_object__<From>::type
-        >()) {
+        if (issubclass<typename __as_object__<To>::type>(from)) {
             return reinterpret_steal<Type<To>>(release(from));
         } else {
             throw TypeError(
-                "cannot convert Python type from '" + repr(Type<From>()) +
-                 "' to '" + repr(Type<To>()) + "'"
+                "cannot convert Python type from '" + repr(from) + "' to '" +
+                repr(Type<To>()) + "'"
             );
         }
     }
@@ -331,8 +273,6 @@ struct Type<BertrandMeta>;
 
 template <>
 struct Interface<BertrandMeta> {};
-template <>
-struct Interface<Type<BertrandMeta>> {};
 
 
 /* Bertrand's metaclass, which is used to expose C++ classes to Python and simplify the
@@ -1069,11 +1009,7 @@ Instances of this class cannot be created any other way.)doc";
                 std::string_view(name, static_cast<size_t>(size))
             );
             if (it != cls->class_setters.end()) {
-                return it->second.func(
-                    reinterpret_cast<PyObject*>(cls),
-                    value,
-                    it->second.closure
-                );
+                return it->second.func(cls, value, it->second.closure);
             }
             return PyObject_GenericSetAttr(
                 reinterpret_cast<PyObject*>(cls),
@@ -5225,6 +5161,10 @@ is deleted, the metaclass will reset the slot to its original value.)doc"
 };
 
 
+template <>
+struct Interface<Type<BertrandMeta>> {};
+
+
 /* The type object associated with Bertrand's metaclass.  This has to be separate
 specialization to prevent Bertrand's generic `Type<T>` implementation from attempting
 to make this an instance of itself, which would cause a circular dependency. */
@@ -5281,7 +5221,7 @@ struct __isinstance__<T, BertrandMeta> : Returns<bool> {
 template <typename T>
 struct __issubclass__<T, BertrandMeta> : Returns<bool> {
     static consteval bool operator()() {
-        return impl::originates_from_cpp<T>;
+        return impl::has_export<T>;
     }
     static bool operator()(const T& obj) {
         int result = PyObject_IsSubclass(
@@ -5327,11 +5267,11 @@ struct __getitem__<BertrandMeta, Type<T>...>                : Returns<BertrandMe
 };
 
 
-template <impl::originates_from_cpp T>
+template <impl::has_export T>
 struct __len__<Type<T>>                                     : Returns<size_t> {};
-template <impl::originates_from_cpp T>
+template <impl::has_export T>
 struct __iter__<Type<T>>                                    : Returns<BertrandMeta> {};
-template <impl::originates_from_cpp T, typename... U>
+template <impl::has_export T, typename... U>
 struct __getitem__<Type<T>, Type<U>...>                     : Returns<BertrandMeta> {
     static auto operator()(const Type<T>& cls, const Type<U>&... key) {
         if (ptr(cls)->templates == nullptr) {
@@ -5358,31 +5298,25 @@ struct __getitem__<Type<T>, Type<U>...>                     : Returns<BertrandMe
 
 /* Implicitly convert an instance of the metaclass to a specific `Type<T>`
 specialization by applying a dynamic `issubclass()` check. */
-template <impl::originates_from_cpp To>
+template <impl::has_export To>
 struct __cast__<BertrandMeta, Type<To>>                     : Returns<Type<To>> {
-    static auto operator()(const Type<From>& from) {
-        if (issubclass<
-            typename __as_object__<To>::type,
-            typename __as_object__<From>::type
-        >()) {
+    static auto operator()(const BertrandMeta& from) {
+        if (issubclass<typename __as_object__<To>::type>(from)) {
             return reinterpret_borrow<Type<To>>(ptr(from));
         } else {
             throw TypeError(
-                "cannot convert Python type from '" + repr(Type<From>()) +
-                 "' to '" + repr(Type<To>()) + "'"
+                "cannot convert Python type from '" + repr(from) + "' to '" +
+                repr(Type<To>()) + "'"
             );
         }
     }
-    static auto operator()(Type<From>&& from) {
-        if (issubclass<
-            typename __as_object__<To>::type,
-            typename __as_object__<From>::type
-        >()) {
+    static auto operator()(BertrandMeta&& from) {
+        if (issubclass<typename __as_object__<To>::type>(from)) {
             return reinterpret_steal<Type<To>>(release(from));
         } else {
             throw TypeError(
-                "cannot convert Python type from '" + repr(Type<From>()) +
-                 "' to '" + repr(Type<To>()) + "'"
+                "cannot convert Python type from '" + repr(from) + "' to '" +
+                repr(Type<To>()) + "'"
             );
         }
     }
@@ -6254,11 +6188,6 @@ inline PyObject* BertrandMeta::__python__::Slots::nb_matrix_multiply(PyObject* l
 ////////////////////////
 
 
-/// TODO: Bindings should include a static assertion that each type implements a
-/// __python__ type whose ::__object__ member is the same as the type itself.  Types
-/// cannot be registered unless this is the case.
-
-
 template <typename Cls, typename CRTP, typename Wrapper, StaticStr ModName>
 struct Object::Bindings {
 private:
@@ -6266,6 +6195,9 @@ private:
     inline static std::vector<PyMethodDef> tp_methods;
     inline static std::vector<PyGetSetDef> tp_getset;
     inline static std::vector<PyMemberDef> tp_members;
+
+    /// TODO: most, if not all, of the complicated stuff here can be moved into the
+    /// impl:: namespace and just called from here.
 
     struct Member {
         bool var = false;
@@ -6292,80 +6224,9 @@ private:
     bindings. */
     static void register_type(Module<ModName>& mod, PyTypeObject* type);
 
-    /// TODO: register_iterator is likely not needed.  It would be naturally covered
-    /// by a custom Iterator<Begin, End> type that uses its own export method.
-    /// Several types might thus be able to share the same iterators if they are
-    /// compatible.
-    /// -> Iterator types cannot participate in template instantiation?  The Begin and
-    /// End types will never have an equivalent Python type, so they can't be
-    /// translated into a template key.  All other types require their value type to
-    /// derive from py::Object, but iterators will require special treatment in order
-    /// to allow a generic transition from C++ to Python.
-
-    template <typename T>
-    void register_iterator(Type<Wrapper>& type) {
-        static PyType_Slot slots[] = {
-            {
-                Py_tp_iter,
-                reinterpret_cast<void*>(PyObject_SelfIter)
-            },
-            {
-                Py_tp_iternext,
-                reinterpret_cast<void*>(T::__next__)
-            },
-            {0, nullptr}
-        };
-        static PyType_Spec spec = {
-            .name = typeid(T).name(),
-            .basicsize = sizeof(T),
-            .itemsize = 0,
-            .flags =
-                Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE |
-                Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_IMMUTABLETYPE |
-                Py_TPFLAGS_DISALLOW_INSTANTIATION,
-            .slots = slots
-        };
-        PyObject* cls = PyType_FromModuleAndSpec(
-            ptr(module),
-            &spec,
-            nullptr
-        );
-        if (cls == nullptr) {
-            Exception::from_python();
-        }
-        int rc = PyObject_SetAttrString(ptr(type), typeid(T).name(), cls);
-        Py_DECREF(cls);
-        if (rc) {
-            Exception::from_python();
-        }
-    }
-
-    // auto result = Base::finalize(tp_flags);
-    // if constexpr (impl::iterable<CppType>) {
-    //     register_iterator<Iterator<
-    //         decltype(std::ranges::begin(std::declval<CppType>())),
-    //         decltype(std::ranges::end(std::declval<CppType>()))
-    //     >>(result);
-    // }
-    // if constexpr (impl::iterable<const CppType>) {
-    //     register_iterator<Iterator<
-    //         decltype(std::ranges::begin(std::declval<const CppType>())),
-    //         decltype(std::ranges::end(std::declval<const CppType>()))
-    //     >>(result);
-    // }
-    // if constexpr (impl::reverse_iterable<CppType>) {
-    //     register_iterator<Iterator<
-    //         decltype(std::ranges::rbegin(std::declval<CppType>())),
-    //         decltype(std::ranges::rend(std::declval<CppType>()))
-    //     >>(result);
-    // }
-    // if constexpr (impl::reverse_iterable<const CppType>) {
-    //     register_iterator<Iterator<
-    //         decltype(std::ranges::rbegin(std::declval<const CppType>())),
-    //         decltype(std::ranges::rend(std::declval<const CppType>()))
-    //     >>(result);
-    // }
-    // return result;
+    /// TODO: Dunder requirements might simply be specified in the function's template
+    /// signature, and then use automated checks to ensure that the signature is
+    /// observed.  That would probably eliminate the need for the Dunder struct.
 
     /* A collection of template constraints for particular overloads of the
     `method<"name">(&func)` helper that forces compatibility with Python's dunder
@@ -7531,98 +7392,63 @@ private:
             )
         struct Static<T> {
             using type = std::invoke_result_t<T>;
-            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
         };
 
         template <typename T>
-        struct NonMember {
+        struct Class {
             static constexpr bool value = false;
         };
 
         template <typename T>
             requires (
                 !std::is_member_function_pointer_v<T> &&
-                std::is_invocable_v<T, const Cls&> &&
-                !std::is_invocable_v<T, Cls&>
+                std::is_invocable_v<T, const Type<Wrapper>&>
             )
-        struct NonMember<T> {
-            using type = std::invoke_result_t<T, const Cls&>;
-            static constexpr bool value = __as_object__<type>::enable;
+        struct Class<T> {
+            using type = std::invoke_result_t<T, Type<Wrapper>&>;
+            static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
             static constexpr bool is_const = true;
         };
 
         template <typename T>
             requires (
                 !std::is_member_function_pointer_v<T> &&
-                !std::is_invocable_v<T, const Cls&> &&
-                std::is_invocable_v<T, Cls&>
+                !std::is_invocable_v<T, const Type<Wrapper>&> &&
+                std::is_invocable_v<T, Type<Wrapper>&>
             )
-        struct NonMember<T> {
-            using type = std::invoke_result_t<T, Cls&>;
-            static constexpr bool value = __as_object__<type>::enable;
+        struct Class<T> {
+            using type = std::invoke_result_t<T, Type<Wrapper>&>;
+            static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
             static constexpr bool is_const = false;
         };
 
         template <typename T>
-        struct Member {
+        struct Instance {
             static constexpr bool value = false;
         };
 
-        template <typename R>
-        struct Member<R(Cls::*)()> {
-            using type = R;
-            static constexpr bool value = __as_object__<type>::enable;
-            static constexpr bool is_const = false;
-            
-        };
-
-        template <typename R>
-        struct Member<R(Cls::*)() const> {
-            using type = R;
-            static constexpr bool value = __as_object__<type>::enable;
+        template <typename T>
+            requires (
+                !std::is_member_function_pointer_v<T> &&
+                std::is_invocable_v<T, const Wrapper&>
+            )
+        struct Instance<T> {
+            using type = std::invoke_result_t<T, const Wrapper&>;
+            static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
             static constexpr bool is_const = true;
         };
 
-        template <typename R>
-        struct Member<R(Cls::*)() volatile> {
-            using type = R;
-            static constexpr bool value = __as_object__<type>::enable;
+        template <typename T>
+            requires (
+                !std::is_member_function_pointer_v<T> &&
+                !std::is_invocable_v<T, const Wrapper&> &&
+                std::is_invocable_v<T, Wrapper&>
+            )
+        struct Instance<T> {
+            using type = std::invoke_result_t<T, Wrapper&>;
+            static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
             static constexpr bool is_const = false;
-        };
-
-        template <typename R>
-        struct Member<R(Cls::*)() const volatile> {
-            using type = R;
-            static constexpr bool value = __as_object__<type>::enable;
-            static constexpr bool is_const = true;
-        };
-
-        template <typename R>
-        struct Member<R(Cls::*)() noexcept> {
-            using type = R;
-            static constexpr bool value = __as_object__<type>::enable;
-            static constexpr bool is_const = false;
-        };
-
-        template <typename R>
-        struct Member<R(Cls::*)() const noexcept> {
-            using type = R;
-            static constexpr bool value = __as_object__<type>::enable;
-            static constexpr bool is_const = true;
-        };
-
-        template <typename R>
-        struct Member<R(Cls::*)() volatile noexcept> {
-            using type = R;
-            static constexpr bool value = __as_object__<type>::enable;
-            static constexpr bool is_const = false;
-        };
-
-        template <typename R>
-        struct Member<R(Cls::*)() const volatile noexcept> {
-            using type = R;
-            static constexpr bool value = __as_object__<type>::enable;
-            static constexpr bool is_const = true;
         };
 
     };
@@ -7638,152 +7464,247 @@ private:
         template <typename T>
         struct Static<void(*)(T)> {
             using type = T;
-            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
         };
 
         template <typename T> requires (impl::has_call_operator<T>)
         struct Static<T> {
             template <typename U>
-            struct call_operator {
+            struct call {
                 using type = void;
                 static constexpr bool value = false;
             };
+
             template <typename U>
-            struct call_operator<void(*)(U)> {
+            struct call<void(*)(U)> {
                 using type = U;
-                static constexpr bool value = __as_object__<type>::enable;
+                static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
             };
-            static constexpr bool value = call_operator<decltype(&T::operator())>::value;
-            using type = typename call_operator<decltype(&T::operator())>::type;
+            template <typename C, typename U>
+            struct call<void(C::*)(U)> : call<void(*)(U)> {};
+            template <typename C, typename U>
+            struct call<void(C::*)(U) const> : call<void(*)(U)> {};
+            template <typename C, typename U>
+            struct call<void(C::*)(U) volatile> : call<void(*)(U)> {};
+            template <typename C, typename U>
+            struct call<void(C::*)(U) const volatile> : call<void(*)(U)> {};
+            template <typename C, typename U>
+            struct call<void(C::*)(U) noexcept> : call<void(*)(U)> {};
+            template <typename C, typename U>
+            struct call<void(C::*)(U) const noexcept> : call<void(*)(U)> {};
+            template <typename C, typename U>
+            struct call<void(C::*)(U) volatile noexcept> : call<void(*)(U)> {};
+            template <typename C, typename U>
+            struct call<void(C::*)(U) const volatile noexcept> : call<void(*)(U)> {};
+
+            using type = typename call<decltype(&T::operator())>::type;
+            static constexpr bool value = call<decltype(&T::operator())>::value;
         };
 
         template <typename T>
-        struct NonMember {
+        struct Class {
             static constexpr bool value = false;
         };
 
         template <typename T>
-        struct NonMember<void(*)(Cls&, T)> {
+        struct Class<void(*)(Type<Wrapper>&, T)> {
             using type = T;
-            static constexpr bool value = __as_object__<type>::enable;
+            static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
+            static constexpr bool is_const = false;
+        };
+
+        template <typename T>
+        struct Class<void(*)(const Type<Wrapper>&, T)> {
+            using type = T;
+            static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
+            static constexpr bool is_const = true;
         };
 
         template <typename T> requires (impl::has_call_operator<T>)
-        struct NonMember<T> {
+        struct Class<T> {
             template <typename U>
-            struct call_operator {
+            struct call {
                 using type = void;
                 static constexpr bool value = false;
-            };
-            template <typename U, typename V> requires (std::convertible_to<T, U>)
-            struct call_operator<void(*)(U, V)> {  // static call operator
-                using type = V;
-                static constexpr bool value = __as_object__<type>::enable;
-            };
-            template <typename V>
-            struct call_operator<void(T::*)(V)> {  // member call operator
-                using type = V;
-                static constexpr bool value = __as_object__<type>::enable;
-            };
-            template <typename V>
-            struct call_operator<void(T::*)(V) const> {
-                using type = V;
-                static constexpr bool value = __as_object__<type>::enable;
-            };
-            template <typename V>
-            struct call_operator<void(T::*)(V) volatile> {
-                using type = V;
-                static constexpr bool value = __as_object__<type>::enable;
-            };
-            template <typename V>
-            struct call_operator<void(T::*)(V) const volatile> {
-                using type = V;
-                static constexpr bool value = __as_object__<type>::enable;
-            };
-            template <typename V>
-            struct call_operator<void(T::*)(V) noexcept> {
-                using type = V;
-                static constexpr bool value = __as_object__<type>::enable;
-            };
-            template <typename V>
-            struct call_operator<void(T::*)(V) const noexcept> {
-                using type = V;
-                static constexpr bool value = __as_object__<type>::enable;
-            };
-            template <typename V>
-            struct call_operator<void(T::*)(V) volatile noexcept> {
-                using type = V;
-                static constexpr bool value = __as_object__<type>::enable;
-            };
-            template <typename V>
-            struct call_operator<void(T::*)(V) const volatile noexcept> {
-                using type = V;
-                static constexpr bool value = __as_object__<type>::enable;
+                static constexpr bool is_const = false;
             };
 
-            static constexpr bool value = call_operator<decltype(&T::operator())>::value;
-            using type = typename call_operator<decltype(&T::operator())>::type;
+            template <typename C, typename U>
+            struct call<void(C::*)(Type<Wrapper>&, U)> {
+                using type = U;
+                static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
+                static constexpr bool is_const = false;
+            };
+            template <typename C, typename U>
+            struct call<void(C::*)(Type<Wrapper>&, U) const> :
+                call<void(C::*)(Type<Wrapper>&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(Type<Wrapper>&, U) volatile> :
+                call<void(C::*)(Type<Wrapper>&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(Type<Wrapper>&, U) const volatile> :
+                call<void(C::*)(Type<Wrapper>&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(Type<Wrapper>&, U) noexcept> :
+                call<void(C::*)(Type<Wrapper>&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(Type<Wrapper>&, U) const noexcept> :
+                call<void(C::*)(Type<Wrapper>&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(Type<Wrapper>&, U) volatile noexcept> :
+                call<void(C::*)(Type<Wrapper>&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(Type<Wrapper>&, U) const volatile noexcept> :
+                call<void(C::*)(Type<Wrapper>&, U)>
+            {};
+
+            template <typename C, typename U>
+            struct call<void(C::*)(const Type<Wrapper>&, U)> {
+                using type = U;
+                static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
+                static constexpr bool is_const = true;
+            };
+            template <typename C, typename U>
+            struct call<void(C::*)(const Type<Wrapper>&, U) const> :
+                call<void(C::*)(const Type<Wrapper>&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(const Type<Wrapper>&, U) volatile> :
+                call<void(C::*)(const Type<Wrapper>&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(const Type<Wrapper>&, U) const volatile> :
+                call<void(C::*)(const Type<Wrapper>&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(const Type<Wrapper>&, U) noexcept> :
+                call<void(C::*)(const Type<Wrapper>&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(const Type<Wrapper>&, U) const noexcept> :
+                call<void(C::*)(const Type<Wrapper>&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(const Type<Wrapper>&, U) volatile noexcept> :
+                call<void(C::*)(const Type<Wrapper>&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(const Type<Wrapper>&, U) const volatile noexcept> :
+                call<void(C::*)(const Type<Wrapper>&, U)>
+            {};
+
+            using type = typename call<decltype(&T::operator())>::type;
+            static constexpr bool value = call<decltype(&T::operator())>::value;
+            static constexpr bool is_const = call<decltype(&T::operator())>::is_const;
         };
 
         template <typename T>
-        struct Member {
+        struct Instance {
             static constexpr bool value = false;
         };
 
-        template <typename V>
-        struct Member<void(Cls::*)(V)> {
-            using type = V;
-            static constexpr bool value = __as_object__<type>::enable;
+        template <typename T>
+        struct Instance<void(*)(Wrapper&, T)> {
+            using type = T;
+            static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
             static constexpr bool is_const = false;
         };
 
-        template <typename V>
-        struct Member<void(Cls::*)(V) const> {
-            using type = V;
-            static constexpr bool value = __as_object__<type>::enable;
+        template <typename T>
+        struct Instance<void(*)(const Wrapper&, T)> {
+            using type = T;
+            static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
             static constexpr bool is_const = true;
         };
 
-        template <typename V>
-        struct Member<void(Cls::*)(V) volatile> {
-            using type = V;
-            static constexpr bool value = __as_object__<type>::enable;
-            static constexpr bool is_const = false;
-        };
+        template <typename T> requires (impl::has_call_operator<T>)
+        struct Instance<T> {
+            template <typename U>
+            struct call {
+                using type = void;
+                static constexpr bool value = false;
+                static constexpr bool is_const = false;
+            };
 
-        template <typename V>
-        struct Member<void(Cls::*)(V) const volatile> {
-            using type = V;
-            static constexpr bool value = __as_object__<type>::enable;
-            static constexpr bool is_const = true;
-        };
+            template <typename C, typename U>
+            struct call<void(C::*)(Wrapper&, U)> {
+                using type = U;
+                static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
+                static constexpr bool is_const = false;
+            };
+            template <typename C, typename U>
+            struct call<void(C::*)(Wrapper&, U) const> :
+                call<void(C::*)(Wrapper&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(Wrapper&, U) volatile> :
+                call<void(C::*)(Wrapper&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(Wrapper&, U) const volatile> :
+                call<void(C::*)(Wrapper&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(Wrapper&, U) noexcept> :
+                call<void(C::*)(Wrapper&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(Wrapper&, U) const noexcept> :
+                call<void(C::*)(Wrapper&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(Wrapper&, U) volatile noexcept> :
+                call<void(C::*)(Wrapper&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(Wrapper&, U) const volatile noexcept> :
+                call<void(C::*)(Wrapper&, U)>
+            {};
 
-        template <typename V>
-        struct Member<void(Cls::*)(V) noexcept> {
-            using type = V;
-            static constexpr bool value = __as_object__<type>::enable;
-            static constexpr bool is_const = false;
-        };
+            template <typename C, typename U>
+            struct call<void(C::*)(const Wrapper&, U)> {
+                using type = U;
+                static constexpr bool value = std::derived_from<std::remove_cvref_t<type>, Object>;
+                static constexpr bool is_const = true;
+            };
+            template <typename C, typename U>
+            struct call<void(C::*)(const Wrapper&, U) const> :
+                call<void(C::*)(const Wrapper&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(const Wrapper&, U) volatile> :
+                call<void(C::*)(const Wrapper&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(const Wrapper&, U) const volatile> :
+                call<void(C::*)(const Wrapper&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(const Wrapper&, U) noexcept> :
+                call<void(C::*)(const Wrapper&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(const Wrapper&, U) const noexcept> :
+                call<void(C::*)(const Wrapper&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(const Wrapper&, U) volatile noexcept> :
+                call<void(C::*)(const Wrapper&, U)>
+            {};
+            template <typename C, typename U>
+            struct call<void(C::*)(const Wrapper&, U) const volatile noexcept> :
+                call<void(C::*)(const Wrapper&, U)>
+            {};
 
-        template <typename V>
-        struct Member<void(Cls::*)(V) const noexcept> {
-            using type = V;
-            static constexpr bool value = __as_object__<type>::enable;
-            static constexpr bool is_const = true;
-        };
-
-        template <typename V>
-        struct Member<void(Cls::*)(V) volatile noexcept> {
-            using type = V;
-            static constexpr bool value = __as_object__<type>::enable;
-            static constexpr bool is_const = false;
-        };
-
-        template <typename V>
-        struct Member<void(Cls::*)(V) const volatile noexcept> {
-            using type = V;
-            static constexpr bool value = __as_object__<type>::enable;
-            static constexpr bool is_const = true;
+            using type = typename call<decltype(&T::operator())>::type;
+            static constexpr bool value = call<decltype(&T::operator())>::value;
+            static constexpr bool is_const = call<decltype(&T::operator())>::is_const;
         };
 
     };
@@ -7796,23 +7717,26 @@ private:
             static constexpr bool value = false;
         };
 
-        template <>
-        struct Static<void(*)()> {
+        template <typename T>
+            requires (
+                !std::is_member_function_pointer_v<T> &&
+                std::is_invocable_r_v<void, T>
+            )
+        struct Static<T> {
             static constexpr bool value = true;
         };
 
         template <typename T>
-        struct NonMember {
+        struct Class {
             static constexpr bool value = false;
         };
 
         template <typename T>
             requires (
                 !std::is_member_function_pointer_v<T> &&
-                std::is_invocable_r_v<void, T, const Cls&> &&
-                !std::is_invocable_r_v<void, T, Cls&>
+                std::is_invocable_r_v<void, T, const Type<Wrapper>&>
             )
-        struct NonMember<T> {
+        struct Class<T> {
             static constexpr bool value = true;
             static constexpr bool is_const = true;
         };
@@ -7820,65 +7744,38 @@ private:
         template <typename T>
             requires (
                 !std::is_member_function_pointer_v<T> &&
-                !std::is_invocable_r_v<void, T, const Cls&> &&
-                std::is_invocable_r_v<void, T, Cls&>
+                !std::is_invocable_r_v<void, T, const Type<Wrapper>&> &&
+                std::is_invocable_r_v<void, T, Type<Wrapper>&>
             )
-        struct NonMember<T> {
+        struct Class<T> {
             static constexpr bool value = true;
             static constexpr bool is_const = false;
         };
 
         template <typename T>
-        struct Member {
+        struct Instance {
             static constexpr bool value = false;
         };
 
-        template <>
-        struct Member<void(Cls::*)()> {
-            static constexpr bool value = true;
-            static constexpr bool is_const = false;
-        };
-
-        template <>
-        struct Member<void(Cls::*)() const> {
+        template <typename T>
+            requires (
+                !std::is_member_function_pointer_v<T> &&
+                std::is_invocable_r_v<void, T, const Wrapper&>
+            )
+        struct Instance<T> {
             static constexpr bool value = true;
             static constexpr bool is_const = true;
         };
 
-        template <>
-        struct Member<void(Cls::*)() volatile> {
+        template <typename T>
+            requires (
+                !std::is_member_function_pointer_v<T> &&
+                !std::is_invocable_r_v<void, T, const Wrapper&> &&
+                std::is_invocable_r_v<void, T, Wrapper&>
+            )
+        struct Instance<T> {
             static constexpr bool value = true;
             static constexpr bool is_const = false;
-        };
-
-        template <>
-        struct Member<void(Cls::*)() const volatile> {
-            static constexpr bool value = true;
-            static constexpr bool is_const = true;
-        };
-
-        template <>
-        struct Member<void(Cls::*)() noexcept> {
-            static constexpr bool value = true;
-            static constexpr bool is_const = false;
-        };
-
-        template <>
-        struct Member<void(Cls::*)() const noexcept> {
-            static constexpr bool value = true;
-            static constexpr bool is_const = true;
-        };
-
-        template <>
-        struct Member<void(Cls::*)() volatile noexcept> {
-            static constexpr bool value = true;
-            static constexpr bool is_const = false;
-        };
-
-        template <>
-        struct Member<void(Cls::*)() const volatile noexcept> {
-            static constexpr bool value = true;
-            static constexpr bool is_const = true;
         };
 
     };
@@ -7888,23 +7785,23 @@ private:
 
         template <typename Getter>
         struct Get {
-            Getter* getter;
+            Getter getter;
         };
 
         template <typename Setter>
         struct Set {
-            Setter* setter;  // TODO: PyObject* setter?
+            Setter setter;
         };
 
         template <typename Deleter>
         struct Del {
-            Deleter* deleter;
+            Deleter deleter;
         };
 
         template <typename Getter, typename Setter>
         struct GetSet {
-            Getter* getter;
-            Setter* setter;  // TODO: PyObject* setter?
+            Getter getter;
+            Setter setter;
         };
 
         template <typename Getter, typename Deleter>
@@ -7915,15 +7812,15 @@ private:
 
         template <typename Setter, typename Deleter>
         struct SetDel {
-            Setter* setter;  // TODO: PyObject* setter?
-            Deleter* deleter;
+            Setter setter;
+            Deleter deleter;
         };
 
         template <typename Getter, typename Setter, typename Deleter>
         struct GetSetDel {
-            Getter* getter;
-            Setter* setter;  // TODO: PyObject* setter?
-            Deleter* deleter;
+            Getter getter;
+            Setter setter;
+            Deleter deleter;
         };
 
         template <typename T>
@@ -7999,24 +7896,26 @@ private:
     template <StaticStr Name, typename Closure>
     static PyObject* static_getter(Meta* cls, void* closure) {
         static_assert(
-            Closures::template Traits<Closure>::value &&
-            Closures::template Traits<Closure>::has_getter,
+            Closure::template Triats<Closure>::value,
+            "Closure type not recognized"
+        );
+        static_assert(
+            Closure::template Traits<Closure>::has_getter,
             "Closure must have a getter."
         );
 
         auto get = [](void* closure) -> PyObject* {
+            static_assert(
+                Get::template Static<Closure>::value,
+                "Getter must be callable without arguments."
+            );
             using G = Closures::template Traits<Closure>::Getter;
-            G* fget = reinterpret_cast<Closure*>(closure)->getter;
-
             using Return  = Get::template Static<G>::type;
+            G* fget = reinterpret_cast<Closure*>(closure)->getter;
             if constexpr (std::is_lvalue_reference_v<Return>) {
-                if constexpr (impl::python_like<Return>) {
-                    return Py_NewRef(ptr((*fget)()));
-                } else {
-                    return release(wrap((*fget)()));
-                }
+                return Py_NewRef(ptr(fget()));
             } else {
-                return release(as_object((*fget)()));
+                return release(fget());
             }
         };
 
@@ -8033,11 +7932,12 @@ private:
     template <StaticStr Name, typename Closure>
     static int static_setter(Meta* cls, PyObject* value, void* closure) {
         static_assert(
-            Closures::template Traits<Closure>::value &&
-            (
-                Closures::template Traits<Closure>::has_setter ||
-                Closures::template Traits<Closure>::has_deleter
-            ),
+            Closure::template Traits<Closure>::value,
+            "Closure type not recognized"
+        );
+        static_assert(
+            Closure::template Traits<Closure>::has_setter ||
+            Closure::template Traits<Closure>::has_deleter,
             "Closure must have a setter or deleter."
         );
 
@@ -8049,9 +7949,13 @@ private:
                     "' has no setter"
                 );
             } else {
-                using S = Closures::template Traits<Closure>::Setter;
-                S* fset = reinterpret_cast<Closure*>(closure)->setter;
-                (*fset)(reinterpret_borrow<Object>(value));
+                static_assert(
+                    Set::template Static<Closure>::value,
+                    "Setter must accept a single argument."
+                );
+                reinterpret_cast<Closure*>(closure)->setter(
+                    reinterpret_borrow<Object>(value)
+                );
             }
         };
 
@@ -8063,9 +7967,11 @@ private:
                     "' has no deleter"
                 );
             } else {
-                using D = Closures::template Traits<Closure>::Deleter;
-                D* fdel = reinterpret_cast<Closure*>(closure)->deleter;
-                (*fdel)();
+                static_assert(
+                    Del::template Static<Closure>::value,
+                    "Deleter must be callable without arguments."
+                );
+                reinterpret_cast<Closure*>(closure)->deleter();
             }
         };
 
@@ -8082,77 +7988,136 @@ private:
         }
     }
 
-    /* A function pointer that can be placed in a `PyGetSetDef.get` slot.  The closure
-    will be interpreted according to the templated Closure type. */
+    /* A function pointer that can be added to the metaclass's `class_getters` field.
+    The closure will be interpreted according to the templated Closure type. */
     template <StaticStr Name, typename Closure>
-    static PyObject* member_getter(CRTP* self, void* closure) {
+    static PyObject* class_getter(Meta* cls, void* closure) {
         static_assert(
-            Closures::template Traits<Closure>::value &&
-            Closures::template Traits<Closure>::has_getter,
+            Closure::template Traits<Closure>::value,
+            "Closure type not recognized"
+        );
+        static_assert(
+            Closure::template Traits<Closure>::has_getter,
             "Closure must have a getter."
         );
 
-        auto get = [](void* closure, auto& obj) -> PyObject* {
+        auto get = [](void* closure, Type<Wrapper>&& cls) -> PyObject* {
+            static_assert(
+                Get::template Class<Closure>::value,
+                "Getter must accept a reference to the enclosing Object wrapper's "
+                "Type<> as a first argument."
+            );
             using G = Closures::template Traits<Closure>::Getter;
-            if constexpr ((
-                Get::template NonMember<G>::value &&
-                !Get::template NonMember<G>::is_const
-            ) || (
-                Get::template Member<G>::value &&
-                !Get::template Member<G>::is_const
-            )) {
-                throw TypeError(
-                    "variable '" + Name + "' of type '" +
-                    impl::demangle(typeid(Wrapper).name()) +
-                    "' is immutable."
-                );
+            using Return = Get::template Class<G>::type;
+            G& fget = reinterpret_cast<Closure*>(closure)->getter;
+            if constexpr (std::is_lvalue_reference_v<Return>) {
+                return Py_NewRef(ptr(fget(cls)));
             } else {
-                G* fget = reinterpret_cast<Closure*>(closure)->getter;
-                if constexpr (Get::template Member<G>::value) {
-                    using Return = Get::template Member<G>::type;
-                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                        if constexpr (impl::python_like<Return>) {
-                            return Py_NewRef(ptr(obj.*(*fget)()));
-                        } else {
-                            return release(wrap(obj.*(*fget)()));
-                        }
-                    } else {
-                        return release(as_object(obj.*(*fget)()));
-                    }
-                } else {
-                    using Return = Get::template NonMember<G>::type;
-                    if constexpr (std::is_lvalue_reference_v<Return>) {
-                        if constexpr (impl::python_like<Return>) {
-                            return Py_NewRef(ptr((*fget)(obj)));
-                        } else {
-                            return release(wrap((*fget)(obj)));
-                        }
-                    } else {
-                        return release(as_object((*fget)(obj)));
-                    }
-                }
+                return release(fget(cls));
             }
         };
 
         try {
-            if constexpr (std::same_as<Cls, CRTP>) {
-                return get(closure, *self);
+            return get(closure, reinterpret_borrow<Type<Wrapper>>(cls));
+        } catch (...) {
+            Exception::to_python();
+            return nullptr;
+        }
+    }
+
+    /* A function pointer that can be added to the metaclass' `class_setters` field.
+    The closure will be interpreted according to the templated Closure type. */
+    template <StaticStr Name, typename Closure>
+    static int class_setter(Meta* cls, void* closure, PyObject* value) {
+        static_assert(
+            Closure::template Traits<Closure>::value,
+            "Closure type not recognized"
+        );
+        static_assert(
+            Closure::template Traits<Closure>::has_setter ||
+            Closure::template Traits<Closure>::has_deleter,
+            "Closure must have a setter or deleter."
+        );
+
+        auto set = [](void* closure, Type<Wrapper>&& cls, PyObject* value) -> void {
+            if constexpr (!Closures::template Traits<Closure>::has_setter) {
+                throw TypeError(
+                    "property '" + Name + "' of type '" +
+                    impl::demangle(typeid(Wrapper).name()) + "' has no setter"
+                );
             } else {
-                return std::visit(
-                    Visitor{
-                        [closure, get](Cls& obj) {
-                            return get(closure, obj);
-                        },
-                        [closure, get](const Cls* obj) {
-                            return get(closure, *obj);
-                        },
-                        [closure, get](Cls* obj) {
-                            return get(closure, *obj);
-                        }
-                    },
-                    self->m_cpp
+                static_assert(
+                    Set::template Class<Closure>::value,
+                    "Setter must accept a reference to the enclosing Object "
+                    "wrapper's Type<> as a first argument."
+                );
+                reinterpret_cast<Closure*>(closure)->setter(
+                    cls,
+                    reinterpret_borrow<Object>(value)
                 );
             }
+        };
+
+        auto del = [](void* closure, Type<Wrapper>&& cls) -> void {
+            if constexpr (!Closures::template Traits<Closure>::has_deleter) {
+                throw TypeError(
+                    "property '" + Name + "' of type '" +
+                    impl::demangle(typeid(Wrapper).name()) + "' has no deleter"
+                );
+            } else {
+                static_assert(
+                    Del::template Class<Closure>::value,
+                    "Deleter must accept a reference to the enclosing Object "
+                    "wrapper's Type<> as a first argument."
+                );
+                reinterpret_cast<Closure*>(closure)->deleter(cls);
+            }
+        };
+
+        try {
+            if (value) {
+                set(closure, reinterpret_borrow<Type<Wrapper>>(cls), value);
+            } else {
+                del(closure, reinterpret_borrow<Type<Wrapper>>(cls));
+            }
+            return 0;
+        } catch (...) {
+            Exception::to_python();
+            return -1;
+        }
+    }
+
+    /* A function pointer that can be placed in a `PyGetSetDef.get` slot.  The closure
+    will be interpreted according to the templated closure type. */
+    template <StaticStr Name, typename Closure>
+    static PyObject* instance_getter(CRTP* self, void* closure) {
+        static_assert(
+            Closure::template Traits<Closure>::value,
+            "Closure type not recognized"
+        );
+        static_assert(
+            Closure::template Traits<Closure>::has_getter,
+            "Closure must have a getter."
+        );
+
+        auto get = [](void* closure, Wrapper&& self) -> PyObject* {
+            static_assert(
+                Get::template Instance<Closure>::value,
+                "Getter must accept a reference to the enclosing Object wrapper as a "
+                "first argument."
+            );
+            using G = Closures::template Traits<Closure>::Getter;
+            using Return = Get::template Instance<G>::type;
+            G& fget = reinterpret_cast<Closure*>(closure)->getter;
+            if constexpr (std::is_lvalue_reference_v<Return>) {
+                return Py_NewRef(ptr(fget(self)));
+            } else {
+                return release(fget(self));
+            }
+        };
+
+        try {
+            return get(closure, reinterpret_borrow<Wrapper>(self));
         } catch (...) {
             Exception::to_python();
             return nullptr;
@@ -8162,125 +8127,57 @@ private:
     /* A function pointer that can be placed in a `PyGetSetDef.set` slot.  The closure
     will be interpreted according to the templated Closure type. */
     template <StaticStr Name, typename Closure>
-    static int member_setter(CRTP* self, PyObject* value, void* closure) {
+    static int instance_setter(CRTP* self, PyObject* value, void* closure) {
         static_assert(
-            Closures::template Traits<Closure>::value &&
-            (
-                Closures::template Traits<Closure>::has_setter ||
-                Closures::template Traits<Closure>::has_deleter
-            ),
+            Closure::template Traits<Closure>::value,
+            "Closure type not recognized"
+        );
+        static_assert(
+            Closure::template Traits<Closure>::has_setter ||
+            Closure::template Traits<Closure>::has_deleter,
             "Closure must have a setter or deleter."
         );
 
-        auto set = [](void* closure, auto& obj, PyObject* value) -> void {
+        auto set = [](void* closure, Wrapper&& self, PyObject* value) -> void {
             if constexpr (!Closures::template Traits<Closure>::has_setter) {
                 throw TypeError(
                     "property '" + Name + "' of type '" +
-                    impl::demangle(typeid(Wrapper).name()) +
-                    "' has no setter"
+                    impl::demangle(typeid(Wrapper).name()) + "' has no setter"
                 );
             } else {
-                using S = Closures::template Traits<Closure>::Setter;
-                if constexpr (
-                    std::is_const_v<std::remove_reference_t<decltype(obj)>> &&
-                    ((
-                        Set::template NonMember<S>::value &&
-                        !Set::template NonMember<S>::is_const
-                    ) || (
-                        Set::template Member<S>::value &&
-                        !Set::template Member<S>::is_const
-                    ))
-                ) {
-                    throw TypeError(
-                        "variable '" + Name + "' of type '" +
-                        impl::demangle(typeid(Wrapper).name()) +
-                        "' is immutable."
-                    );
-                } else {
-                    S* fset = reinterpret_cast<Closure*>(closure)->setter;
-                    if constexpr (Set::template Member<S>::value) {
-                        obj.*(*fset)(reinterpret_borrow<Object>(value));
-                    } else {
-                        (*fset)(obj, reinterpret_borrow<Object>(value));
-                    }
-                }
+                static_assert(
+                    Set::template Instance<Closure>::value,
+                    "Setter must accept a reference to the enclosing Object wrapper "
+                    "as a first argument."
+                );
+                reinterpret_cast<Closure*>(closure)->setter(
+                    self,
+                    reinterpret_borrow<Object>(value)
+                );
             }
         };
 
-        auto del = [](void* closure, auto& obj) -> void {
+        auto del = [](void* closure, Wrapper&& self) -> void {
             if constexpr (!Closures::template Traits<Closure>::has_deleter) {
                 throw TypeError(
                     "property '" + Name + "' of type '" +
-                    impl::demangle(typeid(Wrapper).name()) +
-                    "' has no deleter"
+                    impl::demangle(typeid(Wrapper).name()) + "' has no deleter"
                 );
             } else {
-                using D = Closures::template Traits<Closure>::Deleter;
-                if constexpr (
-                    std::is_const_v<std::remove_reference_t<decltype(obj)>> &&
-                    ((
-                        Del::template NonMember<D>::value &&
-                        !Del::template NonMember<D>::is_const
-                    ) || (
-                        Del::template Member<D>::value &&
-                        !Del::template Member<D>::is_const
-                    ))
-                ) {
-                    throw TypeError(
-                        "variable '" + Name + "' of type '" +
-                        impl::demangle(typeid(Wrapper).name()) +
-                        "' is immutable."
-                    );
-                } else {
-                    D* fdel = reinterpret_cast<Closure*>(closure)->deleter;
-                    if constexpr (Del::template Member<D>::value) {
-                        obj.*(*fdel)();
-                    } else {
-                        (*fdel)(obj);
-                    }
-                }
+                static_assert(
+                    Del::template Instance<Closure>::value,
+                    "Deleter must accept a reference to the enclosing Object wrapper "
+                    "as a first argument."
+                );
+                reinterpret_cast<Closure*>(closure)->deleter(self);
             }
         };
 
         try {
             if (value) {
-                if constexpr (std::same_as<CRTP, Cls>) {
-                    set(closure, *self, value);
-                } else {
-                    std::visit(
-                        Visitor{
-                            [closure, set, value](Cls& obj) {
-                                set(closure, obj, value);
-                            },
-                            [closure, set, value](const Cls* obj) {
-                                set(closure, *obj, value);
-                            },
-                            [closure, set, value](Cls* obj) {
-                                set(closure, *obj, value);
-                            }
-                        },
-                        self->m_cpp
-                    );
-                }
+                set(closure, reinterpret_borrow<Wrapper>(self), value);
             } else {
-                if constexpr (std::same_as<CRTP, Cls>) {
-                    del(closure, *self);
-                } else {
-                    std::visit(
-                        Visitor{
-                            [closure, del](Cls& obj) {
-                                del(closure, obj);
-                            },
-                            [closure, del](const Cls* obj) {
-                                del(closure, *obj);
-                            },
-                            [closure, del](Cls* obj) {
-                                del(closure, *obj);
-                            }
-                        },
-                        self->m_cpp
-                    );
-                }
+                del(closure, reinterpret_borrow<Wrapper>(self));
             }
             return 0;
         } catch (...) {
@@ -8569,22 +8466,17 @@ public:
     ///
     ///     bindings.property<"x">(
     ///         "Python docstring for property `x`",
-    ///         // member getter that accepts no arguments and returns a
-    ///         // python-compatible object
-    ///         &MyClass::get_x,
-    ///         {
-    ///             // non-member setter that accepts a reference to `MyClass` as a
-    ///             // first argument, returns void, and whose second argument is
-    ///             // convertible from Object
-    ///             &set_x,
-    ///             [](MyClass& self, int value) -> void {
-    ///                 // an overloaded setter using a lambda that meets the above
-    ///                 // criteria.  This will be chosen when the new value is
-    ///                 // specifically an integer. 
-    ///             },
-    ///             // ...
+    ///         [](Wrapper& self) {  // overloads can refer to a single Python-style function
+    ///             return unwrap(self).x;
     ///         },
-    ///         nullptr  // property has no deleter (can be omitted)
+    ///         {  // or several functions with compatible signatures
+    ///             some_function_that_accepts_a_reference_to_wrapper,
+    ///             &a_pointer_to_such_a_function,
+    ///             [](Wrapper& self, const Int& value) {
+    ///                 unwrap(self).x = value;
+    ///             }
+    ///         },
+    ///         {}  // property has no deleter (can be omitted)
     ///     );
     ///
     /// This would require some way of constraining the overload set to only accept
@@ -8637,6 +8529,35 @@ public:
     /// class methods separately from pure static methods, and would avoid an
     /// unnecessary import.
 
+    /// TODO: in order for property getters, setters, and deleters to be overloadable,
+    /// I would have to write custom descriptor classes that store the getters, setters
+    /// and deleters as publicly-accessible overload sets, so that they can be
+    /// referenced from the type object.
+
+    /// @MyType.x.getter.overload
+    /// def custom_getter(self: MyType[int]) -> int:
+    ///     return self.x
+
+    /// TODO: this means properties CAN'T use tp_getset slots.  They have to be
+    /// implemented as dynamic Python objects that are attached to the type.
+    /// -> How does this interface with class and static properties?  You would
+    /// probably have to access them in the type object's dictionary in order to
+    /// overload them, which means the metaclass's __getattr__ method would have to
+    /// forward to them.
+
+    /// TODO: overload sets cannot be used with getters/deleters?  Those must by
+    /// definition not accept any additional arguments, so there will never be anything
+    /// to dispatch on.  That might allow for performance optimization as well, since
+    /// I never need to consider overload behavior.  I can thus probably stick with
+    /// using tp_getset slots for these?  That may prevent new overloads from being
+    /// registered from Python, unless I somehow found a way to expose the closure
+    /// to Python.
+    /// -> Perhaps the final solution is to create a Python type that stores the
+    /// getter and deleter as normal function pointers/objects, as well as an overload
+    /// set for the setter.  That would be placed into the type's dictionary using
+    /// SetAttr like normal, and would be accessible from Python as a standard property.
+
+
     /* Expose a non-member getter/setter pair to Python as a getset descriptor. */
     template <
         StaticStr Name,
@@ -8659,9 +8580,9 @@ public:
         ))
     void property(
         std::string&& doc,
-        Getter&& getter = nullptr,
-        Setter&& setter = nullptr,
-        Deleter&& deleter = nullptr
+        Getter&& getter = {},
+        Setter&& setter = {},
+        Deleter&& deleter = {}
     ) {
         using G = std::decay_t<Getter>;
         using S = std::decay_t<Setter>;
@@ -8679,16 +8600,16 @@ public:
             return;
         }
 
-        auto func_ptr = []<typename T>(T&& func) -> std::decay_t<T>* {
+        auto func = []<typename T>(T&& func) {
             using U = std::decay_t<T>;
             if constexpr (
                 std::is_function_v<std::remove_pointer_t<U>> ||
                 std::is_member_function_pointer_v<U>
             ) {
-                return &func;
+                return func;
             } else {
                 static U f = std::forward<T>(func);
-                return &f;
+                return f;
             }
         };
 
@@ -8702,54 +8623,50 @@ public:
                     // do nothing
                 } else {
                     using Closure = Closures::template Del<D>;
-                    static Closure context = {func_ptr(deleter)};
+                    static Closure context = {func(deleter)};
                     closure = &context;
-                    py_setter = reinterpret_cast<::setter>(&member_setter<Name, Closure>);
+                    py_setter = reinterpret_cast<::setter>(&instance_setter<Name, Closure>);
                 }
             } else {
                 if constexpr (std::is_null_pointer_v<Deleter>) {
                     using Closure = Closures::template Set<S>;
-                    static Closure context = {func_ptr(setter)};
+                    static Closure context = {func(setter)};
                     closure = &context;
-                    py_setter = reinterpret_cast<::setter>(&member_setter<Name, Closure>);
+                    py_setter = reinterpret_cast<::setter>(&instance_setter<Name, Closure>);
                 } else {
                     using Closure = Closures::template SetDel<S, D>;
-                    static Closure context = {func_ptr(setter), func_ptr(deleter)};
+                    static Closure context = {func(setter), func(deleter)};
                     closure = &context;
-                    py_setter = reinterpret_cast<::setter>(&member_setter<Name, Closure>);
+                    py_setter = reinterpret_cast<::setter>(&instance_setter<Name, Closure>);
                 }
             }
         } else {
             if constexpr (std::is_null_pointer_v<Setter>) {
                 if constexpr (std::is_null_pointer_v<Deleter>) {
                     using Closure = Closures::template Get<G>;
-                    static Closure context = {func_ptr(getter)};
+                    static Closure context = {func(getter)};
                     closure = &context;
-                    py_getter = reinterpret_cast<::getter>(&member_getter<Name, Closure>);
+                    py_getter = reinterpret_cast<::getter>(&instance_getter<Name, Closure>);
                 } else {
                     using Closure = Closures::template GetDel<G, D>;
-                    static Closure context = {func_ptr(getter), func_ptr(deleter)};
+                    static Closure context = {func(getter), func(deleter)};
                     closure = &context;
-                    py_getter = reinterpret_cast<::getter>(&member_getter<Name, Closure>);
-                    py_setter = reinterpret_cast<::setter>(&member_setter<Name, Closure>);
+                    py_getter = reinterpret_cast<::getter>(&instance_getter<Name, Closure>);
+                    py_setter = reinterpret_cast<::setter>(&instance_setter<Name, Closure>);
                 }
             } else {
                 if constexpr (std::is_null_pointer_v<Deleter>) {
                     using Closure = Closures::template GetSet<G, S>;
-                    static Closure context = {func_ptr(getter), func_ptr(setter)};
+                    static Closure context = {func(getter), func(setter)};
                     closure = &context;
-                    py_getter = reinterpret_cast<::getter>(&member_getter<Name, Closure>);
-                    py_setter = reinterpret_cast<::setter>(&member_setter<Name, Closure>);
+                    py_getter = reinterpret_cast<::getter>(&instance_getter<Name, Closure>);
+                    py_setter = reinterpret_cast<::setter>(&instance_setter<Name, Closure>);
                 } else {
                     using Closure = Closures::template GetSetDel<G, S, D>;
-                    static Closure context = {
-                        func_ptr(getter),
-                        func_ptr(setter),
-                        func_ptr(deleter)
-                    };
+                    static Closure context = {func(getter), func(setter), func(deleter)};
                     closure = &context;
-                    py_getter = reinterpret_cast<::getter>(&member_getter<Name, Closure>);
-                    py_setter = reinterpret_cast<::setter>(&member_setter<Name, Closure>);
+                    py_getter = reinterpret_cast<::getter>(&instance_getter<Name, Closure>);
+                    py_setter = reinterpret_cast<::setter>(&instance_setter<Name, Closure>);
                 }
             }
         }
@@ -8782,9 +8699,9 @@ public:
             Del::template Static<std::decay_t<Deleter>>::value
         ))
     void class_property(
-        Getter&& getter = nullptr,
-        Setter&& setter = nullptr,
-        Deleter&& deleter = nullptr
+        Getter&& getter = {},
+        Setter&& setter = {},
+        Deleter&& deleter = {}
     ) {
         using G = std::decay_t<Getter>;
         using S = std::decay_t<Setter>;
@@ -8798,13 +8715,13 @@ public:
         }
         members[Name] = { .class_property = true };
 
-        auto func_ptr = []<typename T>(T&& func) -> std::decay_t<T>* {
+        auto func = []<typename T>(T&& func) {
             using U = std::decay_t<T>;
             if constexpr (std::is_function_v<std::remove_pointer_t<U>>) {
-                return &func;
+                return func;
             } else {
                 static U f = std::forward<T>(func);
-                return &f;
+                return f;
             }
         };
 
@@ -8817,19 +8734,128 @@ public:
                     // do nothing
                 } else {
                     using Closure = Closures::template Del<D>;
-                    static Closure context = {func_ptr(deleter)};
+                    static Closure context = {func(deleter)};
                     closure = &context;
-                    py_getter = &static_getter<Name, Closure>;
+                    py_getter = &class_setter<Name, Closure>;
                 }
             } else {
                 if constexpr (std::is_null_pointer_v<Deleter>) {
                     using Closure = Closures::template Set<S>;
-                    static Closure context = {func_ptr(setter)};
+                    static Closure context = {func(setter)};
+                    closure = &context;
+                    py_setter = &class_setter<Name, Closure>;
+                } else {
+                    using Closure = Closures::template SetDel<S, D>;
+                    static Closure context = {func(setter), func(deleter)};
+                    closure = &context;
+                    py_setter = &class_setter<Name, Closure>;
+                }
+            }
+        } else {
+            if constexpr (std::is_null_pointer_v<Setter>) {
+                if constexpr (std::is_null_pointer_v<Deleter>) {
+                    using Closure = Closures::template Get<G>;
+                    static Closure context = {func(getter)};
+                    closure = &context;
+                    py_getter = &class_getter<Name, Closure>;
+                } else {
+                    using Closure = Closures::template GetDel<G, D>;
+                    static Closure context = {func(getter), func(deleter)};
+                    closure = &context;
+                    py_getter = &class_getter<Name, Closure>;
+                    py_setter = &class_setter<Name, Closure>;
+                }
+            } else {
+                if constexpr (std::is_null_pointer_v<Deleter>) {
+                    using Closure = Closures::template GetSet<G, S>;
+                    static Closure context = {func(getter), func(setter)};
+                    closure = &context;
+                    py_getter = &class_getter<Name, Closure>;
+                    py_setter = &class_setter<Name, Closure>;
+                } else {
+                    using Closure = Closures::template GetSetDel<G, S, D>;
+                    static Closure context = {func(getter), func(setter), func(deleter)};
+                    closure = &context;
+                    py_getter = &class_getter<Name, Closure>;
+                    py_setter = &class_setter<Name, Closure>;
+                }
+            }
+        }
+        if (py_getter) {
+            class_getters[Name] = { py_getter, closure };
+        }
+        if (py_setter) {
+            class_setters[Name] = { py_setter, closure };
+        }
+    }
+
+    /* Expose a C++-style static getter to Python using the `__getattr__()`
+    slot of the metatype. */
+    template <
+        StaticStr Name,
+        typename Getter = std::nullptr_t,
+        typename Setter = std::nullptr_t,
+        typename Deleter = std::nullptr_t
+    >
+        requires ((
+            std::is_null_pointer_v<Getter> ||
+            Get::template Static<std::decay_t<Getter>>::value
+        ) && (
+            std::is_null_pointer_v<Setter> ||
+            Set::template Static<std::decay_t<Setter>>::value
+        ) && (
+            std::is_null_pointer_v<Deleter> ||
+            Del::template Static<std::decay_t<Deleter>>::value
+        ))
+    void static_property(
+        Getter&& getter = {},
+        Setter&& setter = {},
+        Deleter&& deleter = {}
+    ) {
+        using G = std::decay_t<Getter>;
+        using S = std::decay_t<Setter>;
+        using D = std::decay_t<Deleter>;
+
+        if (members.contains(Name)) {
+            throw AttributeError(
+                "Class '" + impl::demangle(typeid(Wrapper).name()) +
+                "' already has an attribute named '" + Name + "'."
+            );
+        }
+        members[Name] = { .class_property = true };
+
+        auto func = []<typename T>(T&& func) {
+            using U = std::decay_t<T>;
+            if constexpr (std::is_function_v<std::remove_pointer_t<U>>) {
+                return func;
+            } else {
+                static U f = std::forward<T>(func);
+                return f;
+            }
+        };
+
+        PyObject*(*py_getter)(Meta*, void*) = nullptr;
+        int(*py_setter)(Meta*, PyObject*, void*) = nullptr;
+        void* closure = nullptr;
+        if constexpr (std::is_null_pointer_v<G>) {
+            if constexpr (std::is_null_pointer_v<S>) {
+                if constexpr (std::is_null_pointer_v<D>) {
+                    // do nothing
+                } else {
+                    using Closure = Closures::template Del<D>;
+                    static Closure context = {func(deleter)};
+                    closure = &context;
+                    py_getter = &static_setter<Name, Closure>;
+                }
+            } else {
+                if constexpr (std::is_null_pointer_v<Deleter>) {
+                    using Closure = Closures::template Set<S>;
+                    static Closure context = {func(setter)};
                     closure = &context;
                     py_setter = &static_setter<Name, Closure>;
                 } else {
                     using Closure = Closures::template SetDel<S, D>;
-                    static Closure context = {func_ptr(setter), func_ptr(deleter)};
+                    static Closure context = {func(setter), func(deleter)};
                     closure = &context;
                     py_setter = &static_setter<Name, Closure>;
                 }
@@ -8838,12 +8864,12 @@ public:
             if constexpr (std::is_null_pointer_v<Setter>) {
                 if constexpr (std::is_null_pointer_v<Deleter>) {
                     using Closure = Closures::template Get<G>;
-                    static Closure context = {func_ptr(getter)};
+                    static Closure context = {func(getter)};
                     closure = &context;
                     py_getter = &static_getter<Name, Closure>;
                 } else {
                     using Closure = Closures::template GetDel<G, D>;
-                    static Closure context = {func_ptr(getter), func_ptr(deleter)};
+                    static Closure context = {func(getter), func(deleter)};
                     closure = &context;
                     py_getter = &static_getter<Name, Closure>;
                     py_setter = &static_setter<Name, Closure>;
@@ -8851,17 +8877,13 @@ public:
             } else {
                 if constexpr (std::is_null_pointer_v<Deleter>) {
                     using Closure = Closures::template GetSet<G, S>;
-                    static Closure context = {func_ptr(getter), func_ptr(setter)};
+                    static Closure context = {func(getter), func(setter)};
                     closure = &context;
                     py_getter = &static_getter<Name, Closure>;
                     py_setter = &static_setter<Name, Closure>;
                 } else {
                     using Closure = Closures::template GetSetDel<G, S, D>;
-                    static Closure context = {
-                        func_ptr(getter),
-                        func_ptr(setter),
-                        func_ptr(deleter)
-                    };
+                    static Closure context = {func(getter), func(setter), func(deleter)};
                     closure = &context;
                     py_getter = &static_getter<Name, Closure>;
                     py_setter = &static_setter<Name, Closure>;
@@ -8903,11 +8925,9 @@ public:
     /// unique Python type that can be used to iterate over them.  Then, in order to
     /// bind __iter__ and __reversed__, you'd just bind a lambda that calls this
     /// method appropriately.
-
-    /// TODO: all of the methods need the signature check to be implemented, which
-    /// means the Bindings:: class needs to be unique for each specialization of def<>.
-    /// -> Some of their implementations may stay the same, however, particularly for
-    /// the methods provided here.
+    /// -> Perhaps that method is a py::Iterator constructor, and the way you overload
+    /// __iter__ is by providing a lambda that calls this constructor on the self
+    /// argument.
 
     /* Expose a C++ static method to Python as a static method, which can be
     overloaded from either side of the language boundary.  */
@@ -8927,8 +8947,8 @@ public:
         std::derived_from<Object>... Bases
     > requires (
         !impl::is_generic<Class> &&
-        (impl::has_type<Class> && impl::is_type<Type<Class>>) &&
-        ((impl::has_type<Bases> && impl::is_type<Type<Bases>>) && ...)
+        impl::has_interface<Class> && (impl::has_interface<Bases> && ...) &&
+        impl::has_python<Class> && (impl::has_python<Bases> && ...)
     )
     void type() {
         if (members.contains(Name)) {
@@ -9012,8 +9032,8 @@ public:
         std::derived_from<Object>... Bases
     > requires (
         impl::is_generic<Class> &&
-        (impl::has_type<Class> && impl::is_type<Type<Class>>) &&
-        ((impl::has_type<Bases> && impl::is_type<Type<Bases>>) && ...)
+        impl::has_interface<Class> && (impl::has_interface<Bases> && ...) &&
+        impl::has_python<Class> && (impl::has_python<Bases> && ...)
     )
     void type() {
         auto it = members.find(Name);
@@ -9218,14 +9238,6 @@ namespace impl {
                 impl::demangle(typeid(CppType).name()) + "' C++ type."
             );
         }();
-        PyObject_HEAD
-        Variant m_cpp;
-
-        template <typename... Args>
-        def(Args&&... args) : m_cpp(std::forward<Args>(args)...) {}
-
-        template <typename Begin, std::sentinel_for<Begin> End>
-        using Iterator = TypeTag::Iterator<Begin, End>;
 
         /* tp_hash delegates to `std::hash` if it exists. */
         static Py_hash_t __hash__(CRTP* self) {
@@ -9473,84 +9485,6 @@ namespace impl {
                 }
             }
             return 0;
-        }
-
-    private:
-        inline static std::vector<PyMethodDef> tp_methods;
-        inline static std::vector<PyGetSetDef> tp_getset;
-        inline static std::vector<PyMemberDef> tp_members;
-
-        template <typename T>
-            requires (
-                __as_object__<T>::enable &&
-                impl::originates_from_cpp<typename __as_object__<T>::type> &&
-                std::same_as<T, typename __as_object__<T>::type::__python__::CppType>
-            )
-        friend auto wrap(const T& obj) -> __as_object__<T>::type;
-        template <typename T>
-            requires (
-                __as_object__<T>::enable &&
-                impl::originates_from_cpp<typename __as_object__<T>::type> &&
-                std::same_as<T, typename __as_object__<T>::type::__python__::CppType>
-            )
-        friend auto wrap(T& obj) -> __as_object__<T>::type;
-        template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
-        friend auto& unwrap(T& obj);
-        template <typename T> requires (impl::cpp_or_originates_from_cpp<T>)
-        friend auto& unwrap(const T& obj);
-
-        /* Implements py::wrap() for immutable references. */
-        static Wrapper _wrap(const CppType& cpp) {
-            Type<Wrapper> type;
-            PyTypeObject* type_ptr = reinterpret_cast<PyTypeObject*>(ptr(type));
-            PyObject* self = type_ptr->tp_alloc(type_ptr, 0);
-            if (self == nullptr) {
-                Exception::from_python();
-            }
-            new (&reinterpret_cast<CRTP*>(self)->m_cpp) Variant(&cpp);
-            return reinterpret_steal<Wrapper>(self);
-        }
-
-        /* Implements py::wrap() for mutable references. */
-        static Wrapper _wrap(CppType& cpp) {
-            Type<Wrapper> type;
-            PyTypeObject* type_ptr = reinterpret_cast<PyTypeObject*>(ptr(type));
-            PyObject* self = type_ptr->tp_alloc(type_ptr, 0);
-            if (self == nullptr) {
-                Exception::from_python();
-            }
-            new (&reinterpret_cast<CRTP*>(self)->m_cpp) Variant(&cpp);
-            return reinterpret_steal<Wrapper>(self);
-        }
-
-        /* Implements py::unwrap() for immutable wrappers. */
-        static const CppType& _unwrap(const Wrapper& obj) {
-            return std::visit(Visitor{
-                [](const CppType& cpp) {
-                    return cpp;
-                },
-                [](const CppType* cpp) {
-                    return *cpp;
-                }
-            }, reinterpret_cast<CRTP*>(ptr(obj))->m_cpp);
-        }
-
-        /* Implements py::unwrap() for mutable wrappers. */
-        static CppType& _unwrap(Wrapper& obj) {
-            return std::visit(Visitor{
-                [](CppType& cpp) {
-                    return cpp;
-                },
-                [](CppType* cpp) {
-                    return *cpp;
-                },
-                [&obj](const CppType* cpp) {
-                    throw TypeError(
-                        "requested a mutable reference to const object: " +
-                        repr(obj)
-                    );
-                }
-            }, reinterpret_cast<CRTP*>(ptr(obj))->m_cpp);
         }
 
     };

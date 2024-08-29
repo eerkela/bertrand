@@ -61,11 +61,11 @@ using bertrand::StaticStr;
 
 namespace impl {
     struct BertrandTag {};
-    struct TypeTag;
-    struct IterTag : BertrandTag {};
+    struct TypeTag : BertrandTag {};  /// TODO: eliminate this
+    struct IterTag : BertrandTag {};  /// TODO: eliminate this
     struct ArgTag : BertrandTag {};
-    struct FunctionTag : BertrandTag {};
-    struct ModuleTag;
+    struct FunctionTag : BertrandTag {};   /// TODO: eliminate this
+    struct ModuleTag;  /// TODO: eliminate this
     struct TupleTag : BertrandTag {};
     struct ListTag : BertrandTag{};
     struct SetTag : BertrandTag {};
@@ -174,12 +174,13 @@ struct Traceback;
 template <typename T = Object>
 struct Type;
 struct BertrandMeta;
-template <typename Return>
-struct Iterator;  /// TODO: template on begin and end iterator types, not the return type
+template <typename Begin = Object, typename End = void>
+struct Iterator;
 template <StaticStr Name, typename T>
 struct Arg;
 template <typename>
 struct Function;
+struct Overload;
 template <StaticStr Name>
 struct Module;
 struct NoneType;
@@ -587,7 +588,6 @@ namespace impl {
     struct attr_is_deletable_helper {
         static constexpr bool value = false;
     };
-
     template <typename Self, StaticStr Name>
         requires (__delattr__<Self, Name>::enable)
     struct attr_is_deletable_helper<Attr<Self, Name>> {
@@ -595,7 +595,6 @@ namespace impl {
         using type = __delattr__<Self, Name>;
         static constexpr StaticStr name = Name;
     };
-
     template <typename T>
     struct attr_is_deletable : attr_is_deletable_helper<std::remove_cvref_t<T>> {};
 
@@ -623,14 +622,12 @@ namespace impl {
     struct item_is_deletable_helper {
         static constexpr bool value = false;
     };
-
     template <typename Container, typename... Key>
         requires (__delitem__<Container, Key...>::enable)
     struct item_is_deletable_helper<Item<Container, Key...>> {
         static constexpr bool value = true;
         using type = __delitem__<Container, Key...>;
     };
-
     template <typename T>
     struct item_is_deletable : item_is_deletable_helper<std::remove_cvref_t<T>> {};
 
@@ -645,13 +642,6 @@ namespace impl {
     struct lazy_type_helper<T> { using type = item_type<T>; };
     template <lazily_evaluated T>
     using lazy_type = lazy_type_helper<std::remove_cvref_t<T>>::type;
-
-    template <typename T>
-    constexpr bool is_generic_helper = false;
-    template <template <typename...> typename T, typename... Ts>
-    constexpr bool is_generic_helper<T<Ts...>> = true;
-    template <typename T>
-    concept is_generic = is_generic_helper<std::remove_cvref_t<T>>;
 
     template <typename T, typename = void>
     constexpr bool has_interface_helper = false;
@@ -668,31 +658,64 @@ namespace impl {
     concept has_type = has_type_helper<std::remove_cvref_t<T>>;
 
     template <typename T, typename = void>
-    constexpr bool is_type_helper = false;
+    constexpr bool has_python_helper = false;
     template <typename T>
-    constexpr bool is_type_helper<T, std::void_t<typename T::__python__>> = true;
+    constexpr bool has_python_helper<T, std::void_t<typename T::__python__::__object__>> =
+        std::same_as<T, typename T::__python__::__object__>;
     template <typename T>
-    concept is_type =
-        std::derived_from<std::remove_cvref_t<T>, TypeTag> &&
-        is_type_helper<std::remove_cvref_t<T>>;
+    concept has_python = has_python_helper<std::remove_cvref_t<T>>;
+
+    template <typename T>
+    concept has_export = has_python<T> && requires() {
+        { &std::remove_cvref_t<T>::__python__::__export__ };
+    };
 
     template <typename T, typename = void>
-    constexpr bool is_module_helper = false;
+    constexpr bool has_cpp_helper = false;
     template <typename T>
-    constexpr bool is_module_helper<T, std::void_t<typename T::__python__>> = true;
+    constexpr bool has_cpp_helper<T, std::void_t<typename T::__python__::__cpp__>> = true;
     template <typename T>
-    concept is_module =
-        std::derived_from<std::remove_cvref_t<T>, ModuleTag> &&
-        is_module_helper<std::remove_cvref_t<T>>;
+    concept has_cpp = has_python<T> && has_cpp_helper<T> && requires() {
+        { &std::remove_cvref_t<T>::__python__::m_cpp };
+    };
+
+    template <typename T>
+    concept bertrand_like = std::derived_from<std::remove_cvref_t<T>, BertrandTag>;
+
+    template <typename T>
+    concept python_like = std::derived_from<std::remove_cvref_t<T>, Object>;
+
+    template <typename... Ts>
+    concept any_are_python_like = (python_like<Ts> || ...);
+
+    template <typename T>
+    concept dynamic_type = std::same_as<std::remove_cvref_t<T>, Object>;
+
+    template <typename T>
+    concept cpp_like = !python_like<T>;
+
+    template <typename T>
+    struct cpp_type_helper { using type = T; };
+    template <has_cpp T>
+    struct cpp_type_helper<T> { using type = T::__python__::__cpp__; };
+    template <typename T> requires (cpp_like<T> || has_cpp<T>)
+    using cpp_type = cpp_type_helper<std::remove_cvref_t<T>>::type;
+
+    template <typename T>
+    constexpr bool is_generic_helper = false;
+    template <template <typename...> typename T, typename... Ts>
+    constexpr bool is_generic_helper<T<Ts...>> = true;
+    template <typename T>
+    concept is_generic = is_generic_helper<std::remove_cvref_t<T>>;
 
     template <typename From, typename To>
     concept has_conversion_operator = requires(From from) {
-        from.operator To();
+        { from.operator To() };
     };
 
     template <typename From, typename To>
     concept explicitly_convertible_to = requires(From from) {
-        static_cast<To>(from);
+        { static_cast<To>(from) };
     };
 
     template <typename T>
@@ -796,6 +819,77 @@ namespace impl {
     template <typename T, typename First, typename Second>
     concept yields_pairs_with =
         iterable<T> && pair_like_with<iter_type<T>, First, Second>;
+
+    template <typename T>
+    concept has_to_string = requires(T t) {
+        { std::to_string(t) } -> std::convertible_to<std::string>;
+    };
+
+    template <typename T>
+    concept has_stream_insertion = requires(std::ostream& os, T t) {
+        { os << t } -> std::convertible_to<std::ostream&>;
+    };
+
+    template <typename T>
+    concept has_call_operator = requires { &std::decay_t<T>::operator(); };
+
+    template <typename T>
+    concept is_callable_any = 
+        std::is_function_v<std::remove_pointer_t<std::decay_t<T>>> ||
+        std::is_member_function_pointer_v<std::decay_t<T>> ||
+        has_call_operator<T>;
+
+    template <typename T>
+    concept string_literal = requires(T t) {
+        { []<size_t N>(const char(&)[N]){}(t) };
+    };
+
+    template <typename T>
+    concept complex_like = requires(T t) {
+        { t.real() } -> std::convertible_to<double>;
+        { t.imag() } -> std::convertible_to<double>;
+    };
+
+    template <typename T>
+    concept has_empty = requires(T t) {
+        { t.empty() } -> std::convertible_to<bool>;
+    };
+
+    template <typename T>
+    concept has_reserve = requires(T t, size_t n) {
+        { t.reserve(n) } -> std::same_as<void>;
+    };
+
+    template <typename T, typename Key>
+    concept has_contains = requires(T t, Key key) {
+        { t.contains(key) } -> std::convertible_to<bool>;
+    };
+
+    template <typename T>
+    concept has_keys = requires(T t) {
+        { t.keys() } -> iterable;
+        { t.keys() } -> yields<typename std::remove_cvref_t<T>::key_type>;
+    };
+
+    template <typename T>
+    concept has_values = requires(T t) {
+        { t.values() } -> iterable;
+        { t.values() } -> yields<typename std::remove_cvref_t<T>::mapped_type>;
+    };
+
+    template <typename T>
+    concept has_items = requires(T t) {
+        { t.items() } -> iterable;
+        { t.items() } -> yields_pairs_with<
+            typename std::remove_cvref_t<T>::key_type,
+            typename std::remove_cvref_t<T>::mapped_type
+        >;
+    };
+
+    template <typename T>
+    concept has_operator_bool = requires(T t) {
+        { !t } -> std::convertible_to<bool>;
+    };
 
     template <typename T>
     concept hashable = requires(T t) {
@@ -1206,112 +1300,6 @@ namespace impl {
     concept has_inplace_repeat = requires(T& lhs, size_t rhs) {
         { lhs *= rhs } -> std::convertible_to<T&>;
     };
-
-    template <typename T>
-    concept has_operator_bool = requires(T t) {
-        { !t } -> std::convertible_to<bool>;
-    };
-
-    template <typename T>
-    concept has_to_string = requires(T t) {
-        { std::to_string(t) } -> std::convertible_to<std::string>;
-    };
-
-    template <typename T>
-    concept has_stream_insertion = requires(std::ostream& os, T t) {
-        { os << t } -> std::convertible_to<std::ostream&>;
-    };
-
-    template <typename T>
-    concept has_call_operator = requires { &std::decay_t<T>::operator(); };
-
-    template <typename T>
-    concept is_callable_any = 
-        std::is_function_v<std::remove_pointer_t<std::decay_t<T>>> ||
-        std::is_member_function_pointer_v<std::decay_t<T>> ||
-        has_call_operator<T>;
-
-    template <typename T>
-    concept string_literal = requires(T t) {
-        { []<size_t N>(const char(&)[N]){}(t) };
-    };
-
-    template <typename T>
-    concept complex_like = requires(T t) {
-        { t.real() } -> std::convertible_to<double>;
-        { t.imag() } -> std::convertible_to<double>;
-    };
-
-    template <typename T>
-    concept has_empty = requires(T t) {
-        { t.empty() } -> std::convertible_to<bool>;
-    };
-
-    template <typename T>
-    concept has_reserve = requires(T t, size_t n) {
-        { t.reserve(n) } -> std::same_as<void>;
-    };
-
-    template <typename T, typename Key>
-    concept has_contains = requires(T t, Key key) {
-        { t.contains(key) } -> std::convertible_to<bool>;
-    };
-
-    template <typename T>
-    concept has_keys = requires(T t) {
-        { t.keys() } -> iterable;
-        { t.keys() } -> yields<typename std::remove_cvref_t<T>::key_type>;
-    };
-
-    template <typename T>
-    concept has_values = requires(T t) {
-        { t.values() } -> iterable;
-        { t.values() } -> yields<typename std::remove_cvref_t<T>::mapped_type>;
-    };
-
-    template <typename T>
-    concept has_items = requires(T t) {
-        { t.items() } -> iterable;
-        { t.items() } -> yields_pairs_with<
-            typename std::remove_cvref_t<T>::key_type,
-            typename std::remove_cvref_t<T>::mapped_type
-        >;
-    };
-
-    template <typename T>
-    concept bertrand_like = std::derived_from<std::remove_cvref_t<T>, BertrandTag>;
-
-    template <typename T>
-    concept python_like = std::derived_from<std::remove_cvref_t<T>, Object>;
-
-    template <typename... Ts>
-    concept any_are_python_like = (python_like<Ts> || ...);
-
-    template <typename T>
-    concept dynamic_type = std::same_as<std::remove_cvref_t<T>, Object>;
-
-    template <typename T>
-    concept cpp_like = !python_like<T>;
-
-    template <typename T>
-    concept originates_from_cpp =
-        std::derived_from<std::remove_cvref_t<T>, Object> && requires() {
-            { &std::remove_cvref_t<T>::__python__::__export__ };
-        };
-
-    template <typename T>
-    concept originates_from_python =
-        std::derived_from<std::remove_cvref_t<T>, Object> && !originates_from_cpp<T>;
-
-    template <typename T>
-    concept cpp_or_originates_from_cpp = cpp_like<T> || originates_from_cpp<T>;
-
-    template <typename T>
-    struct cpp_type_helper { using type = T; };
-    template <originates_from_cpp T>
-    struct cpp_type_helper<T> { using type = T::__python__::__cpp__; };
-    template <cpp_or_originates_from_cpp T>
-    using cpp_type = cpp_type_helper<std::remove_cvref_t<T>>::type;
 
     template <typename T>
     concept type_like =
