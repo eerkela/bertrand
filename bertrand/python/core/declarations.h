@@ -125,6 +125,15 @@ namespace impl {
         CPP
     };
 
+
+    /* Introspect the proper signature for a py::Function instance from a generic
+    function pointer, reference, or object, such as a lambda. */
+    template <typename T>
+    struct GetSignature {
+        using type = void;
+        static constexpr bool enable = false;
+    };
+
 }
 
 
@@ -171,16 +180,16 @@ struct Object;
 struct Code;
 struct Frame;
 struct Traceback;
+template <StaticStr Name, typename T>
+struct Arg;
+template <typename F> requires (impl::GetSignature<F>::enable)
+struct Function;
+struct Overload;
 template <typename T = Object>
 struct Type;
 struct BertrandMeta;
 template <typename Begin = Object, typename End = void>
 struct Iterator;
-template <StaticStr Name, typename T>
-struct Arg;
-template <typename>
-struct Function;
-struct Overload;
 template <StaticStr Name>
 struct Module;
 struct NoneType;

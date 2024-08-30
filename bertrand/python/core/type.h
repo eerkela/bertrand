@@ -275,6 +275,11 @@ template <>
 struct Interface<BertrandMeta> {};
 
 
+/// TODO: metaclass and/or bindings should insert a default tp_repr slot for all types,
+/// which returns the demangled type name.  This is in addition to the __repr__ slot
+/// for the type object itself, which does something similar.
+
+
 /* Bertrand's metaclass, which is used to expose C++ classes to Python and simplify the
 binding process.  Any type which includes an `__export__()` method will be exposed as
 an instance of this class. */
@@ -7377,6 +7382,11 @@ private:
 
     };
 
+    /// TODO: all of this crap should be placed in impl:: and referenced in each of the
+    /// def specializations individually for maximum control.  They might be forward
+    /// declared and filled in after functions are defined, which would mean I don't
+    /// need to do anything here.
+
     /* A collection of template constraints for getset property getters. */
     struct Get {
 
@@ -8028,7 +8038,7 @@ private:
     /* A function pointer that can be added to the metaclass' `class_setters` field.
     The closure will be interpreted according to the templated Closure type. */
     template <StaticStr Name, typename Closure>
-    static int class_setter(Meta* cls, void* closure, PyObject* value) {
+    static int class_setter(Meta* cls, PyObject* value, void* closure) {
         static_assert(
             Closure::template Traits<Closure>::value,
             "Closure type not recognized"
@@ -9230,264 +9240,264 @@ public:
 
 namespace impl {
 
-    template <typename CRTP, typename Wrapper, typename CppType>
-    struct TypeTag::def : BaseDef<CRTP, Wrapper, CppType> {
-        static constexpr StaticStr __doc__ = [] {
-            return (
-                "A Bertrand-generated Python wrapper for the '" +
-                impl::demangle(typeid(CppType).name()) + "' C++ type."
-            );
-        }();
+    // template <typename CRTP, typename Wrapper, typename CppType>
+    // struct TypeTag::def : BaseDef<CRTP, Wrapper, CppType> {
+    //     static constexpr StaticStr __doc__ = [] {
+    //         return (
+    //             "A Bertrand-generated Python wrapper for the '" +
+    //             impl::demangle(typeid(CppType).name()) + "' C++ type."
+    //         );
+    //     }();
 
-        /* tp_hash delegates to `std::hash` if it exists. */
-        static Py_hash_t __hash__(CRTP* self) {
-            try {
-                return std::visit(Visitor{
-                    [](const CppType& cpp) {
-                        return std::hash<CppType>{}(cpp);
-                    },
-                    [](const CppType* cpp) {
-                        return std::hash<CppType>{}(*cpp);
-                    }
-                }, self->m_cpp);
-            } catch (...) {
-                Exception::to_python();
-                return -1;
-            }
-        }
+    //     /* tp_hash delegates to `std::hash` if it exists. */
+    //     static Py_hash_t __hash__(CRTP* self) {
+    //         try {
+    //             return std::visit(Visitor{
+    //                 [](const CppType& cpp) {
+    //                     return std::hash<CppType>{}(cpp);
+    //                 },
+    //                 [](const CppType* cpp) {
+    //                     return std::hash<CppType>{}(*cpp);
+    //                 }
+    //             }, self->m_cpp);
+    //         } catch (...) {
+    //             Exception::to_python();
+    //             return -1;
+    //         }
+    //     }
 
-        /* tp_iter delegates to the type's begin() and end() iterators if they exist,
-        and provides a thin Python wrapper around them that respects reference
-        semantics and const-ness. */
-        static PyObject* __iter__(CRTP* self) {
-            try {
-                PyObject* iter = std::visit(Visitor{
-                    [self](CppType& cpp) -> PyObject* {
-                        using Begin = decltype(std::ranges::begin(std::declval<CppType>()));
-                        using End = decltype(std::ranges::end(std::declval<CppType>()));
-                        using Iterator = Iterator<Begin, End>;
-                        PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
-                            PyObject_GetAttrString(
-                                reinterpret_cast<PyObject*>(Py_TYPE(self)),
-                                typeid(Iterator).name()
-                            )
-                        );
-                        if (iter_type == nullptr) {
-                            Exception::from_python();
-                        }
-                        Iterator* iter = iter_type->tp_alloc(iter_type, 0);
-                        Py_DECREF(iter_type);
-                        if (iter == nullptr) {
-                            Exception::from_python();
-                        }
-                        new (&iter->begin) Iterator::Begin(std::ranges::begin(cpp));
-                        new (&iter->end) Iterator::End(std::ranges::end(cpp));
-                        return iter;
-                    },
-                    [self](CppType* cpp) -> PyObject* {
-                        using Begin = decltype(std::ranges::begin(std::declval<CppType>()));
-                        using End = decltype(std::ranges::end(std::declval<CppType>()));
-                        using Iterator = Iterator<Begin, End>;
-                        PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
-                            PyObject_GetAttrString(
-                                reinterpret_cast<PyObject*>(Py_TYPE(self)),
-                                typeid(Iterator).name()
-                            )
-                        );
-                        if (iter_type == nullptr) {
-                            Exception::from_python();
-                        }
-                        Iterator* iter = iter_type->tp_alloc(iter_type, 0);
-                        Py_DECREF(iter_type);
-                        if (iter == nullptr) {
-                            Exception::from_python();
-                        }
-                        new (&iter->begin) Iterator::Begin(std::ranges::begin(*cpp));
-                        new (&iter->end) Iterator::End(std::ranges::end(*cpp));
-                        return iter;
-                    },
-                    [self](const CppType* cpp) -> PyObject* {
-                        using Begin = decltype(std::ranges::begin(std::declval<const CppType>()));
-                        using End = decltype(std::ranges::end(std::declval<const CppType>()));
-                        using Iterator = Iterator<Begin, End>;
-                        PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
-                            PyObject_GetAttrString(
-                                reinterpret_cast<PyObject*>(Py_TYPE(self)),
-                                typeid(Iterator).name()
-                            )
-                        );
-                        if (iter_type == nullptr) {
-                            Exception::from_python();
-                        }
-                        Iterator* iter = iter_type->tp_alloc(iter_type, 0);
-                        Py_DECREF(iter_type);
-                        if (iter == nullptr) {
-                            Exception::from_python();
-                        }
-                        new (&iter->begin) Iterator::Begin(std::ranges::begin(*cpp));
-                        new (&iter->end) Iterator::End(std::ranges::end(*cpp));
-                        return iter;
-                    }
-                }, self->m_cpp);
-                PyObject_GC_Track(iter);
-                return iter;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
+    //     /* tp_iter delegates to the type's begin() and end() iterators if they exist,
+    //     and provides a thin Python wrapper around them that respects reference
+    //     semantics and const-ness. */
+    //     static PyObject* __iter__(CRTP* self) {
+    //         try {
+    //             PyObject* iter = std::visit(Visitor{
+    //                 [self](CppType& cpp) -> PyObject* {
+    //                     using Begin = decltype(std::ranges::begin(std::declval<CppType>()));
+    //                     using End = decltype(std::ranges::end(std::declval<CppType>()));
+    //                     using Iterator = Iterator<Begin, End>;
+    //                     PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
+    //                         PyObject_GetAttrString(
+    //                             reinterpret_cast<PyObject*>(Py_TYPE(self)),
+    //                             typeid(Iterator).name()
+    //                         )
+    //                     );
+    //                     if (iter_type == nullptr) {
+    //                         Exception::from_python();
+    //                     }
+    //                     Iterator* iter = iter_type->tp_alloc(iter_type, 0);
+    //                     Py_DECREF(iter_type);
+    //                     if (iter == nullptr) {
+    //                         Exception::from_python();
+    //                     }
+    //                     new (&iter->begin) Iterator::Begin(std::ranges::begin(cpp));
+    //                     new (&iter->end) Iterator::End(std::ranges::end(cpp));
+    //                     return iter;
+    //                 },
+    //                 [self](CppType* cpp) -> PyObject* {
+    //                     using Begin = decltype(std::ranges::begin(std::declval<CppType>()));
+    //                     using End = decltype(std::ranges::end(std::declval<CppType>()));
+    //                     using Iterator = Iterator<Begin, End>;
+    //                     PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
+    //                         PyObject_GetAttrString(
+    //                             reinterpret_cast<PyObject*>(Py_TYPE(self)),
+    //                             typeid(Iterator).name()
+    //                         )
+    //                     );
+    //                     if (iter_type == nullptr) {
+    //                         Exception::from_python();
+    //                     }
+    //                     Iterator* iter = iter_type->tp_alloc(iter_type, 0);
+    //                     Py_DECREF(iter_type);
+    //                     if (iter == nullptr) {
+    //                         Exception::from_python();
+    //                     }
+    //                     new (&iter->begin) Iterator::Begin(std::ranges::begin(*cpp));
+    //                     new (&iter->end) Iterator::End(std::ranges::end(*cpp));
+    //                     return iter;
+    //                 },
+    //                 [self](const CppType* cpp) -> PyObject* {
+    //                     using Begin = decltype(std::ranges::begin(std::declval<const CppType>()));
+    //                     using End = decltype(std::ranges::end(std::declval<const CppType>()));
+    //                     using Iterator = Iterator<Begin, End>;
+    //                     PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
+    //                         PyObject_GetAttrString(
+    //                             reinterpret_cast<PyObject*>(Py_TYPE(self)),
+    //                             typeid(Iterator).name()
+    //                         )
+    //                     );
+    //                     if (iter_type == nullptr) {
+    //                         Exception::from_python();
+    //                     }
+    //                     Iterator* iter = iter_type->tp_alloc(iter_type, 0);
+    //                     Py_DECREF(iter_type);
+    //                     if (iter == nullptr) {
+    //                         Exception::from_python();
+    //                     }
+    //                     new (&iter->begin) Iterator::Begin(std::ranges::begin(*cpp));
+    //                     new (&iter->end) Iterator::End(std::ranges::end(*cpp));
+    //                     return iter;
+    //                 }
+    //             }, self->m_cpp);
+    //             PyObject_GC_Track(iter);
+    //             return iter;
+    //         } catch (...) {
+    //             Exception::to_python();
+    //             return nullptr;
+    //         }
+    //     }
 
-        /* __reversed__ delegates to the type's rbegin() and rend() iterators if they
-        exist, and provides a thin Python wrapper around them that respects reference
-        semantics and const-ness. */
-        static PyObject* __reversed__(CRTP* self) {
-            try {
-                PyObject* iter = std::visit(Visitor{
-                    [self](CppType& cpp) -> PyObject* {
-                        using Begin = decltype(std::ranges::rbegin(std::declval<CppType>()));
-                        using End = decltype(std::ranges::rend(std::declval<CppType>()));
-                        using Iterator = Iterator<Begin, End>;
-                        PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
-                            PyObject_GetAttrString(
-                                reinterpret_cast<PyObject*>(Py_TYPE(self)),
-                                typeid(Iterator).name()
-                            )
-                        );
-                        if (iter_type == nullptr) {
-                            Exception::from_python();
-                        }
-                        Iterator* iter = iter_type->tp_alloc(iter_type, 0);
-                        Py_DECREF(iter_type);
-                        if (iter == nullptr) {
-                            Exception::from_python();
-                        }
-                        new (&iter->begin) Iterator::Begin(std::ranges::rbegin(cpp));
-                        new (&iter->end) Iterator::End(std::ranges::rend(cpp));
-                        return iter;
-                    },
-                    [self](CppType* cpp) -> PyObject* {
-                        using Begin = decltype(std::ranges::rbegin(std::declval<CppType>()));
-                        using End = decltype(std::ranges::rend(std::declval<CppType>()));
-                        using Iterator = Iterator<Begin, End>;
-                        PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
-                            PyObject_GetAttrString(
-                                reinterpret_cast<PyObject*>(Py_TYPE(self)),
-                                typeid(Iterator).name()
-                            )
-                        );
-                        if (iter_type == nullptr) {
-                            Exception::from_python();
-                        }
-                        Iterator* iter = iter_type->tp_alloc(iter_type, 0);
-                        Py_DECREF(iter_type);
-                        if (iter == nullptr) {
-                            Exception::from_python();
-                        }
-                        new (&iter->begin) Iterator::Begin(std::ranges::rbegin(*cpp));
-                        new (&iter->end) Iterator::End(std::ranges::rend(*cpp));
-                        return iter;
-                    },
-                    [self](const CppType* cpp) -> PyObject* {
-                        using Begin = decltype(std::ranges::rbegin(std::declval<const CppType>()));
-                        using End = decltype(std::ranges::rend(std::declval<const CppType>()));
-                        using Iterator = Iterator<Begin, End>;
-                        PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
-                            PyObject_GetAttrString(
-                                reinterpret_cast<PyObject*>(Py_TYPE(self)),
-                                typeid(Iterator).name()
-                            )
-                        );
-                        if (iter_type == nullptr) {
-                            Exception::from_python();
-                        }
-                        Iterator* iter = iter_type->tp_alloc(iter_type, 0);
-                        Py_DECREF(iter_type);
-                        if (iter == nullptr) {
-                            Exception::from_python();
-                        }
-                        new (&iter->begin) Iterator::Begin(std::ranges::rbegin(*cpp));
-                        new (&iter->end) Iterator::End(std::ranges::rend(*cpp));
-                        return iter;
-                    }
-                }, self->m_cpp);
-                PyObject_GC_Track(iter);
-                return iter;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
+    //     /* __reversed__ delegates to the type's rbegin() and rend() iterators if they
+    //     exist, and provides a thin Python wrapper around them that respects reference
+    //     semantics and const-ness. */
+    //     static PyObject* __reversed__(CRTP* self) {
+    //         try {
+    //             PyObject* iter = std::visit(Visitor{
+    //                 [self](CppType& cpp) -> PyObject* {
+    //                     using Begin = decltype(std::ranges::rbegin(std::declval<CppType>()));
+    //                     using End = decltype(std::ranges::rend(std::declval<CppType>()));
+    //                     using Iterator = Iterator<Begin, End>;
+    //                     PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
+    //                         PyObject_GetAttrString(
+    //                             reinterpret_cast<PyObject*>(Py_TYPE(self)),
+    //                             typeid(Iterator).name()
+    //                         )
+    //                     );
+    //                     if (iter_type == nullptr) {
+    //                         Exception::from_python();
+    //                     }
+    //                     Iterator* iter = iter_type->tp_alloc(iter_type, 0);
+    //                     Py_DECREF(iter_type);
+    //                     if (iter == nullptr) {
+    //                         Exception::from_python();
+    //                     }
+    //                     new (&iter->begin) Iterator::Begin(std::ranges::rbegin(cpp));
+    //                     new (&iter->end) Iterator::End(std::ranges::rend(cpp));
+    //                     return iter;
+    //                 },
+    //                 [self](CppType* cpp) -> PyObject* {
+    //                     using Begin = decltype(std::ranges::rbegin(std::declval<CppType>()));
+    //                     using End = decltype(std::ranges::rend(std::declval<CppType>()));
+    //                     using Iterator = Iterator<Begin, End>;
+    //                     PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
+    //                         PyObject_GetAttrString(
+    //                             reinterpret_cast<PyObject*>(Py_TYPE(self)),
+    //                             typeid(Iterator).name()
+    //                         )
+    //                     );
+    //                     if (iter_type == nullptr) {
+    //                         Exception::from_python();
+    //                     }
+    //                     Iterator* iter = iter_type->tp_alloc(iter_type, 0);
+    //                     Py_DECREF(iter_type);
+    //                     if (iter == nullptr) {
+    //                         Exception::from_python();
+    //                     }
+    //                     new (&iter->begin) Iterator::Begin(std::ranges::rbegin(*cpp));
+    //                     new (&iter->end) Iterator::End(std::ranges::rend(*cpp));
+    //                     return iter;
+    //                 },
+    //                 [self](const CppType* cpp) -> PyObject* {
+    //                     using Begin = decltype(std::ranges::rbegin(std::declval<const CppType>()));
+    //                     using End = decltype(std::ranges::rend(std::declval<const CppType>()));
+    //                     using Iterator = Iterator<Begin, End>;
+    //                     PyTypeObject* iter_type = reinterpret_cast<PyTypeObject*>(
+    //                         PyObject_GetAttrString(
+    //                             reinterpret_cast<PyObject*>(Py_TYPE(self)),
+    //                             typeid(Iterator).name()
+    //                         )
+    //                     );
+    //                     if (iter_type == nullptr) {
+    //                         Exception::from_python();
+    //                     }
+    //                     Iterator* iter = iter_type->tp_alloc(iter_type, 0);
+    //                     Py_DECREF(iter_type);
+    //                     if (iter == nullptr) {
+    //                         Exception::from_python();
+    //                     }
+    //                     new (&iter->begin) Iterator::Begin(std::ranges::rbegin(*cpp));
+    //                     new (&iter->end) Iterator::End(std::ranges::rend(*cpp));
+    //                     return iter;
+    //                 }
+    //             }, self->m_cpp);
+    //             PyObject_GC_Track(iter);
+    //             return iter;
+    //         } catch (...) {
+    //             Exception::to_python();
+    //             return nullptr;
+    //         }
+    //     }
 
-        /* tp_repr demangles the exact C++ type name and includes memory address
-        similar to Python. */
-        static PyObject* __repr__(CRTP* self) {
-            try {
-                std::string str = std::visit(Visitor{
-                    [](const CppType& cpp) {
-                        return repr(cpp);
-                    },
-                    [](const CppType* cpp) {
-                        return repr(*cpp);
-                    }
-                }, self->m_cpp);
-                PyObject* result = PyUnicode_FromStringAndSize(
-                    str.c_str(),
-                    str.size()
-                );
-                if (result == nullptr) {
-                    return nullptr;
-                }
-                return result;
-            } catch (...) {
-                Exception::to_python();
-                return nullptr;
-            }
-        }
+    //     /* tp_repr demangles the exact C++ type name and includes memory address
+    //     similar to Python. */
+    //     static PyObject* __repr__(CRTP* self) {
+    //         try {
+    //             std::string str = std::visit(Visitor{
+    //                 [](const CppType& cpp) {
+    //                     return repr(cpp);
+    //                 },
+    //                 [](const CppType* cpp) {
+    //                     return repr(*cpp);
+    //                 }
+    //             }, self->m_cpp);
+    //             PyObject* result = PyUnicode_FromStringAndSize(
+    //                 str.c_str(),
+    //                 str.size()
+    //             );
+    //             if (result == nullptr) {
+    //                 return nullptr;
+    //             }
+    //             return result;
+    //         } catch (...) {
+    //             Exception::to_python();
+    //             return nullptr;
+    //         }
+    //     }
 
-        /// TODO: maybe there needs to be some handling to make sure that the container
-        /// yields specifically lvalue references to Python objects?  I might also need
-        /// to const_cast them in the __clear__ method in order to properly release
-        /// everything.
+    //     /// TODO: maybe there needs to be some handling to make sure that the container
+    //     /// yields specifically lvalue references to Python objects?  I might also need
+    //     /// to const_cast them in the __clear__ method in order to properly release
+    //     /// everything.
 
-        /* tp_traverse registers any Python objects that are owned by the C++ object
-        with Python's cyclic garbage collector. */
-        static int __traverse__(CRTP* self, visitproc visit, void* arg) {
-            if constexpr (
-                impl::iterable<CppType> &&
-                std::derived_from<std::decay_t<impl::iter_type<CppType>>, Object>
-            ) {
-                if (std::holds_alternative<CppType>(self->m_cpp)) {
-                    for (auto&& item : std::get<CppType>(self->m_cpp)) {
-                        Py_VISIT(ptr(item));
-                    }
-                }
-            }
-            Py_VISIT(Py_TYPE(self));  // required for heap types
-            return 0;
-        }
+    //     /* tp_traverse registers any Python objects that are owned by the C++ object
+    //     with Python's cyclic garbage collector. */
+    //     static int __traverse__(CRTP* self, visitproc visit, void* arg) {
+    //         if constexpr (
+    //             impl::iterable<CppType> &&
+    //             std::derived_from<std::decay_t<impl::iter_type<CppType>>, Object>
+    //         ) {
+    //             if (std::holds_alternative<CppType>(self->m_cpp)) {
+    //                 for (auto&& item : std::get<CppType>(self->m_cpp)) {
+    //                     Py_VISIT(ptr(item));
+    //                 }
+    //             }
+    //         }
+    //         Py_VISIT(Py_TYPE(self));  // required for heap types
+    //         return 0;
+    //     }
 
-        /* tp_clear breaks possible reference cycles for Python objects that are owned
-        by the C++ object.  Note that special care has to be taken to avoid
-        double-freeing any Python objects between this method and the `__dealloc__()`
-        destructor. */
-        static int __clear__(CRTP* self) {
-            if constexpr (
-                impl::iterable<CppType> &&
-                std::derived_from<std::decay_t<impl::iter_type<CppType>>, Object>
-            ) {
-                if (std::holds_alternative<CppType>(self->m_cpp)) {
-                    /// NOTE: In order to avoid a double free, we release() all of the
-                    /// container's items here, so that when their destructors are called
-                    /// normally in __dealloc__(), they see a null pointer and do nothing.
-                    for (auto&& item : std::get<CppType>(self->m_cpp)) {
-                        Py_XDECREF(release(item));
-                    }
-                }
-            }
-            return 0;
-        }
+    //     /* tp_clear breaks possible reference cycles for Python objects that are owned
+    //     by the C++ object.  Note that special care has to be taken to avoid
+    //     double-freeing any Python objects between this method and the `__dealloc__()`
+    //     destructor. */
+    //     static int __clear__(CRTP* self) {
+    //         if constexpr (
+    //             impl::iterable<CppType> &&
+    //             std::derived_from<std::decay_t<impl::iter_type<CppType>>, Object>
+    //         ) {
+    //             if (std::holds_alternative<CppType>(self->m_cpp)) {
+    //                 /// NOTE: In order to avoid a double free, we release() all of the
+    //                 /// container's items here, so that when their destructors are called
+    //                 /// normally in __dealloc__(), they see a null pointer and do nothing.
+    //                 for (auto&& item : std::get<CppType>(self->m_cpp)) {
+    //                     Py_XDECREF(release(item));
+    //                 }
+    //             }
+    //         }
+    //         return 0;
+    //     }
 
-    };
+    // };
 
 }
 
@@ -9499,7 +9509,7 @@ namespace impl {
 /// TODO: what about isinstance/issubclass?
 
 
-template <typename T, impl::originates_from_cpp Self>
+template <typename T, impl::has_cpp Self>
 struct __isinstance__<T, Self>                              : Returns<bool> {
     /// TODO: is this default behavior?
     static bool operator()(const T& obj) {
@@ -9508,7 +9518,7 @@ struct __isinstance__<T, Self>                              : Returns<bool> {
 };
 
 
-template <impl::originates_from_cpp Self, typename T>
+template <impl::has_cpp Self, typename T>
     requires (std::convertible_to<T, impl::cpp_type<Self>>)
 struct __init__<Self, T>                                    : Returns<Self> {
     static Self operator()(T&& value) {
@@ -9517,7 +9527,7 @@ struct __init__<Self, T>                                    : Returns<Self> {
 };
 
 
-template <impl::originates_from_cpp Self, typename... Args>
+template <impl::has_cpp Self, typename... Args>
     requires (std::constructible_from<impl::cpp_type<Self>, Args...>)
 struct __explicit_init__<Self, Args...>                     : Returns<Self> {
     static Self operator()(Args&&... args) {
@@ -9526,7 +9536,7 @@ struct __explicit_init__<Self, Args...>                     : Returns<Self> {
 };
 
 
-template <impl::originates_from_cpp Self, typename T>
+template <impl::has_cpp Self, typename T>
     requires (std::convertible_to<impl::cpp_type<Self>, T>)
 struct __cast__<Self, T>                                    : Returns<T> {
     static T operator()(const Self& self) {
@@ -9535,7 +9545,7 @@ struct __cast__<Self, T>                                    : Returns<T> {
 };
 
 
-template <impl::originates_from_cpp Self, typename T>
+template <impl::has_cpp Self, typename T>
     requires (impl::explicitly_convertible_to<impl::cpp_type<Self>, T>)
 struct __explicit_cast__<Self, T>                           : Returns<T> {
     static T operator()(const Self& self) {
@@ -9544,7 +9554,7 @@ struct __explicit_cast__<Self, T>                           : Returns<T> {
 };
 
 
-template <impl::originates_from_cpp Self, typename... Args>
+template <impl::has_cpp Self, typename... Args>
     requires (std::is_invocable_v<impl::cpp_type<Self>, Args...>)
 struct __call__<Self, Args...> : Returns<std::invoke_result_t<impl::cpp_type<Self>, Args...>> {};
 
@@ -9553,7 +9563,7 @@ struct __call__<Self, Args...> : Returns<std::invoke_result_t<impl::cpp_type<Sel
 /// be deduced here.
 
 
-template <impl::originates_from_cpp Self, typename... Key>
+template <impl::has_cpp Self, typename... Key>
     requires (impl::supports_lookup<impl::cpp_type<Self>, Key...>)
 struct __getitem__<Self, Key...> : Returns<impl::lookup_type<impl::cpp_type<Self>, Key...>> {
     template <typename... Ks>
@@ -9563,64 +9573,64 @@ struct __getitem__<Self, Key...> : Returns<impl::lookup_type<impl::cpp_type<Self
 };
 
 
-template <impl::originates_from_cpp Self, typename Value, typename... Key>
+template <impl::has_cpp Self, typename Value, typename... Key>
     requires (impl::supports_item_assignment<impl::cpp_type<Self>, Value, Key...>)
 struct __setitem__<Self, Value, Key...> : Returns<void> {};
 
 
-template <impl::originates_from_cpp Self>
+template <impl::has_cpp Self>
     requires (impl::has_size<impl::cpp_type<Self>>)
 struct __len__<Self> : Returns<size_t> {};
 
 
-template <impl::originates_from_cpp Self>
+template <impl::has_cpp Self>
     requires (impl::iterable<impl::cpp_type<Self>>)
 struct __iter__<Self> : Returns<impl::iter_type<impl::cpp_type<Self>>> {};
 
 
-template <impl::originates_from_cpp Self>
+template <impl::has_cpp Self>
     requires (impl::reverse_iterable<impl::cpp_type<Self>>)
 struct __reversed__<Self> : Returns<impl::reverse_iter_type<impl::cpp_type<Self>>> {};
 
 
-template <impl::originates_from_cpp Self, typename Key>
+template <impl::has_cpp Self, typename Key>
     requires (impl::has_contains<impl::cpp_type<Self>, Key>)
 struct __contains__<Self, Key> : Returns<bool> {};
 
 
-template <impl::originates_from_cpp Self>
+template <impl::has_cpp Self>
     requires (impl::hashable<impl::cpp_type<Self>>)
 struct __hash__<Self> : Returns<size_t> {};
 
 
-template <impl::originates_from_cpp Self>
+template <impl::has_cpp Self>
     requires (impl::has_abs<impl::cpp_type<Self>>)
 struct __abs__<Self> : Returns<impl::abs_type<impl::cpp_type<Self>>> {};
 
 
-template <impl::originates_from_cpp Self>
+template <impl::has_cpp Self>
     requires (impl::has_pos<impl::cpp_type<Self>>)
 struct __pos__<Self> : Returns<impl::pos_type<impl::cpp_type<Self>>> {};
 
 
-template <impl::originates_from_cpp Self>
+template <impl::has_cpp Self>
     requires (impl::has_neg<impl::cpp_type<Self>>)
 struct __neg__<Self> : Returns<impl::neg_type<impl::cpp_type<Self>>> {};
 
 
-template <impl::originates_from_cpp Self>
+template <impl::has_cpp Self>
     requires (impl::has_preincrement<impl::cpp_type<Self>>)
 struct __increment__<Self> : Returns<impl::preincrement_type<impl::cpp_type<Self>>> {};
 
 
-template <impl::originates_from_cpp Self>
+template <impl::has_cpp Self>
     requires (impl::has_predecrement<impl::cpp_type<Self>>)
 struct __decrement__<Self> : Returns<impl::predecrement_type<impl::cpp_type<Self>>> {};
 
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_lt<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __lt__<L, R> : Returns<impl::lt_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9628,7 +9638,7 @@ struct __lt__<L, R> : Returns<impl::lt_type<impl::cpp_type<L>, impl::cpp_type<R>
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_le<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __le__<L, R> : Returns<impl::le_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9636,7 +9646,7 @@ struct __le__<L, R> : Returns<impl::le_type<impl::cpp_type<L>, impl::cpp_type<R>
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_eq<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __eq__<L, R> : Returns<impl::eq_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9644,7 +9654,7 @@ struct __eq__<L, R> : Returns<impl::eq_type<impl::cpp_type<L>, impl::cpp_type<R>
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_ne<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __ne__<L, R> : Returns<impl::ne_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9652,7 +9662,7 @@ struct __ne__<L, R> : Returns<impl::ne_type<impl::cpp_type<L>, impl::cpp_type<R>
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_ge<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __ge__<L, R> : Returns<impl::ge_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9660,7 +9670,7 @@ struct __ge__<L, R> : Returns<impl::ge_type<impl::cpp_type<L>, impl::cpp_type<R>
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_gt<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __gt__<L, R> : Returns<impl::gt_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9668,7 +9678,7 @@ struct __gt__<L, R> : Returns<impl::gt_type<impl::cpp_type<L>, impl::cpp_type<R>
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_add<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __add__<L, R> : Returns<impl::add_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9676,7 +9686,7 @@ struct __add__<L, R> : Returns<impl::add_type<impl::cpp_type<L>, impl::cpp_type<
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_iadd<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __iadd__<L, R> : Returns<impl::iadd_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9684,7 +9694,7 @@ struct __iadd__<L, R> : Returns<impl::iadd_type<impl::cpp_type<L>, impl::cpp_typ
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_sub<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __sub__<L, R> : Returns<impl::sub_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9692,7 +9702,7 @@ struct __sub__<L, R> : Returns<impl::sub_type<impl::cpp_type<L>, impl::cpp_type<
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_isub<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __isub__<L, R> : Returns<impl::isub_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9700,7 +9710,7 @@ struct __isub__<L, R> : Returns<impl::isub_type<impl::cpp_type<L>, impl::cpp_typ
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_mul<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __mul__<L, R> : Returns<impl::mul_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9708,7 +9718,7 @@ struct __mul__<L, R> : Returns<impl::mul_type<impl::cpp_type<L>, impl::cpp_type<
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_imul<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __imul__<L, R> : Returns<impl::imul_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9716,7 +9726,7 @@ struct __imul__<L, R> : Returns<impl::imul_type<impl::cpp_type<L>, impl::cpp_typ
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_truediv<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __truediv__<L, R> : Returns<impl::truediv_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9724,7 +9734,7 @@ struct __truediv__<L, R> : Returns<impl::truediv_type<impl::cpp_type<L>, impl::c
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_itruediv<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __itruediv__<L, R> : Returns<impl::itruediv_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9732,7 +9742,7 @@ struct __itruediv__<L, R> : Returns<impl::itruediv_type<impl::cpp_type<L>, impl:
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_mod<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __mod__<L, R> : Returns<impl::mod_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9740,7 +9750,7 @@ struct __mod__<L, R> : Returns<impl::mod_type<impl::cpp_type<L>, impl::cpp_type<
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_imod<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __imod__<L, R> : Returns<impl::imod_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9748,7 +9758,7 @@ struct __imod__<L, R> : Returns<impl::imod_type<impl::cpp_type<L>, impl::cpp_typ
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_pow<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __pow__<L, R> : Returns<impl::pow_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9756,7 +9766,7 @@ struct __pow__<L, R> : Returns<impl::pow_type<impl::cpp_type<L>, impl::cpp_type<
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_lshift<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __lshift__<L, R> : Returns<impl::lshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9764,7 +9774,7 @@ struct __lshift__<L, R> : Returns<impl::lshift_type<impl::cpp_type<L>, impl::cpp
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_ilshift<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __ilshift__<L, R> : Returns<impl::ilshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9772,7 +9782,7 @@ struct __ilshift__<L, R> : Returns<impl::ilshift_type<impl::cpp_type<L>, impl::c
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_rshift<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __rshift__<L, R> : Returns<impl::rshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9780,7 +9790,7 @@ struct __rshift__<L, R> : Returns<impl::rshift_type<impl::cpp_type<L>, impl::cpp
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_irshift<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __irshift__<L, R> : Returns<impl::irshift_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9788,7 +9798,7 @@ struct __irshift__<L, R> : Returns<impl::irshift_type<impl::cpp_type<L>, impl::c
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_and<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __and__<L, R> : Returns<impl::and_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9796,7 +9806,7 @@ struct __and__<L, R> : Returns<impl::and_type<impl::cpp_type<L>, impl::cpp_type<
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_iand<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __iand__<L, R> : Returns<impl::iand_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9804,7 +9814,7 @@ struct __iand__<L, R> : Returns<impl::iand_type<impl::cpp_type<L>, impl::cpp_typ
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_or<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __or__<L, R> : Returns<impl::or_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9812,7 +9822,7 @@ struct __or__<L, R> : Returns<impl::or_type<impl::cpp_type<L>, impl::cpp_type<R>
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_ior<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __ior__<L, R> : Returns<impl::ior_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9820,7 +9830,7 @@ struct __ior__<L, R> : Returns<impl::ior_type<impl::cpp_type<L>, impl::cpp_type<
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_xor<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __xor__<L, R> : Returns<impl::xor_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};
@@ -9828,7 +9838,7 @@ struct __xor__<L, R> : Returns<impl::xor_type<impl::cpp_type<L>, impl::cpp_type<
 
 template <typename L, typename R>
     requires (
-        (impl::originates_from_cpp<L> || impl::originates_from_cpp<R>) &&
+        (impl::has_cpp<L> || impl::has_cpp<R>) &&
         impl::has_ixor<impl::cpp_type<L>, impl::cpp_type<R>>
     )
 struct __ixor__<L, R> : Returns<impl::ixor_type<impl::cpp_type<L>, impl::cpp_type<R>>> {};

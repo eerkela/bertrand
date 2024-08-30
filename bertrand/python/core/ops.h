@@ -4,7 +4,6 @@
 #include "declarations.h"
 #include "object.h"
 #include "except.h"
-#include "type.h"
 
 
 namespace py {
