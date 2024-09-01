@@ -260,9 +260,9 @@ struct Interface<Type<Code>> {
 };
 
 
-template <typename T>
-struct __isinstance__<T, Code>                              : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
+template <typename T, impl::is<Code> Base>
+struct __isinstance__<T, Base>                              : Returns<bool> {
+    static constexpr bool operator()(Base&& obj) {
         if constexpr (impl::dynamic_type<T>) {
             return PyCode_Check(ptr(obj));
         } else {
@@ -272,33 +272,32 @@ struct __isinstance__<T, Code>                              : Returns<bool> {
 };
 
 
-template <typename T>
-struct __issubclass__<T, Code>                              : Returns<bool> {
-    static consteval bool operator()() { return std::derived_from<T, Interface<Code>>; }
+template <typename T, impl::is<Code> Base>
+struct __issubclass__<T, Base>                              : Returns<bool> {
+    static consteval bool operator()() { return impl::inherits<T, Interface<Code>>; }
 };
 
 
 /* Implicitly convert a source string into a compiled code object. */
-template <typename Source>
-    requires (std::convertible_to<std::decay_t<Source>, std::string>)
+template <std::convertible_to<std::string> Source>
 struct __init__<Code, Source>                               : Returns<Code> {
     static auto operator()(const std::string& path);
 };
 
 
 /* Execute the code object with an empty context. */
-template <>
-struct __call__<Code>                                       : Returns<Dict<Str, Object>> {
-    static auto operator()(const Code& code);  // defined in __init__.h
+template <impl::is<Code> Self>
+struct __call__<Self>                                       : Returns<Dict<Str, Object>> {
+    static auto operator()(Self&& self);  // defined in __init__.h
 };
 
 
 /* Execute the code object with a given context, which can be either mutable or a
 temporary. */
-template <std::convertible_to<Dict<Str, Object>> Context>
-struct __call__<Code, Context>                              : Returns<Dict<Str, Object>> {
-    static auto operator()(const Code& code, Dict<Str, Object>& context);  // defined in __init__.h
-    static auto operator()(const Code& code, Dict<Str, Object>&& context);  // defined in __init__.h
+template <impl::is<Code> Self, std::convertible_to<Dict<Str, Object>> Context>
+struct __call__<Self, Context>                              : Returns<Dict<Str, Object>> {
+    static auto operator()(Self&& self, Dict<Str, Object>& context);  // defined in __init__.h
+    static auto operator()(Self&& self, Dict<Str, Object>&& context);  // defined in __init__.h
 };
 
 
@@ -483,9 +482,9 @@ struct Interface<Type<Frame>> {
 };
 
 
-template <typename T>
-struct __isinstance__<T, Frame>                             : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
+template <typename T, impl::is<Frame> Base>
+struct __isinstance__<T, Base>                              : Returns<bool> {
+    static constexpr bool operator()(T&& obj) {
         if constexpr (impl::dynamic_type<T>) {
             return PyFrame_Check(ptr(obj));
         } else {
@@ -495,9 +494,9 @@ struct __isinstance__<T, Frame>                             : Returns<bool> {
 };
 
 
-template <typename T>
-struct __issubclass__<T, Frame>                             : Returns<bool> {
-    static consteval bool operator()() { return std::derived_from<T, Interface<Frame>>; }
+template <typename T, impl::is<Frame> Base>
+struct __issubclass__<T, Base>                              : Returns<bool> {
+    static consteval bool operator()() { return impl::inherits<T, Interface<Frame>>; }
 };
 
 
@@ -512,8 +511,8 @@ struct __init__<Frame> : Returns<Frame> {
 
 /* Converting a `cpptrace::stacktrace_frame` into a Python frame object will synthesize
 an interpreter frame with an empty bytecode object. */
-template <>
-struct __init__<Frame, cpptrace::stacktrace_frame>          : Returns<Frame> {
+template <impl::is<cpptrace::stacktrace_frame> T>
+struct __init__<Frame, T>                                   : Returns<Frame> {
     static auto operator()(const cpptrace::stacktrace_frame& frame) {
         PyObject* globals = PyDict_New();
         if (globals == nullptr) {
@@ -576,9 +575,9 @@ This is the main entry point for the Python interpreter, and causes the program 
 until it either terminates or encounters an error.  The return value is the result of
 the last evaluated expression, which can be the return value of a function, the yield
 value of a generator, etc. */
-template <>
-struct __call__<Frame> : Returns<Object> {
-    static auto operator()(const Frame& frame);
+template <impl::is<Frame> Self>
+struct __call__<Self>                                       : Returns<Object> {
+    static auto operator()(Frame&& frame);
 };
 
 

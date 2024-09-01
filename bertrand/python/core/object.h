@@ -43,7 +43,7 @@ template <typename T>
         impl::has_cpp<typename __as_object__<T>::type> &&
         impl::is<T, impl::cpp_type<typename __as_object__<T>::type>>
     )
-[[nodiscard]] auto wrap(T& obj) -> __as_object__<T>::type;  // defined in except.h
+[[nodiscard]] auto wrap(T& obj) -> __as_object__<T>::type;  // defined in ops.h
 
 
 /* Wrap a non-owning, immutable reference to a C++ object into a `py::Object` proxy
@@ -61,7 +61,7 @@ template <typename T>
         impl::has_cpp<typename __as_object__<T>::type> &&
         impl::is<T, impl::cpp_type<typename __as_object__<T>::type>>
     )
-[[nodiscard]] auto wrap(const T& obj) -> __as_object__<T>::type;  // defined in except.h
+[[nodiscard]] auto wrap(const T& obj) -> __as_object__<T>::type;  // defined in ops.h
 
 
 /* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper,
@@ -69,7 +69,7 @@ if such an object exists.  Does nothing if called on a pure Python or naked C++
 object.  If the wrapper does not own the backing object, this method will follow the
 internal pointer to resolve the reference. */
 template <typename T>
-[[nodiscard]] auto& unwrap(T& obj);
+[[nodiscard]] auto& unwrap(T& obj);  // defined in ops.h
 
 
 /* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper,
@@ -77,7 +77,7 @@ if such an object exists.  Does nothing if called on a pure Python or naked C++
 object.  If the wrapper does not own the backing object, this method will follow the
 internal pointer to resolve the reference. */
 template <typename T>
-[[nodiscard]] const auto& unwrap(const T& obj);
+[[nodiscard]] const auto& unwrap(const T& obj);  // defined in ops.h
 
 
 template <>
@@ -505,7 +505,7 @@ public:
     container types, and the allowable key types can be specified via the __contains__
     control struct. */
     template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
-    [[nodiscard]] bool contains(this Self&& self, Key& key);
+    [[nodiscard]] bool contains(this Self&& self, Key&& key);
 
     /* Contextually convert an Object into a boolean value for use in if/else 
     statements, with the same semantics as in Python. */
@@ -629,7 +629,7 @@ struct __isinstance__<T, Base>                              : Returns<bool> {
     static consteval bool operator()(T&& obj) {
         return std::derived_from<std::remove_cvref_t<T>, Object>;
     }
-    static constexpr bool operator()(T&& obj, Base&& cls);  // defined in except.h
+    static constexpr bool operator()(T&& obj, Base&& cls);  // defined in ops.h
 };
 
 
@@ -646,7 +646,7 @@ struct __issubclass__<T, Base>                              : Returns<bool> {
             return impl::type_like<U>;
         }
     }
-    static bool operator()(T&& obj, Base&& cls);  // defined in except.h
+    static bool operator()(T&& obj, Base&& cls);  // defined in ops.h
 };
 
 
@@ -708,7 +708,7 @@ struct __explicit_init__<Self, T>                           : Returns<Self> {
 `isinstance()` check. */
 template <impl::inherits<Object> From, impl::inherits<From> To>
 struct __cast__<From, To>                                   : Returns<To> {
-    static auto operator()(From&& from);  // defined in except.h
+    static auto operator()(From&& from);  // defined in ops.h
 };
 
 
