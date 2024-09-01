@@ -3,7 +3,7 @@
 
 #include "declarations.h"
 #include "except.h"
-// #include "ops.h"
+#include "ops.h"
 #include "object.h"
 
 
@@ -212,104 +212,6 @@ namespace impl {
         }        
     };
 
-    /* Introspect the proper signature for a py::Function instance from a generic
-    function pointer, reference, or object, such as a lambda. */
-    template <typename R, typename... A>
-    struct GetSignature<R(*)(A...)> {
-        using type = R(*)(A...);
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename... A>
-    struct GetSignature<R(*)(A...) noexcept> {
-        using type = R(*)(A...);
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...)> {
-        using type = R(C::*)(A...);
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) &> {
-        using type = R(C::*)(A...);
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) noexcept> {
-        using type = R(C::*)(A...);
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) & noexcept > {
-        using type = R(C::*)(A...);
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) const> {
-        using type = R(C::*)(A...) const;
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) const &> {
-        using type = R(C::*)(A...) const;
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) const noexcept> {
-        using type = R(C::*)(A...) const;
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) const & noexcept> {
-        using type = R(C::*)(A...) const;
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) volatile> {
-        using type = R(C::*)(A...) volatile;
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) volatile &> {
-        using type = R(C::*)(A...) volatile;
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) volatile noexcept> {
-        using type = R(C::*)(A...) volatile;
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) volatile & noexcept> {
-        using type = R(C::*)(A...) volatile;
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) const volatile> {
-        using type = R(C::*)(A...) const volatile;
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) const volatile &> {
-        using type = R(C::*)(A...) const volatile;
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) const volatile noexcept> {
-        using type = R(C::*)(A...) const volatile;
-        static constexpr bool enable = true;
-    };
-    template <typename R, typename C, typename... A>
-    struct GetSignature<R(C::*)(A...) const volatile & noexcept> {
-        using type = R(C::*)(A...) const volatile;
-        static constexpr bool enable = true;
-    };
-    template <impl::has_call_operator T>
-    struct GetSignature<T> {
-        using type = GetSignature<decltype(&T::operator())>::type;
-        static constexpr bool enable = GetSignature<decltype(&T::operator())>::enable;
-    };
-
     /// TODO: perhaps the solution is to write the implementation, but leave the
     /// export script as a forward declaration until types have been fully defined.
 
@@ -445,6 +347,154 @@ constexpr impl::UnboundArg<name> arg {};
 
 
 namespace impl {
+
+    /* Introspect the proper signature for a py::Function instance from a generic
+    function pointer, reference, or object, such as a lambda type. */
+    template <typename R, typename... A>
+    struct GetSignature<R(A...)> {
+        using type = R(*)(A...);
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename... A>
+    struct GetSignature<R(A...) noexcept> {
+        using type = R(*)(A...);
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename... A>
+    struct GetSignature<R(*)(A...)> {
+        using type = R(*)(A...);
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename... A>
+    struct GetSignature<R(*)(A...) noexcept> {
+        using type = R(*)(A...);
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...)> {
+        using type = R(C::*)(A...);
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) &> {
+        using type = R(C::*)(A...);
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) noexcept> {
+        using type = R(C::*)(A...);
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) & noexcept > {
+        using type = R(C::*)(A...);
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) const> {
+        using type = R(C::*)(A...) const;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) const &> {
+        using type = R(C::*)(A...) const;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) const noexcept> {
+        using type = R(C::*)(A...) const;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) const & noexcept> {
+        using type = R(C::*)(A...) const;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) volatile> {
+        using type = R(C::*)(A...) volatile;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) volatile &> {
+        using type = R(C::*)(A...) volatile;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) volatile noexcept> {
+        using type = R(C::*)(A...) volatile;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) volatile & noexcept> {
+        using type = R(C::*)(A...) volatile;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) const volatile> {
+        using type = R(C::*)(A...) const volatile;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) const volatile &> {
+        using type = R(C::*)(A...) const volatile;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) const volatile noexcept> {
+        using type = R(C::*)(A...) const volatile;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(C::*)(A...) const volatile & noexcept> {
+        using type = R(C::*)(A...) const volatile;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(*)(this C&, A...)> {
+        using type = R(C::*)(A...);
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(*)(this C&, A...) noexcept> {
+        using type = R(C::*)(A...);
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(*)(this const C&, A...)> {
+        using type = R(C::*)(A...) const;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(*)(this const C&, A...) noexcept> {
+        using type = R(C::*)(A...) const;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(*)(this volatile C&, A...)> {
+        using type = R(C::*)(A...) volatile;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(*)(this volatile C&, A...) noexcept> {
+        using type = R(C::*)(A...) volatile;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(*)(this const volatile C&, A...)> {
+        using type = R(C::*)(A...) const volatile;
+        static constexpr bool enable = true;
+    };
+    template <typename R, typename C, typename... A>
+    struct GetSignature<R(*)(this const volatile C&, A...) noexcept> {
+        using type = R(C::*)(A...) const volatile;
+        static constexpr bool enable = true;
+    };
+    template <impl::has_call_operator T>
+    struct GetSignature<T> {
+        using type = GetSignature<decltype(&T::operator())>::type;
+        static constexpr bool enable = GetSignature<decltype(&T::operator())>::enable;
+    };
 
     /* Inspect an unannotated C++ argument in a py::Function. */
     template <typename T>
@@ -886,9 +936,9 @@ namespace impl {
 
     };
 
-    /* Translates arguments from the call site to the target signature if it is fully
-    satisfied, accounting for keyword args, default values, and variadic parameter
-    packs. */
+    /* Translates arguments from the call site to the target signature as long as it is
+    fully satisfied, accounting for keyword args, default values, and variadic
+    parameter packs. */
     template <typename target, typename... Source>
     struct Arguments {
     private:
@@ -1857,6 +1907,9 @@ namespace impl {
 
     };
 
+    /* After invoking a function with variadic positional arguments, the argument
+    iterators must be exhausted, otherwise there are additional positional arguments
+    that were not consumed. */
     template <typename Iter, std::sentinel_for<Iter> End>
     static void assert_var_args_are_consumed(Iter& iter, const End& end) {
         if (iter != end) {
@@ -1871,6 +1924,12 @@ namespace impl {
         }
     }
 
+    /// TODO: account for duplicate arguments from the source signature during
+    /// kwargs check.
+
+    /* Before invoking a function with variadic keyword arguments, those arguments need
+    to be scanned to ensure each of them are recognized and do not interfere with other
+    keyword arguments given in the source signature. */
     template <typename target, size_t... Is, typename Kwargs>
     static void assert_var_kwargs_are_recognized(
         std::index_sequence<Is...>,

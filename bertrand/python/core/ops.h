@@ -11,31 +11,35 @@ namespace py {
 
 namespace impl {
     static PyObject* one = (Interpreter::init(), PyLong_FromLong(1));  // immortal
-}
 
-
-template <std::derived_from<Object> T>
-struct __as_object__<T>                                     : Returns<T> {
-    static decltype(auto) operator()(T&& value) { return std::forward<T>(value); }
-};
-
-
-/* Convert an arbitrary C++ value to an equivalent Python object if it isn't one
-already. */
-template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
-[[nodiscard]] decltype(auto) as_object(T&& value) {
-    using Obj = __as_object__<std::remove_cvref_t<T>>;
-    static_assert(
-        !std::same_as<typename Obj::type, Object>,
-        "C++ types cannot be converted to py::Object directly.  Check your "
-        "specialization of __as_object__ for this type and ensure the Return type "
-        "derives from py::Object, and is not py::Object itself."
-    );
-    if constexpr (impl::has_call_operator<Obj>) {
-        return Obj{}(std::forward<T>(value));
-    } else {
-        return typename Obj::type(std::forward<T>(value));
+    /* Construct a new instance of an inner `Type<Wrapper>::__python__` type using
+    Python-based memory allocation and forwarding to its C++ constructor to complete
+    initialization. */
+    template <typename Wrapper, typename... Args>
+        requires (
+            std::derived_from<Wrapper, Object> && has_python<Wrapper> &&
+            std::constructible_from<typename Wrapper::__python__, Args...>
+        )
+    static Wrapper construct(Args&&... args) {
+        using Self = Wrapper::__python__;
+        Type<Wrapper> type;
+        PyTypeObject* cls = ptr(type);
+        Self* self = reinterpret_cast<Self*>(cls->tp_alloc(cls, 0));
+        if (self == nullptr) {
+            Exception::from_python();
+        }
+        try {
+            new (self) Self(std::forward<Args>(args)...);
+        } catch (...) {
+            cls->tp_free(self);
+            throw;
+        }
+        if (cls->tp_flags & Py_TPFLAGS_HAVE_GC) {
+            PyObject_GC_Track(self);
+        }
+        return reinterpret_steal<Wrapper>(self);
     }
+
 }
 
 
@@ -68,10 +72,7 @@ template <typename Self, typename Key> requires (__contains__<Self, Key>::enable
     if constexpr (impl::has_call_operator<__contains__<Self, Key>>) {
         return __contains__<Self, Key>{}(self, key);
 
-    } else if constexpr (
-        impl::originates_from_cpp<Self> &&
-        impl::cpp_or_originates_from_cpp<Key>
-    ) {
+    } else if constexpr (impl::has_cpp<Self>) {
         static_assert(
             impl::has_contains<impl::cpp_type<Self>, impl::cpp_type<Key>>,
             "__contains__<Self, Key> is enabled for operands whose C++ "
@@ -92,52 +93,26 @@ template <typename Self, typename Key> requires (__contains__<Self, Key>::enable
 }
 
 
-/// TODO: __isinstance__ and __issubclass__ should test for inheritance from a Python
-/// object's `Interface<T>` type, not the type itself.  That allows it to correctly
-/// model multiple inheritance.
-
-
 // TODO: implement the extra overloads for Object, BertrandMeta, Type, and Tuple of
 // types/generic objects
 
 
-// TODO: there also might be an issue with infinite recursion during automated
-// isinstance() calls when converting Object to one of its subclasses, if that
-// conversion occurs within the logic of isinstance() itself.
-
-
-// TODO: update docs to better reflect the actual behavior of each overload.
-//
-//  isinstance<Base>(obj): checks if obj can be safely converted to Base when narrowing
-//      a dynamic type.
-//  isinstance(obj, base): equivalent to a Python-level isinstance() check.  Base must
-//      be type-like, a union of types, or a dynamic object which can be narrowed to
-//      either of the above.
-//  issubclass<Base, Derived>(): does a compile-time check to see if Derived inherits
-//      from Base.
-//  issubclass<Base>(obj): devolves to an issubclass<Base, Derived>() check unless obj
-//      is a dynamic object which may be narrowed to a single type.
-//  issubclass(obj, base): equivalent to a Python-level issubclass() check.  Derived
-//      must be a single type or a dynamic object which can be narrowed to a single
-//      type, and base must be type-like, a union of types, or a dynamic object which
-//      can be narrowed to either of the above.
-
-
-/* Equivalent to Python `isinstance(obj, base)`, except that base is given as a
-template parameter.  If a specialization of `__isinstance__` exists and implements a
-call operator that takes a single `const Derived&` argument, then it will be called
-directly.  Otherwise, if the argument is a dynamic object, it falls back to a
-Python-level `isinstance()` check.  In all other cases, it will be evaluated at
-compile-time by calling `issubclass<Derived, Base>()`. */
+/* Checks if the given object can be safely converted to the specified base type.  This
+is automatically called whenever a Python object is narrowed from a parent type to one
+of its subclasses. */
 template <typename Base, typename Derived>
 [[nodiscard]] constexpr bool isinstance(const Derived& obj) {
     if constexpr (std::is_invocable_v<
         __isinstance__<Derived, Base>,
         const Derived&
     >) {
+        static_assert(
+            std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, const Derived&>,
+            "__isinstance__<Derived, Base> must return a boolean value."
+        );
         return __isinstance__<Derived, Base>{}(obj);
 
-    } else if constexpr (impl::python_like<Base> && impl::dynamic_type<Derived>) {
+    } else if constexpr (impl::has_type<Base> && impl::dynamic_type<Derived>) {
         int result = PyObject_IsInstance(
             ptr(obj),
             ptr(Type<Base>())
@@ -155,8 +130,8 @@ template <typename Base, typename Derived>
 
 /* Equivalent to Python `isinstance(obj, base)`.  This overload must be explicitly
 enabled by defining a two-argument call operator in a specialization of
-`__issubclass__`.  By default, this is only done for `Type`, `BertrandMeta`, `Object`,
-and `Tuple` as right-hand arguments. */
+`__isinstance__`.  By default, this is only done for bases which are type-like, a union
+of types, or a dynamic object which can be narrowed to either of the above. */
 template <typename Derived, typename Base>
     requires (std::is_invocable_r_v<
         bool,
@@ -169,38 +144,51 @@ template <typename Derived, typename Base>
 }
 
 
-// TODO: isinstance() seems to work, but issubclass() is still complicated
-
-
-/* Equivalent to Python `issubclass(obj, base)`, except that both arguments are given
-as template parameters, marking the check as `consteval`.  This is essentially
-equivalent to a `std::derived_from<>` check, except that custom logic from the
-`__issubclass__` control structure will be used if available. */
+/* Does a compile-time check to see if the derived type inherits from the base type.
+Ordinarily, this is equivalent to a `std::derived_from<>` concept, except that custom
+logic is allowed by defining a zero-argument call operator in a specialization of
+`__issubclass__`, and `Interface<T>` specializations are used to handle Python objects
+in a way that allows for multiple inheritance. */
 template <typename Derived, typename Base>
 [[nodiscard]] consteval bool issubclass() {
     if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>>) {
+        static_assert(
+            std::is_invocable_r_v<bool, __issubclass__<Derived, Base>>,
+            "__issubclass__<Derived, Base> must return a boolean value."
+        );
         return __issubclass__<Derived, Base>{}();
+
+    } else if constexpr (impl::has_interface<Derived> && impl::has_interface<Base>) {
+        return std::derived_from<Interface<Derived>, Interface<Base>>;
+
+    } else if constexpr (impl::has_interface<Derived>) {
+        return std::derived_from<Interface<Derived>, Base>;
+
+    } else if constexpr (impl::has_interface<Base>) {
+        return std::derived_from<Derived, Interface<Base>>;
+
     } else {
         return std::derived_from<Derived, Base>;
     }
 }
 
 
-/* Equivalent to Python `issubclass(obj, base)`, except that the base is given as a
-template parameter, marking the check as `constexpr`.  This overload must be explicitly
-enabled by defining a one-argument call operator in a specialization of the
-`__issubclass__` control structure.  By default, this is only done for `Type`,
-`BertrandMeta`, and `Object` as left-hand arguments, as well as `Type`, `BertrandMeta`,
-`Object`, and `Tuple` as right-hand arguments. */
+/* Devolves to a compile-time `issubclass<Derived, Base>()` check unless the object is
+a dynamic object which may be narrowed to a single type, or a one-argument call
+operator is defined in a specialization of `__issubclass__`. */
 template <std::derived_from<Object> Base, std::derived_from<Object> Derived>
 [[nodiscard]] constexpr bool issubclass(const Derived& obj) {
     if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>, const Derived&>) {
+        static_assert(
+            std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, const Derived&>,
+            "__issubclass__<Derived, Base> must return a boolean value."
+        );
         return __issubclass__<Derived, Base>{}(obj);
 
-    } else if constexpr (impl::dynamic_type<Derived>) {
+    } else if constexpr (impl::has_type<Base> && impl::dynamic_type<Derived>) {
         return PyType_Check(ptr(obj)) && PyObject_IsSubclass(
             ptr(obj),
-            ptr(Type<Base>())  // TODO: correct?
+            ptr(Type<Base>())
         );
 
     } else if constexpr (impl::type_like<Derived>) {
@@ -214,9 +202,9 @@ template <std::derived_from<Object> Base, std::derived_from<Object> Derived>
 
 /* Equivalent to Python `issubclass(obj, base)`.  This overload must be explicitly
 enabled by defining a two-argument call operator in a specialization of
-`__issubclass__`.  By default, this is only done for `Type`, `BertrandMeta`, and
-`Object`, as left-hand arguments, as well as `Type`, `BertrandMeta`, `Object`, and
-`Tuple` as right-hand arguments. */
+`__issubclass__`.  The derived type must be a single type or a dynamic object which can
+be narrowed to a single type, and the base must be type-like, a union of types, or a
+dynamic object which can be narrowed to such. */
 template <typename Derived, typename Base>
     requires (std::is_invocable_v<
         __issubclass__<Derived, Base>,
@@ -308,8 +296,8 @@ void delattr(const T& obj) {
 
 
 /* Equivalent to Python `repr(obj)`, but returns a std::string and attempts to
-represent C++ types using stream insertion operator (<<) or std::to_string.  If all
-else fails, falls back to typeid(obj).name(). */
+represent C++ types using the stream insertion operator (<<) or std::to_string.  If all
+else fails, falls back to demangling the result of typeid(obj).name(). */
 template <typename T>
 [[nodiscard]] std::string repr(const T& obj) {
     if constexpr (__as_object__<T>::enable) {
@@ -327,16 +315,18 @@ template <typename T>
         Py_DECREF(str);
         return result;
 
+    } else if constexpr (impl::has_to_string<T>) {
+        return std::to_string(obj);
+
     } else if constexpr (impl::has_stream_insertion<T>) {
         std::ostringstream stream;
         stream << obj;
         return stream.str();
 
-    } else if constexpr (impl::has_to_string<T>) {
-        return std::to_string(obj);
-
     } else {
-        return typeid(T).name();
+        return
+            "<" + impl::demangle(typeid(obj).name()) + " at " +
+            std::to_string(reinterpret_cast<size_t>(&obj)) + ">";
     }
 }
 
@@ -363,7 +353,7 @@ template <typename T> requires (__len__<T>::enable)
     if constexpr (impl::has_call_operator<__len__<T>>) {
         return __len__<T>{}(obj);
 
-    } else if constexpr (impl::cpp_or_originates_from_cpp<T>) {
+    } else if constexpr (impl::has_cpp<T>) {
         static_assert(
             impl::has_size<impl::cpp_type<T>>,
             "__len__<T> is enabled for a type whose C++ representation does not have "
@@ -413,7 +403,7 @@ template <std::derived_from<Object> Self> requires (__abs__<Self>::enable)
     if constexpr (impl::has_call_operator<__abs__<Self>>) {
         return __abs__<Self>{}(self);
 
-    } else if (impl::cpp_or_originates_from_cpp<Self>) {
+    } else if (impl::has_cpp<Self>) {
         static_assert(
             impl::has_abs<impl::cpp_type<Self>>,
             "__abs__<T> is enabled for a type whose C++ representation does not have "
@@ -454,8 +444,8 @@ template <typename Base, typename Exp> requires (__pow__<Base, Exp>::enable)
         return __pow__<Base, Exp>{}(base, exp);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<Base> &&
-        impl::cpp_or_originates_from_cpp<Exp>
+        (impl::cpp_like<Base> || impl::has_cpp<Base>) &&
+        (impl::cpp_like<Exp> || impl::has_cpp<Exp>)
     ) {
         if constexpr (
             impl::complex_like<impl::cpp_type<Base>> &&
@@ -553,9 +543,9 @@ template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
         return __pow__<Base, Exp>{}(base, exp, mod);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<Base> &&
-        impl::cpp_or_originates_from_cpp<Exp> &&
-        impl::cpp_or_originates_from_cpp<Mod>
+        (impl::cpp_like<Base> || impl::has_cpp<Base>) &&
+        (impl::cpp_like<Exp> || impl::has_cpp<Exp>) &&
+        (impl::cpp_like<Mod> || impl::has_cpp<Mod>)
     ) {
         return pow(unwrap(base), unwrap(exp), unwrap(mod));
 
@@ -658,7 +648,7 @@ decltype(auto) operator~(const Self& self) {
     if constexpr (impl::has_call_operator<__invert__<Self>>) {
         return __invert__<Self>{}(self);
 
-    } else if constexpr (impl::cpp_or_originates_from_cpp<Self>) {
+    } else if constexpr (impl::has_cpp<Self>) {
         static_assert(
             impl::has_invert<impl::cpp_type<Self>>,
             "__invert__<T> is enabled for a type whose C++ representation does not "
@@ -692,7 +682,7 @@ decltype(auto) operator+(const Self& self) {
     if constexpr (impl::has_call_operator<__pos__<Self>>) {
         return __pos__<Self>{}(self);
 
-    } else if constexpr (impl::cpp_or_originates_from_cpp<Self>) {
+    } else if constexpr (impl::has_cpp<Self>) {
         static_assert(
             impl::has_pos<impl::cpp_type<Self>>,
             "__pos__<T> is enabled for a type whose C++ representation does not have "
@@ -726,7 +716,7 @@ decltype(auto) operator-(const Self& self) {
     if constexpr (impl::has_call_operator<__neg__<Self>>) {
         return __neg__<Self>{}(self);
 
-    } else if constexpr (impl::cpp_or_originates_from_cpp<Self>) {
+    } else if constexpr (impl::has_cpp<Self>) {
         static_assert(
             impl::has_neg<impl::cpp_type<Self>>,
             "__neg__<T> is enabled for a type whose C++ representation does not have "
@@ -769,7 +759,7 @@ Self& operator++(Self& self) {
     if constexpr (impl::has_call_operator<__increment__<Self>>) {
         __increment__<Self>{}(self);
 
-    } else if constexpr (impl::cpp_or_originates_from_cpp<Self>) {
+    } else if constexpr (impl::has_cpp<Self>) {
         static_assert(
             impl::has_preincrement<impl::cpp_type<Self>>,
             "__increment__<T> is enabled for a type whose C++ representation does not "
@@ -808,7 +798,7 @@ Self& operator--(Self& self) {
     if constexpr (impl::has_call_operator<__decrement__<Self>>) {
         __decrement__<Self>{}(self);
 
-    } else if constexpr (impl::cpp_or_originates_from_cpp<Self>) {
+    } else if constexpr (impl::has_cpp<Self>) {
         static_assert(
             impl::has_predecrement<impl::cpp_type<Self>>,
             "__decrement__<T> is enabled for a type whose C++ representation does not "
@@ -841,8 +831,8 @@ decltype(auto) operator<(const L& lhs, const R& rhs) {
         return __lt__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_lt<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -884,8 +874,8 @@ decltype(auto) operator<=(const L& lhs, const R& rhs) {
         return __le__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_le<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -927,8 +917,8 @@ decltype(auto) operator==(const L& lhs, const R& rhs) {
         return __eq__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_eq<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -969,8 +959,8 @@ decltype(auto) operator!=(const L& lhs, const R& rhs) {
         return __ne__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_ne<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1011,8 +1001,8 @@ decltype(auto) operator>=(const L& lhs, const R& rhs) {
         return __ge__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_ge<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1054,8 +1044,8 @@ decltype(auto) operator>(const L& lhs, const R& rhs) {
         return __gt__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_gt<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1096,8 +1086,8 @@ decltype(auto) operator+(const L& lhs, const R& rhs) {
         return __add__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_add<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1143,8 +1133,8 @@ L& operator+=(L& lhs, const R& rhs) {
         __iadd__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_iadd<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1181,8 +1171,8 @@ decltype(auto) operator-(const L& lhs, const R& rhs) {
         return __sub__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_sub<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1228,8 +1218,8 @@ L& operator-=(L& lhs, const R& rhs) {
         __isub__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_isub<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1266,8 +1256,8 @@ decltype(auto) operator*(const L& lhs, const R& rhs) {
         return __mul__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_mul<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1313,8 +1303,8 @@ L& operator*=(L& lhs, const R& rhs) {
         __imul__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_imul<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1351,8 +1341,8 @@ decltype(auto) operator/(const L& lhs, const R& rhs) {
         return __truediv__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_truediv<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1398,8 +1388,8 @@ L& operator/=(L& lhs, const R& rhs) {
         __itruediv__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_itruediv<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1436,8 +1426,8 @@ decltype(auto) operator%(const L& lhs, const R& rhs) {
         return __mod__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_mod<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1483,8 +1473,8 @@ L& operator%=(L& lhs, const R& rhs) {
         __imod__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_imod<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1521,8 +1511,8 @@ decltype(auto) operator<<(const L& lhs, const R& rhs) {
         return __lshift__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_lshift<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1568,8 +1558,8 @@ L& operator<<=(L& lhs, const R& rhs) {
         __ilshift__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_ilshift<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1606,8 +1596,8 @@ decltype(auto) operator>>(const L& lhs, const R& rhs) {
         return __rshift__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_rshift<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1653,8 +1643,8 @@ L& operator>>=(L& lhs, const R& rhs) {
         __irshift__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_irshift<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1691,8 +1681,8 @@ decltype(auto) operator&(const L& lhs, const R& rhs) {
         return __and__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_and<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1738,8 +1728,8 @@ L& operator&=(L& lhs, const R& rhs) {
         __iand__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_iand<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1776,8 +1766,8 @@ decltype(auto) operator|(const L& lhs, const R& rhs) {
         return __or__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_or<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1823,8 +1813,8 @@ L& operator|=(L& lhs, const R& rhs) {
         __ior__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_ior<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1861,8 +1851,8 @@ decltype(auto) operator^(const L& lhs, const R& rhs) {
         return __xor__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_xor<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1908,8 +1898,8 @@ L& operator^=(L& lhs, const R& rhs) {
         __ixor__<L, R>{}(lhs, rhs);
 
     } else if constexpr (
-        impl::cpp_or_originates_from_cpp<L> &&
-        impl::cpp_or_originates_from_cpp<R>
+        (impl::cpp_like<L> || impl::has_cpp<L>) &&
+        (impl::cpp_like<R> || impl::has_cpp<R>)
     ) {
         static_assert(
             impl::has_ixor<impl::cpp_type<L>, impl::cpp_type<R>>,
@@ -1952,7 +1942,7 @@ namespace std {
         static constexpr size_t operator()(const T& obj) {
             if constexpr (py::impl::has_call_operator<py::__hash__<T>>) {
                 return py::__hash__<T>{}(obj);
-            } else if constexpr (py::impl::cpp_or_originates_from_cpp<T>) {
+            } else if constexpr (py::impl::has_cpp<T>) {
                 static_assert(
                     py::impl::hashable<py::impl::cpp_type<T>>,
                     "__hash__<T> is enabled for a type whose C++ representation does "

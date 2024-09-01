@@ -1552,8 +1552,8 @@ template <typename T>
 }
 
 
-template <typename T>
-constexpr bool __isinstance__<T, Object>::operator()(const T& obj, const Object& cls) {
+template <typename T, impl::is<Object> Base>
+constexpr bool __isinstance__<T, Base>::operator()(T&& obj, Base&& cls) {
     if constexpr (impl::python_like<T>) {
         int result = PyObject_IsInstance(
             ptr(obj),
@@ -1569,8 +1569,8 @@ constexpr bool __isinstance__<T, Object>::operator()(const T& obj, const Object&
 }
 
 
-template <typename T>
-bool __issubclass__<T, Object>::operator()(const T& obj, const Object& cls) {
+template <typename T, impl::is<Object> Base>
+bool __issubclass__<T, Base>::operator()(T&& obj, Base&& cls) {
     int result = PyObject_IsSubclass(
         ptr(as_object(obj)),
         ptr(cls)
@@ -1582,24 +1582,17 @@ bool __issubclass__<T, Object>::operator()(const T& obj, const Object& cls) {
 }
 
 
-template <std::derived_from<Object> From, std::derived_from<From> To>
-auto __cast__<From, To>::operator()(const From& from) {
-    if (isinstance<To>(from)) {
-        return reinterpret_borrow<To>(ptr(from));
-    } else {
-        throw TypeError(
-            "cannot convert Python object from type '" + repr(Type<From>()) +
-            "' to type '" + repr(Type<To>()) + "'"
-        );
-    }
-}
-
-
-template <std::derived_from<Object> From, std::derived_from<From> To>
+template <impl::inherits<Object> From, impl::inherits<From> To>
 auto __cast__<From, To>::operator()(From&& from) {
     if (isinstance<To>(from)) {
-        return reinterpret_steal<To>(release(from));
+        if constexpr (std::is_lvalue_reference_v<From>) {
+            return reinterpret_borrow<To>(ptr(from));
+        } else {
+            return reinterpret_steal<To>(release(from));
+        }
     } else {
+        /// TODO: Type<From> and Type<To> must apply std::remove_cvref_t<>?  Maybe that
+        /// can be rolled into the Type<> class itself?
         throw TypeError(
             "cannot convert Python object from type '" + repr(Type<From>()) +
             "' to type '" + repr(Type<To>()) + "'"
@@ -1608,8 +1601,9 @@ auto __cast__<From, To>::operator()(From&& from) {
 }
 
 
-template <std::derived_from<Object> From, std::integral To>
-To __explicit_cast__<From, To>::operator()(const From& from) {
+template <impl::inherits<Object> From, impl::cpp_like To>
+    requires (__as_object__<To>::enable && std::integral<To>)
+To __explicit_cast__<From, To>::operator()(From&& from) {
     long long result = PyLong_AsLongLong(ptr(from));
     if (result == -1 && PyErr_Occurred()) {
         Exception::from_python();
@@ -1626,8 +1620,9 @@ To __explicit_cast__<From, To>::operator()(const From& from) {
 }
 
 
-template <std::derived_from<Object> From, std::floating_point To>
-To __explicit_cast__<From, To>::operator()(const From& from) {
+template <impl::inherits<Object> From, impl::cpp_like To>
+    requires (__as_object__<To>::enable && std::floating_point<To>)
+To __explicit_cast__<From, To>::operator()(From&& from) {
     double result = PyFloat_AsDouble(ptr(from));
     if (result == -1.0 && PyErr_Occurred()) {
         Exception::from_python();
@@ -1635,37 +1630,75 @@ To __explicit_cast__<From, To>::operator()(const From& from) {
     return result;
 }
 
-template <std::derived_from<Object> From, impl::complex_like To>
-    requires (impl::cpp_like<To>)
-To __explicit_cast__<From, To>::operator()(const From& from) {
+
+template <impl::inherits<Object> From, typename Float>
+auto __explicit_cast__<From, std::complex<Float>>::operator()(From&& from) {
     Py_complex result = PyComplex_AsCComplex(ptr(from));
     if (result.real == -1.0 && PyErr_Occurred()) {
         Exception::from_python();
     }
-    return To(result.real, result.imag);
+    return std::complex<Float>(result.real, result.imag);
 }
 
 
-template <std::derived_from<Object> From>
-auto __explicit_cast__<From, std::string>::operator()(const From& from) {
+/// TODO: this same logic should carry over for strings, bytes, and byte arrays to
+/// allow conversion to any kind of basic string type.
+
+
+template <impl::inherits<Object> From, typename Char>
+auto __explicit_cast__<From, std::basic_string<Char>>::operator()(From&& from) {
     PyObject* str = PyObject_Str(ptr(from));
     if (str == nullptr) {
         Exception::from_python();
     }
-    Py_ssize_t size;
-    const char* data = PyUnicode_AsUTF8AndSize(str, &size);
-    if (data == nullptr) {
+    if constexpr (sizeof(Char) == 1) {
+        Py_ssize_t size;
+        const char* data = PyUnicode_AsUTF8AndSize(str, &size);
+        if (data == nullptr) {
+            Py_DECREF(str);
+            Exception::from_python();
+        }
+        std::basic_string<Char> result(data, size);
         Py_DECREF(str);
-        Exception::from_python();
+        return result;
+
+    } else if constexpr (sizeof(Char) == 2) {
+        PyObject* bytes = PyUnicode_AsUTF16String(str);
+        Py_DECREF(str);
+        if (bytes == nullptr) {
+            Exception::from_python();
+        }
+        std::basic_string<Char> result(
+            reinterpret_cast<const Char*>(PyBytes_AsString(bytes)) + 1,  // skip BOM marker
+            (PyBytes_GET_SIZE(bytes) / sizeof(Char)) - 1
+        );
+        Py_DECREF(bytes);
+        return result;
+
+    } else if constexpr (sizeof(Char) == 4) {
+        PyObject* bytes = PyUnicode_AsUTF32String(str);
+        Py_DECREF(str);
+        if (bytes == nullptr) {
+            Exception::from_python();
+        }
+        std::basic_string<Char> result(
+            reinterpret_cast<const Char*>(PyBytes_AsString(bytes)) + 1,  // skip BOM marker
+            (PyBytes_GET_SIZE(bytes) / sizeof(Char)) - 1
+        );
+        Py_DECREF(bytes);
+        return result;
+
+    } else {
+        static_assert(
+            sizeof(Char) == 1 || sizeof(Char) == 2 || sizeof(Char) == 4,
+            "unsupported character size for string conversion"
+        );
     }
-    std::string result(data, size);
-    Py_DECREF(str);
-    return result;
 }
 
 
-template <std::derived_from<std::ostream> Stream, std::derived_from<Object> Self>
-Stream& __lshift__<Stream, Self>::operator()(Stream& stream, const Self& self) {
+template <std::derived_from<std::ostream> Stream, impl::inherits<Object> Self>
+Stream& __lshift__<Stream, Self>::operator()(Stream& stream, Self&& self) {
     PyObject* repr = PyObject_Str(ptr(self));
     if (repr == nullptr) {
         Exception::from_python();

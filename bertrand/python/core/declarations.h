@@ -717,6 +717,12 @@ namespace impl {
     template <typename T>
     concept is_generic = is_generic_helper<std::remove_cvref_t<T>>;
 
+    template <typename L, typename R>
+    concept is = std::same_as<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
+
+    template <typename L, typename R>
+    concept inherits = std::derived_from<std::remove_cvref_t<L>, std::remove_cvref_t<R>>;
+
     template <typename From, typename To>
     concept has_conversion_operator = requires(From from) {
         { from.operator To() };

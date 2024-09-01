@@ -5,45 +5,10 @@
 #include "object.h"
 #include "code.h"
 #include "except.h"
+#include "ops.h"
 
 
 namespace py {
-
-
-namespace impl {
-
-    /// TODO: construct() should not be necessary?  Just implement the logic in
-    /// __init__/__explicit_init__?
-
-    /* Construct a new instance of an inner `Type<Wrapper>::__python__` type using
-    Python-based memory allocation and forwarding to its C++ constructor to complete
-    initialization. */
-    template <typename Wrapper, typename... Args>
-        requires (
-            has_python<Wrapper> &&
-            std::constructible_from<typename Wrapper::__python__, Args...>
-        )
-    static Wrapper construct(Args&&... args) {
-        using Self = Wrapper::__python__;
-        Type<Wrapper> type;
-        PyTypeObject* cls = ptr(type);
-        Self* self = reinterpret_cast<Self*>(cls->tp_alloc(cls, 0));
-        if (self == nullptr) {
-            Exception::from_python();
-        }
-        try {
-            new (self) Self(std::forward<Args>(args)...);
-        } catch (...) {
-            cls->tp_free(self);
-            throw;
-        }
-        if (cls->tp_flags & Py_TPFLAGS_HAVE_GC) {
-            PyObject_GC_Track(self);
-        }
-        return reinterpret_steal<Wrapper>(self);
-    }
-
-}
 
 
 ////////////////////
@@ -1066,10 +1031,7 @@ Instances of this class cannot be created any other way.)doc";
         /* A candidate for the `_instancecheck` function pointer to be used for stub
         types. */
         static bool instancecheck(__python__* cls, PyObject* instance) {
-            if (PyType_IsSubtype(
-                Py_TYPE(instance),
-                reinterpret_cast<PyTypeObject*>(cls)
-            )) {
+            if (PyType_IsSubtype(Py_TYPE(instance), cls)) {
                 return true;
             }
             PyObject* key;
@@ -1088,29 +1050,14 @@ Instances of this class cannot be created any other way.)doc";
         C++ extension types. */
         template <typename Wrapper>
         static bool instancecheck(__python__* cls, PyObject* instance) {
-            if constexpr (std::is_invocable_v<
-                __isinstance__<Object, Wrapper>,
-                const Object&
-            >) {
-                return __isinstance__<Object, Wrapper>{}(
-                    reinterpret_borrow<Object>(instance)
-                );
-            } else {
-                return PyType_IsSubtype(
-                    Py_TYPE(instance),
-                    reinterpret_cast<PyTypeObject*>(cls)
-                );
-            }
+            return PyType_IsSubtype(Py_TYPE(instance), cls);
         }
 
         /* A candidate for the `_subclasscheck` function pointer to be used for stub
         types. */
         static bool subclasscheck(__python__* cls, PyObject* subclass) {
             if (PyType_Check(subclass)) {
-                if (PyType_IsSubtype(
-                    reinterpret_cast<PyTypeObject*>(subclass),
-                    reinterpret_cast<PyTypeObject*>(cls)
-                )) {
+                if (PyType_IsSubtype(reinterpret_cast<PyTypeObject*>(subclass), cls)) {
                     return true;
                 }
                 PyObject* key;
@@ -1132,24 +1079,10 @@ Instances of this class cannot be created any other way.)doc";
         C++ extension types. */
         template <typename Wrapper>
         static bool subclasscheck(__python__* cls, PyObject* subclass) {
-            if constexpr (std::is_invocable_v<
-                __issubclass__<Object, Wrapper>,
-                const Object&
-            >) {
-                return __issubclass__<Object, Wrapper>{}(
-                    reinterpret_borrow<Object>(subclass)
-                );
+            if (PyType_Check(subclass)) {
+                return PyType_IsSubtype(reinterpret_cast<PyTypeObject*>(subclass), cls);
             } else {
-                if (PyType_Check(subclass)) {
-                    return PyType_IsSubtype(
-                        reinterpret_cast<PyTypeObject*>(subclass),
-                        reinterpret_cast<PyTypeObject*>(cls)
-                    );
-                } else {
-                    throw TypeError(
-                        "issubclass() arg 1 must be a class"
-                    );
-                }
+                throw TypeError("issubclass() arg 1 must be a class");
             }
         }
 

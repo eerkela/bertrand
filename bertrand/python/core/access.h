@@ -4,7 +4,7 @@
 #include "declarations.h"
 #include "object.h"
 #include "except.h"
-#include "type.h"
+#include "ops.h"
 
 
 namespace py {
@@ -106,15 +106,8 @@ namespace impl {
             if constexpr (has_call_operator<setattr>) {
                 setattr{}(m_self, value);
 
-            } else if constexpr (
-                originates_from_cpp<Base> &&
-                cpp_or_originates_from_cpp<Value>
-            ) {
-                if constexpr (python_like<std::remove_cvref_t<Value>>) {
-                    unwrap(*this) = unwrap(std::forward<Value>(value));
-                } else {
-                    unwrap(*this) = std::forward<Value>(value);
-                }
+            } else if constexpr (has_cpp<Base>) {
+                unwrap(*this) = unwrap(std::forward<Value>(value));
 
             } else {
                 if (PyObject_SetAttr(
@@ -244,21 +237,13 @@ namespace impl {
                     setitem{}(m_container, *this, keys...);
                 }, m_key);
 
-            } else if constexpr (
-                impl::originates_from_cpp<Base> &&
-                (impl::cpp_or_originates_from_cpp<Key> && ...) &&
-                impl::cpp_or_originates_from_cpp<std::remove_cvref_t<Value>>
-            ) {
+            } else if constexpr (impl::has_cpp<Base>) {
                 static_assert(
                     impl::supports_item_assignment<Base, std::remove_cvref_t<Value>, Key...>,
                     "__setitem__<Self, Value, Key...> is enabled for operands whose C++ "
                     "representations have no viable overload for `Self[Key...] = Value`"
                 );
-                if constexpr (impl::python_like<std::remove_cvref_t<Value>>) {
-                    unwrap(*this) = unwrap(std::forward<Value>(value));
-                } else {
-                    unwrap(*this) = std::forward<Value>(value);
-                }
+                unwrap(*this) = unwrap(std::forward<Value>(value));
 
             } else {
                 if (PyObject_SetItem(
@@ -349,11 +334,14 @@ void del(T&& attr) {
 }
 
 
+/// TODO: cast/explicit cast should inherit the behavior of the base type?
+
+
 template <impl::lazily_evaluated From, typename To>
     requires (std::convertible_to<impl::lazy_type<From>, To>)
 struct __cast__<From, To>                                   : Returns<To> {
     static To operator()(const From& item) {
-        if constexpr (impl::originates_from_cpp<impl::lazy_type<From>>) {
+        if constexpr (impl::has_cpp<impl::lazy_type<From>>) {
             return unwrap(item);
         } else {
             return reinterpret_steal<impl::lazy_type<From>>(ptr(item));
@@ -366,7 +354,7 @@ template <impl::lazily_evaluated From, typename To>
     requires (impl::explicitly_convertible_to<impl::lazy_type<From>, To>)
 struct __explicit_cast__<From, To>                          : Returns<To> {
     static To operator()(const From& item) {
-        if constexpr (impl::originates_from_cpp<impl::lazy_type<From>>) {
+        if constexpr (impl::has_cpp<impl::lazy_type<From>>) {
             return static_cast<To>(unwrap(item));
         } else {
             return static_cast<To>(
@@ -377,8 +365,224 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 };
 
 
-/// TODO: specialize all the relevant control structures to allow attributes and items
-/// to be used symmetrically to all other objects.
+template <typename T, impl::lazily_evaluated Base>
+struct __isinstance__<T, Base> : __isinstance__<T, impl::lazy_type<Base>> {};
+template <typename T, impl::lazily_evaluated Base>
+struct __issubclass__<T, Base> : __issubclass__<T, impl::lazy_type<Base>> {};
+template <impl::lazily_evaluated Base, StaticStr Name>
+struct __getattr__<Base, Name> : __getattr__<impl::lazy_type<Base>, Name> {};
+template <impl::lazily_evaluated Base, StaticStr Name, typename Value>
+struct __setattr__<Base, Name, Value> : __setattr__<impl::lazy_type<Base>, Name, Value> {};
+template <impl::lazily_evaluated Base, StaticStr Name>
+struct __delattr__<Base, Name> : __delattr__<impl::lazy_type<Base>, Name> {};
+template <impl::lazily_evaluated Base, typename... Key>
+struct __getitem__<Base, Key...> : __getitem__<impl::lazy_type<Base>, Key...> {};
+template <impl::lazily_evaluated Base, typename Value, typename... Key>
+struct __setitem__<Base, Value, Key...> : __setitem__<impl::lazy_type<Base>, Value, Key...> {};
+template <impl::lazily_evaluated Base, typename... Key>
+struct __delitem__<Base, Key...> : __delitem__<impl::lazy_type<Base>, Key...> {};
+template <impl::lazily_evaluated Base>
+struct __len__<Base> : __len__<impl::lazy_type<Base>> {};
+template <impl::lazily_evaluated Base>
+struct __iter__<Base> : __iter__<impl::lazy_type<Base>> {};
+template <impl::lazily_evaluated Base>
+struct __reversed__<Base> : __reversed__<impl::lazy_type<Base>> {};
+template <impl::lazily_evaluated Base, typename Key>
+struct __contains__<Base, Key> : __contains__<impl::lazy_type<Base>, Key> {};
+template <impl::lazily_evaluated Base>
+struct __hash__<Base> : __hash__<impl::lazy_type<Base>> {};
+template <impl::lazily_evaluated Base>
+struct __abs__<Base> : __abs__<impl::lazy_type<Base>> {};
+template <impl::lazily_evaluated Base>
+struct __invert__<Base> : __invert__<impl::lazy_type<Base>> {};
+template <impl::lazily_evaluated Base>
+struct __pos__<Base> : __pos__<impl::lazy_type<Base>> {};
+template <impl::lazily_evaluated Base>
+struct __neg__<Base> : __neg__<impl::lazy_type<Base>> {};
+template <impl::lazily_evaluated Base>
+struct __increment__<Base> : __increment__<impl::lazy_type<Base>> {};
+template <impl::lazily_evaluated Base>
+struct __decrement__<Base> : __decrement__<impl::lazy_type<Base>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __lt__<L, R> : __lt__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __lt__<L, R> : __lt__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __lt__<L, R> : __lt__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __le__<L, R> : __le__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __le__<L, R> : __le__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __le__<L, R> : __le__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __eq__<L, R> : __eq__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __eq__<L, R> : __eq__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __eq__<L, R> : __eq__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __ne__<L, R> : __ne__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __ne__<L, R> : __ne__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __ne__<L, R> : __ne__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __ge__<L, R> : __ge__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __ge__<L, R> : __ge__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __ge__<L, R> : __ge__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __gt__<L, R> : __gt__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __gt__<L, R> : __gt__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __gt__<L, R> : __gt__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __add__<L, R> : __add__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __add__<L, R> : __add__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __add__<L, R> : __add__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __sub__<L, R> : __sub__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __sub__<L, R> : __sub__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __sub__<L, R> : __sub__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __mul__<L, R> : __mul__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __mul__<L, R> : __mul__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __mul__<L, R> : __mul__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __truediv__<L, R> : __truediv__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __truediv__<L, R> : __truediv__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __truediv__<L, R> : __truediv__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __floordiv__<L, R> : __floordiv__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __floordiv__<L, R> : __floordiv__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __floordiv__<L, R> : __floordiv__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __mod__<L, R> : __mod__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __mod__<L, R> : __mod__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __mod__<L, R> : __mod__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __pow__<L, R> : __pow__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __pow__<L, R> : __pow__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __pow__<L, R> : __pow__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __lshift__<L, R> : __lshift__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __lshift__<L, R> : __lshift__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __lshift__<L, R> : __lshift__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __rshift__<L, R> : __rshift__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __rshift__<L, R> : __rshift__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __rshift__<L, R> : __rshift__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __and__<L, R> : __and__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __and__<L, R> : __and__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __and__<L, R> : __and__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __xor__<L, R> : __xor__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __xor__<L, R> : __xor__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __xor__<L, R> : __xor__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __or__<L, R> : __or__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __or__<L, R> : __or__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __or__<L, R> : __or__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __iadd__<L, R> : __iadd__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __iadd__<L, R> : __iadd__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __iadd__<L, R> : __iadd__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __isub__<L, R> : __isub__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __isub__<L, R> : __isub__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __isub__<L, R> : __isub__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __imul__<L, R> : __imul__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __imul__<L, R> : __imul__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __imul__<L, R> : __imul__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __itruediv__<L, R> : __itruediv__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __itruediv__<L, R> : __itruediv__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __itruediv__<L, R> : __itruediv__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __ifloordiv__<L, R> : __ifloordiv__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __ifloordiv__<L, R> : __ifloordiv__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __ifloordiv__<L, R> : __ifloordiv__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __imod__<L, R> : __imod__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __imod__<L, R> : __imod__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __imod__<L, R> : __imod__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __ipow__<L, R> : __ipow__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __ipow__<L, R> : __ipow__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __ipow__<L, R> : __ipow__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __ilshift__<L, R> : __ilshift__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __ilshift__<L, R> : __ilshift__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __ilshift__<L, R> : __ilshift__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __irshift__<L, R> : __irshift__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __irshift__<L, R> : __irshift__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __irshift__<L, R> : __irshift__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __iand__<L, R> : __iand__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __iand__<L, R> : __iand__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __iand__<L, R> : __iand__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __ixor__<L, R> : __ixor__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __ixor__<L, R> : __ixor__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __ixor__<L, R> : __ixor__<L, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, impl::lazily_evaluated R>
+struct __ior__<L, R> : __ior__<impl::lazy_type<L>, impl::lazy_type<R>> {};
+template <impl::lazily_evaluated L, typename R> requires (!impl::lazily_evaluated<R>)
+struct __ior__<L, R> : __ior__<impl::lazy_type<L>, R> {};
+template <typename L, impl::lazily_evaluated R> requires (!impl::lazily_evaluated<L>)
+struct __ior__<L, R> : __ior__<L, impl::lazy_type<R>> {};
 
 
 /////////////////////////
@@ -396,10 +600,6 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 
 /// TODO: creating a Python iterator around a C++ object will not accept rvalues.  Only
 /// const/non-const lvalue references to iterable containers will be accepted.
-
-
-template <typename Begin, typename End>
-struct Iterator;
 
 
 template <typename Begin, typename End>
@@ -508,26 +708,14 @@ struct __iter__<Iterator<T>>                                : Returns<T> {
         ++(*this);
     }
 
-    /// NOTE: modifying a copy of a Python iterator will also modify the original due
-    /// to the inherent state of the iterator, which is managed by the Python runtime.
-    /// This class is only copyable in order to fulfill the requirements of the
-    /// iterator protocol, but it is not recommended to use it in this way.
-
-    __iter__(const __iter__& other) :
-        iter(other.iter), curr(other.curr)
-    {}
+    /// NOTE: Python iterators cannot be copied, due to the inherent state of the
+    /// iterator object.
+    __iter__(const __iter__&) = delete;
+    __iter__& operator=(const __iter__&) = delete;
 
     __iter__(__iter__&& other) :
         iter(std::move(other.iter)), curr(std::move(other.curr))
     {}
-
-    __iter__& operator=(const __iter__& other) {
-        if (&other != this) {
-            iter = other.iter;
-            curr = other.curr;
-        }
-        return *this;
-    }
 
     __iter__& operator=(__iter__&& other) {
         if (&other != this) {
@@ -551,8 +739,6 @@ struct __iter__<Iterator<T>>                                : Returns<T> {
         return *this;
     }
 
-    /// NOTE: post-increment is not supported due to inaccurate copy semantics.
-
     [[nodiscard]] bool operator==(const __iter__& other) const {
         return ptr(curr) == ptr(other.curr);
     }
@@ -562,24 +748,24 @@ struct __iter__<Iterator<T>>                                : Returns<T> {
     }
 
 };
-/// NOTE: no __iter__<const Iterator<T>> specialization since marking the iterator
-/// itself as const prevents it from being incremented.
+/// NOTE: can't iterate over a const Iterator<T> because the iterator itself must be
+/// mutable.
 
 
 /* A wrapper around a pair of C++ iterators that allows them to be used from Python.
 
 This will instantiate a unique Python type with an appropriate `__next__()` method for
 every combination of C++ iterators, forwarding to their respective `operator*()`,
-`operator++()`, and `operator==()` methods.  
-
- */
+`operator++()`, and `operator==()` methods. */
 template <std::input_iterator Begin, std::sentinel_for<Begin> End>
 struct Iterator<Begin, End> : Object, Interface<Iterator<Begin, End>> {
     struct __python__ : def<__python__, Iterator>, PyObject {
         Begin begin;
         End end;
 
-        __python__(Begin begin, End end) : begin(begin), end(end) {}
+        __python__(Begin&& begin, End&& end) :
+            begin(std::move(begin)), end(std::move(end))
+        {}
 
         template <StaticStr ModName>
         static Type<Iterator> __export__(Module<ModName> module) {
@@ -667,39 +853,25 @@ template <std::input_iterator Begin, std::sentinel_for<Begin> End>
 Iterator(Begin, End) -> Iterator<Begin, End>;
 
 
-/// TODO: do I need to handle const/non-const containers separately?  Also, what about
-/// iteration over an rvalue container?  Should I disallow that?
-
-
-/* Implement the CTAD guide for iterable C++ containers. */
+/* Implement the CTAD guide for iterable C++ containers.  The container type may be
+const. */
 template <impl::iterable Container>
 struct __init__<Iterator<
     decltype(std::ranges::begin(std::declval<Container>())),
     decltype(std::ranges::end(std::declval<Container>()))
 >, Container> {
+    using Iter = Iterator<
+        decltype(std::ranges::begin(std::declval<Container>())),
+        decltype(std::ranges::end(std::declval<Container>()))
+    >;
     static auto operator()(Container& container) {
-        return impl::construct<Iterator<
-            decltype(std::ranges::begin(container)),
-            decltype(std::ranges::end(container))
-        >>(
-            std::ranges::begin(container),
-            std::ranges::end(container)
-        );
-    }
-    static auto operator()(const Container& container) {
-        return impl::construct<Iterator<
-            decltype(std::ranges::begin(container)),
-            decltype(std::ranges::end(container))
-        >>(
+        return impl::construct<Iter>(
             std::ranges::begin(container),
             std::ranges::end(container)
         );
     }
     static auto operator()(Container&& container) {
-        return impl::construct<Iterator<
-            decltype(std::ranges::begin(container)),
-            decltype(std::ranges::end(container))
-        >>(
+        return impl::construct<Iter>(
             std::ranges::begin(container),
             std::ranges::end(container)
         );
@@ -765,6 +937,8 @@ struct __iter__<Iterator<Begin, End>> : Returns<decltype(*std::declval<Begin>())
     }
 
 };
+/// NOTE: can't iterate over a const Iterator<T> because the iterator itself must be
+/// mutable.
 
 
 
@@ -776,6 +950,9 @@ struct __contains__<T, Iterator<Begin, End>> : Returns<bool> {};
 
 
 /// TODO: include begin()/end() operators here
+
+
+
 
 
 
@@ -899,6 +1076,21 @@ auto Interface<Type<py::Iterator<Return>>>::__next__(auto& iter)
 }
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* Begin iteration operator.  Both this and the end iteration operator are
 controlled by the __iter__ control struct, whose return type dictates the
 iterator's dereference type. */
@@ -917,7 +1109,7 @@ template <typename Self> requires (__iter__<Self>::enable)
             "__iter__<T> specializes the end iterator, but not the begin iterator.  "
             "Did you forget to define an `__iter__(const T&, int)` constructor?"
         );
-        if constexpr (impl::originates_from_cpp<Self>) {
+        if constexpr (impl::has_cpp<Self>) {
             return std::ranges::begin(py::unwrap(self));
         } else {
             using Return = typename __iter__<Self>::type;
@@ -942,23 +1134,23 @@ controlled by the __iter__ control struct, whose return type dictates the
 iterator's dereference type. */
 template <typename Self> requires (__iter__<const Self>::enable)
 [[nodiscard]] auto begin(const Self& self) {
-    if constexpr (std::is_constructible_v<__iter__<Self>, const Self&, int>) {
+    if constexpr (std::is_constructible_v<__iter__<const Self>, const Self&, int>) {
         static_assert(
-            std::is_constructible_v<__iter__<Self>, const Self&>,
+            std::is_constructible_v<__iter__<const Self>, const Self&>,
             "__iter__<T> specializes the begin iterator, but not the end iterator.  "
             "Did you forget to define an `__iter__(const T&)` constructor?"
         );
-        return __iter__<Self>(self, 0);
+        return __iter__<const Self>(self, 0);
     } else {
         static_assert(
-            !std::is_constructible_v<__iter__<Self>, const Self&>,
+            !std::is_constructible_v<__iter__<const Self>, const Self&>,
             "__iter__<T> specializes the end iterator, but not the begin iterator.  "
             "Did you forget to define an `__iter__(const T&, int)` constructor?"
         );
-        if constexpr (impl::originates_from_cpp<Self>) {
+        if constexpr (impl::has_cpp<Self>) {
             return std::ranges::begin(py::unwrap(self));
         } else {
-            using Return = typename __iter__<Self>::type;
+            using Return = typename __iter__<const Self>::type;
             static_assert(
                 std::derived_from<Return, Object>,
                 "iterator must dereference to a subclass of Object.  Check your "
@@ -1001,7 +1193,7 @@ template <typename Self> requires (__iter__<Self>::enable)
             "__iter__<T> specializes the end iterator, but not the begin iterator.  "
             "Did you forget to define an `__iter__(const T&, int)` constructor?"
         );
-        if constexpr (impl::originates_from_cpp<Self>) {
+        if constexpr (impl::has_cpp<Self>) {
             return std::ranges::end(py::unwrap(self));
         } else {
             using Return = typename __iter__<Self>::type;
@@ -1021,23 +1213,23 @@ template <typename Self> requires (__iter__<Self>::enable)
 __iter__ control struct. */
 template <typename Self> requires (__iter__<const Self>::enable)
 [[nodiscard]] auto end(const Self& self) {
-    if constexpr (std::is_constructible_v<__iter__<Self>, const Self&>) {
+    if constexpr (std::is_constructible_v<__iter__<const Self>, const Self&>) {
         static_assert(
-            std::is_constructible_v<__iter__<Self>, const Self&, int>,
+            std::is_constructible_v<__iter__<const Self>, const Self&, int>,
             "__iter__<T> specializes the begin iterator, but not the end iterator.  "
             "Did you forget to define an `__iter__(const T&)` constructor?"
         );
-        return __iter__<Self>(self);
+        return __iter__<const Self>(self);
     } else {
         static_assert(
-            !std::is_constructible_v<__iter__<Self>, const Self&, int>,
+            !std::is_constructible_v<__iter__<const Self>, const Self&, int>,
             "__iter__<T> specializes the end iterator, but not the begin iterator.  "
             "Did you forget to define an `__iter__(const T&, int)` constructor?"
         );
-        if constexpr (impl::originates_from_cpp<Self>) {
+        if constexpr (impl::has_cpp<Self>) {
             return std::ranges::end(py::unwrap(self));
         } else {
-            using Return = typename __iter__<Self>::type;
+            using Return = typename __iter__<const Self>::type;
             static_assert(
                 std::derived_from<Return, Object>,
                 "iterator must dereference to a subclass of Object.  Check your "
@@ -1077,7 +1269,7 @@ template <typename Self> requires (__reversed__<Self>::enable)
             "iterator.  Did you forget to define a `__reversed__(const T&, int)` "
             "constructor?"
         );
-        if constexpr (impl::originates_from_cpp<Self>) {
+        if constexpr (impl::has_cpp<Self>) {
             return std::ranges::rbegin(py::unwrap(self));
         } else {
             using Return = typename __reversed__<Self>::type;
@@ -1105,25 +1297,25 @@ controlled by the __reversed__ control struct, whose return type dictates the
 iterator's dereference type. */
 template <typename Self> requires (__reversed__<const Self>::enable)
 [[nodiscard]] auto rbegin(const Self& self) {
-    if constexpr (std::is_constructible_v<__reversed__<Self>, const Self&, int>) {
+    if constexpr (std::is_constructible_v<__reversed__<const Self>, const Self&, int>) {
         static_assert(
-            std::is_constructible_v<__reversed__<Self>, const Self&>,
+            std::is_constructible_v<__reversed__<const Self>, const Self&>,
             "__reversed__<T> specializes the begin iterator, but not the end "
             "iterator.  Did you forget to define a `__reversed__(const T&)` "
             "constructor?"
         );
-        return __reversed__<Self>(self, 0);
+        return __reversed__<const Self>(self, 0);
     } else {
         static_assert(
-            !std::is_constructible_v<__reversed__<Self>, const Self&>,
+            !std::is_constructible_v<__reversed__<const Self>, const Self&>,
             "__reversed__<T> specializes the end iterator, but not the begin "
             "iterator.  Did you forget to define a `__reversed__(const T&, int)` "
             "constructor?"
         );
-        if constexpr (impl::originates_from_cpp<Self>) {
+        if constexpr (impl::has_cpp<Self>) {
             return std::ranges::rbegin(py::unwrap(self));
         } else {
-            using Return = typename __reversed__<Self>::type;
+            using Return = typename __reversed__<const Self>::type;
             static_assert(
                 std::derived_from<Return, Object>,
                 "iterator must dereference to a subclass of Object.  Check your "
@@ -1171,7 +1363,7 @@ template <typename Self> requires (__reversed__<Self>::enable)
             "iterator.  Did you forget to define a `__reversed__(const T&, int)` "
             "constructor?"
         );
-        if constexpr (impl::originates_from_cpp<Self>) {
+        if constexpr (impl::has_cpp<Self>) {
             return std::ranges::rend(py::unwrap(self));
         } else {
             using Return = typename __reversed__<Self>::type;
@@ -1191,25 +1383,25 @@ template <typename Self> requires (__reversed__<Self>::enable)
 by the __reversed__ control struct. */
 template <typename Self> requires (__reversed__<const Self>::enable)
 [[nodiscard]] auto rend(const Self& self) {
-    if constexpr (std::is_constructible_v<__reversed__<Self>, const Self&>) {
+    if constexpr (std::is_constructible_v<__reversed__<const Self>, const Self&>) {
         static_assert(
-            std::is_constructible_v<__reversed__<Self>, const Self&, int>,
+            std::is_constructible_v<__reversed__<const Self>, const Self&, int>,
             "__reversed__<T> specializes the begin iterator, but not the end "
             "iterator.  Did you forget to define a `__reversed__(const T&)` "
             "constructor?"
         );
-        return __reversed__<Self>(self);
+        return __reversed__<const Self>(self);
     } else {
         static_assert(
-            !std::is_constructible_v<__reversed__<Self>, const Self&, int>,
+            !std::is_constructible_v<__reversed__<const Self>, const Self&, int>,
             "__reversed__<T> specializes the end iterator, but not the begin "
             "iterator.  Did you forget to define a `__reversed__(const T&, int)` "
             "constructor?"
         );
-        if constexpr (impl::originates_from_cpp<Self>) {
+        if constexpr (impl::has_cpp<Self>) {
             return std::ranges::rend(py::unwrap(self));
         } else {
-            using Return = typename __reversed__<Self>::type;
+            using Return = typename __reversed__<const Self>::type;
             static_assert(
                 std::derived_from<Return, Object>,
                 "iterator must dereference to a subclass of Object.  Check your "
