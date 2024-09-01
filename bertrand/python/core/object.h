@@ -23,9 +23,19 @@ template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_steal(PyObject* obj);
 
 
+/* Steal a reference to a raw Python object. */
+template <std::derived_from<Object> T, impl::inherits<impl::PythonTag> Ptr>
+[[nodiscard]] T reinterpret_steal(Ptr* obj);
+
+
 /* Borrow a reference to a raw Python object. */
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_borrow(PyObject* obj);
+
+
+/* Borrow a reference to a raw Python object. */
+template <std::derived_from<Object> T, impl::inherits<impl::PythonTag> Ptr>
+[[nodiscard]] T reinterpret_borrow(Ptr* obj);
 
 
 /* Wrap a non-owning, mutable reference to a C++ object into a `py::Object` proxy that
@@ -119,8 +129,12 @@ protected:
     friend std::remove_reference_t<T>::__python__* release(T&&);
     template <std::derived_from<Object> T>
     friend T reinterpret_borrow(PyObject*);
+    template <std::derived_from<Object> T, impl::inherits<impl::PythonTag> Ptr>
+    friend T reinterpret_borrow(Ptr*);
     template <std::derived_from<Object> T>
     friend T reinterpret_steal(PyObject*);
+    template <std::derived_from<Object> T, impl::inherits<impl::PythonTag> Ptr>
+    friend T reinterpret_steal(Ptr*);
     template <typename T>
     friend auto& unwrap(T& obj);
     template <typename T>
@@ -175,7 +189,7 @@ protected:
     members.  It should only implement the `__export__()` script, which uses the
     binding helpers to expose the C++ type's interface to Python. */
     template <typename CRTP, typename Derived, typename CppType = void>
-    struct def : PyObject {
+    struct def : PyObject, impl::PythonTag {
     protected:
 
         template <typename... Ts>
@@ -279,7 +293,7 @@ protected:
     methods as they see fit.  Bertrand will ensure that these hooks are called whenever
     the Python object is created, destroyed, or otherwise manipulated from Python. */
     template <typename CRTP, typename Derived>
-    struct def<CRTP, Derived, void> {
+    struct def<CRTP, Derived, void> : impl::PythonTag {
     protected:
 
         template <StaticStr ModName>
@@ -373,7 +387,7 @@ protected:
     and are therefore safe to access from multiple threads, provided that the user
     ensures that the data they reference is thread-safe. */
     template <typename CRTP, StaticStr Name>
-    struct def<CRTP, Module<Name>, void> {
+    struct def<CRTP, Module<Name>, void> : impl::PythonTag {
     protected:
 
         template <StaticStr ModName>
@@ -618,9 +632,21 @@ template <std::derived_from<Object> T>
 }
 
 
+template <std::derived_from<Object> T, impl::inherits<impl::PythonTag> Ptr>
+[[nodiscard]] T reinterpret_borrow(Ptr* ptr) {
+    return T(reinterpret_cast<PyObject*>(ptr), Object::borrowed_t{});
+}
+
+
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_steal(PyObject* ptr) {
     return T(ptr, Object::stolen_t{});
+}
+
+
+template <std::derived_from<Object> T, impl::inherits<impl::PythonTag> Ptr>
+[[nodiscard]] T reinterpret_steal(Ptr* ptr) {
+    return T(reinterpret_cast<PyObject*>(ptr), Object::stolen_t{});
 }
 
 

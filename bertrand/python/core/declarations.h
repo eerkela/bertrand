@@ -61,6 +61,7 @@ using bertrand::StaticStr;
 
 namespace impl {
     struct BertrandTag {};
+    struct PythonTag : BertrandTag {};
     struct TypeTag : BertrandTag {};  /// TODO: eliminate this
     struct IterTag : BertrandTag {};  /// TODO: eliminate this
     struct ArgTag : BertrandTag {};
@@ -76,7 +77,7 @@ namespace impl {
     struct DictTag : BertrandTag {};
     struct MappingProxyTag : BertrandTag {};
 
-    static std::string demangle(const char* name) {
+    static constexpr std::string demangle(const char* name) {
         #if defined(__GNUC__) || defined(__clang__)
             int status = 0;
             std::unique_ptr<char, void(*)(void*)> res {

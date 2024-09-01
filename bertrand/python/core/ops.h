@@ -43,110 +43,8 @@ namespace impl {
 }
 
 
-template <typename Self>
-[[nodiscard]] Object::operator bool(this Self&& self) {
-    if constexpr (
-        impl::has_cpp<Self> &&
-        impl::has_operator_bool<impl::cpp_type<Self>>
-    ) {
-        return static_cast<bool>(unwrap(std::forward<Self>(self)));
-    } else {
-        int result = PyObject_IsTrue(ptr(self));
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;   
-    }
-}
-
-
-template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
-[[nodiscard]] bool Object::contains(this Self&& self, Key&& key) {
-    using Return = typename __contains__<Self, Key>::type;
-    static_assert(
-        std::same_as<Return, bool>,
-        "contains() operator must return a boolean value.  Check your "
-        "specialization of __contains__ for these types and ensure the Return "
-        "type is set to bool."
-    );
-    if constexpr (impl::has_call_operator<__contains__<Self, Key>>) {
-        return __contains__<Self, Key>{}(
-            std::forward<Self>(self),
-            std::forward<Key>(key)
-        );
-
-    } else if constexpr (impl::has_cpp<Self>) {
-        static_assert(
-            impl::has_contains<impl::cpp_type<Self>, impl::cpp_type<Key>>,
-            "__contains__<Self, Key> is enabled for operands whose C++ "
-            "representations have no viable overload for `Self.contains(Key)`"
-        );
-        return unwrap(std::forward<Self>(self)).contains(
-            unwrap(std::forward<Key>(key))
-        );
-
-    } else {
-        int result = PySequence_Contains(
-            ptr(self),
-            ptr(as_object(key))
-        );
-        if (result == -1) {
-            Exception::from_python();
-        }
-        return result;
-    }
-}
-
-
 /// TODO: implement the extra overloads for Object, BertrandMeta, Type, and Tuple of
 /// types/generic objects
-
-
-/* Checks if the given object can be safely converted to the specified base type.  This
-is automatically called whenever a Python object is narrowed from a parent type to one
-of its subclasses. */
-template <typename Base, typename Derived>
-[[nodiscard]] constexpr bool isinstance(const Derived& obj) {
-    if constexpr (std::is_invocable_v<
-        __isinstance__<Derived, Base>,
-        const Derived&
-    >) {
-        static_assert(
-            std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, const Derived&>,
-            "__isinstance__<Derived, Base> must return a boolean value."
-        );
-        return __isinstance__<Derived, Base>{}(obj);
-
-    } else if constexpr (impl::has_type<Base> && impl::dynamic_type<Derived>) {
-        int result = PyObject_IsInstance(
-            ptr(obj),
-            ptr(Type<Base>())
-        );
-        if (result < 0) {
-            Exception::from_python();
-        }
-        return result;
-
-    } else {
-        return issubclass<Derived, Base>();
-    }
-}
-
-
-/* Equivalent to Python `isinstance(obj, base)`.  This overload must be explicitly
-enabled by defining a two-argument call operator in a specialization of
-`__isinstance__`.  By default, this is only done for bases which are type-like, a union
-of types, or a dynamic object which can be narrowed to either of the above. */
-template <typename Derived, typename Base>
-    requires (std::is_invocable_r_v<
-        bool,
-        __isinstance__<Derived, Base>,
-        const Derived&,
-        const Base&
-    >)
-[[nodiscard]] constexpr bool isinstance(const Derived& obj, const Base& base) {
-    return __isinstance__<Derived, Base>{}(obj, base);
-}
 
 
 /* Does a compile-time check to see if the derived type inherits from the base type.
@@ -164,16 +62,16 @@ template <typename Derived, typename Base>
         return __issubclass__<Derived, Base>{}();
 
     } else if constexpr (impl::has_interface<Derived> && impl::has_interface<Base>) {
-        return std::derived_from<Interface<Derived>, Interface<Base>>;
+        return impl::inherits<Interface<Derived>, Interface<Base>>;
 
     } else if constexpr (impl::has_interface<Derived>) {
-        return std::derived_from<Interface<Derived>, Base>;
+        return impl::inherits<Interface<Derived>, Base>;
 
     } else if constexpr (impl::has_interface<Base>) {
-        return std::derived_from<Derived, Interface<Base>>;
+        return impl::inherits<Derived, Interface<Base>>;
 
     } else {
-        return std::derived_from<Derived, Base>;
+        return impl::inherits<Derived, Base>;
     }
 }
 
@@ -181,14 +79,14 @@ template <typename Derived, typename Base>
 /* Devolves to a compile-time `issubclass<Derived, Base>()` check unless the object is
 a dynamic object which may be narrowed to a single type, or a one-argument call
 operator is defined in a specialization of `__issubclass__`. */
-template <std::derived_from<Object> Base, std::derived_from<Object> Derived>
-[[nodiscard]] constexpr bool issubclass(const Derived& obj) {
-    if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>, const Derived&>) {
+template <impl::inherits<Object> Base, impl::inherits<Object> Derived>
+[[nodiscard]] constexpr bool issubclass(Derived&& obj) {
+    if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>, Derived>) {
         static_assert(
-            std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, const Derived&>,
+            std::is_invocable_r_v<bool, __issubclass__<Derived, Base>, Derived>,
             "__issubclass__<Derived, Base> must return a boolean value."
         );
-        return __issubclass__<Derived, Base>{}(obj);
+        return __issubclass__<Derived, Base>{}(std::forward<Derived>(obj));
 
     } else if constexpr (impl::has_type<Base> && impl::dynamic_type<Derived>) {
         return PyType_Check(ptr(obj)) && PyObject_IsSubclass(
@@ -211,13 +109,54 @@ enabled by defining a two-argument call operator in a specialization of
 be narrowed to a single type, and the base must be type-like, a union of types, or a
 dynamic object which can be narrowed to such. */
 template <typename Derived, typename Base>
-    requires (std::is_invocable_v<
-        __issubclass__<Derived, Base>,
-        const Derived&,
-        const Base&
-    >)
-[[nodiscard]] bool issubclass(const Derived& obj, const Base& base) {
-    return __issubclass__<Derived, Base>{}(obj, base);
+    requires (std::is_invocable_v<__issubclass__<Derived, Base>, Derived, Base>)
+[[nodiscard]] bool issubclass(Derived&& obj, Base&& base) {
+    return __issubclass__<Derived, Base>{}(
+        std::forward<Derived>(obj),
+        std::forward<Base>(base)
+    );
+}
+
+
+/* Checks if the given object can be safely converted to the specified base type.  This
+is automatically called whenever a Python object is narrowed from a parent type to one
+of its subclasses. */
+template <typename Base, typename Derived>
+[[nodiscard]] constexpr bool isinstance(Derived&& obj) {
+    if constexpr (std::is_invocable_v<__isinstance__<Derived, Base>, Derived>) {
+        static_assert(
+            std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived>,
+            "__isinstance__<Derived, Base> must return a boolean value."
+        );
+        return __isinstance__<Derived, Base>{}(std::forward<Derived>(obj));
+
+    } else if constexpr (impl::has_type<Base> && impl::dynamic_type<Derived>) {
+        int result = PyObject_IsInstance(
+            ptr(obj),
+            ptr(Type<Base>())
+        );
+        if (result < 0) {
+            Exception::from_python();
+        }
+        return result;
+
+    } else {
+        return issubclass<Derived, Base>();
+    }
+}
+
+
+/* Equivalent to Python `isinstance(obj, base)`.  This overload must be explicitly
+enabled by defining a two-argument call operator in a specialization of
+`__isinstance__`.  By default, this is only done for bases which are type-like, a union
+of types, or a dynamic object which can be narrowed to either of the above. */
+template <typename Derived, typename Base>
+    requires (std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived, Base>)
+[[nodiscard]] constexpr bool isinstance(Derived&& obj, Base&& base) {
+    return __isinstance__<Derived, Base>{}(
+        std::forward<Derived>(obj),
+        std::forward<Base>(base)
+    );
 }
 
 
@@ -230,16 +169,16 @@ template <typename T, StaticStr name> requires (__as_object__<T>::enable)
 
 /* Equivalent to Python `hasattr(obj, name)` with a static attribute name. */
 template <StaticStr name, typename T>
-[[nodiscard]] consteval bool hasattr(const T& obj) {
+[[nodiscard]] consteval bool hasattr(T&& obj) {
     return __getattr__<T, name>::enable;
 }
 
 
 /* Equivalent to Python `getattr(obj, name)` with a static attribute name. */
 template <StaticStr name, typename T> requires (__getattr__<T, name>::enable)
-[[nodiscard]] auto getattr(const T& obj) -> __getattr__<T, name>::type {
+[[nodiscard]] auto getattr(T&& obj) -> __getattr__<T, name>::type {
     if constexpr (impl::has_call_operator<__getattr__<T, name>>) {
-        return __getattr__<T, name>{}(obj);
+        return __getattr__<T, name>{}(std::forward<T>(obj));
     } else {
         PyObject* result = PyObject_GetAttr(ptr(obj), impl::TemplateString<name>::ptr);
         if (result == nullptr) {
@@ -254,11 +193,11 @@ template <StaticStr name, typename T> requires (__getattr__<T, name>::enable)
 default value. */
 template <StaticStr name, typename T> requires (__getattr__<T, name>::enable)
 [[nodiscard]] auto getattr(
-    const T& obj,
+    T&& obj,
     const typename __getattr__<T, name>::type& default_value
 ) -> __getattr__<T, name>::type {
     if constexpr (impl::has_call_operator<__getattr__<T, name>>) {
-        return __getattr__<T, name>{}(obj, default_value);
+        return __getattr__<T, name>{}(std::forward<T>(obj), default_value);
     } else {
         PyObject* result = PyObject_GetAttr(ptr(obj), impl::TemplateString<name>::ptr);
         if (result == nullptr) {
@@ -272,14 +211,14 @@ template <StaticStr name, typename T> requires (__getattr__<T, name>::enable)
 
 /* Equivalent to Python `setattr(obj, name, value)` with a static attribute name. */
 template <StaticStr name, typename T, typename V> requires (__setattr__<T, name, V>::enable)
-void setattr(const T& obj, const V& value) {
+void setattr(T&& obj, V&& value) {
     if constexpr (impl::has_call_operator<__setattr__<T, name, V>>) {
-        __setattr__<T, name, V>{}(obj, value);
+        __setattr__<T, name, V>{}(std::forward<T>(obj), std::forward<V>(value));
     } else {
         if (PyObject_SetAttr(
             ptr(obj),
             impl::TemplateString<name>::ptr,
-            ptr(as_object(value))
+            ptr(as_object(std::forward<V>(value)))
         ) < 0) {
             Exception::from_python();
         }
@@ -289,9 +228,9 @@ void setattr(const T& obj, const V& value) {
 
 /* Equivalent to Python `delattr(obj, name)` with a static attribute name. */
 template <StaticStr name, typename T> requires (__delattr__<T, name>::enable)
-void delattr(const T& obj) {
+void delattr(T&& obj) {
     if constexpr (impl::has_call_operator<__delattr__<T, name>>) {
-        __delattr__<T, name>{}(obj);
+        __delattr__<T, name>{}(std::forward<T>(obj));
     } else {
         if (PyObject_DelAttr(ptr(obj), impl::TemplateString<name>::ptr) < 0) {
             Exception::from_python();
@@ -304,9 +243,9 @@ void delattr(const T& obj) {
 represent C++ types using the stream insertion operator (<<) or std::to_string.  If all
 else fails, falls back to demangling the result of typeid(obj).name(). */
 template <typename T>
-[[nodiscard]] std::string repr(const T& obj) {
+[[nodiscard]] std::string repr(T&& obj) {
     if constexpr (__as_object__<T>::enable) {
-        PyObject* str = PyObject_Repr(ptr(as_object(obj)));
+        PyObject* str = PyObject_Repr(ptr(as_object(std::forward<T>(obj))));
         if (str == nullptr) {
             Exception::from_python();
         }
@@ -321,11 +260,11 @@ template <typename T>
         return result;
 
     } else if constexpr (impl::has_to_string<T>) {
-        return std::to_string(obj);
+        return std::to_string(std::forward<T>(obj));
 
     } else if constexpr (impl::has_stream_insertion<T>) {
         std::ostringstream stream;
-        stream << obj;
+        stream << std::forward<T>(obj);
         return stream.str();
 
     } else {
@@ -340,14 +279,14 @@ template <typename T>
 for the relevant Python types.  This promotes hash-not-implemented exceptions into
 compile-time equivalents. */
 template <impl::hashable T>
-[[nodiscard]] size_t hash(const T& obj) {
-    return std::hash<T>{}(obj);
+[[nodiscard]] size_t hash(T&& obj) {
+    return std::hash<T>{}(std::forward<T>(obj));
 }
 
 
 /* Equivalent to Python `len(obj)`. */
 template <typename T> requires (__len__<T>::enable)
-[[nodiscard]] size_t len(const T& obj) {
+[[nodiscard]] size_t len(T&& obj) {
     using Return = typename __len__<T>::type;
     static_assert(
         std::same_as<Return, size_t>,
@@ -356,7 +295,7 @@ template <typename T> requires (__len__<T>::enable)
         "type is set to size_t."
     );
     if constexpr (impl::has_call_operator<__len__<T>>) {
-        return __len__<T>{}(obj);
+        return __len__<T>{}(std::forward<T>(obj));
 
     } else if constexpr (impl::has_cpp<T>) {
         static_assert(
@@ -380,33 +319,33 @@ template <typename T> requires (__len__<T>::enable)
 /* Equivalent to Python `len(obj)`, except that it works on C++ objects implementing a
 `size()` method. */
 template <typename T> requires (!__len__<T>::enable && impl::has_size<T>)
-[[nodiscard]] size_t len(const T& obj) {
-    return std::size(obj);
+[[nodiscard]] size_t len(T&& obj) {
+    return std::size(std::forward<T>(obj));
 }
 
 
 /* An alias for `py::len(obj)`, but triggers ADL for constructs that expect a
 free-floating size() function. */
 template <typename T> requires (__len__<T>::enable)
-[[nodiscard]] size_t size(const T& obj) {
-    return len(obj);
+[[nodiscard]] size_t size(T&& obj) {
+    return len(std::forward<T>(obj));
 }
 
 
 /* An alias for `py::len(obj)`, but triggers ADL for constructs that expect a
 free-floating size() function. */
 template <typename T> requires (!__len__<T>::enable && impl::has_size<T>)
-[[nodiscard]] size_t size(const T& obj) {
-    return len(obj);
+[[nodiscard]] size_t size(T&& obj) {
+    return len(std::forward<T>(obj));
 }
 
 
 /* Equivalent to Python `abs(obj)` for any object that specializes the __abs__ control
 struct. */
-template <std::derived_from<Object> Self> requires (__abs__<Self>::enable)
-[[nodiscard]] decltype(auto) abs(const Self& self) {
+template <typename Self> requires (__abs__<Self>::enable)
+[[nodiscard]] decltype(auto) abs(Self&& self) {
     if constexpr (impl::has_call_operator<__abs__<Self>>) {
-        return __abs__<Self>{}(self);
+        return __abs__<Self>{}(std::forward<Self>(self));
 
     } else if (impl::has_cpp<Self>) {
         static_assert(
@@ -437,16 +376,19 @@ template <std::derived_from<Object> Self> requires (__abs__<Self>::enable)
 /* Equivalent to Python `abs(obj)`, except that it takes a C++ value and applies
 std::abs() for identical semantics. */
 template <impl::has_abs T> requires (!__abs__<T>::enable && impl::has_abs<T>)
-[[nodiscard]] decltype(auto) abs(const T& value) {
-    return std::abs(value);
+[[nodiscard]] decltype(auto) abs(T&& value) {
+    return std::abs(std::forward<T>(value));
 }
 
 
 /* Equivalent to Python `base ** exp` (exponentiation). */
 template <typename Base, typename Exp> requires (__pow__<Base, Exp>::enable)
-[[nodiscard]] decltype(auto) pow(const Base& base, const Exp& exp) {
+[[nodiscard]] decltype(auto) pow(Base&& base, Exp&& exp) {
     if constexpr (impl::has_call_operator<__pow__<Base, Exp>>) {
-        return __pow__<Base, Exp>{}(base, exp);
+        return __pow__<Base, Exp>{}(
+            std::forward<Base>(base),
+            std::forward<Exp>(exp)
+        );
 
     } else if constexpr (
         (impl::cpp_like<Base> || impl::has_cpp<Base>) &&
@@ -513,9 +455,9 @@ template <typename Base, typename Exp>
             impl::has_pow<Base, Exp>
         )
     )
-[[nodiscard]] decltype(auto) pow(const Base& base, const Exp& exp) {
+[[nodiscard]] decltype(auto) pow(Base&& base, Exp&& exp) {
     if constexpr (impl::complex_like<Base> && impl::complex_like<Exp>) {
-        return std::common_type_t<Base, Exp>(
+        return std::common_type_t<std::remove_cvref_t<Base>, std::remove_cvref_t<Exp>>(
             pow(base.real(), exp.real()),
             pow(base.imag(), exp.imag())
         );
@@ -538,14 +480,13 @@ template <typename Base, typename Exp>
 /* Equivalent to Python `pow(base, exp, mod)`. */
 template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
     requires (__pow__<Base, Exp>::enable)
-[[nodiscard]] decltype(auto) pow(const Base& base, const Exp& exp, const Mod& mod) {
-    if constexpr (std::is_invocable_v<
-        __pow__<Base, Exp>,
-        const Base&,
-        const Exp&,
-        const Mod&
-    >) {
-        return __pow__<Base, Exp>{}(base, exp, mod);
+[[nodiscard]] decltype(auto) pow(Base&& base, Exp&& exp, Mod&& mod) {
+    if constexpr (std::is_invocable_v<__pow__<Base, Exp>, Base, Exp, Mod>) {
+        return __pow__<Base, Exp>{}(
+            std::forward<Base>(base),
+            std::forward<Exp>(exp),
+            std::forward<Mod>(mod)
+        );
 
     } else if constexpr (
         (impl::cpp_like<Base> || impl::has_cpp<Base>) &&
@@ -564,9 +505,9 @@ template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
             "this behavior."
         );
         PyObject* result = PyNumber_Power(
-            ptr(as_object(base)),
-            ptr(as_object(exp)),
-            ptr(as_object(mod))
+            ptr(as_object(std::forward<Base>(base))),
+            ptr(as_object(std::forward<Exp>(exp))),
+            ptr(as_object(std::forward<Mod>(mod)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -593,10 +534,11 @@ template <std::integral Base, std::integral Exp, std::integral Mod>
 }
 
 
-template <typename L, typename R> requires (__floordiv__<L, R>::enable)
-decltype(auto) floordiv(const L& lhs, const R& rhs) {
+template <typename L, typename R>
+    requires (impl::any_are_python_like<L, R> && __floordiv__<L, R>::enable)
+decltype(auto) floordiv(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__floordiv__<L, R>>) {
-        return __floordiv__<L, R>{}(lhs, rhs);
+        return __floordiv__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
     } else {
         using Return = typename __floordiv__<L, R>::type;
         static_assert(
@@ -607,8 +549,8 @@ decltype(auto) floordiv(const L& lhs, const R& rhs) {
             "override this behavior."
         );
         PyObject* result = PyNumber_FloorDivide(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(lhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -618,8 +560,8 @@ decltype(auto) floordiv(const L& lhs, const R& rhs) {
 }
 
 
-template <std::derived_from<Object> L, typename R> requires (__ifloordiv__<L, R>::enable)
-L& ifloordiv(L& lhs, const R& rhs) {
+template <impl::python_like L, typename R> requires (__ifloordiv__<L, R>::enable)
+L& ifloordiv(L& lhs, R&& rhs) {
     using Return = typename __ifloordiv__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -628,11 +570,11 @@ L& ifloordiv(L& lhs, const R& rhs) {
         "types and ensure the Return type is set to the left operand."
     );
     if constexpr (impl::has_call_operator<__ifloordiv__<L, R>>) {
-        __ifloordiv__<L, R>{}(lhs, rhs);
+        __ifloordiv__<L, R>{}(lhs, std::forward<R>(rhs));
     } else {
         PyObject* result = PyNumber_InPlaceFloorDivide(
             ptr(lhs),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -646,12 +588,12 @@ L& ifloordiv(L& lhs, const R& rhs) {
 }
 
 
-template <std::derived_from<Object> Self> requires (!__invert__<Self>::enable)
-decltype(auto) operator~(const Self& self) = delete;
-template <std::derived_from<Object> Self> requires (__invert__<Self>::enable)
-decltype(auto) operator~(const Self& self) {
+template <impl::python_like Self> requires (!__invert__<Self>::enable)
+decltype(auto) operator~(Self&& self) = delete;
+template <impl::python_like Self> requires (__invert__<Self>::enable)
+decltype(auto) operator~(Self&& self) {
     if constexpr (impl::has_call_operator<__invert__<Self>>) {
-        return __invert__<Self>{}(self);
+        return __invert__<Self>{}(std::forward<Self>(self));
 
     } else if constexpr (impl::has_cpp<Self>) {
         static_assert(
@@ -660,7 +602,7 @@ decltype(auto) operator~(const Self& self) {
             "have a viable overload for `~T`.  Did you forget to define a custom call "
             "operator for this type?"
         );
-        return ~unwrap(self);
+        return ~unwrap(std::forward<Self>(self));
 
     } else {
         using Return = typename __invert__<Self>::type;
@@ -680,12 +622,12 @@ decltype(auto) operator~(const Self& self) {
 }
 
 
-template <std::derived_from<Object> Self> requires (!__pos__<Self>::enable)
-decltype(auto) operator+(const Self& self) = delete;
-template <std::derived_from<Object> Self> requires (__pos__<Self>::enable)
-decltype(auto) operator+(const Self& self) {
+template <impl::python_like Self> requires (!__pos__<Self>::enable)
+decltype(auto) operator+(Self&& self) = delete;
+template <impl::python_like Self> requires (__pos__<Self>::enable)
+decltype(auto) operator+(Self&& self) {
     if constexpr (impl::has_call_operator<__pos__<Self>>) {
-        return __pos__<Self>{}(self);
+        return __pos__<Self>{}(std::forward<Self>(self));
 
     } else if constexpr (impl::has_cpp<Self>) {
         static_assert(
@@ -694,7 +636,7 @@ decltype(auto) operator+(const Self& self) {
             "a viable overload for `+T`.  Did you forget to define a custom call "
             "operator for this type?"
         );
-        return +unwrap(self);
+        return +unwrap(std::forward<Self>(self));
 
     } else {
         using Return = typename __pos__<Self>::type;
@@ -714,12 +656,12 @@ decltype(auto) operator+(const Self& self) {
 }
 
 
-template <std::derived_from<Object> Self> requires (!__neg__<Self>::enable)
-decltype(auto) operator-(const Self& self) = delete;
-template <std::derived_from<Object> Self> requires (__neg__<Self>::enable)
-decltype(auto) operator-(const Self& self) {
+template <impl::python_like Self> requires (!__neg__<Self>::enable)
+decltype(auto) operator-(Self&& self) = delete;
+template <impl::python_like Self> requires (__neg__<Self>::enable)
+decltype(auto) operator-(Self&& self) {
     if constexpr (impl::has_call_operator<__neg__<Self>>) {
-        return __neg__<Self>{}(self);
+        return __neg__<Self>{}(std::forward<Self>(self));
 
     } else if constexpr (impl::has_cpp<Self>) {
         static_assert(
@@ -728,7 +670,7 @@ decltype(auto) operator-(const Self& self) {
             "a viable overload for `-T`.  Did you forget to define a custom call "
             "operator for this type?"
         );
-        return -unwrap(self);
+        return -unwrap(std::forward<Self>(self));
 
     } else {
         using Return = typename __neg__<Self>::type;
@@ -748,11 +690,11 @@ decltype(auto) operator-(const Self& self) {
 }
 
 
-template <std::derived_from<Object> Self>
+template <impl::python_like Self>
 Self operator++(Self& self, int) = delete;  // post-increment is not valid Python
-template <std::derived_from<Object> Self> requires (!__increment__<Self>::enable)
+template <impl::python_like Self> requires (!__increment__<Self>::enable)
 Self& operator++(Self& self) = delete;
-template <std::derived_from<Object> Self> requires (__increment__<Self>::enable)
+template <impl::python_like Self> requires (__increment__<Self>::enable)
 Self& operator++(Self& self) {
     using Return = typename __increment__<Self>::type;
     static_assert(
@@ -787,11 +729,11 @@ Self& operator++(Self& self) {
 }
 
 
-template <std::derived_from<Object> Self>
+template <impl::python_like Self>
 Self operator--(Self& self, int) = delete;  // post-decrement is not valid Python
-template <std::derived_from<Object> Self> requires (!__decrement__<Self>::enable)
+template <impl::python_like Self> requires (!__decrement__<Self>::enable)
 Self& operator--(Self& self) = delete;
-template <std::derived_from<Object> Self> requires (__decrement__<Self>::enable)
+template <impl::python_like Self> requires (__decrement__<Self>::enable)
 Self& operator--(Self& self) {
     using Return = typename __decrement__<Self>::type;
     static_assert(
@@ -828,12 +770,12 @@ Self& operator--(Self& self) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__lt__<L, R>::enable)
-decltype(auto) operator<(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator<(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __lt__<L, R>::enable)
-decltype(auto) operator<(const L& lhs, const R& rhs) {
+decltype(auto) operator<(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__lt__<L, R>>) {
-        return __lt__<L, R>{}(lhs, rhs);
+        return __lt__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -845,7 +787,7 @@ decltype(auto) operator<(const L& lhs, const R& rhs) {
             "no viable overload for `L < R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) < unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) < unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __lt__<L, R>::type;
@@ -857,8 +799,8 @@ decltype(auto) operator<(const L& lhs, const R& rhs) {
             "behavior."
         );
         int result = PyObject_RichCompareBool(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs)),
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs))),
             Py_LT
         );
         if (result == -1) {
@@ -871,12 +813,12 @@ decltype(auto) operator<(const L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__le__<L, R>::enable)
-decltype(auto) operator<=(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator<=(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __le__<L, R>::enable)
-decltype(auto) operator<=(const L& lhs, const R& rhs) {
+decltype(auto) operator<=(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__le__<L, R>>) {
-        return __le__<L, R>{}(lhs, rhs);
+        return __le__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -888,7 +830,7 @@ decltype(auto) operator<=(const L& lhs, const R& rhs) {
             "no viable overload for `L <= R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) <= unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) <= unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __le__<L, R>::type;
@@ -900,8 +842,8 @@ decltype(auto) operator<=(const L& lhs, const R& rhs) {
             "behavior."
         );
         int result = PyObject_RichCompareBool(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs)),
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs))),
             Py_LE
         );
         if (result == -1) {
@@ -914,12 +856,12 @@ decltype(auto) operator<=(const L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__eq__<L, R>::enable)
-decltype(auto) operator==(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator==(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __eq__<L, R>::enable)
-decltype(auto) operator==(const L& lhs, const R& rhs) {
+decltype(auto) operator==(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__eq__<L, R>>) {
-        return __eq__<L, R>{}(lhs, rhs);
+        return __eq__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -931,7 +873,7 @@ decltype(auto) operator==(const L& lhs, const R& rhs) {
             "no viable overload for `L == R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) == unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) == unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __eq__<L, R>::type;
@@ -942,8 +884,8 @@ decltype(auto) operator==(const L& lhs, const R& rhs) {
             "set to bool, or define a custom call operator to override this behavior."
         );
         int result = PyObject_RichCompareBool(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs)),
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs))),
             Py_EQ
         );
         if (result == -1) {
@@ -956,12 +898,12 @@ decltype(auto) operator==(const L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__ne__<L, R>::enable)
-decltype(auto) operator!=(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator!=(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __ne__<L, R>::enable)
-decltype(auto) operator!=(const L& lhs, const R& rhs) {
+decltype(auto) operator!=(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__ne__<L, R>>) {
-        return __ne__<L, R>{}(lhs, rhs);
+        return __ne__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -973,7 +915,7 @@ decltype(auto) operator!=(const L& lhs, const R& rhs) {
             "no viable overload for `L != R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) != unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) != unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __ne__<L, R>::type;
@@ -984,8 +926,8 @@ decltype(auto) operator!=(const L& lhs, const R& rhs) {
             "set to bool, or define a custom call operator to override this behavior."
         );
         int result = PyObject_RichCompareBool(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs)),
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs))),
             Py_NE
         );
         if (result == -1) {
@@ -998,12 +940,12 @@ decltype(auto) operator!=(const L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__ge__<L, R>::enable)
-decltype(auto) operator>=(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator>=(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __ge__<L, R>::enable)
-decltype(auto) operator>=(const L& lhs, const R& rhs) {
+decltype(auto) operator>=(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__ge__<L, R>>) {
-        return __ge__<L, R>{}(lhs, rhs);
+        return __ge__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1015,7 +957,7 @@ decltype(auto) operator>=(const L& lhs, const R& rhs) {
             "no viable overload for `L >= R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) >= unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) >= unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __ge__<L, R>::type;
@@ -1027,8 +969,8 @@ decltype(auto) operator>=(const L& lhs, const R& rhs) {
             "behavior."
         );
         int result = PyObject_RichCompareBool(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs)),
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs))),
             Py_GE
         );
         if (result == -1) {
@@ -1041,12 +983,12 @@ decltype(auto) operator>=(const L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__gt__<L, R>::enable)
-decltype(auto) operator>(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator>(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __gt__<L, R>::enable)
-decltype(auto) operator>(const L& lhs, const R& rhs) {
+decltype(auto) operator>(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__gt__<L, R>>) {
-        return __gt__<L, R>{}(lhs, rhs);
+        return __gt__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1058,7 +1000,7 @@ decltype(auto) operator>(const L& lhs, const R& rhs) {
             "no viable overload for `L > R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) > unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) > unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __gt__<L, R>::type;
@@ -1069,8 +1011,8 @@ decltype(auto) operator>(const L& lhs, const R& rhs) {
             "set to bool, or define a custom call operator to override this behavior."
         );
         int result = PyObject_RichCompareBool(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs)),
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs))),
             Py_GT
         );
         if (result == -1) {
@@ -1083,12 +1025,12 @@ decltype(auto) operator>(const L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__add__<L, R>::enable)
-decltype(auto) operator+(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator+(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __add__<L, R>::enable)
-decltype(auto) operator+(const L& lhs, const R& rhs) {
+decltype(auto) operator+(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__add__<L, R>>) {
-        return __add__<L, R>{}(lhs, rhs);
+        return __add__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1100,7 +1042,7 @@ decltype(auto) operator+(const L& lhs, const R& rhs) {
             "no viable overload for `L + R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) + unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) + unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __add__<L, R>::type;
@@ -1112,8 +1054,8 @@ decltype(auto) operator+(const L& lhs, const R& rhs) {
             "this behavior."
         );
         PyObject* result = PyNumber_Add(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1123,10 +1065,10 @@ decltype(auto) operator+(const L& lhs, const R& rhs) {
 }
 
 
-template <std::derived_from<Object> L, typename R> requires (!__iadd__<L, R>::enable)
-L& operator+=(L& lhs, const R& rhs) = delete;
-template <std::derived_from<Object> L, typename R> requires (__iadd__<L, R>::enable)
-L& operator+=(L& lhs, const R& rhs) {
+template <impl::python_like L, typename R> requires (!__iadd__<L, R>::enable)
+L& operator+=(L& lhs, R&& rhs) = delete;
+template <impl::python_like L, typename R> requires (__iadd__<L, R>::enable)
+L& operator+=(L& lhs, R&& rhs) {
     using Return = typename __iadd__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1135,7 +1077,7 @@ L& operator+=(L& lhs, const R& rhs) {
         "the Return type is set to the left operand."
     );
     if constexpr (impl::has_call_operator<__iadd__<L, R>>) {
-        __iadd__<L, R>{}(lhs, rhs);
+        __iadd__<L, R>{}(lhs, std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1147,12 +1089,12 @@ L& operator+=(L& lhs, const R& rhs) {
             "no viable overload for `L += R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        unwrap(lhs) += unwrap(rhs);
+        unwrap(lhs) += unwrap(std::forward<R>(rhs));
 
     } else {
         PyObject* result = PyNumber_InPlaceAdd(
             ptr(lhs),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1168,12 +1110,12 @@ L& operator+=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__sub__<L, R>::enable)
-decltype(auto) operator-(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator-(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __sub__<L, R>::enable)
-decltype(auto) operator-(const L& lhs, const R& rhs) {
+decltype(auto) operator-(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__sub__<L, R>>) {
-        return __sub__<L, R>{}(lhs, rhs);
+        return __sub__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1185,7 +1127,7 @@ decltype(auto) operator-(const L& lhs, const R& rhs) {
             "no viable overload for `L - R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) - unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) - unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __sub__<L, R>::type;
@@ -1197,8 +1139,8 @@ decltype(auto) operator-(const L& lhs, const R& rhs) {
             "this behavior."
         );
         PyObject* result = PyNumber_Subtract(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1208,10 +1150,10 @@ decltype(auto) operator-(const L& lhs, const R& rhs) {
 }
 
 
-template <std::derived_from<Object> L, typename R> requires (!__isub__<L, R>::enable)
-L& operator-=(L& lhs, const R& rhs) = delete;
-template <std::derived_from<Object> L, typename R> requires (__isub__<L, R>::enable)
-L& operator-=(L& lhs, const R& rhs) {
+template <impl::python_like L, typename R> requires (!__isub__<L, R>::enable)
+L& operator-=(L& lhs, R&& rhs) = delete;
+template <impl::python_like L, typename R> requires (__isub__<L, R>::enable)
+L& operator-=(L& lhs, R&& rhs) {
     using Return = typename __isub__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1220,7 +1162,7 @@ L& operator-=(L& lhs, const R& rhs) {
         "the Return type is set to the left operand."
     );
     if constexpr (impl::has_call_operator<__isub__<L, R>>) {
-        __isub__<L, R>{}(lhs, rhs);
+        __isub__<L, R>{}(lhs, std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1232,12 +1174,12 @@ L& operator-=(L& lhs, const R& rhs) {
             "no viable overload for `L -= R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        unwrap(lhs) -= unwrap(rhs);
+        unwrap(lhs) -= unwrap(std::forward<R>(rhs));
 
     } else {
         PyObject* result = PyNumber_InPlaceSubtract(
             ptr(lhs),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1253,12 +1195,12 @@ L& operator-=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__mul__<L, R>::enable)
-decltype(auto) operator*(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator*(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __mul__<L, R>::enable)
-decltype(auto) operator*(const L& lhs, const R& rhs) {
+decltype(auto) operator*(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__mul__<L, R>>) {
-        return __mul__<L, R>{}(lhs, rhs);
+        return __mul__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1270,7 +1212,7 @@ decltype(auto) operator*(const L& lhs, const R& rhs) {
             "no viable overload for `L * R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) * unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) * unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __mul__<L, R>::type;
@@ -1282,8 +1224,8 @@ decltype(auto) operator*(const L& lhs, const R& rhs) {
             "override this behavior."
         );
         PyObject* result = PyNumber_Multiply(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1293,10 +1235,10 @@ decltype(auto) operator*(const L& lhs, const R& rhs) {
 }
 
 
-template <std::derived_from<Object> L, typename R> requires (!__imul__<L, R>::enable)
-L& operator*=(L& lhs, const R& rhs) = delete;
-template <std::derived_from<Object> L, typename R> requires (__imul__<L, R>::enable)
-L& operator*=(L& lhs, const R& rhs) {
+template <impl::python_like L, typename R> requires (!__imul__<L, R>::enable)
+L& operator*=(L& lhs, R&& rhs) = delete;
+template <impl::python_like L, typename R> requires (__imul__<L, R>::enable)
+L& operator*=(L& lhs, R&& rhs) {
     using Return = typename __imul__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1305,7 +1247,7 @@ L& operator*=(L& lhs, const R& rhs) {
         "and ensure the Return type is set to the left operand."
     );
     if constexpr (impl::has_call_operator<__imul__<L, R>>) {
-        __imul__<L, R>{}(lhs, rhs);
+        __imul__<L, R>{}(lhs, std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1317,12 +1259,12 @@ L& operator*=(L& lhs, const R& rhs) {
             "no viable overload for `L *= R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        unwrap(lhs) *= unwrap(rhs);
+        unwrap(lhs) *= unwrap(std::forward<R>(rhs));
 
     } else {
         PyObject* result = PyNumber_InPlaceMultiply(
             ptr(lhs),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1338,12 +1280,12 @@ L& operator*=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__truediv__<L, R>::enable)
-decltype(auto) operator/(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator/(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __truediv__<L, R>::enable)
-decltype(auto) operator/(const L& lhs, const R& rhs) {
+decltype(auto) operator/(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__truediv__<L, R>>) {
-        return __truediv__<L, R>{}(lhs, rhs);
+        return __truediv__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1355,7 +1297,7 @@ decltype(auto) operator/(const L& lhs, const R& rhs) {
             "no viable overload for `L / R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) / unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) / unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __truediv__<L, R>::type;
@@ -1367,8 +1309,8 @@ decltype(auto) operator/(const L& lhs, const R& rhs) {
             "override this behavior."
         );
         PyObject* result = PyNumber_TrueDivide(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1378,10 +1320,10 @@ decltype(auto) operator/(const L& lhs, const R& rhs) {
 }
 
 
-template <std::derived_from<Object> L, typename R> requires (!__itruediv__<L, R>::enable)
-L& operator/=(L& lhs, const R& rhs) = delete;
-template <std::derived_from<Object> L, typename R> requires (__itruediv__<L, R>::enable)
-L& operator/=(L& lhs, const R& rhs) {
+template <impl::python_like L, typename R> requires (!__itruediv__<L, R>::enable)
+L& operator/=(L& lhs, R&& rhs) = delete;
+template <impl::python_like L, typename R> requires (__itruediv__<L, R>::enable)
+L& operator/=(L& lhs, R&& rhs) {
     using Return = typename __itruediv__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1390,7 +1332,7 @@ L& operator/=(L& lhs, const R& rhs) {
         "types and ensure the Return type is set to the left operand."
     );
     if constexpr (impl::has_call_operator<__itruediv__<L, R>>) {
-        __itruediv__<L, R>{}(lhs, rhs);
+        __itruediv__<L, R>{}(lhs, std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1402,12 +1344,12 @@ L& operator/=(L& lhs, const R& rhs) {
             "no viable overload for `L /= R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        unwrap(lhs) /= unwrap(rhs);
+        unwrap(lhs) /= unwrap(std::forward<R>(rhs));
 
     } else {
         PyObject* result = PyNumber_InPlaceTrueDivide(
             ptr(lhs),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1423,12 +1365,12 @@ L& operator/=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__mod__<L, R>::enable)
-decltype(auto) operator%(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator%(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __mod__<L, R>::enable)
-decltype(auto) operator%(const L& lhs, const R& rhs) {
+decltype(auto) operator%(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__mod__<L, R>>) {
-        return __mod__<L, R>{}(lhs, rhs);
+        return __mod__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1440,7 +1382,7 @@ decltype(auto) operator%(const L& lhs, const R& rhs) {
             "no viable overload for `L % R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) % unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) % unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __mod__<L, R>::type;
@@ -1452,8 +1394,8 @@ decltype(auto) operator%(const L& lhs, const R& rhs) {
             "this behavior."
         );
         PyObject* result = PyNumber_Remainder(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1463,10 +1405,10 @@ decltype(auto) operator%(const L& lhs, const R& rhs) {
 }
 
 
-template <std::derived_from<Object> L, typename R> requires (!__imod__<L, R>::enable)
-L& operator%=(L& lhs, const R& rhs) = delete;
-template <std::derived_from<Object> L, typename R> requires (__imod__<L, R>::enable)
-L& operator%=(L& lhs, const R& rhs) {
+template <impl::python_like L, typename R> requires (!__imod__<L, R>::enable)
+L& operator%=(L& lhs, R&& rhs) = delete;
+template <impl::python_like L, typename R> requires (__imod__<L, R>::enable)
+L& operator%=(L& lhs, R&& rhs) {
     using Return = typename __imod__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1475,7 +1417,7 @@ L& operator%=(L& lhs, const R& rhs) {
         "ensure the Return type is set to the left operand."
     );
     if constexpr (impl::has_call_operator<__imod__<L, R>>) {
-        __imod__<L, R>{}(lhs, rhs);
+        __imod__<L, R>{}(lhs, std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1487,12 +1429,12 @@ L& operator%=(L& lhs, const R& rhs) {
             "no viable overload for `L %= R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        unwrap(lhs) %= unwrap(rhs);
+        unwrap(lhs) %= unwrap(std::forward<R>(rhs));
 
     } else {
         PyObject* result = PyNumber_InPlaceRemainder(
             ptr(lhs),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1508,12 +1450,12 @@ L& operator%=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__lshift__<L, R>::enable)
-decltype(auto) operator<<(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator<<(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __lshift__<L, R>::enable)
-decltype(auto) operator<<(const L& lhs, const R& rhs) {
+decltype(auto) operator<<(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__lshift__<L, R>>) {
-        return __lshift__<L, R>{}(lhs, rhs);
+        return __lshift__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1525,7 +1467,7 @@ decltype(auto) operator<<(const L& lhs, const R& rhs) {
             "no viable overload for `L << R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) << unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) << unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __lshift__<L, R>::type;
@@ -1537,8 +1479,8 @@ decltype(auto) operator<<(const L& lhs, const R& rhs) {
             "override this behavior."
         );
         PyObject* result = PyNumber_Lshift(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1548,10 +1490,10 @@ decltype(auto) operator<<(const L& lhs, const R& rhs) {
 }
 
 
-template <std::derived_from<Object> L, typename R> requires (!__ilshift__<L, R>::enable)
-L& operator<<=(L& lhs, const R& rhs) = delete;
-template <std::derived_from<Object> L, typename R> requires (__ilshift__<L, R>::enable)
-L& operator<<=(L& lhs, const R& rhs) {
+template <impl::python_like L, typename R> requires (!__ilshift__<L, R>::enable)
+L& operator<<=(L& lhs, R&& rhs) = delete;
+template <impl::python_like L, typename R> requires (__ilshift__<L, R>::enable)
+L& operator<<=(L& lhs, R&& rhs) {
     using Return = typename __ilshift__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1560,7 +1502,7 @@ L& operator<<=(L& lhs, const R& rhs) {
         "and ensure the Return type is set to the left operand."
     );
     if constexpr (impl::has_call_operator<__ilshift__<L, R>>) {
-        __ilshift__<L, R>{}(lhs, rhs);
+        __ilshift__<L, R>{}(lhs, std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1572,12 +1514,12 @@ L& operator<<=(L& lhs, const R& rhs) {
             "no viable overload for `L <<= R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        unwrap(lhs) <<= unwrap(rhs);
+        unwrap(lhs) <<= unwrap(std::forward<R>(rhs));
 
     } else {
         PyObject* result = PyNumber_InPlaceLshift(
             ptr(lhs),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1593,12 +1535,12 @@ L& operator<<=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__rshift__<L, R>::enable)
-decltype(auto) operator>>(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator>>(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __rshift__<L, R>::enable)
-decltype(auto) operator>>(const L& lhs, const R& rhs) {
+decltype(auto) operator>>(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__rshift__<L, R>>) {
-        return __rshift__<L, R>{}(lhs, rhs);
+        return __rshift__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1610,7 +1552,7 @@ decltype(auto) operator>>(const L& lhs, const R& rhs) {
             "no viable overload for `L >> R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) >> unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) >> unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __rshift__<L, R>::type;
@@ -1622,8 +1564,8 @@ decltype(auto) operator>>(const L& lhs, const R& rhs) {
             "override this behavior."
         );
         PyObject* result = PyNumber_Rshift(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1633,10 +1575,10 @@ decltype(auto) operator>>(const L& lhs, const R& rhs) {
 }
 
 
-template <std::derived_from<Object> L, typename R> requires (!__irshift__<L, R>::enable)
-L& operator>>=(L& lhs, const R& rhs) = delete;
-template <std::derived_from<Object> L, typename R> requires (__irshift__<L, R>::enable)
-L& operator>>=(L& lhs, const R& rhs) {
+template <impl::python_like L, typename R> requires (!__irshift__<L, R>::enable)
+L& operator>>=(L& lhs, R&& rhs) = delete;
+template <impl::python_like L, typename R> requires (__irshift__<L, R>::enable)
+L& operator>>=(L& lhs, R&& rhs) {
     using Return = typename __irshift__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1645,7 +1587,7 @@ L& operator>>=(L& lhs, const R& rhs) {
         "and ensure the Return type is set to the left operand."
     );
     if constexpr (impl::has_call_operator<__irshift__<L, R>>) {
-        __irshift__<L, R>{}(lhs, rhs);
+        __irshift__<L, R>{}(lhs, std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1657,12 +1599,12 @@ L& operator>>=(L& lhs, const R& rhs) {
             "no viable overload for `L >>= R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        unwrap(lhs) >>= unwrap(rhs);
+        unwrap(lhs) >>= unwrap(std::forward<R>(rhs));
 
     } else {
         PyObject* result = PyNumber_InPlaceRshift(
             ptr(lhs),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1678,12 +1620,12 @@ L& operator>>=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__and__<L, R>::enable)
-decltype(auto) operator&(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator&(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __and__<L, R>::enable)
-decltype(auto) operator&(const L& lhs, const R& rhs) {
+decltype(auto) operator&(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__and__<L, R>>) {
-        return __and__<L, R>{}(lhs, rhs);
+        return __and__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1695,7 +1637,7 @@ decltype(auto) operator&(const L& lhs, const R& rhs) {
             "no viable overload for `L & R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) & unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) & unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __and__<L, R>::type;
@@ -1707,8 +1649,8 @@ decltype(auto) operator&(const L& lhs, const R& rhs) {
             "this behavior."
         );
         PyObject* result = PyNumber_And(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1718,10 +1660,10 @@ decltype(auto) operator&(const L& lhs, const R& rhs) {
 }
 
 
-template <std::derived_from<Object> L, typename R> requires (!__iand__<L, R>::enable)
-L& operator&=(L& lhs, const R& rhs) = delete;
-template <std::derived_from<Object> L, typename R> requires (__iand__<L, R>::enable)
-L& operator&=(L& lhs, const R& rhs) {
+template <impl::python_like L, typename R> requires (!__iand__<L, R>::enable)
+L& operator&=(L& lhs, R&& rhs) = delete;
+template <impl::python_like L, typename R> requires (__iand__<L, R>::enable)
+L& operator&=(L& lhs, R&& rhs) {
     using Return = typename __iand__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1730,7 +1672,7 @@ L& operator&=(L& lhs, const R& rhs) {
         "ensure the Return type is set to the left operand."
     );
     if constexpr (impl::has_call_operator<__iand__<L, R>>) {
-        __iand__<L, R>{}(lhs, rhs);
+        __iand__<L, R>{}(lhs, std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1742,12 +1684,12 @@ L& operator&=(L& lhs, const R& rhs) {
             "no viable overload for `L &= R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        unwrap(lhs) &= unwrap(rhs);
+        unwrap(lhs) &= unwrap(std::forward<R>(rhs));
 
     } else {
         PyObject* result = PyNumber_InPlaceAnd(
             ptr(lhs),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1763,12 +1705,12 @@ L& operator&=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__or__<L, R>::enable)
-decltype(auto) operator|(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator|(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __or__<L, R>::enable)
-decltype(auto) operator|(const L& lhs, const R& rhs) {
+decltype(auto) operator|(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__or__<L, R>>) {
-        return __or__<L, R>{}(lhs, rhs);
+        return __or__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1780,7 +1722,7 @@ decltype(auto) operator|(const L& lhs, const R& rhs) {
             "viable overload for `L | R`.  Did you forget to define a custom call "
             "operator for this type?"
         );
-        return unwrap(lhs) | unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) | unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __or__<L, R>::type;
@@ -1792,8 +1734,8 @@ decltype(auto) operator|(const L& lhs, const R& rhs) {
             "this behavior."
         );
         PyObject* result = PyNumber_Or(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1803,10 +1745,10 @@ decltype(auto) operator|(const L& lhs, const R& rhs) {
 }
 
 
-template <std::derived_from<Object> L, typename R> requires (!__ior__<L, R>::enable)
-L& operator|=(L& lhs, const R& rhs) = delete;
-template <std::derived_from<Object> L, typename R> requires (__ior__<L, R>::enable)
-L& operator|=(L& lhs, const R& rhs) {
+template <impl::python_like L, typename R> requires (!__ior__<L, R>::enable)
+L& operator|=(L& lhs, R&& rhs) = delete;
+template <impl::python_like L, typename R> requires (__ior__<L, R>::enable)
+L& operator|=(L& lhs, R&& rhs) {
     using Return = typename __ior__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1815,7 +1757,7 @@ L& operator|=(L& lhs, const R& rhs) {
         "ensure the Return type is set to the left operand."
     );
     if constexpr (impl::has_call_operator<__ior__<L, R>>) {
-        __ior__<L, R>{}(lhs, rhs);
+        __ior__<L, R>{}(lhs, std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1827,12 +1769,12 @@ L& operator|=(L& lhs, const R& rhs) {
             "no viable overload for `L |= R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        unwrap(lhs) |= unwrap(rhs);
+        unwrap(lhs) |= unwrap(std::forward<R>(rhs));
 
     } else {
         PyObject* result = PyNumber_InPlaceOr(
             ptr(lhs),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1848,12 +1790,12 @@ L& operator|=(L& lhs, const R& rhs) {
 
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && !__xor__<L, R>::enable)
-decltype(auto) operator^(const L& lhs, const R& rhs) = delete;
+decltype(auto) operator^(L&& lhs, R&& rhs) = delete;
 template <typename L, typename R>
     requires (impl::any_are_python_like<L, R> && __xor__<L, R>::enable)
-decltype(auto) operator^(const L& lhs, const R& rhs) {
+decltype(auto) operator^(L&& lhs, R&& rhs) {
     if constexpr (impl::has_call_operator<__xor__<L, R>>) {
-        return __xor__<L, R>{}(lhs, rhs);
+        return __xor__<L, R>{}(std::forward<L>(lhs), std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1865,7 +1807,7 @@ decltype(auto) operator^(const L& lhs, const R& rhs) {
             "no viable overload for `L ^ R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return unwrap(lhs) ^ unwrap(rhs);
+        return unwrap(std::forward<L>(lhs)) ^ unwrap(std::forward<R>(rhs));
 
     } else {
         using Return = typename __xor__<L, R>::type;
@@ -1877,8 +1819,8 @@ decltype(auto) operator^(const L& lhs, const R& rhs) {
             "this behavior."
         );
         PyObject* result = PyNumber_Xor(
-            ptr(as_object(lhs)),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<L>(lhs))),
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -1888,10 +1830,10 @@ decltype(auto) operator^(const L& lhs, const R& rhs) {
 }
 
 
-template <std::derived_from<Object> L, typename R> requires (!__ixor__<L, R>::enable)
-L& operator^=(L& lhs, const R& rhs) = delete;
-template <std::derived_from<Object> L, typename R> requires (__ixor__<L, R>::enable)
-L& operator^=(L& lhs, const R& rhs) {
+template <impl::python_like L, typename R> requires (!__ixor__<L, R>::enable)
+L& operator^=(L& lhs, R&& rhs) = delete;
+template <impl::python_like L, typename R> requires (__ixor__<L, R>::enable)
+L& operator^=(L& lhs, R&& rhs) {
     using Return = typename __ixor__<L, R>::type;
     static_assert(
         std::same_as<Return, L&>,
@@ -1900,7 +1842,7 @@ L& operator^=(L& lhs, const R& rhs) {
         "ensure the Return type is set to the left operand."
     );
     if constexpr (impl::has_call_operator<__ixor__<L, R>>) {
-        __ixor__<L, R>{}(lhs, rhs);
+        __ixor__<L, R>{}(lhs, std::forward<R>(rhs));
 
     } else if constexpr (
         (impl::cpp_like<L> || impl::has_cpp<L>) &&
@@ -1912,12 +1854,12 @@ L& operator^=(L& lhs, const R& rhs) {
             "no viable overload for `L ^= R`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        unwrap(lhs) ^= unwrap(rhs);
+        unwrap(lhs) ^= unwrap(std::forward<R>(rhs));
 
     } else {
         PyObject* result = PyNumber_InPlaceXor(
             ptr(lhs),
-            ptr(as_object(rhs))
+            ptr(as_object(std::forward<R>(rhs)))
         );
         if (result == nullptr) {
             Exception::from_python();
@@ -2012,6 +1954,61 @@ template <typename T>
         );
     } else {
         return obj;
+    }
+}
+
+
+template <typename Self>
+[[nodiscard]] Object::operator bool(this Self&& self) {
+    if constexpr (
+        impl::has_cpp<Self> &&
+        impl::has_operator_bool<impl::cpp_type<Self>>
+    ) {
+        return static_cast<bool>(unwrap(std::forward<Self>(self)));
+    } else {
+        int result = PyObject_IsTrue(ptr(self));
+        if (result == -1) {
+            Exception::from_python();
+        }
+        return result;   
+    }
+}
+
+
+template <typename Self, typename Key> requires (__contains__<Self, Key>::enable)
+[[nodiscard]] bool Object::contains(this Self&& self, Key&& key) {
+    using Return = typename __contains__<Self, Key>::type;
+    static_assert(
+        std::same_as<Return, bool>,
+        "contains() operator must return a boolean value.  Check your "
+        "specialization of __contains__ for these types and ensure the Return "
+        "type is set to bool."
+    );
+    if constexpr (impl::has_call_operator<__contains__<Self, Key>>) {
+        return __contains__<Self, Key>{}(
+            std::forward<Self>(self),
+            std::forward<Key>(key)
+        );
+
+    } else if constexpr (impl::has_cpp<Self>) {
+        static_assert(
+            impl::has_contains<impl::cpp_type<Self>, impl::cpp_type<Key>>,
+            "__contains__<Self, Key> is enabled for operands whose C++ "
+            "representations have no viable overload for `Self.contains(Key)`"
+        );
+        return unwrap(std::forward<Self>(self)).contains(
+            unwrap(std::forward<Key>(key))
+        );
+
+    } else {
+        int result = PySequence_Contains(
+            ptr(self),
+            ptr(as_object(key))
+        );
+        if (result == -1) {
+            Exception::from_python();
+        }
+        return result;
     }
 }
 
