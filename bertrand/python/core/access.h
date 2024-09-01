@@ -25,9 +25,9 @@ namespace impl {
     the object in any other way will also modify it in-place on the parent. */
     template <typename Self, StaticStr Name>
         requires (__getattr__<Self, Name>::enable)
-    struct Attr : __getattr__<Self, Name>::type {
+    struct Attr : std::remove_cvref_t<typename __getattr__<Self, Name>::type> {
     private:
-        using Base = __getattr__<Self, Name>::type;
+        using Base = std::remove_cvref_t<typename __getattr__<Self, Name>::type>;
         static_assert(
             std::derived_from<Base, Object>,
             "Default attribute access operator must return a subclass of py::Object.  "
@@ -36,14 +36,11 @@ namespace impl {
             "to override this behavior."
         );
 
-        template <typename T> requires (
-            std::is_rvalue_reference_v<T> &&
-            impl::attr_is_deletable<std::remove_cvref_t<T>>::value
-        )
-        friend void del(T&& item);
-        template <impl::inherits<Object> T>
+        template <typename S, StaticStr N> requires (__delattr__<S, N>::enable)
+        friend void del(Attr<S, N>&& item);
+        template <inherits<Object> T>
         friend PyObject* ptr(T&);
-        template <impl::inherits<Object> T>
+        template <inherits<Object> T>
             requires (!std::is_const_v<std::remove_reference_t<T>>)
         friend PyObject* release(T&&);
         template <std::derived_from<Object> T>
@@ -55,21 +52,25 @@ namespace impl {
         template <typename T>
         friend const auto& unwrap(const T& obj);
 
+        /* m_self inherits the same const/volatile/reference qualifiers as the original
+        object. */
         Self m_self;
 
         /* The wrapper's `m_ptr` member is lazily evaluated to avoid repeated lookups.
         Replacing it with a computed property will trigger a __getattr__ lookup the
         first time it is accessed. */
-        __declspec(property(get = get_ptr, put = set_ptr)) PyObject* m_ptr;
-        void set_ptr(PyObject* value) { Base::m_ptr = value; }
-        PyObject* get_ptr() {
+        __declspec(property(get = _get_ptr, put = _set_ptr)) PyObject* m_ptr;
+        void _set_ptr(PyObject* value) { Base::m_ptr = value; }
+        PyObject* _get_ptr() {
             if (Base::m_ptr == nullptr) {
                 if constexpr (has_call_operator<__getattr__<Self, Name>>) {
-                    Base::m_ptr = release(__getattr__<Self, Name>{}(m_self));
+                    Base::m_ptr = release(__getattr__<Self, Name>{}(
+                        std::forward<Self>(m_self))
+                    );
                 } else {
                     PyObject* result = PyObject_GetAttr(
                         ptr(m_self),
-                        impl::TemplateString<Name>::ptr
+                        TemplateString<Name>::ptr
                     );
                     if (result == nullptr) {
                         Exception::from_python();
@@ -82,26 +83,25 @@ namespace impl {
 
     public:
 
-        Attr(const Self& self) :
-            Base(nullptr, Object::stolen_t{}), m_self(self)
-        {}
         Attr(Self&& self) :
-            Base(nullptr, Object::stolen_t{}), m_self(std::move(self))
+            Base(nullptr, Object::stolen_t{}), m_self(std::forward<Self>(self))
         {}
-        Attr(const Attr& other) :
-            Base(other), m_self(other.m_self)
-        {}
-        Attr(Attr&& other) :
-            Base(std::move(other)), m_self(std::move(other.m_self))
-        {}
+        Attr(const Attr& other) = delete;
+        Attr(Attr&& other) = delete;
 
-        template <typename Value>
-            requires (!__setattr__<Self, Name, std::remove_cvref_t<Value>>::enable)
-        Attr& operator=(Value&& other) = delete;
-        template <typename Value>
-            requires (__setattr__<Self, Name, std::remove_cvref_t<Value>>::enable)
-        Attr& operator=(Value&& value) {
-            using setattr = __setattr__<Self, Name, std::remove_cvref_t<Value>>;
+        template <typename S, typename Value>
+            requires (
+                std::is_lvalue_reference_v<S> ||
+                !__setattr__<Self, Name, Value>::enable
+            )
+        Attr& operator=(this S&& self, Value&& value) = delete;
+        template <typename S, typename Value>
+            requires (
+                !std::is_lvalue_reference_v<S> &&
+                __setattr__<Self, Name, Value>::enable
+            )
+        Attr& operator=(this S&& self, Value&& value) {
+            using setattr = __setattr__<Self, Name, Value>;
             using Return = typename setattr::type;
             static_assert(
                 std::is_void_v<Return>,
@@ -109,23 +109,23 @@ namespace impl {
                 "specialization of __setattr__ for these types and ensure the Return "
                 "type is set to void."
             );
-            Base::operator=(std::forward<Value>(value));
             if constexpr (has_call_operator<setattr>) {
-                setattr{}(m_self, value);
+                setattr{}(std::forward<Self>(self.m_self), std::forward<Value>(value));
 
             } else if constexpr (has_cpp<Base>) {
-                unwrap(*this) = unwrap(std::forward<Value>(value));
+                unwrap(self) = unwrap(std::forward<Value>(value));
 
             } else {
+                Base::operator=(std::forward<Value>(value));
                 if (PyObject_SetAttr(
-                    ptr(m_self),
+                    ptr(self.m_self),
                     TemplateString<Name>::ptr,
-                    m_ptr
+                    ptr(self)
                 )) {
                     Exception::from_python();
                 }
             }
-            return *this;
+            return self;
         }
 
     };
@@ -136,11 +136,11 @@ namespace impl {
     This is a simple extension of an Object type that intercepts `operator=` and
     assigns the new value back to the container using the appropriate API.  Mutating
     the object in any other way will also modify it in-place within the container. */
-    template <typename Container, typename... Key>
-        requires (__getitem__<Container, Key...>::enable)
-    struct Item : __getitem__<Container, Key...>::type {
+    template <typename Self, typename... Key>
+        requires (__getitem__<Self, Key...>::enable)
+    struct Item : __getitem__<Self, Key...>::type {
     private:
-        using Base = __getitem__<Container, Key...>::type;
+        using Base = __getitem__<Self, Key...>::type;
         static_assert(sizeof...(Key) > 0, "Item must have at least one key.");
         static_assert(
             std::derived_from<Base, Object>,
@@ -150,20 +150,11 @@ namespace impl {
             "this behavior."
         );
 
-        using M_Key = std::conditional_t<
-            (sizeof...(Key) == 1),
-            std::tuple_element_t<0, std::tuple<Key...>>,
-            std::tuple<Key...>
-        >;
-
-        template <typename T> requires (
-            std::is_rvalue_reference_v<T> &&
-            impl::item_is_deletable<std::remove_cvref_t<T>>::value
-        )
-        friend void del(T&& item);
-        template <impl::inherits<Object> T>
+        template <typename S, typename... K> requires (__delitem__<S, K...>::enable)
+        friend void del(Item<S, K...>&& item);
+        template <inherits<Object> T>
         friend PyObject* ptr(T&);
-        template <impl::inherits<Object> T>
+        template <inherits<Object> T>
             requires (!std::is_const_v<std::remove_reference_t<T>>)
         friend PyObject* release(T&&);
         template <std::derived_from<Object> T>
@@ -175,66 +166,122 @@ namespace impl {
         template <typename T>
         friend const auto& unwrap(const T& obj);
 
-        Container m_container;
+        template <typename... Ts>
+        struct KeyType {
+            template <typename T>
+            struct wrap_references {
+                using type = T;
+            };
+            template <typename T> requires (std::is_reference_v<T>)
+            struct wrap_references<T> {
+                using type = std::reference_wrapper<std::remove_reference_t<T>>;
+            };
+            using type = std::tuple<wrap_references<Ts>...>;
+        };
+        template <typename T>
+        struct KeyType<T> {
+            using type = T;
+        };
+        using M_Key = KeyType<Key...>::type;
+
+        /* m_self inherits the same const/volatile/reference qualifiers as the original
+        object.  The keys are either moved or copied into m_key if it is a tuple, or
+        directly references similar to m_self if it is a single value. */
+        Self m_self;
         M_Key m_key;
+
+        /* When the key is stored as a tuple, there needs to be an extra coercion step
+        to convert the `reference_wrapper`s back into the original references, and to
+        move the keys that were originally supplied as raw values or rvalue
+        references. */
+        template <size_t I>
+        struct maybe_move {
+            using type = unpack_type<I, Key...>;
+            decltype(auto) static operator()(M_Key& keys) {
+                if constexpr (std::is_lvalue_reference_v<type>) {
+                    return std::get<I>(keys).get();
+                } else if constexpr (std::is_rvalue_reference_v<type>) {
+                    return std::move(std::get<I>(keys).get());
+                } else {
+                    return std::move(std::get<I>(keys));
+                }
+            }
+        };
 
         /* The wrapper's `m_ptr` member is lazily evaluated to avoid repeated lookups.
         Replacing it with a computed property will trigger a __getitem__ lookup the
         first time it is accessed. */
-        __declspec(property(get = get_ptr, put = set_ptr)) PyObject* m_ptr;
-        void set_ptr(PyObject* value) { Base::m_ptr = value; }
-        PyObject* get_ptr() {
+        __declspec(property(get = _get_ptr, put = _set_ptr)) PyObject* m_ptr;
+        void _set_ptr(PyObject* value) { Base::m_ptr = value; }
+        PyObject* _get_ptr() {
             if (Base::m_ptr == nullptr) {
-                if constexpr (has_call_operator<__getitem__<Container, Key...>>) {
-                    Base::m_ptr = std::apply(
-                        [&](const Key&... keys) {
-                            return release(
-                                __getitem__<Container, Key...>{}(m_container, keys...)
-                            );
-                        },
-                        m_key
-                    );
-                } else {
-                    PyObject* result = PyObject_GetItem(
-                        ptr(m_container),
-                        ptr(as_object(m_key))
-                    );
-                    if (result == nullptr) {
-                        Exception::from_python();
+                using getitem = __getitem__<Self, Key...>;
+                PyObject* result;
+                if constexpr (sizeof...(Key) == 1) {
+                    if constexpr (has_call_operator<getitem>) {
+                        result = release(
+                            getitem{}(
+                                std::forward<Self>(m_self),
+                                std::forward<M_Key>(m_key)
+                            )
+                        );
+                    } else {
+                        result = PyObject_GetItem(
+                            ptr(m_self),
+                            ptr(as_object(std::forward<M_Key>(m_key)))
+                        );
+                        if (result == nullptr) {
+                            Exception::from_python();
+                        }
                     }
-                    Base::m_ptr = result;
+
+                } else {
+                    if constexpr (has_call_operator<getitem>) {
+                        [&]<size_t... I>(std::index_sequence<I...>) {
+                            result = release(
+                                getitem{}(
+                                    std::forward<Self>(m_self),
+                                    maybe_move<I>{}(m_key)...
+                                )
+                            );
+                        }(std::index_sequence_for<Key...>{});
+                    } else {
+                        result = PyObject_GetItem(
+                            ptr(m_self),
+                            ptr(as_object(m_key))
+                        );
+                        if (result == nullptr) {
+                            Exception::from_python();
+                        }
+                    }
                 }
+                Base::m_ptr = result;
             }
             return Base::m_ptr;
         }
 
     public:
 
-        template <typename C, typename... Ks>
-        Item(const Container& container, Ks&&... key) :
-            Base(nullptr, Object::stolen_t{}), m_container(container),
-            m_key(std::forward<Ks>(key)...)
+        Item(Self&& self, Key&&... key) :
+            Base(nullptr, Object::stolen_t{}), m_self(std::forward<Self>(self)),
+            m_key(std::forward<Key>(key)...)
         {}
-        template <typename C, typename... Ks>
-        Item(Container&& container, Ks&&... key) :
-            Base(nullptr, Object::stolen_t{}), m_container(std::move(container)),
-            m_key(std::forward<Ks>(key)...)
-        {}
-        Item(const Item& other) :
-            Base(other), m_container(other.m_container), m_key(other.m_key)
-        {}
-        Item(Item&& other) :
-            Base(std::move(other)), m_container(std::move(other.m_container)),
-            m_key(std::move(other.m_key))
-        {}
+        Item(const Item& other) = delete;
+        Item(Item&& other) = delete;
 
-        template <typename Value>
-            requires (!__setitem__<Container, std::remove_cvref_t<Value>, Key...>::enable)
-        Item& operator=(Value&& other) = delete;
-        template <typename Value>
-            requires (__setitem__<Container, std::remove_cvref_t<Value>, Key...>::enable)
-        Item& operator=(Value&& value) {
-            using setitem = __setitem__<Container, std::remove_cvref_t<Value>, Key...>;
+        template <typename S, typename Value>
+            requires (
+                std::is_lvalue_reference_v<S> ||
+                !__setitem__<Self, Value, Key...>::enable
+            )
+        Item& operator=(this S&& self, Value&& other) = delete;
+        template <typename S, typename Value>
+            requires (
+                !std::is_lvalue_reference_v<S> &&
+                __setitem__<Self, Value, Key...>::enable
+            )
+        Item& operator=(this S&& self, Value&& value) {
+            using setitem = __setitem__<Self, Value, Key...>;
             using Return = typename setitem::type;
             static_assert(
                 std::is_void_v<Return>,
@@ -242,33 +289,66 @@ namespace impl {
                 "specialization of __setitem__ for these types and ensure the Return "
                 "type is set to void."
             );
-            Base::operator=(std::forward<Value>(value));
-            if constexpr (impl::has_call_operator<setitem>) {
-                /// NOTE: all custom __setitem__ operators must reverse the order of the
-                /// value and keys.  Also, they will only ever be called with the
-                /// value as a python object.
-                std::apply([&](const Key&... keys) {
-                    setitem{}(m_container, *this, keys...);
-                }, m_key);
+            /// TODO: all custom __setitem__ operators must reverse the order of the
+            /// value and keys.  Also, they will only ever be called with the
+            /// value as a python object.
+            if constexpr (sizeof...(Key) == 1) {
+                if constexpr (has_call_operator<setitem>) {
+                    setitem{}(
+                        std::forward<Self>(self.m_self),
+                        std::forward<Value>(value),
+                        std::forward<M_Key>(self.m_key)
+                    );
+                } else if constexpr (has_cpp<Base>) {
+                    static_assert(
+                        supports_item_assignment<Base, Value, Key...>,
+                        "__setitem__<Self, Value, Key...> is enabled for operands "
+                        "whose C++ representations have no viable overload for "
+                        "`Self[Key...] = Value`"
+                    );
+                    unwrap(self) = unwrap(std::forward<Value>(value));
 
-            } else if constexpr (impl::has_cpp<Base>) {
-                static_assert(
-                    impl::supports_item_assignment<Base, std::remove_cvref_t<Value>, Key...>,
-                    "__setitem__<Self, Value, Key...> is enabled for operands whose C++ "
-                    "representations have no viable overload for `Self[Key...] = Value`"
-                );
-                unwrap(*this) = unwrap(std::forward<Value>(value));
+                } else {
+                    Base::operator=(std::forward<Value>(value));
+                    if (PyObject_SetItem(
+                        ptr(self.m_self),
+                        ptr(as_object(std::forward<M_Key>(self.m_key))),
+                        ptr(self)
+                    )) {
+                        Exception::from_python();
+                    }
+                }
 
             } else {
-                if (PyObject_SetItem(
-                    ptr(m_container),
-                    ptr(as_object(m_key)),
-                    m_ptr
-                )) {
-                    Exception::from_python();
+                if constexpr (has_call_operator<setitem>) {
+                    [&]<size_t... I>(std::index_sequence<I...>) {
+                        setitem{}(
+                            std::forward<Self>(self.m_self),
+                            std::forward<Value>(value),
+                            maybe_move<I>{}(self.m_key)...
+                        );
+                    }(std::index_sequence_for<Key...>{});
+                } else if constexpr (has_cpp<Base>) {
+                    static_assert(
+                        supports_item_assignment<Base, Value, Key...>,
+                        "__setitem__<Self, Value, Key...> is enabled for operands "
+                        "whose C++ representations have no viable overload for "
+                        "`Self[Key...] = Value`"
+                    );
+                    unwrap(self) = unwrap(std::forward<Value>(value));
+
+                } else {
+                    Base::operator=(std::forward<Value>(value));
+                    if (PyObject_SetItem(
+                        ptr(self.m_self),
+                        ptr(as_object(self.m_key)),
+                        ptr(self)
+                    )) {
+                        Exception::from_python();
+                    }
                 }
             }
-            return *this;
+            return self;
         }
 
     };
@@ -277,10 +357,13 @@ namespace impl {
 
 
 template <typename Self, typename... Key> requires (__getitem__<Self, Key...>::enable)
-decltype(auto) Object::operator[](this const Self& self, Key&&... key) {
-    using getitem = __getitem__<Self, std::decay_t<Key>...>;
+decltype(auto) Object::operator[](this Self&& self, Key&&... key) {
+    using getitem = __getitem__<Self, Key...>;
     if constexpr (std::derived_from<typename getitem::type, Object>) {
-        return impl::Item<Self, std::decay_t<Key>...>(self, std::forward<Key>(key)...);
+        return impl::Item<Self, Key...>(
+            std::forward<Self>(self),
+            std::forward<Key>(key)...
+        );
     } else {
         static_assert(
             std::is_invocable_r_v<typename getitem::type, getitem, const Self&, Key...>,
@@ -289,7 +372,7 @@ decltype(auto) Object::operator[](this const Self& self, Key&&... key) {
             "__getitem__ for these types and ensure a call operator is defined that "
             "accepts these arguments."
         );
-        return getitem{}(self, std::forward<Key>(key)...);
+        return getitem{}(std::forward<Self>(self), std::forward<Key>(key)...);
     }
 }
 
@@ -298,22 +381,21 @@ decltype(auto) Object::operator[](this const Self& self, Key&&... key) {
 usage of `del` to dereference naked Python objects is not supported - only those uses
 which would translate to a `PyObject_DelAttr()` or `PyObject_DelItem()` are considered
 valid. */
-template <typename T>
-    requires (std::is_rvalue_reference_v<T> && impl::item_is_deletable<T>::value)
-void del(T&& item) {
-    using delitem = impl::item_is_deletable<T>::type;
-    using Return = delitem::type;
+template <typename Self, StaticStr Name> requires (__delattr__<Self, Name>::enable)
+void del(impl::Attr<Self, Name>&& attr) {
+    using delattr = __delattr__<Self, Name>;
+    using Return = delattr::type;
     static_assert(
         std::is_void_v<Return>,
         "index deletion operator must return void.  Check your specialization "
         "of __delitem__ for these types and ensure the Return type is set to void."
     );
-    if constexpr (impl::has_call_operator<delitem>) {
-        delitem{}(std::move(item));
+    if constexpr (impl::has_call_operator<delattr>) {
+        delattr{}(std::forward<Self>(attr.m_self));
     } else {
-        if (PyObject_DelItem(
-            ptr(item.m_container),
-            ptr(as_object(item.m_key))
+        if (PyObject_DelAttr(
+            ptr(attr.m_self),
+            impl::TemplateString<Name>::ptr
         )) {
             Exception::from_python();
         }
@@ -325,24 +407,47 @@ void del(T&& item) {
 usage of `del` to dereference naked Python objects is not supported - only those uses
 which would translate to a `PyObject_DelAttr()` or `PyObject_DelItem()` are considered
 valid. */
-template <typename T>
-    requires (std::is_rvalue_reference_v<T> && impl::attr_is_deletable<T>::value)
-void del(T&& attr) {
-    using delattr = impl::attr_is_deletable<T>::type;
-    using Return = delattr::type;
+template <typename Self, typename... Key> requires (__delitem__<Self, Key...>::enable)
+void del(impl::Item<Self, Key...>&& item) {
+    using delitem = __delitem__<Self, Key...>;
+    using Return = delitem::type;
     static_assert(
         std::is_void_v<Return>,
         "index deletion operator must return void.  Check your specialization "
         "of __delitem__ for these types and ensure the Return type is set to void."
     );
-    if constexpr (impl::has_call_operator<delattr>) {
-        delattr{}(std::move(attr));
+    if constexpr (sizeof...(Key) == 1) {
+        if constexpr (impl::has_call_operator<delitem>) {
+            delitem{}(
+                std::forward<Self>(item.m_self),
+                std::forward<Key>(item.m_key)...
+            );
+        } else {
+            if (PyObject_DelItem(
+                ptr(item.m_self),
+                ptr(as_object(std::forward<Key>(item.m_key)))...
+            )) {
+                Exception::from_python();
+            }
+        }
+
     } else {
-        if (PyObject_DelAttr(
-            ptr(attr.m_container),
-            impl::TemplateString<delattr::name>::ptr
-        )) {
-            Exception::from_python();
+        if constexpr (impl::has_call_operator<delitem>) {
+            [&]<size_t... I>(std::index_sequence<I...>) {
+                delitem{}(
+                    std::forward<Self>(item.m_self),
+                    typename impl::Item<Self, Key...>::template maybe_move<I>{}(
+                        item.m_key
+                    )...
+                );
+            }(std::index_sequence_for<Key...>{});
+        } else {
+            if (PyObject_DelItem(
+                ptr(item.m_self),
+                ptr(as_object(item.m_key))
+            )) {
+                Exception::from_python();
+            }
         }
     }
 }

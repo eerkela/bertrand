@@ -121,11 +121,21 @@ namespace impl {
         }
     }
 
+    template <size_t I, typename... Ts>
+    struct unpack_type {
+        static_assert(false, "index out of range for parameter pack");
+    };
+    template <size_t I, typename T, typename... Ts>
+    struct unpack_type<I, T, Ts...> {
+        using type = std::conditional_t<
+            (I > 0), typename unpack_type<I - 1, Ts...>::type, T
+        >;
+    };
+
     enum class Origin {
         PYTHON,
         CPP
     };
-
 
     /* Introspect the proper signature for a py::Function instance from a generic
     function pointer, reference, or object, such as a lambda. */
@@ -594,20 +604,6 @@ namespace impl {
         std::derived_from<typename __getattr__<T, Name>::type, FunctionTag> &&
         __getattr__<T, Name>::type::template invocable<Args...>;
 
-    template <typename T>
-    struct attr_is_deletable_helper {
-        static constexpr bool value = false;
-    };
-    template <typename Self, StaticStr Name>
-        requires (__delattr__<Self, Name>::enable)
-    struct attr_is_deletable_helper<Attr<Self, Name>> {
-        static constexpr bool value = true;
-        using type = __delattr__<Self, Name>;
-        static constexpr StaticStr name = Name;
-    };
-    template <typename T>
-    struct attr_is_deletable : attr_is_deletable_helper<std::remove_cvref_t<T>> {};
-
     template <typename Container, typename... Key>
         requires (__getitem__<Container, Key...>::enable)
     struct Item;
@@ -627,19 +623,6 @@ namespace impl {
     };
     template <is_item T>
     using item_type = item_type_helper<std::remove_cvref_t<T>>::type;
-
-    template <typename T>
-    struct item_is_deletable_helper {
-        static constexpr bool value = false;
-    };
-    template <typename Container, typename... Key>
-        requires (__delitem__<Container, Key...>::enable)
-    struct item_is_deletable_helper<Item<Container, Key...>> {
-        static constexpr bool value = true;
-        using type = __delitem__<Container, Key...>;
-    };
-    template <typename T>
-    struct item_is_deletable : item_is_deletable_helper<std::remove_cvref_t<T>> {};
 
     template <typename T>
     concept lazily_evaluated = is_attr<T> || is_item<T>;

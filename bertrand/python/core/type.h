@@ -8,6 +8,15 @@
 #include "ops.h"
 
 
+/// TODO: maybe what I need to do is split Type<>, BertrandMeta, Object::bindings into
+/// separate headers.  type.h would be included just before ops.h, meta.h after
+/// access.h and func.h, and then Object::bindings could be either placed into a bind.h
+/// header included after module.h, or it can be defined later on in core.h as part
+/// of the forward declarations.  That last option is probably the best, since it
+/// could centralize all the forward declarations (at this level anyways) into a single
+/// location.
+
+
 namespace py {
 
 

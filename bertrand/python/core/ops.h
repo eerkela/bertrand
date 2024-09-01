@@ -2466,12 +2466,6 @@ template <impl::is<Traceback> Self>
 }
 
 
-inline void func() {
-    Code script = "print('Hello, world!')";
-    auto x = script->co_argcount;
-}
-
-
 }  // namespace py
 
 
