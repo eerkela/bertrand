@@ -154,7 +154,7 @@ struct __isinstance__<T, Type<Cls>> : Returns<bool> {
 recurring on the templated type. */
 template <typename T, typename Cls>
 struct __issubclass__<T, Type<Cls>> : Returns<bool> {
-    static consteval bool operator()() { return issubclass<T, Cls>(); }
+    static constexpr bool operator()() { return issubclass<T, Cls>(); }
     static constexpr bool operator()(const T& obj) { return issubclass<Cls>(obj); }
     static constexpr bool operator()(const T& obj, const Type<Cls>& cls) {
         if constexpr (impl::dynamic_type<Cls>) {
@@ -5158,7 +5158,7 @@ struct __isinstance__<T, BertrandMeta> : Returns<bool> {
 
 template <typename T>
 struct __issubclass__<T, BertrandMeta> : Returns<bool> {
-    static consteval bool operator()() {
+    static constexpr bool operator()() {
         return impl::has_export<T>;
     }
     static bool operator()(const T& obj) {

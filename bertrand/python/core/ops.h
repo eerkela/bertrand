@@ -23,7 +23,7 @@ namespace impl {
     static Wrapper construct(Args&&... args) {
         using Self = Wrapper::__python__;
         Type<Wrapper> type;
-        PyTypeObject* cls = ptr(type);
+        PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(ptr(type));
         Self* self = reinterpret_cast<Self*>(cls->tp_alloc(cls, 0));
         if (self == nullptr) {
             Exception::from_python();
@@ -53,7 +53,7 @@ logic is allowed by defining a zero-argument call operator in a specialization o
 `__issubclass__`, and `Interface<T>` specializations are used to handle Python objects
 in a way that allows for multiple inheritance. */
 template <typename Derived, typename Base>
-[[nodiscard]] consteval bool issubclass() {
+[[nodiscard]] constexpr bool issubclass() {
     if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>>) {
         static_assert(
             std::is_invocable_r_v<bool, __issubclass__<Derived, Base>>,
@@ -161,64 +161,74 @@ template <typename Derived, typename Base>
 
 
 /* Equivalent to Python `hasattr(obj, name)` with a static attribute name. */
-template <typename T, StaticStr name> requires (__as_object__<T>::enable)
-[[nodiscard]] consteval bool hasattr() {
-    return __getattr__<T, name>::enable;
+template <typename Self, StaticStr Name>
+[[nodiscard]] constexpr bool hasattr() {
+    return __getattr__<Self, Name>::enable;
 }
 
 
 /* Equivalent to Python `hasattr(obj, name)` with a static attribute name. */
-template <StaticStr name, typename T>
-[[nodiscard]] consteval bool hasattr(T&& obj) {
-    return __getattr__<T, name>::enable;
+template <StaticStr Name, typename Self>
+[[nodiscard]] constexpr bool hasattr(Self&& obj) {
+    return __getattr__<Self, Name>::enable;
 }
 
 
 /* Equivalent to Python `getattr(obj, name)` with a static attribute name. */
-template <StaticStr name, typename T> requires (__getattr__<T, name>::enable)
-[[nodiscard]] auto getattr(T&& obj) -> __getattr__<T, name>::type {
-    if constexpr (impl::has_call_operator<__getattr__<T, name>>) {
-        return __getattr__<T, name>{}(std::forward<T>(obj));
+template <StaticStr Name, typename Self> requires (__getattr__<Self, Name>::enable)
+[[nodiscard]] auto getattr(Self&& self) -> __getattr__<Self, Name>::type {
+    if constexpr (impl::has_call_operator<__getattr__<Self, Name>>) {
+        return __getattr__<Self, Name>{}(std::forward<Self>(self));
     } else {
-        PyObject* result = PyObject_GetAttr(ptr(obj), impl::TemplateString<name>::ptr);
+        PyObject* result = PyObject_GetAttr(
+            ptr(as_object(std::forward<Self>(self))),
+            impl::TemplateString<Name>::ptr
+        );
         if (result == nullptr) {
             Exception::from_python();
         }
-        return reinterpret_steal<typename __getattr__<T, name>::type>(result);
+        return reinterpret_steal<typename __getattr__<Self, Name>::type>(result);
     }
 }
 
 
 /* Equivalent to Python `getattr(obj, name, default)` with a static attribute name and
 default value. */
-template <StaticStr name, typename T> requires (__getattr__<T, name>::enable)
+template <StaticStr Name, typename Self> requires (__getattr__<Self, Name>::enable)
 [[nodiscard]] auto getattr(
-    T&& obj,
-    const typename __getattr__<T, name>::type& default_value
-) -> __getattr__<T, name>::type {
-    if constexpr (impl::has_call_operator<__getattr__<T, name>>) {
-        return __getattr__<T, name>{}(std::forward<T>(obj), default_value);
+    Self&& self,
+    const typename __getattr__<Self, Name>::type& default_value
+) -> __getattr__<Self, Name>::type {
+    if constexpr (impl::has_call_operator<__getattr__<Self, Name>>) {
+        return __getattr__<Self, Name>{}(std::forward<Self>(self), default_value);
     } else {
-        PyObject* result = PyObject_GetAttr(ptr(obj), impl::TemplateString<name>::ptr);
+        PyObject* result = PyObject_GetAttr(
+            ptr(as_object(std::forward<Self>(self))),
+            impl::TemplateString<Name>::ptr
+        );
         if (result == nullptr) {
             PyErr_Clear();
             return default_value;
         }
-        return reinterpret_steal<typename __getattr__<T, name>::type>(result);
+        return reinterpret_steal<typename __getattr__<Self, Name>::type>(result);
     }
 }
 
 
 /* Equivalent to Python `setattr(obj, name, value)` with a static attribute name. */
-template <StaticStr name, typename T, typename V> requires (__setattr__<T, name, V>::enable)
-void setattr(T&& obj, V&& value) {
-    if constexpr (impl::has_call_operator<__setattr__<T, name, V>>) {
-        __setattr__<T, name, V>{}(std::forward<T>(obj), std::forward<V>(value));
+template <StaticStr Name, typename Self, typename Value>
+    requires (__setattr__<Self, Name, Value>::enable)
+void setattr(Self&& self, Value&& value) {
+    if constexpr (impl::has_call_operator<__setattr__<Self, Name, Value>>) {
+        __setattr__<Self, Name, Value>{}(
+            std::forward<Self>(self),
+            std::forward<Value>(value)
+        );
     } else {
         if (PyObject_SetAttr(
-            ptr(obj),
-            impl::TemplateString<name>::ptr,
-            ptr(as_object(std::forward<V>(value)))
+            ptr(as_object(std::forward<Self>(self))),
+            impl::TemplateString<Name>::ptr,
+            ptr(as_object(std::forward<Value>(value)))
         ) < 0) {
             Exception::from_python();
         }
@@ -227,12 +237,15 @@ void setattr(T&& obj, V&& value) {
 
 
 /* Equivalent to Python `delattr(obj, name)` with a static attribute name. */
-template <StaticStr name, typename T> requires (__delattr__<T, name>::enable)
-void delattr(T&& obj) {
-    if constexpr (impl::has_call_operator<__delattr__<T, name>>) {
-        __delattr__<T, name>{}(std::forward<T>(obj));
+template <StaticStr Name, typename Self> requires (__delattr__<Self, Name>::enable)
+void delattr(Self&& self) {
+    if constexpr (impl::has_call_operator<__delattr__<Self, Name>>) {
+        __delattr__<Self, Name>{}(std::forward<Self>(self));
     } else {
-        if (PyObject_DelAttr(ptr(obj), impl::TemplateString<name>::ptr) < 0) {
+        if (PyObject_DelAttr(
+            ptr(as_object(std::forward<Self>(self))),
+            impl::TemplateString<Name>::ptr) < 0
+        ) {
             Exception::from_python();
         }
     }
@@ -245,7 +258,9 @@ else fails, falls back to demangling the result of typeid(obj).name(). */
 template <typename T>
 [[nodiscard]] std::string repr(T&& obj) {
     if constexpr (__as_object__<T>::enable) {
-        PyObject* str = PyObject_Repr(ptr(as_object(std::forward<T>(obj))));
+        PyObject* str = PyObject_Repr(
+            ptr(as_object(std::forward<T>(obj)))
+        );
         if (str == nullptr) {
             Exception::from_python();
         }
@@ -285,29 +300,31 @@ template <impl::hashable T>
 
 
 /* Equivalent to Python `len(obj)`. */
-template <typename T> requires (__len__<T>::enable)
-[[nodiscard]] size_t len(T&& obj) {
-    using Return = typename __len__<T>::type;
+template <typename Self> requires (__len__<Self>::enable)
+[[nodiscard]] size_t len(Self&& obj) {
+    using Return = typename __len__<Self>::type;
     static_assert(
         std::same_as<Return, size_t>,
         "len() operator must return a size_t for compatibility with C++ containers.  "
         "Check your specialization of __len__ for these types and ensure the Return "
         "type is set to size_t."
     );
-    if constexpr (impl::has_call_operator<__len__<T>>) {
-        return __len__<T>{}(std::forward<T>(obj));
+    if constexpr (impl::has_call_operator<__len__<Self>>) {
+        return __len__<Self>{}(std::forward<Self>(obj));
 
-    } else if constexpr (impl::has_cpp<T>) {
+    } else if constexpr (impl::has_cpp<Self>) {
         static_assert(
-            impl::has_size<impl::cpp_type<T>>,
+            impl::has_size<impl::cpp_type<Self>>,
             "__len__<T> is enabled for a type whose C++ representation does not have "
             "a viable overload for `std::size(T)`.  Did you forget to define a custom "
             "call operator for this type?"
         );
-        return std::size(unwrap(obj));
+        return std::size(unwrap(std::forward<Self>(obj)));
 
     } else {
-        Py_ssize_t size = PyObject_Length(ptr(obj));
+        Py_ssize_t size = PyObject_Length(
+            ptr(as_object(std::forward<Self>(obj)))
+        );
         if (size < 0) {
             Exception::from_python();
         }
@@ -353,7 +370,7 @@ template <typename Self> requires (__abs__<Self>::enable)
             "__abs__<T> is enabled for a type whose C++ representation does not have "
             "a viable overload for `std::abs(T)`"
         );
-        return std::abs(unwrap(self));
+        return std::abs(unwrap(std::forward<Self>(self)));
 
     } else {
         using Return = __abs__<Self>::type;
@@ -364,7 +381,9 @@ template <typename Self> requires (__abs__<Self>::enable)
             "type derives from py::Object, or define a custom call operator to "
             "override this behavior."
         );
-        PyObject* result = PyNumber_Absolute(ptr(self));
+        PyObject* result = PyNumber_Absolute(
+            ptr(as_object(std::forward<Self>(self)))
+        );
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -418,7 +437,10 @@ template <typename Base, typename Exp> requires (__pow__<Base, Exp>::enable)
                 "__pow__<Base, Exp> is enabled for operands whose C++ representations "
                 "have no viable overload for `std::pow(Base, Exp)`"
             );
-            return std::pow(unwrap(base), unwrap(exp));
+            return std::pow(
+                unwrap(std::forward<Base>(base)),
+                unwrap(std::forward<Exp>(exp))
+            );
         }
 
     } else {
@@ -431,8 +453,8 @@ template <typename Base, typename Exp> requires (__pow__<Base, Exp>::enable)
             "this behavior."
         );
         PyObject* result = PyNumber_Power(
-            ptr(as_object(base)),
-            ptr(as_object(exp)),
+            ptr(as_object(std::forward<Base>(base))),
+            ptr(as_object(std::forward<Exp>(exp))),
             Py_None
         );
         if (result == nullptr) {
@@ -493,7 +515,11 @@ template <impl::int_like Base, impl::int_like Exp, impl::int_like Mod>
         (impl::cpp_like<Exp> || impl::has_cpp<Exp>) &&
         (impl::cpp_like<Mod> || impl::has_cpp<Mod>)
     ) {
-        return pow(unwrap(base), unwrap(exp), unwrap(mod));
+        return pow(
+            unwrap(std::forward<Base>(base)),
+            unwrap(std::forward<Exp>(exp)),
+            unwrap(std::forward<Mod>(mod))
+        );
 
     } else {
         using Return = typename __pow__<Base, Exp>::type;
@@ -613,7 +639,9 @@ decltype(auto) operator~(Self&& self) {
             "type derives from py::Object, or define a custom call operator to "
             "override this behavior."
         );
-        PyObject* result = PyNumber_Invert(ptr(self));
+        PyObject* result = PyNumber_Invert(
+            ptr(as_object(std::forward<Self>(self)))
+        );
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -647,7 +675,9 @@ decltype(auto) operator+(Self&& self) {
             "type derives from py::Object, or define a custom call operator to "
             "override this behavior."
         );
-        PyObject* result = PyNumber_Positive(ptr(self));
+        PyObject* result = PyNumber_Positive(
+            ptr(as_object(std::forward<Self>(self)))
+        );
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -681,7 +711,9 @@ decltype(auto) operator-(Self&& self) {
             "derives from py::Object, or define a custom call operator to override "
             "this behavior."
         );
-        PyObject* result = PyNumber_Negative(ptr(self));
+        PyObject* result = PyNumber_Negative(
+            ptr(as_object(std::forward<Self>(self)))
+        );
         if (result == nullptr) {
             Exception::from_python();
         }
@@ -1933,7 +1965,7 @@ template <typename T>
                     );
                 }
             },
-            ptr(obj)->m_cpp
+            obj->m_cpp
         );
     } else {
         return obj;
@@ -1950,7 +1982,7 @@ template <typename T>
                 [](const CppType& cpp) -> const CppType& { return cpp; },
                 [](const CppType* cpp) -> const CppType& { return *cpp; }
             },
-            ptr(obj)->m_cpp
+            obj->m_cpp
         );
     } else {
         return obj;
@@ -2003,7 +2035,7 @@ template <typename Self, typename Key> requires (__contains__<Self, Key>::enable
     } else {
         int result = PySequence_Contains(
             ptr(self),
-            ptr(as_object(key))
+            ptr(as_object(std::forward<Key>(key)))
         );
         if (result == -1) {
             Exception::from_python();
@@ -2017,7 +2049,7 @@ template <typename T, impl::is<Object> Base>
 constexpr bool __isinstance__<T, Base>::operator()(T&& obj, Base&& cls) {
     if constexpr (impl::python_like<T>) {
         int result = PyObject_IsInstance(
-            ptr(obj),
+            ptr(as_object(std::forward<T>(obj))),
             ptr(cls)
         );
         if (result < 0) {
@@ -2033,7 +2065,7 @@ constexpr bool __isinstance__<T, Base>::operator()(T&& obj, Base&& cls) {
 template <typename T, impl::is<Object> Base>
 bool __issubclass__<T, Base>::operator()(T&& obj, Base&& cls) {
     int result = PyObject_IsSubclass(
-        ptr(as_object(obj)),
+        ptr(as_object(std::forward<T>(obj))),
         ptr(cls)
     );
     if (result == -1) {
@@ -2054,6 +2086,8 @@ auto __cast__<From, To>::operator()(From&& from) {
     } else {
         /// TODO: Type<From> and Type<To> must apply std::remove_cvref_t<>?  Maybe that
         /// can be rolled into the Type<> class itself?
+        /// -> The only way this can be handled universally is if these forward
+        /// declarations are filled after type.h is included
         throw TypeError(
             "cannot convert Python object from type '" + repr(Type<From>()) +
             "' to type '" + repr(Type<To>()) + "'"
@@ -2108,7 +2142,7 @@ auto __explicit_cast__<From, std::complex<Float>>::operator()(From&& from) {
 
 template <impl::inherits<Object> From, typename Char>
 auto __explicit_cast__<From, std::basic_string<Char>>::operator()(From&& from) {
-    PyObject* str = PyObject_Str(ptr(from));
+    PyObject* str = PyObject_Str(reinterpret_cast<PyObject*>(ptr(from)));
     if (str == nullptr) {
         Exception::from_python();
     }
@@ -2298,7 +2332,7 @@ Frame __explicit_init__<Frame, T>::operator()(int skip) {
 
 
 template <impl::is<Frame> Self>
-inline auto __call__<Self>::operator()(Frame&& frame) {
+inline auto __call__<Self>::operator()(Self&& frame) {
     PyObject* result = PyEval_EvalFrame(ptr(frame));
     if (result == nullptr) {
         Exception::from_python();
@@ -2338,7 +2372,7 @@ inline auto __call__<Self>::operator()(Frame&& frame) {
 }
 
 
-[[nodiscard]] inline std::optional<Code> Interface<Frame>::_code(
+[[nodiscard]] inline std::optional<Code> Interface<Frame>::_get_code(
     this const auto& self
 ) {
     PyCodeObject* code = PyFrame_GetCode(ptr(self));
@@ -2349,7 +2383,7 @@ inline auto __call__<Self>::operator()(Frame&& frame) {
 }
 
 
-[[nodiscard]] inline std::optional<Frame> Interface<Frame>::_back(
+[[nodiscard]] inline std::optional<Frame> Interface<Frame>::_get_back(
     this const auto& self
 ) {
     PyFrameObject* result = PyFrame_GetBack(ptr(self));
@@ -2360,14 +2394,14 @@ inline auto __call__<Self>::operator()(Frame&& frame) {
 }
 
 
-[[nodiscard]] inline size_t Interface<Frame>::_line_number(
+[[nodiscard]] inline size_t Interface<Frame>::_get_line_number(
     this const auto& self
 ) {
     return PyFrame_GetLineNumber(ptr(self));
 }
 
 
-[[nodiscard]] inline size_t Interface<Frame>::_last_instruction(
+[[nodiscard]] inline size_t Interface<Frame>::_get_last_instruction(
     this const auto& self
 ) {
     int result = PyFrame_GetLasti(ptr(self));
@@ -2378,7 +2412,7 @@ inline auto __call__<Self>::operator()(Frame&& frame) {
 }
 
 
-[[nodiscard]] inline std::optional<Object> Interface<Frame>::_generator(
+[[nodiscard]] inline std::optional<Object> Interface<Frame>::_get_generator(
     this const auto& self
 ) {
     PyObject* result = PyFrame_GetGenerator(ptr(self));
@@ -2432,6 +2466,11 @@ template <impl::is<Traceback> Self>
 }
 
 
+inline void func() {
+    Code script = "print('Hello, world!')";
+    auto x = script->co_argcount;
+}
+
 
 }  // namespace py
 
@@ -2446,9 +2485,9 @@ namespace std {
             "Check your specialization of __hash__ for this type and ensure the "
             "Return type is set to size_t."
         );
-        static constexpr size_t operator()(const T& obj) {
+        static constexpr size_t operator()(T&& obj) {
             if constexpr (py::impl::has_call_operator<py::__hash__<T>>) {
-                return py::__hash__<T>{}(obj);
+                return py::__hash__<T>{}(std::forward<T>(obj));
             } else if constexpr (py::impl::has_cpp<T>) {
                 static_assert(
                     py::impl::hashable<py::impl::cpp_type<T>>,
@@ -2456,9 +2495,11 @@ namespace std {
                     "not have a viable overload for `std::hash<T>{}`.  Did you forget "
                     "to define a custom call operator for this type?"
                 );
-                return std::hash<T>{}(py::unwrap(obj));
+                return std::hash<T>{}(py::unwrap(std::forward<T>(obj)));
             } else {
-                Py_ssize_t result = PyObject_Hash(py::ptr(obj));
+                Py_ssize_t result = PyObject_Hash(
+                    py::ptr(py::as_object(std::forward<T>(obj)))
+                );
                 if (result == -1 && PyErr_Occurred()) {
                     py::Exception::from_python();
                 }

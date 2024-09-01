@@ -41,12 +41,19 @@ namespace impl {
             impl::attr_is_deletable<std::remove_cvref_t<T>>::value
         )
         friend void del(T&& item);
+        template <impl::inherits<Object> T>
+        friend PyObject* ptr(T&);
+        template <impl::inherits<Object> T>
+            requires (!std::is_const_v<std::remove_reference_t<T>>)
+        friend PyObject* release(T&&);
         template <std::derived_from<Object> T>
-        friend PyObject* ptr(const T&);
+        friend T reinterpret_borrow(PyObject*);
         template <std::derived_from<Object> T>
-        friend PyObject* release(T&);
-        template <std::derived_from<Object> T> requires (!std::is_const_v<T>)
-        friend PyObject* release(T&& obj);
+        friend T reinterpret_steal(PyObject*);
+        template <typename T>
+        friend auto& unwrap(T& obj);
+        template <typename T>
+        friend const auto& unwrap(const T& obj);
 
         Self m_self;
 
@@ -154,12 +161,19 @@ namespace impl {
             impl::item_is_deletable<std::remove_cvref_t<T>>::value
         )
         friend void del(T&& item);
+        template <impl::inherits<Object> T>
+        friend PyObject* ptr(T&);
+        template <impl::inherits<Object> T>
+            requires (!std::is_const_v<std::remove_reference_t<T>>)
+        friend PyObject* release(T&&);
         template <std::derived_from<Object> T>
-        friend PyObject* ptr(const T&);
+        friend T reinterpret_borrow(PyObject*);
         template <std::derived_from<Object> T>
-        friend PyObject* release(T&);
-        template <std::derived_from<Object> T> requires (!std::is_const_v<T>)
-        friend PyObject* release(T&& obj);
+        friend T reinterpret_steal(PyObject*);
+        template <typename T>
+        friend auto& unwrap(T& obj);
+        template <typename T>
+        friend const auto& unwrap(const T& obj);
 
         Container m_container;
         M_Key m_key;
@@ -673,7 +687,7 @@ struct __isinstance__<T, Iterator<Return>>                  : Returns<bool> {
 
 template <std::derived_from<Object> T, typename Return>
 struct __issubclass__<T, Iterator<Return>>                  : Returns<bool> {
-    static consteval bool operator()() {
+    static constexpr bool operator()() {
         return
             std::derived_from<T, impl::IterTag> &&
             std::convertible_to<impl::iter_type<T>, Return>;

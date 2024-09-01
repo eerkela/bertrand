@@ -3146,7 +3146,7 @@ struct __isinstance__<T, Function<R(A...)>> : Returns<bool> {
 
 template <typename T, typename R, typename... A>
 struct __issubclass__<T, Function<R(A...)>> : Returns<bool> {
-    static consteval bool operator()() {
+    static constexpr bool operator()() {
         return std::is_invocable_r_v<R, T, A...>;
     }
     static constexpr bool operator()(const T&) {

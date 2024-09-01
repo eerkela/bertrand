@@ -17,40 +17,40 @@ template <>
 struct Interface<Code> {
     [[nodiscard]] static Code compile(const std::string& source);
 
-    __declspec(property(get = _line_number)) Py_ssize_t line_number;
-    [[nodiscard]] Py_ssize_t _line_number(this const auto& self) noexcept;
-    __declspec(property(get = _argcount)) Py_ssize_t argcount;
-    [[nodiscard]] Py_ssize_t _argcount(this const auto& self) noexcept;
-    __declspec(property(get = _posonlyargcount)) Py_ssize_t posonlyargcount;
-    [[nodiscard]] Py_ssize_t _posonlyargcount(this const auto& self) noexcept;
-    __declspec(property(get = _kwonlyargcount)) Py_ssize_t kwonlyargcount;
-    [[nodiscard]] Py_ssize_t _kwonlyargcount(this const auto& self) noexcept;
-    __declspec(property(get = _nlocals)) Py_ssize_t nlocals;
-    [[nodiscard]] Py_ssize_t _nlocals(this const auto& self) noexcept;
-    __declspec(property(get = _stacksize)) Py_ssize_t stacksize;
-    [[nodiscard]] Py_ssize_t _stacksize(this const auto& self) noexcept;
-    __declspec(property(get = _flags)) int flags;
-    [[nodiscard]] int _flags(this const auto& self) noexcept;
+    __declspec(property(get = _get_line_number)) Py_ssize_t line_number;
+    [[nodiscard]] Py_ssize_t _get_line_number(this const auto& self) noexcept;
+    __declspec(property(get = _get_argcount)) Py_ssize_t argcount;
+    [[nodiscard]] Py_ssize_t _get_argcount(this const auto& self) noexcept;
+    __declspec(property(get = _get_posonlyargcount)) Py_ssize_t posonlyargcount;
+    [[nodiscard]] Py_ssize_t _get_posonlyargcount(this const auto& self) noexcept;
+    __declspec(property(get = _get_kwonlyargcount)) Py_ssize_t kwonlyargcount;
+    [[nodiscard]] Py_ssize_t _get_kwonlyargcount(this const auto& self) noexcept;
+    __declspec(property(get = _get_nlocals)) Py_ssize_t nlocals;
+    [[nodiscard]] Py_ssize_t _get_nlocals(this const auto& self) noexcept;
+    __declspec(property(get = _get_stacksize)) Py_ssize_t stacksize;
+    [[nodiscard]] Py_ssize_t _get_stacksize(this const auto& self) noexcept;
+    __declspec(property(get = _get_flags)) int flags;
+    [[nodiscard]] int _get_flags(this const auto& self) noexcept;
 
     /// NOTE: these are defined in __init__.h
-    __declspec(property(get = _filename)) Str filename;
-    [[nodiscard]] Str _filename(this const auto& self);
-    __declspec(property(get = _name)) Str name;
-    [[nodiscard]] Str _name(this const auto& self);
-    __declspec(property(get = _qualname)) Str qualname;
-    [[nodiscard]] Str _qualname(this const auto& self);
-    __declspec(property(get = _varnames)) Tuple<Str> varnames;
-    [[nodiscard]] Tuple<Str> _varnames(this const auto& self);
-    __declspec(property(get = _cellvars)) Tuple<Str> cellvars;
-    [[nodiscard]] Tuple<Str> _cellvars(this const auto& self);
-    __declspec(property(get = _freevars)) Tuple<Str> freevars;
-    [[nodiscard]] Tuple<Str> _freevars(this const auto& self);
-    __declspec(property(get = _bytecode)) Bytes bytecode;
-    [[nodiscard]] Bytes _bytecode(this const auto& self);
+    __declspec(property(get = _get_filename)) Str filename;
+    [[nodiscard]] Str _get_filename(this const auto& self);
+    __declspec(property(get = _get_name)) Str name;
+    [[nodiscard]] Str _get_name(this const auto& self);
+    __declspec(property(get = _get_qualname)) Str qualname;
+    [[nodiscard]] Str _get_qualname(this const auto& self);
+    __declspec(property(get = _get_varnames)) Tuple<Str> varnames;
+    [[nodiscard]] Tuple<Str> _get_varnames(this const auto& self);
+    __declspec(property(get = _get_cellvars)) Tuple<Str> cellvars;
+    [[nodiscard]] Tuple<Str> _get_cellvars(this const auto& self);
+    __declspec(property(get = _get_freevars)) Tuple<Str> freevars;
+    [[nodiscard]] Tuple<Str> _get_freevars(this const auto& self);
+    __declspec(property(get = _get_bytecode)) Bytes bytecode;
+    [[nodiscard]] Bytes _get_bytecode(this const auto& self);
     __declspec(property(get = _consts)) Tuple<Object> consts;
-    [[nodiscard]] Tuple<Object> _consts(this const auto& self);
-    __declspec(property(get = _names)) Tuple<Str> names;
-    [[nodiscard]] Tuple<Str> _names(this const auto& self);
+    [[nodiscard]] Tuple<Object> _get_consts(this const auto& self);
+    __declspec(property(get = _get_names)) Tuple<Str> names;
+    [[nodiscard]] Tuple<Str> _get_names(this const auto& self);
 };
 
 
@@ -274,7 +274,7 @@ struct __isinstance__<T, Base>                              : Returns<bool> {
 
 template <typename T, impl::is<Code> Base>
 struct __issubclass__<T, Base>                              : Returns<bool> {
-    static consteval bool operator()() { return impl::inherits<T, Interface<Code>>; }
+    static constexpr bool operator()() { return impl::inherits<T, Interface<Code>>; }
 };
 
 
@@ -302,47 +302,47 @@ struct __call__<Self, Context>                              : Returns<Dict<Str, 
 
 
 /* Get the first line number of the function. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_line_number(this const auto& self) noexcept {
-    return ptr(self)->co_firstlineno;
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_line_number(this const auto& self) noexcept {
+    return self->co_firstlineno;
 }
 
 
 /* Get the number of positional arguments for the function. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_argcount(this const auto& self) noexcept {
-    return ptr(self)->co_argcount;
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_argcount(this const auto& self) noexcept {
+    return self->co_argcount;
 }
 
 
 /* Get the number of positional-only arguments for the function, including those with
 default values.  Does not include variable positional or keyword arguments. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_posonlyargcount(this const auto& self) noexcept {
-    return ptr(self)->co_posonlyargcount;
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_posonlyargcount(this const auto& self) noexcept {
+    return self->co_posonlyargcount;
 }
 
 
 /* Get the number of keyword-only arguments for the function, including those with
 default values.  Does not include positional-only or variable positional/keyword
 arguments. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_kwonlyargcount(this const auto& self) noexcept {
-    return ptr(self)->co_kwonlyargcount;
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_kwonlyargcount(this const auto& self) noexcept {
+    return self->co_kwonlyargcount;
 }
 
 
 /* Get the number of local variables used by the function (including all parameters). */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_nlocals(this const auto& self) noexcept {
-    return ptr(self)->co_nlocals;
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_nlocals(this const auto& self) noexcept {
+    return self->co_nlocals;
 }
 
 
 /* Get the required stack space for the code object. */
-[[nodiscard]] inline Py_ssize_t Interface<Code>::_stacksize(this const auto& self) noexcept {
-    return ptr(self)->co_stacksize;
+[[nodiscard]] inline Py_ssize_t Interface<Code>::_get_stacksize(this const auto& self) noexcept {
+    return self->co_stacksize;
 }
 
 
 /* Get an integer encoding flags for the Python interpreter. */
-[[nodiscard]] inline int Interface<Code>::_flags(this const auto& self) noexcept {
-    return ptr(self)->co_flags;
+[[nodiscard]] inline int Interface<Code>::_get_flags(this const auto& self) noexcept {
+    return self->co_flags;
 }
 
 
@@ -406,25 +406,25 @@ template <>
 struct Interface<Frame> {
     [[nodiscard]] std::string to_string(this const auto& self);
 
-    __declspec(property(get = _code)) std::optional<Code> code;
-    [[nodiscard]] std::optional<Code> _code(this const auto& self);
-    __declspec(property(get = _back)) std::optional<Frame> back;
-    [[nodiscard]] std::optional<Frame> _back(this const auto& self);
-    __declspec(property(get = _line_number)) size_t line_number;
-    [[nodiscard]] size_t _line_number(this const auto& self);
-    __declspec(property(get = _last_instruction)) size_t last_instruction;
-    [[nodiscard]] size_t _last_instruction(this const auto& self);
-    __declspec(property(get = _generator)) std::optional<Object> generator;
-    [[nodiscard]] std::optional<Object> _generator(this const auto& self);
+    __declspec(property(get = _get_code)) std::optional<Code> code;
+    [[nodiscard]] std::optional<Code> _get_code(this const auto& self);
+    __declspec(property(get = _get_back)) std::optional<Frame> back;
+    [[nodiscard]] std::optional<Frame> _get_back(this const auto& self);
+    __declspec(property(get = _get_line_number)) size_t line_number;
+    [[nodiscard]] size_t _get_line_number(this const auto& self);
+    __declspec(property(get = _get_last_instruction)) size_t last_instruction;
+    [[nodiscard]] size_t _get_last_instruction(this const auto& self);
+    __declspec(property(get = _get_generator)) std::optional<Object> generator;
+    [[nodiscard]] std::optional<Object> _get_generator(this const auto& self);
 
     /// NOTE: these are defined in __init__.h
     [[nodiscard]] Object get(this const auto& self, const Str& name);
-    __declspec(property(get = _builtins)) Dict<Str, Object> builtins;
-    [[nodiscard]] Dict<Str, Object> _builtins(this const auto& self);
-    __declspec(property(get = _globals)) Dict<Str, Object> globals;
-    [[nodiscard]] Dict<Str, Object> _globals(this const auto& self);
-    __declspec(property(get = _locals)) Dict<Str, Object> locals;
-    [[nodiscard]] Dict<Str, Object> _locals(this const auto& self);
+    __declspec(property(get = _get_builtins)) Dict<Str, Object> builtins;
+    [[nodiscard]] Dict<Str, Object> _get_builtins(this const auto& self);
+    __declspec(property(get = _get_globals)) Dict<Str, Object> globals;
+    [[nodiscard]] Dict<Str, Object> _get_globals(this const auto& self);
+    __declspec(property(get = _get_locals)) Dict<Str, Object> locals;
+    [[nodiscard]] Dict<Str, Object> _get_locals(this const auto& self);
 };
 
 
@@ -496,7 +496,7 @@ struct __isinstance__<T, Base>                              : Returns<bool> {
 
 template <typename T, impl::is<Frame> Base>
 struct __issubclass__<T, Base>                              : Returns<bool> {
-    static consteval bool operator()() { return impl::inherits<T, Interface<Frame>>; }
+    static constexpr bool operator()() { return impl::inherits<T, Interface<Frame>>; }
 };
 
 
@@ -577,7 +577,7 @@ the last evaluated expression, which can be the return value of a function, the 
 value of a generator, etc. */
 template <impl::is<Frame> Self>
 struct __call__<Self>                                       : Returns<Object> {
-    static auto operator()(Frame&& frame);
+    static auto operator()(Self&& frame);
 };
 
 

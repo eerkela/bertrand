@@ -47,7 +47,7 @@ namespace impl {
                     );
                 }
                 tb->tb_next = front;
-                tb->tb_frame = release(Frame(frame));
+                tb->tb_frame = reinterpret_cast<PyFrameObject*>(release(Frame(frame)));
                 tb->tb_lasti = PyFrame_GetLasti(tb->tb_frame) * sizeof(_Py_CODEUNIT);
                 tb->tb_lineno = PyFrame_GetLineNumber(tb->tb_frame);
                 PyObject_GC_Track(tb);
@@ -164,7 +164,7 @@ struct __explicit_init__<Traceback, T>                      : Returns<Traceback>
 
         // compute the full traceback to account for mixed C++ and Python frames
         Traceback trace(cpptrace::generate_trace(1));
-        PyTracebackObject* curr = ptr(trace);
+        PyTracebackObject* curr = reinterpret_cast<PyTracebackObject*>(ptr(trace));
 
         // if skip is negative, we need to skip the most recent frames, which are
         // stored at the tail of the list.  Since we don't know the exact length of the
@@ -219,7 +219,7 @@ Python frames. */
 template <impl::is<Traceback> Self>
 struct __len__<Self>                                        : Returns<size_t> {
     static auto operator()(const Traceback& self) {
-        PyTracebackObject* tb = ptr(self);
+        PyTracebackObject* tb = reinterpret_cast<PyTracebackObject*>(ptr(self));
         size_t count = 0;
         while (tb != nullptr) {
             ++count;
@@ -244,8 +244,12 @@ struct __iter__<Self>                                       : Returns<Frame> {
 
     __iter__(const Traceback& self) : traceback(self), curr(nullptr) {}
     __iter__(Traceback&& self) : traceback(std::move(self)), curr(nullptr) {}
-    __iter__(const Traceback& self, int) : traceback(self), curr(ptr(traceback)) {}
-    __iter__(Traceback&& self, int) : traceback(std::move(self)), curr(ptr(traceback)) {}
+    __iter__(const Traceback& self, int) : traceback(self), curr(
+        reinterpret_cast<PyTracebackObject*>(ptr(traceback))
+    ) {}
+    __iter__(Traceback&& self, int) : traceback(std::move(self)), curr(
+        reinterpret_cast<PyTracebackObject*>(ptr(traceback))
+    ) {}
     __iter__(const __iter__& other) : traceback(other.traceback), curr(other.curr) {}
     __iter__(__iter__&& other) : traceback(std::move(other.traceback)), curr(other.curr) {
         other.curr = nullptr;
@@ -312,7 +316,9 @@ struct __reversed__<Self>                                   : Returns<Traceback>
     __reversed__(Traceback&& self) : traceback(std::move(self)), index(-1) {}
 
     __reversed__(const Traceback& self, int) : traceback(self) {
-        PyTracebackObject* curr = ptr(traceback);
+        PyTracebackObject* curr = reinterpret_cast<PyTracebackObject*>(
+            ptr(traceback)
+        );
         while (curr != nullptr) {
             frames.push_back(curr);
             curr = curr->tb_next;
@@ -321,7 +327,9 @@ struct __reversed__<Self>                                   : Returns<Traceback>
     }
 
     __reversed__(Traceback&& self, int) : traceback(std::move(self)) {
-        PyTracebackObject* curr = ptr(traceback);
+        PyTracebackObject* curr = reinterpret_cast<PyTracebackObject*>(
+            ptr(traceback)
+        );
         while (curr != nullptr) {
             frames.push_back(curr);
             curr = curr->tb_next;
@@ -453,9 +461,7 @@ public:
     /* Returns the message that was supplied to construct this exception. */
     const char* message() const noexcept {
         if (!m_message.has_value()) {
-            PyObject* args = PyException_GetArgs(
-                reinterpret_cast<PyObject*>(ptr(*this))
-            );
+            PyObject* args = PyException_GetArgs(ptr(*this));
             if (args == nullptr) {
                 PyErr_Clear();
                 return "";
@@ -488,9 +494,7 @@ public:
         if (!m_what.has_value()) {
             std::string msg;
             Traceback tb = reinterpret_steal<Traceback>(
-                PyException_GetTraceback(
-                    reinterpret_cast<PyObject*>(ptr(*this))
-                )
+                PyException_GetTraceback(ptr(*this))
             );
             if (ptr(tb) != nullptr) {
                 msg = tb.to_string() + "\n";
@@ -582,9 +586,7 @@ inline void Interface<Exception>::to_python() {
     try {
         throw;
     } catch (Exception& err) {
-        PyThreadState_Get()->current_exception = reinterpret_cast<PyObject*>(
-            release(err)
-        );
+        PyThreadState_Get()->current_exception = release(err);
     } catch (const std::exception& err) {
         PyErr_SetString(PyExc_Exception, err.what());
     } catch (...) {
@@ -768,9 +770,7 @@ struct UnicodeDecodeError : Exception, Interface<UnicodeDecodeError> {
             try {
                 std::string msg;
                 Traceback tb = reinterpret_steal<Traceback>(
-                    PyException_GetTraceback(
-                        reinterpret_cast<PyObject*>(ptr(*this))
-                    )
+                    PyException_GetTraceback(ptr(*this))
                 );
                 if (ptr(tb) != nullptr) {
                     msg = tb.to_string() + "\n";
@@ -872,9 +872,7 @@ struct __explicit_init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> 
 [[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_encoding(
     this const auto& self
 ) {
-    PyObject* encoding = PyUnicodeDecodeError_GetEncoding(
-        reinterpret_cast<PyObject*>(ptr(self))
-    );
+    PyObject* encoding = PyUnicodeDecodeError_GetEncoding(ptr(self));
     if (encoding == nullptr) {
         Exception::from_python();
     }
@@ -913,10 +911,7 @@ struct __explicit_init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> 
     this const auto& self
 ) {
     Py_ssize_t start;
-    if (PyUnicodeDecodeError_GetStart(
-        reinterpret_cast<PyObject*>(ptr(self)),
-        &start
-    )) {
+    if (PyUnicodeDecodeError_GetStart(ptr(self), &start)) {
         Exception::from_python();
     }
     return start;
@@ -927,10 +922,7 @@ struct __explicit_init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> 
     this const auto& self
 ) {
     Py_ssize_t end;
-    if (PyUnicodeDecodeError_GetEnd(
-        reinterpret_cast<PyObject*>(ptr(self)),
-        &end
-    )) {
+    if (PyUnicodeDecodeError_GetEnd(ptr(self), &end)) {
         Exception::from_python();
     }
     return end;
@@ -940,9 +932,7 @@ struct __explicit_init__<UnicodeDecodeError, Encoding, Obj, Start, End, Reason> 
 [[nodiscard]] inline std::string Interface<UnicodeDecodeError>::_reason(
     this const auto& self
 ) {
-    PyObject* reason = PyUnicodeDecodeError_GetReason(
-        reinterpret_cast<PyObject*>(ptr(self))
-    );
+    PyObject* reason = PyUnicodeDecodeError_GetReason(ptr(self));
     if (reason == nullptr) {
         Exception::from_python();
     }
@@ -1029,9 +1019,7 @@ struct UnicodeEncodeError : Exception, Interface<UnicodeEncodeError> {
             try {
                 std::string msg;
                 Traceback tb = reinterpret_steal<Traceback>(
-                    PyException_GetTraceback(
-                        reinterpret_cast<PyObject*>(ptr(*this))
-                    )
+                    PyException_GetTraceback(ptr(*this))
                 );
                 if (ptr(tb) != nullptr) {
                     msg = tb.to_string() + "\n";
@@ -1134,9 +1122,7 @@ struct __explicit_init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> 
 [[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_encoding(
     this const auto& self
 ) {
-    PyObject* encoding = PyUnicodeEncodeError_GetEncoding(
-        reinterpret_cast<PyObject*>(ptr(self))
-    );
+    PyObject* encoding = PyUnicodeEncodeError_GetEncoding(ptr(self));
     if (encoding == nullptr) {
         Exception::from_python();
     }
@@ -1175,10 +1161,7 @@ struct __explicit_init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> 
     this const auto& self
 ) {
     Py_ssize_t start;
-    if (PyUnicodeEncodeError_GetStart(
-        reinterpret_cast<PyObject*>(ptr(self)),
-        &start
-    )) {
+    if (PyUnicodeEncodeError_GetStart(ptr(self), &start)) {
         Exception::from_python();
     }
     return start;
@@ -1189,10 +1172,7 @@ struct __explicit_init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> 
     this const auto& self
 ) {
     Py_ssize_t end;
-    if (PyUnicodeEncodeError_GetEnd(
-        reinterpret_cast<PyObject*>(ptr(self)),
-        &end
-    )) {
+    if (PyUnicodeEncodeError_GetEnd(ptr(self), &end)) {
         Exception::from_python();
     }
     return end;
@@ -1202,9 +1182,7 @@ struct __explicit_init__<UnicodeEncodeError, Encoding, Obj, Start, End, Reason> 
 [[nodiscard]] inline std::string Interface<UnicodeEncodeError>::_reason(
     this const auto& self
 ) {
-    PyObject* reason = PyUnicodeEncodeError_GetReason(
-        reinterpret_cast<PyObject*>(ptr(self))
-    );
+    PyObject* reason = PyUnicodeEncodeError_GetReason(ptr(self));
     if (reason == nullptr) {
         Exception::from_python();
     }
@@ -1287,9 +1265,7 @@ struct UnicodeTranslateError : Exception, Interface<UnicodeTranslateError> {
             try {
                 std::string msg;
                 Traceback tb = reinterpret_steal<Traceback>(
-                    PyException_GetTraceback(
-                        reinterpret_cast<PyObject*>(ptr(*this))
-                    )
+                    PyException_GetTraceback(ptr(*this))
                 );
                 if (ptr(tb) != nullptr) {
                     msg = tb.to_string() + "\n";
@@ -1407,10 +1383,7 @@ struct __explicit_init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reaso
     this const auto& self
 ) {
     Py_ssize_t start;
-    if (PyUnicodeTranslateError_GetStart(
-        reinterpret_cast<PyObject*>(ptr(self)),
-        &start
-    )) {
+    if (PyUnicodeTranslateError_GetStart(ptr(self), &start)) {
         Exception::from_python();
     }
     return start;
@@ -1421,9 +1394,7 @@ struct __explicit_init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reaso
     this const auto& self
 ) {
     Py_ssize_t end;
-    if (PyUnicodeTranslateError_GetEnd(
-        reinterpret_cast<PyObject*>(ptr(self)), &end
-    )) {
+    if (PyUnicodeTranslateError_GetEnd(ptr(self), &end)) {
         Exception::from_python();
     }
     return end;
@@ -1433,9 +1404,7 @@ struct __explicit_init__<UnicodeTranslateError, Encoding, Obj, Start, End, Reaso
 [[nodiscard]] inline std::string Interface<UnicodeTranslateError>::_reason(
     this const auto& self
 ) {
-    PyObject* reason = PyUnicodeTranslateError_GetReason(
-        reinterpret_cast<PyObject*>(ptr(self))
-    );
+    PyObject* reason = PyUnicodeTranslateError_GetReason(ptr(self));
     if (reason == nullptr) {
         Exception::from_python();
     }

@@ -1594,6 +1594,20 @@ namespace impl {
 }
 
 
+template <typename Derived, typename Base>
+[[nodiscard]] constexpr bool issubclass();
+template <impl::inherits<Object> Base, impl::inherits<Object> Derived>
+[[nodiscard]] constexpr bool issubclass(Derived&& obj);
+template <typename Derived, typename Base>
+    requires (std::is_invocable_v<__issubclass__<Derived, Base>, Derived, Base>)
+[[nodiscard]] bool issubclass(Derived&& obj, Base&& base);
+template <typename Base, typename Derived>
+[[nodiscard]] constexpr bool isinstance(Derived&& obj);
+template <typename Derived, typename Base>
+    requires (std::is_invocable_r_v<bool, __isinstance__<Derived, Base>, Derived, Base>)
+[[nodiscard]] constexpr bool isinstance(Derived&& obj, Base&& base);
+
+
 }  // namespace py
 
 

@@ -9,13 +9,13 @@ namespace py {
 
 /* Retrieve the raw pointer backing a Python object. */
 template <impl::inherits<Object> T>
-[[nodiscard]] T::__python__* ptr(T& obj);
+[[nodiscard]] PyObject* ptr(T& obj);
 
 
 /* Cause a Python object to relinquish ownership over its backing pointer, and then
 return the raw pointer. */
 template <impl::inherits<Object> T> requires (!std::is_const_v<std::remove_reference_t<T>>)
-[[nodiscard]] std::remove_reference_t<T>::__python__* release(T&& obj);
+[[nodiscard]] PyObject* release(T&& obj);
 
 
 /* Steal a reference to a raw Python object. */
@@ -23,19 +23,28 @@ template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_steal(PyObject* obj);
 
 
-/* Steal a reference to a raw Python object. */
-template <std::derived_from<Object> T, impl::inherits<impl::PythonTag> Ptr>
-[[nodiscard]] T reinterpret_steal(Ptr* obj);
-
-
 /* Borrow a reference to a raw Python object. */
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_borrow(PyObject* obj);
 
 
-/* Borrow a reference to a raw Python object. */
-template <std::derived_from<Object> T, impl::inherits<impl::PythonTag> Ptr>
-[[nodiscard]] T reinterpret_borrow(Ptr* obj);
+/* Convert an arbitrary C++ value to an equivalent Python object if it isn't one
+already. */
+template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
+[[nodiscard]] decltype(auto) as_object(T&& value) {
+    using AsObj = __as_object__<std::remove_cvref_t<T>>;
+    static_assert(
+        !std::same_as<typename AsObj::type, Object>,
+        "C++ types cannot be converted to py::Object directly.  Check your "
+        "specialization of __as_object__ for this type and ensure the Return type "
+        "derives from py::Object, and is not py::Object itself."
+    );
+    if constexpr (impl::has_call_operator<AsObj>) {
+        return AsObj{}(std::forward<T>(value));
+    } else {
+        return typename AsObj::type(std::forward<T>(value));
+    }
+}
 
 
 /* Wrap a non-owning, mutable reference to a C++ object into a `py::Object` proxy that
@@ -124,17 +133,13 @@ protected:
     struct stolen_t {};
 
     template <impl::inherits<Object> T>
-    friend T::__python__* ptr(T&);
+    friend PyObject* ptr(T&);
     template <impl::inherits<Object> T> requires (!std::is_const_v<std::remove_reference_t<T>>)
-    friend std::remove_reference_t<T>::__python__* release(T&&);
+    friend PyObject* release(T&&);
     template <std::derived_from<Object> T>
     friend T reinterpret_borrow(PyObject*);
-    template <std::derived_from<Object> T, impl::inherits<impl::PythonTag> Ptr>
-    friend T reinterpret_borrow(Ptr*);
     template <std::derived_from<Object> T>
     friend T reinterpret_steal(PyObject*);
-    template <std::derived_from<Object> T, impl::inherits<impl::PythonTag> Ptr>
-    friend T reinterpret_steal(Ptr*);
     template <typename T>
     friend auto& unwrap(T& obj);
     template <typename T>
@@ -500,18 +505,23 @@ public:
         return *this;
     }
 
+    /* Access an internal member of the underlying PyObject* pointer. */
+    template <impl::has_python Self>
+    [[nodiscard]] std::remove_cvref_t<Self>::__python__* operator->(this Self&& self) {
+        using Ptr = std::remove_cvref_t<Self>::__python__;
+        return reinterpret_cast<Ptr*>(ptr(self));
+    }
+
     /* Check for exact pointer identity. */
-    template <typename Self, std::derived_from<Object> T>
-    [[nodiscard]] bool is(this Self&& self, const T& other) {
-        return
-            reinterpret_cast<PyObject*>(ptr(self)) ==
-            reinterpret_cast<PyObject*>(ptr(other));
+    template <typename Self, impl::inherits<Object> T>
+    [[nodiscard]] bool is(this Self&& self, T&& other) {
+        return ptr(self) == ptr(other);
     }
 
     /* Check for exact pointer identity. */
     template <typename Self>
     [[nodiscard]] bool is(this Self&& self, PyObject* other) {
-        return reinterpret_cast<PyObject*>(ptr(self)) == other;
+        return ptr(self) == other;
     }
 
     /* Contains operator.  Equivalent to Python's `in` keyword, but with reversed
@@ -613,16 +623,16 @@ struct Interface<Type<Object>> {};
 
 
 template <impl::inherits<Object> T>
-[[nodiscard]] T::__python__* ptr(T& obj) {
-    return reinterpret_cast<T::__python__*>(obj.m_ptr);
+[[nodiscard]] PyObject* ptr(T& obj) {
+    return obj.m_ptr;
 }
 
 
 template <impl::inherits<Object> T> requires (!std::is_const_v<std::remove_reference_t<T>>)
-[[nodiscard]] std::remove_reference_t<T>::__python__* release(T&& obj) {
+[[nodiscard]] PyObject* release(T&& obj) {
     PyObject* temp = obj.m_ptr;
     obj.m_ptr = nullptr;
-    return reinterpret_cast<std::remove_reference_t<T>::__python__*>(temp);
+    return temp;
 }
 
 
@@ -632,27 +642,15 @@ template <std::derived_from<Object> T>
 }
 
 
-template <std::derived_from<Object> T, impl::inherits<impl::PythonTag> Ptr>
-[[nodiscard]] T reinterpret_borrow(Ptr* ptr) {
-    return T(reinterpret_cast<PyObject*>(ptr), Object::borrowed_t{});
-}
-
-
 template <std::derived_from<Object> T>
 [[nodiscard]] T reinterpret_steal(PyObject* ptr) {
     return T(ptr, Object::stolen_t{});
 }
 
 
-template <std::derived_from<Object> T, impl::inherits<impl::PythonTag> Ptr>
-[[nodiscard]] T reinterpret_steal(Ptr* ptr) {
-    return T(reinterpret_cast<PyObject*>(ptr), Object::stolen_t{});
-}
-
-
 template <typename T, impl::is<Object> Base>
 struct __isinstance__<T, Base>                              : Returns<bool> {
-    static consteval bool operator()(T&& obj) {
+    static constexpr bool operator()(T&& obj) {
         return std::derived_from<std::remove_cvref_t<T>, Object>;
     }
     static constexpr bool operator()(T&& obj, Base&& cls);  // defined in ops.h
@@ -662,7 +660,7 @@ struct __isinstance__<T, Base>                              : Returns<bool> {
 template <typename T, impl::is<Object> Base>
 struct __issubclass__<T, Base>                              : Returns<bool> {
     using U = std::remove_cvref_t<T>;
-    static consteval bool operator()() {
+    static constexpr bool operator()() {
         return std::derived_from<U, Object>;
     }
     static constexpr bool operator()(T&& obj) {
@@ -772,7 +770,7 @@ Python level. */
 template <impl::inherits<Object> From, impl::cpp_like To>
     requires (__as_object__<To>::enable && std::integral<To>)
 struct __explicit_cast__<From, To>                          : Returns<To> {
-    static To operator()(From&& from);  // defined in except.h
+    static To operator()(From&& from);  // defined in ops.h
 };
 
 
@@ -781,7 +779,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 template <impl::inherits<Object> From, impl::cpp_like To>
     requires (__as_object__<To>::enable && std::floating_point<To>)
 struct __explicit_cast__<From, To>                          : Returns<To> {
-    static To operator()(From&& from);  // defined in except.h
+    static To operator()(From&& from);  // defined in ops.h
 };
 
 
@@ -789,7 +787,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 `complex(obj)` at the Python level. */
 template <impl::inherits<Object> From, typename Float>
 struct __explicit_cast__<From, std::complex<Float>> : Returns<std::complex<Float>> {
-    static auto operator()(From&& from);  // defined in except.h
+    static auto operator()(From&& from);  // defined in ops.h
 };
 
 
@@ -797,7 +795,7 @@ struct __explicit_cast__<From, std::complex<Float>> : Returns<std::complex<Float
 `str(obj)` at the Python level. */
 template <impl::inherits<Object> From, typename Char>
 struct __explicit_cast__<From, std::basic_string<Char>> : Returns<std::basic_string<Char>> {
-    static auto operator()(From&& from);  // defined in except.h
+    static auto operator()(From&& from);  // defined in ops.h
 };
 
 
@@ -940,7 +938,7 @@ Python level. */
 template <std::derived_from<std::ostream> Stream, impl::inherits<Object> Self>
 struct __lshift__<Stream, Self>                             : Returns<Stream&> {
     /// TODO: Str, Bytes, ByteArray should specialize this to write to the stream directly.
-    static Stream& operator()(Stream& stream, Self&& self);  // defined in except.h
+    static Stream& operator()(Stream& stream, Self&& self);  // defined in ops.h
 };
 
 
@@ -948,25 +946,6 @@ template <impl::inherits<Object> T>
 struct __as_object__<T>                                     : Returns<T> {
     static decltype(auto) operator()(T&& value) { return std::forward<T>(value); }
 };
-
-
-/* Convert an arbitrary C++ value to an equivalent Python object if it isn't one
-already. */
-template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
-[[nodiscard]] decltype(auto) as_object(T&& value) {
-    using AsObj = __as_object__<std::remove_cvref_t<T>>;
-    static_assert(
-        !std::same_as<typename AsObj::type, Object>,
-        "C++ types cannot be converted to py::Object directly.  Check your "
-        "specialization of __as_object__ for this type and ensure the Return type "
-        "derives from py::Object, and is not py::Object itself."
-    );
-    if constexpr (impl::has_call_operator<AsObj>) {
-        return AsObj{}(std::forward<T>(value));
-    } else {
-        return typename AsObj::type(std::forward<T>(value));
-    }
-}
 
 
 }  // namespace py
