@@ -805,12 +805,12 @@ template <impl::is<Object> Self, StaticStr Name, std::convertible_to<Object> Val
 struct __setattr__<Self, Name, Value>                       : Returns<void> {};
 template <impl::is<Object> Self, StaticStr Name>
 struct __delattr__<Self, Name>                              : Returns<void> {};
-template <impl::is<Object> Self, std::convertible_to<Object> Key>
-struct __getitem__<Self, Key>                               : Returns<Object> {};
+template <impl::is<Object> Self, std::convertible_to<Object>... Key>
+struct __getitem__<Self, Key...>                            : Returns<Object> {};
 template <impl::is<Object> Self, std::convertible_to<Object> Value, std::convertible_to<Object>... Key>
 struct __setitem__<Self, Value, Key...>                     : Returns<void> {};
-template <impl::is<Object> Self, std::convertible_to<Object> Key>
-struct __delitem__<Self, Key>                               : Returns<void> {};
+template <impl::is<Object> Self, std::convertible_to<Object>... Key>
+struct __delitem__<Self, Key...>                            : Returns<void> {};
 template <impl::is<Object> Self, std::convertible_to<Object> Key>
 struct __contains__<Self, Key>                              : Returns<bool> {};
 template <impl::is<Object> Self>

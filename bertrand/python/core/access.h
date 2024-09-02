@@ -453,17 +453,16 @@ void del(impl::Item<Self, Key...>&& item) {
 }
 
 
-/// TODO: cast/explicit cast should inherit the behavior of the base type?
-
-
 template <impl::lazily_evaluated From, typename To>
     requires (std::convertible_to<impl::lazy_type<From>, To>)
 struct __cast__<From, To>                                   : Returns<To> {
-    static To operator()(const From& item) {
+    static To operator()(From&& item) {
         if constexpr (impl::has_cpp<impl::lazy_type<From>>) {
-            return unwrap(item);
+            return impl::implicit_cast<To>(unwrap(std::forward<From>(item)));
         } else {
-            return reinterpret_steal<impl::lazy_type<From>>(ptr(item));
+            return impl::implicit_cast<To>(
+                reinterpret_steal<impl::lazy_type<From>>(ptr(item))
+            );
         }
     }
 };
@@ -742,7 +741,7 @@ no specialized C++ iterator can be found.  In that case, its value type is set t
 `T` in an `__iter__<Container> : Returns<T> {};` specialization.  If you want to use
 this class and avoid type safety issues, leave the return type set to `Object` (the
 default), which will incur a runtime check on conversion. */
-template <std::derived_from<Object> Return>
+template <impl::python_like Return>
 struct Iterator<Return, void> : Object, Interface<Iterator<Return, void>> {
     struct __python__ : def<__python__, Iterator>, PyObject {
         static Type<Iterator> __import__() {
@@ -782,19 +781,19 @@ struct Iterator<Return, void> : Object, Interface<Iterator<Return, void>> {
 };
 
 
-template <std::derived_from<Object> T, typename Return>
+template <impl::python_like T, typename Return>
 struct __isinstance__<T, Iterator<Return>>                  : Returns<bool> {
-    static constexpr bool operator()(const T& obj) {
+    static constexpr bool operator()(T&& obj) {
         return PyIter_Check(ptr(obj));
     }
 };
 
 
-template <std::derived_from<Object> T, typename Return>
+template <impl::python_like T, typename Return>
 struct __issubclass__<T, Iterator<Return>>                  : Returns<bool> {
     static constexpr bool operator()() {
         return
-            std::derived_from<T, impl::IterTag> &&
+            impl::inherits<T, impl::IterTag> &&
             std::convertible_to<impl::iter_type<T>, Return>;
     }
 };
@@ -1105,35 +1104,7 @@ struct __contains__<T, Iterator<Begin, End>> : Returns<bool> {};
 
 
 
-template <std::derived_from<Object> Container, std::ranges::view View>
-    requires (impl::iterable<Container>)
-[[nodiscard]] auto operator->*(const Container& container, const View& view) {
-    return std::views::all(container) | view;
-}
 
-
-template <std::derived_from<Object> Container, typename Func>
-    requires (
-        impl::iterable<Container> &&
-        !std::ranges::view<Func> &&
-        std::is_invocable_v<Func, impl::iter_type<Container>>
-    )
-[[nodiscard]] auto operator->*(const Container& container, Func func) {
-    using Return = std::invoke_result_t<Func, impl::iter_type<Container>>;
-    if constexpr (impl::is_optional<Return>) {
-        return (
-            std::views::all(container) |
-            std::views::transform(func) |
-            std::views::filter([](const Return& value) {
-                return value.has_value();
-            }) | std::views::transform([](const Return& value) {
-            return value.value();
-            })
-        );
-    } else {
-        return std::views::all(container) | std::views::transform(func);
-    }
-}
 
 
 /// TODO: eliminate full py::Iterator<> in favor of a simpler impl::Iterator<> type?
@@ -1193,8 +1164,6 @@ auto Interface<Type<py::Iterator<Return>>>::__next__(auto& iter)
     }
     return reinterpret_steal<Return>(next);
 }
-
-
 
 
 
@@ -1538,6 +1507,167 @@ template <typename Self> requires (__reversed__<const Self>::enable)
 template <typename Self> requires (__reversed__<const Self>::enable)
 [[nodiscard]] auto crend(const Self& self) {
     return rend(self);
+}
+
+
+namespace impl {
+
+    /* A range adaptor that concatenates a sequence of subranges into a single view.
+    Every element in the input range must yield another range, which will be flattened
+    into a single output range. */
+    template <std::ranges::input_range View>
+        requires (
+            std::ranges::view<View> &&
+            std::ranges::input_range<std::ranges::range_value_t<View>>
+        )
+    struct Comprehension : BertrandTag, std::ranges::view_base {
+    private:
+        using InnerView = std::ranges::range_value_t<View>;
+
+        View m_view;
+
+        struct Sentinel;
+
+        struct Iterator {
+        private:
+
+            void skip_empty_views() {
+                while (inner_begin == inner_end) {
+                    if (++outer_begin == outer_end) {
+                        break;
+                    }
+                    inner_begin = std::ranges::begin(*outer_begin);
+                    inner_end = std::ranges::end(*outer_begin);
+                }
+            }
+
+        public:
+            using iterator_category = std::input_iterator_tag;
+            using value_type = std::ranges::range_value_t<InnerView>;
+            using difference_type = std::ranges::range_difference_t<InnerView>;
+            using pointer = value_type*;
+            using reference = value_type&;
+
+            std::ranges::iterator_t<View> outer_begin;
+            std::ranges::iterator_t<View> outer_end;
+            std::ranges::iterator_t<InnerView> inner_begin;
+            std::ranges::iterator_t<InnerView> inner_end;
+
+            Iterator() = default;
+            Iterator(
+                std::ranges::iterator_t<View>&& outer_begin,
+                std::ranges::iterator_t<View>&& outer_end
+            ) : outer_begin(std::move(outer_begin)), outer_end(std::move(outer_end))
+            {
+                if (outer_begin != outer_end) {
+                    inner_begin = std::ranges::begin(*outer_begin);
+                    inner_end = std::ranges::end(*outer_begin);
+                    skip_empty_views();
+                }
+            }
+
+            Iterator& operator++() {
+                if (++inner_begin == inner_end) {
+                    if (++outer_begin != outer_end) {
+                        inner_begin = std::ranges::begin(*outer_begin);
+                        inner_end = std::ranges::end(*outer_begin);
+                        skip_empty_views();
+                    }
+                }
+                return *this;
+            }
+
+            decltype(auto) operator*() const {
+                return *inner_begin;
+            }
+
+            bool operator==(const Sentinel&) const {
+                return outer_begin == outer_end;
+            }
+
+            bool operator!=(const Sentinel&) const {
+                return outer_begin != outer_end;
+            }
+
+        };
+
+        struct Sentinel {
+            bool operator==(const Iterator& iter) const {
+                return iter.outer_begin == iter.outer_end;
+            }
+            bool operator!=(const Iterator& iter) const {
+                return iter.outer_begin != iter.outer_end;
+            }
+        };
+
+    public:
+
+        Comprehension() = default;
+        Comprehension(const Comprehension&) = default;
+        Comprehension(Comprehension&&) = default;
+        Comprehension(View&& view) : m_view(std::move(view)) {}
+
+        Iterator begin() {
+            return Iterator(std::ranges::begin(m_view), std::ranges::end(m_view));
+        }
+
+        Sentinel end() {
+            return {};
+        };
+
+    };
+
+    template <typename View>
+    Comprehension(View&&) -> Comprehension<std::remove_cvref_t<View>>;
+
+}
+
+
+/* Apply a C++ range adaptor to a Python object.  This is similar to the C++-style `|`
+operator for chaining range adaptors, but uses the `->*` operator to avoid conflicts
+with Python and apply higher precedence than typical binary operators. */
+template <impl::python_like Self, std::ranges::view View> requires (impl::iterable<Self>)
+[[nodiscard]] auto operator->*(Self&& self, View&& view) {
+    return std::views::all(std::forward<Self>(self)) | std::forward<View>(view);
+}
+
+
+/* Generate a C++ range adaptor that approximates a Python-style list comprehension.
+This is done by piping a raw function pointer or lambda in place of a C++ range
+adaptor, which will be applied to each element in the sequence.  The function must be
+callable with the container's value type, and may return any type.
+
+If the function returns a range adaptor, then the adaptor's output will be flattened
+into the parent range, similar to a nested `for` loop within a comprehension.
+Returning a range with no elements will effectively filter out the current element,
+similar to a Python `if` clause within a comprehension.
+
+Here's an example:
+
+    py::List list = {1, 2, 3, 4, 5};
+    py::List new_list = list->*[](const py::Int& x) {
+        return std::views::repeat(x, x % 2 ? 0 : x);
+    };
+    py::print(new_list);  // [2, 2, 4, 4, 4, 4]
+*/
+template <impl::python_like Self, typename Func>
+    requires (
+        impl::iterable<Self> &&
+        !std::ranges::view<Func> &&
+        std::is_invocable_v<Func, impl::iter_type<Self>>
+    )
+[[nodiscard]] auto operator->*(Self&& self, Func&& func) {
+    using Return = std::invoke_result_t<Func, impl::iter_type<Self>>;
+    if constexpr (std::ranges::view<Return>) {
+        return impl::Comprehension(
+            std::views::all(std::forward<Self>(self))) |
+            std::views::transform(std::forward<Func>(func)
+        );
+    } else {
+        return
+            std::views::all(std::forward<Self>(self)) |
+            std::views::transform(std::forward<Func>(func));
+    }
 }
 
 
