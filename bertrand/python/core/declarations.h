@@ -199,7 +199,7 @@ struct Overload;
 template <typename T = Object>
 struct Type;
 struct BertrandMeta;
-template <typename Begin = Object, typename End = void>
+template <typename Begin = Object, typename End = void, typename Container = void>
 struct Iterator;
 template <StaticStr Name>
 struct Module;
@@ -746,7 +746,6 @@ namespace impl {
     concept iterator_like = requires(T begin, T end) {
         { *begin } -> std::convertible_to<typename std::remove_cvref_t<T>::value_type>;
         { ++begin } -> std::same_as<std::remove_reference_t<T>&>;
-        { begin++ } -> std::same_as<std::remove_reference_t<T>>;
         { begin == end } -> std::convertible_to<bool>;
         { begin != end } -> std::convertible_to<bool>;
     };
