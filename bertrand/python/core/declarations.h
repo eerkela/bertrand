@@ -636,6 +636,59 @@ namespace impl {
     template <lazily_evaluated T>
     using lazy_type = lazy_type_helper<std::remove_cvref_t<T>>::type;
 
+    template <typename Func, typename Self>
+    struct qualify_helper;
+    template <typename R, typename... As, typename Self>
+    struct qualify_helper<R(std::remove_cvref_t<Self>::*)(As...), Self> {
+        using type = R(std::remove_cvref_t<Self>::*)(As...);
+    };
+    template <typename R, typename... As, typename Self>
+    struct qualify_helper<R(std::remove_cvref_t<Self>::*)(As...), Self&> {
+        using type = R(std::remove_cvref_t<Self>::*)(As...) &;
+    };
+    template <typename R, typename... As, typename Self>
+    struct qualify_helper<R(std::remove_cvref_t<Self>::*)(As...), Self&&> {
+        using type = R(std::remove_cvref_t<Self>::*)(As...) &&;
+    };
+    template <typename R, typename... As, typename Self>
+    struct qualify_helper<R(std::remove_cvref_t<Self>::*)(As...), const Self> {
+        using type = R(std::remove_cvref_t<Self>::*)(As...) const;
+    };
+    template <typename R, typename... As, typename Self>
+    struct qualify_helper<R(std::remove_cvref_t<Self>::*)(As...), const Self&> {
+        using type = R(std::remove_cvref_t<Self>::*)(As...) const &;
+    };
+    template <typename R, typename... As, typename Self>
+    struct qualify_helper<R(std::remove_cvref_t<Self>::*)(As...), const Self&&> {
+        using type = R(std::remove_cvref_t<Self>::*)(As...) const &&;
+    };
+    template <typename R, typename... As, typename Self>
+    struct qualify_helper<R(std::remove_cvref_t<Self>::*)(As...), volatile Self> {
+        using type = R(std::remove_cvref_t<Self>::*)(As...) volatile;
+    };
+    template <typename R, typename... As, typename Self>
+    struct qualify_helper<R(std::remove_cvref_t<Self>::*)(As...), volatile Self&> {
+        using type = R(std::remove_cvref_t<Self>::*)(As...) volatile &;
+    };
+    template <typename R, typename... As, typename Self>
+    struct qualify_helper<R(std::remove_cvref_t<Self>::*)(As...), volatile Self&&> {
+        using type = R(std::remove_cvref_t<Self>::*)(As...) volatile &&;
+    };
+    template <typename R, typename... As, typename Self>
+    struct qualify_helper<R(std::remove_cvref_t<Self>::*)(As...), const volatile Self> {
+        using type = R(std::remove_cvref_t<Self>::*)(As...) const volatile;
+    };
+    template <typename R, typename... As, typename Self>
+    struct qualify_helper<R(std::remove_cvref_t<Self>::*)(As...), const volatile Self&> {
+        using type = R(std::remove_cvref_t<Self>::*)(As...) const volatile &;
+    };
+    template <typename R, typename... As, typename Self>
+    struct qualify_helper<R(std::remove_cvref_t<Self>::*)(As...), const volatile Self&&> {
+        using type = R(std::remove_cvref_t<Self>::*)(As...) const volatile &&;
+    };
+    template <typename Func, typename Self>
+    using qualify = typename qualify_helper<Func, Self>::type;
+
     template <typename T, typename = void>
     constexpr bool has_interface_helper = false;
     template <typename T>
