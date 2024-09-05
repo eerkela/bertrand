@@ -13,8 +13,8 @@ namespace impl {
     static PyObject* one = (Interpreter::init(), PyLong_FromLong(1));  // immortal
 
     /* Construct a new instance of an inner `Type<Wrapper>::__python__` type using
-    Python-based memory allocation and forwarding to its C++ constructor to complete
-    initialization. */
+    Python-based memory allocation and forwarding to the nested type's C++ constructor
+    to complete initialization. */
     template <typename Wrapper, typename... Args>
         requires (
             std::derived_from<Wrapper, Object> && has_python<Wrapper> &&
@@ -39,6 +39,10 @@ namespace impl {
         }
         return reinterpret_steal<Wrapper>(self);
     }
+
+    /// TODO: I might be able to implement an __init__/__explicit_init__ specialization
+    /// to automatically forward this behavior to the nested type, but that might not
+    /// be appropriate for all types.  I'll have to think about it.
 
 }
 
@@ -79,7 +83,7 @@ template <typename Derived, typename Base>
 /* Devolves to a compile-time `issubclass<Derived, Base>()` check unless the object is
 a dynamic object which may be narrowed to a single type, or a one-argument call
 operator is defined in a specialization of `__issubclass__`. */
-template <impl::inherits<Object> Base, impl::inherits<Object> Derived>
+template <typename Base, typename Derived>
 [[nodiscard]] constexpr bool issubclass(Derived&& obj) {
     if constexpr (std::is_invocable_v<__issubclass__<Derived, Base>, Derived>) {
         static_assert(
@@ -94,11 +98,8 @@ template <impl::inherits<Object> Base, impl::inherits<Object> Derived>
             ptr(Type<Base>())
         );
 
-    } else if constexpr (impl::type_like<Derived>) {
-        return issubclass<Derived, Base>();
-
     } else {
-        return false;
+        return impl::type_like<Derived> && issubclass<Derived, Base>();
     }
 }
 
@@ -110,7 +111,7 @@ be narrowed to a single type, and the base must be type-like, a union of types, 
 dynamic object which can be narrowed to such. */
 template <typename Derived, typename Base>
     requires (std::is_invocable_v<__issubclass__<Derived, Base>, Derived, Base>)
-[[nodiscard]] bool issubclass(Derived&& obj, Base&& base) {
+[[nodiscard]] constexpr bool issubclass(Derived&& obj, Base&& base) {
     return __issubclass__<Derived, Base>{}(
         std::forward<Derived>(obj),
         std::forward<Base>(base)

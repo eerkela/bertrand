@@ -5,7 +5,6 @@
 #include "object.h"
 #include "except.h"
 #include "ops.h"
-#include <cstdio>
 
 
 namespace py {
@@ -883,7 +882,7 @@ the iterator object has a nonzero reference count.
 This will instantiate a unique Python type with an appropriate `__next__()` method for
 every combination of C++ iterators, forwarding to their respective `operator*()`,
 `operator++()`, and `operator==()` methods. */
-template <std::input_iterator Begin, std::sentinel_for<Begin> End, typename Container>
+template <std::input_iterator Begin, std::sentinel_for<Begin> End, impl::iterable Container>
 struct Iterator<Begin, End, Container> : Object, Interface<Iterator<Begin, End, Container>> {
     struct __python__ : def<__python__, Iterator>, PyObject {
         Container container;
@@ -1029,20 +1028,20 @@ struct __init__<Iterator<Begin, End, void>, Begin, End> {
 };
 
 
-template <impl::python_like T, typename Return>
-struct __isinstance__<T, Iterator<Return>>                  : Returns<bool> {
+template <impl::python_like T, impl::python_like Return>
+struct __isinstance__<T, Iterator<Return, void, void>>      : Returns<bool> {
     static constexpr bool operator()(T&& obj) {
         if constexpr (impl::dynamic_type<T>) {
             return PyIter_Check(ptr(obj));
         } else {
-            return issubclass<T, Iterator<Return>>();
+            return issubclass<T, Iterator<Return, void, void>>();
         }
     }
 };
 
 
-template <impl::python_like T, typename Return>
-struct __issubclass__<T, Iterator<Return>>                  : Returns<bool> {
+template <impl::python_like T, impl::python_like Return>
+struct __issubclass__<T, Iterator<Return, void, void>>      : Returns<bool> {
     static constexpr bool operator()() {
         return
             impl::inherits<T, impl::IterTag> &&
@@ -1051,7 +1050,22 @@ struct __issubclass__<T, Iterator<Return>>                  : Returns<bool> {
 };
 
 
-/// TODO: __isinstance__ and __issubclass__ for Iterator<Begin, End, void/Container>.
+template <
+    impl::python_like T,
+    std::input_iterator Begin,
+    std::sentinel_for<Begin> End,
+    typename Container
+>
+struct __isinstance__<T, Iterator<Begin, End, Container>>   : Returns<bool> {};
+
+
+template <
+    impl::python_like T,
+    std::input_iterator Begin,
+    std::sentinel_for<Begin> End,
+    typename Container
+>
+struct __issubclass__<T, Iterator<Begin, End, Container>>   : Returns<bool> {};
 
 
 /* Traversing a Python iterator requires a customized C++ iterator type. */

@@ -62,10 +62,10 @@ using bertrand::StaticStr;
 namespace impl {
     struct BertrandTag {};
     struct PythonTag : BertrandTag {};
-    struct TypeTag : BertrandTag {};  /// TODO: eliminate this
-    struct IterTag : BertrandTag {};  /// TODO: eliminate this
+    struct IterTag : BertrandTag {};
     struct ArgTag : BertrandTag {};
     struct FunctionTag : BertrandTag {};   /// TODO: eliminate this
+    struct TypeTag : BertrandTag {};  /// TODO: eliminate this
     struct ModuleTag;  /// TODO: eliminate this
     struct TupleTag : BertrandTag {};
     struct ListTag : BertrandTag{};
@@ -122,15 +122,17 @@ namespace impl {
     }
 
     template <size_t I, typename... Ts>
-    struct unpack_type {
+    struct unpack_type_helper {
         static_assert(false, "index out of range for parameter pack");
     };
     template <size_t I, typename T, typename... Ts>
-    struct unpack_type<I, T, Ts...> {
+    struct unpack_type_helper<I, T, Ts...> {
         using type = std::conditional_t<
-            (I > 0), typename unpack_type<I - 1, Ts...>::type, T
+            (I > 0), typename unpack_type_helper<I - 1, Ts...>::type, T
         >;
     };
+    template <size_t I, typename... Ts>
+    using unpack_type = unpack_type_helper<I, Ts...>::type;
 
     enum class Origin {
         PYTHON,
@@ -140,8 +142,7 @@ namespace impl {
     /* Introspect the proper signature for a py::Function instance from a generic
     function pointer, reference, or object, such as a lambda. */
     template <typename T>
-    struct GetSignature {
-        using type = void;
+    struct Signature {
         static constexpr bool enable = false;
     };
 
@@ -193,7 +194,7 @@ struct Frame;
 struct Traceback;
 template <StaticStr Name, typename T>
 struct Arg;
-template <typename F> requires (impl::GetSignature<F>::enable)
+template <typename F> requires (impl::Signature<F>::enable)
 struct Function;
 struct Overload;
 template <typename T = Object>
@@ -1631,11 +1632,11 @@ namespace impl {
 
 template <typename Derived, typename Base>
 [[nodiscard]] constexpr bool issubclass();
-template <impl::inherits<Object> Base, impl::inherits<Object> Derived>
+template <typename Base, typename Derived>
 [[nodiscard]] constexpr bool issubclass(Derived&& obj);
 template <typename Derived, typename Base>
     requires (std::is_invocable_v<__issubclass__<Derived, Base>, Derived, Base>)
-[[nodiscard]] bool issubclass(Derived&& obj, Base&& base);
+[[nodiscard]] constexpr bool issubclass(Derived&& obj, Base&& base);
 template <typename Base, typename Derived>
 [[nodiscard]] constexpr bool isinstance(Derived&& obj);
 template <typename Derived, typename Base>
