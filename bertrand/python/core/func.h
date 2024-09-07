@@ -432,10 +432,11 @@ namespace impl {
         static constexpr size_t kwargs_idx          = _kwargs_idx<Args...>;
 
         template <size_t I> requires (I < n)
-        using Arg = impl::unpack_type<I, Args...>;
-
+        using at = unpack_type<I, Args...>;
+        template <size_t I> requires (I < args_idx && I < kwonly_idx)
+        using Arg = Param<unpack_type<I, Args...>>::type;
         template <StaticStr Name> requires (has<Name>)
-        using Kwarg = impl::unpack_type<idx<Name>, Args...>;
+        using Kwarg = Param<unpack_type<idx<Name>, Args...>>::type;
 
     private:
 
@@ -520,8 +521,11 @@ namespace impl {
             return ((std::strcmp(Param<Args>::name, name) == 0) || ...);
         }
 
+        /* A tuple holding the default values for each argument marked as optional in
+        the enclosing signature. */
         struct Defaults {
         private:
+            using Outer = Parameters;
 
             /// TODO: Value might not want to remove the reference of the ::type, but
             /// only for the value itself, so that I can forward them correctly when
@@ -548,11 +552,11 @@ namespace impl {
             the enclosing signature. */
             template <size_t I>
             struct Value  {
-                using annotation = Parameters::template Arg<I>;
-                using type = std::remove_reference_t<typename Param<annotation>::type>;
+                using annotation = Outer::template at<I>;
+                using type = Param<annotation>::type;
                 static constexpr StaticStr name = Param<annotation>::name;
                 static constexpr size_t index = I;
-                type value;
+                std::remove_reference_t<type> value;
             };
 
             /* Build a sub-signature holding only the arguments marked as optional from
@@ -560,25 +564,23 @@ namespace impl {
             class, which is used to bind arguments to this class's constructor using
             the same semantics as the function's call operator. */
             template <typename Sig, typename... Ts>
-            struct _Pars {
-                using type = Sig;
-            };
+            struct _Inner { using type = Sig; };
             template <typename... Sig, typename T, typename... Ts>
-            struct _Pars<Parameters<Sig...>, T, Ts...> {
+            struct _Inner<Parameters<Sig...>, T, Ts...> {
                 template <typename U>
                 struct helper {
-                    using type = _Pars<Parameters<Sig...>, Ts...>::type;
+                    using type = _Inner<Parameters<Sig...>, Ts...>::type;
                 };
                 template <typename U> requires (Param<U>::opt)
                 struct helper<U> {
-                    using type =_Pars<
+                    using type =_Inner<
                         Parameters<Sig..., typename Param<U>::no_opt>,
                         Ts...
                     >::type;
                 };
                 using type = helper<T>::type;
             };
-            using Pars = _Pars<Parameters<>, Args...>::type;
+            using Inner = _Inner<Parameters<>, Args...>::type;
 
             /* Build a std::tuple of Value<I> instances to hold the default values
             themselves. */
@@ -606,49 +608,52 @@ namespace impl {
             };
 
         public:
-            static constexpr size_t n               = Pars::n;
-            static constexpr size_t n_pos           = Pars::n_pos;
-            static constexpr size_t n_posonly       = Pars::n_posonly;
-            static constexpr size_t n_kw            = Pars::n_kw;
-            static constexpr size_t n_kwonly        = Pars::n_kwonly;
+            static constexpr size_t n               = Inner::n;
+            static constexpr size_t n_pos           = Inner::n_pos;
+            static constexpr size_t n_posonly       = Inner::n_posonly;
+            static constexpr size_t n_kw            = Inner::n_kw;
+            static constexpr size_t n_kwonly        = Inner::n_kwonly;
 
             template <StaticStr Name>
-            static constexpr bool has               = Pars::template has<Name>;
-            static constexpr bool has_pos           = Pars::has_pos;
-            static constexpr bool has_posonly       = Pars::has_posonly;
-            static constexpr bool has_kw            = Pars::has_kw;
-            static constexpr bool has_kwonly        = Pars::has_kwonly;
+            static constexpr bool has               = Inner::template has<Name>;
+            static constexpr bool has_pos           = Inner::has_pos;
+            static constexpr bool has_posonly       = Inner::has_posonly;
+            static constexpr bool has_kw            = Inner::has_kw;
+            static constexpr bool has_kwonly        = Inner::has_kwonly;
 
             template <StaticStr Name> requires (has<Name>)
-            static constexpr size_t idx             = Pars::template idx<Name>;
-            static constexpr size_t kw_idx          = Pars::kw_idx;
-            static constexpr size_t kwonly_idx      = Pars::kwonly_idx;
+            static constexpr size_t idx             = Inner::template idx<Name>;
+            static constexpr size_t kw_idx          = Inner::kw_idx;
+            static constexpr size_t kwonly_idx      = Inner::kwonly_idx;
 
             template <size_t I> requires (I < n)
-            using Arg = Pars::template Arg<I>;
-
+            using at = Inner::template at<I>;
+            template <size_t I> requires (I < kwonly_idx)
+            using Arg = Inner::template Arg<I>;
             template <StaticStr Name> requires (has<Name>)
-            using Kwarg = Pars::template Kwarg<Name>;
+            using Kwarg = Inner::template Kwarg<Name>;
 
+            /* Bind an argument list to the default values tuple using the
+            sub-signature's normal Bind<> machinery. */
             template <typename... Values>
-            using Bind = Pars::template Bind<Values...>;
+            using Bind = Inner::template Bind<Values...>;
 
             /* Given an index into the enclosing signature, find the corresponding index
             in the defaults tuple if that index corresponds to a default value. */
-            template <size_t I> requires (Param<typename Parameters::Arg<I>>::opt)
+            template <size_t I> requires (Param<typename Outer::at<I>>::opt)
             static constexpr size_t find = _find<I, Tuple>::value;
 
         private:
 
             template <size_t J, typename... Values>
             static constexpr decltype(auto) build_recursive(Values&&... values) {
-                using source = Parameters<Values...>;
-                using S = source::template Arg<J>;
+                using observed = Parameters<Values...>;
+                using S = observed::template at<J>;
                 using type = Param<S>::type;
                 constexpr StaticStr name = Param<S>::name;
 
                 if constexpr (Param<S>::kw) {
-                    constexpr size_t idx = source::template idx<name>;
+                    constexpr size_t idx = observed::template idx<name>;
                     return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
 
                 } else if constexpr (Param<S>::args) {
@@ -711,23 +716,25 @@ namespace impl {
 
         };
 
+        /* A helper that binds observed arguments to the enclosing signature and
+        performs the translation necessary to invoke a matching function. */
         template <typename... Values>
         struct Bind {
         private:
-            using target = Parameters<Args...>;
-            using source = Parameters<Values...>;
+            using Outer = Parameters;
+            using Inner = Parameters<Values...>;
 
             template <size_t I>
-            using Target = target::template Arg<I>;
+            using Target = Outer::template at<I>;
             template <size_t J>
-            using Source = source::template Arg<J>;
+            using Source = Inner::template at<J>;
 
             /* Upon encountering a variadic positional pack in the target signature,
             recursively traverse the remaining source positional arguments and ensure that
             each is convertible to the target type. */
             template <size_t J, typename Pos>
             static constexpr bool consume_target_args = true;
-            template <size_t J, typename Pos> requires (J < source::kw_idx)
+            template <size_t J, typename Pos> requires (J < Inner::kw_idx)
             static constexpr bool consume_target_args<J, Pos> = [] {
                 if constexpr (Param<Source<J>>::args) {
                     if constexpr (
@@ -749,7 +756,7 @@ namespace impl {
             type. */
             template <size_t J, typename Kw>
             static constexpr bool consume_target_kwargs = true;
-            template <size_t J, typename Kw> requires (J < source::n)
+            template <size_t J, typename Kw> requires (J < Inner::n)
             static constexpr bool consume_target_kwargs<J, Kw> = [] {
                 if constexpr (Param<Source<J>>::kwargs) {
                     if constexpr (
@@ -760,10 +767,10 @@ namespace impl {
                 } else {
                     if constexpr (
                         (
-                            target::has_args &&
-                            target::template idx<Param<Source<J>>::name> < target::args_idx
+                            Outer::has_args &&
+                            Outer::template idx<Param<Source<J>>::name> < Outer::args_idx
                         ) || (
-                            !target::template has<Param<Source<J>>::name> &&
+                            !Outer::template has<Param<Source<J>>::name> &&
                             !std::convertible_to<typename Param<Source<J>>::type, Kw>
                         )
                     ) {
@@ -778,8 +785,7 @@ namespace impl {
             type is convertible to each target type. */
             template <size_t I, typename Pos>
             static constexpr bool consume_source_args = true;
-            template <size_t I, typename Pos>
-                requires (I < target::n && I <= target::args_idx)
+            template <size_t I, typename Pos> requires (I < Outer::n && I <= Outer::args_idx)
             static constexpr bool consume_source_args<I, Pos> = [] {
                 if constexpr (Param<Target<I>>::args) {
                     if constexpr (
@@ -790,7 +796,7 @@ namespace impl {
                 } else {
                     if constexpr (
                         !std::convertible_to<Pos, typename Param<Target<I>>::type> ||
-                        source::template has<Param<Target<I>>::name>
+                        Inner::template has<Param<Target<I>>::name>
                     ) {
                         return false;
                     }
@@ -804,7 +810,7 @@ namespace impl {
             to each target type. */
             template <size_t I, typename Kw>
             static constexpr bool consume_source_kwargs = true;
-            template <size_t I, typename Kw> requires (I < target::n)
+            template <size_t I, typename Kw> requires (I < Outer::n)
             static constexpr bool consume_source_kwargs<I, Kw> = [] {
                 /// TODO: does this work as expected?
                 if constexpr (Param<Target<I>>::kwargs) {
@@ -877,38 +883,38 @@ namespace impl {
             a way that allows LSPs to provide informative feedback to the user. */
             template <size_t I, size_t J>
             static constexpr bool enable_recursive = true;
-            template <size_t I, size_t J> requires (I < target::n && J >= source::n)
+            template <size_t I, size_t J> requires (I < Outer::n && J >= Inner::n)
             static constexpr bool enable_recursive<I, J> = [] {
                 if constexpr (Param<Target<I>>::args || Param<Target<I>>::opt) {
                     return enable_recursive<I + 1, J>;
                 } else if constexpr (Param<Target<I>>::kwargs) {
                     return consume_target_kwargs<
-                        source::kw_idx,
+                        Inner::kw_idx,
                         typename Param<Target<I>>::type
                     >;
                 }
                 return false;
             }();
-            template <size_t I, size_t J> requires (I >= target::n && J < source::n)
+            template <size_t I, size_t J> requires (I >= Outer::n && J < Inner::n)
             static constexpr bool enable_recursive<I, J> = false;
-            template <size_t I, size_t J> requires (I < target::n && J < source::n)
+            template <size_t I, size_t J> requires (I < Outer::n && J < Inner::n)
             static constexpr bool enable_recursive<I, J> = [] {
                 // ensure target arguments are present & expand variadic parameter packs
                 if constexpr (Param<Target<I>>::pos) {
                     if constexpr (
-                        (J >= source::kw_idx && !Param<Target<I>>::opt) ||
+                        (J >= Inner::kw_idx && !Param<Target<I>>::opt) ||
                         (
                             Param<Target<I>>::name != "" &&
-                            source::template has<Param<Target<I>>::name>
+                            Inner::template has<Param<Target<I>>::name>
                         )
                     ) {
                         return false;
                     }
                 } else if constexpr (Param<Target<I>>::kwonly) {
                     if constexpr (
-                        J < source::kw_idx ||
+                        J < Inner::kw_idx ||
                         (
-                            !source::template has<Param<Target<I>>::name> &&
+                            !Inner::template has<Param<Target<I>>::name> &&
                             !Param<Target<I>>::opt
                         )
                     ) {
@@ -916,11 +922,11 @@ namespace impl {
                     }
                 } else if constexpr (Param<Target<I>>::kw) {
                     if constexpr ((
-                        J < source::kw_idx &&
-                        source::template has<Param<Target<I>>::name>
+                        J < Inner::kw_idx &&
+                        Inner::template has<Param<Target<I>>::name>
                     ) || (
-                        J >= source::kw_idx &&
-                        !source::template has<Param<Target<I>>::name> &&
+                        J >= Inner::kw_idx &&
+                        !Inner::template has<Param<Target<I>>::name> &&
                         !Param<Target<I>>::opt
                     )) {
                         return false;
@@ -932,10 +938,10 @@ namespace impl {
                         return false;
                     }
                     // skip to source keywords
-                    return enable_recursive<I + 1, source::kw_idx>;
+                    return enable_recursive<I + 1, Inner::kw_idx>;
                 } else if constexpr (Param<Target<I>>::kwargs) {
                     return consume_target_kwargs<
-                        source::kw_idx,
+                        Inner::kw_idx,
                         typename Param<Target<I>>::type
                     >;  // end of expression
                 } else {
@@ -948,13 +954,13 @@ namespace impl {
                         return false;
                     }
                 } else if constexpr (Param<Source<J>>::kw) {
-                    if constexpr (target::template has<Param<Source<J>>::name>) {
-                        using type = Target<target::template idx<Param<Source<J>>::name>>;
+                    if constexpr (Outer::template has<Param<Source<J>>::name>) {
+                        using type = Target<Outer::template idx<Param<Source<J>>::name>>;
                         if constexpr (!std::convertible_to<Source<J>, type>) {
                             return false;
                         }
-                    } else if constexpr (!target::has_kwargs) {
-                        using type = Param<Target<target::kwargs_idx>>::type;
+                    } else if constexpr (!Outer::has_kwargs) {
+                        using type = Param<Target<Outer::kwargs_idx>>::type;
                         if constexpr (!std::convertible_to<Source<J>, type>) {
                             return false;
                         }
@@ -966,7 +972,7 @@ namespace impl {
                         return false;
                     }
                     // skip to target keywords
-                    return enable_recursive<target::args_idx + 1, J + 1>;
+                    return enable_recursive<Outer::args_idx + 1, J + 1>;
                 } else if constexpr (Param<Source<J>>::kwargs) {
                     // end of expression
                     return consume_source_kwargs<I, typename Param<Source<J>>::type>;
@@ -983,22 +989,16 @@ namespace impl {
                 std::unordered_map<std::string, T>& map,
                 Values&&... args
             ) {
-                using Arg = Source<source::kw_idx + I>;
-                if constexpr (!target::template has<Param<Arg>::name>) {
+                using Arg = Source<Inner::kw_idx + I>;
+                if constexpr (!Outer::template has<Param<Arg>::name>) {
                     map.emplace(
                         Param<Arg>::name,
-                        impl::unpack_arg<source::kw_index + I>(
+                        impl::unpack_arg<Inner::kw_index + I>(
                             std::forward<Source>(args)...
                         )
                     );
                 }
             }
-
-        public:
-
-            /* Call operator is only enabled if source arguments are well-formed and
-            match the target signature. */
-            static constexpr bool enable = source::valid && enable_recursive<0, 0>;
 
             //////////////////////////
             ////    C++ -> C++    ////
@@ -1041,18 +1041,18 @@ namespace impl {
                 constexpr StaticStr name = Param<T>::name;
 
                 if constexpr (Param<T>::kwonly) {
-                    if constexpr (source::template has<name>) {
-                        constexpr size_t idx = source::template idx<name>;
+                    if constexpr (Inner::template has<name>) {
+                        constexpr size_t idx = Inner::template idx<name>;
                         return impl::unpack_arg<idx>(std::forward<Values>(args)...);
                     } else {
                         return defaults.template get<I>();
                     }
 
                 } else if constexpr (Param<T>::kw) {
-                    if constexpr (I < source::kw_idx) {
+                    if constexpr (I < Inner::kw_idx) {
                         return impl::unpack_arg<I>(std::forward<Values>(args)...);
-                    } else if constexpr (source::template has<name>) {
-                        constexpr size_t idx = source::template idx<name>;
+                    } else if constexpr (Inner::template has<name>) {
+                        constexpr size_t idx = Inner::template idx<name>;
                         return impl::unpack_arg<idx>(std::forward<Values>(args)...);
                     } else {
                         return defaults.template get<I>();
@@ -1061,8 +1061,8 @@ namespace impl {
                 } else if constexpr (Param<T>::args) {
                     using Pack = std::vector<type>;
                     Pack vec;
-                    if constexpr (I < source::kw_idx) {
-                        constexpr size_t diff = source::kw_idx - I;
+                    if constexpr (I < Inner::kw_idx) {
+                        constexpr size_t diff = Inner::kw_idx - I;
                         vec.reserve(diff);
                         []<size_t... Js>(
                             std::index_sequence<Js...>,
@@ -1090,14 +1090,14 @@ namespace impl {
                     ) {
                         (build_kwargs<Js>(pack, std::forward<Values>(args)...), ...);
                     }(
-                        std::make_index_sequence<source::n - source::kw_idx>{},
+                        std::make_index_sequence<Inner::n - Inner::kw_idx>{},
                         pack,
                         std::forward<Values>(args)...
                     );
                     return pack;
 
                 } else {
-                    if constexpr (I < source::kw_idx) {
+                    if constexpr (I < Inner::kw_idx) {
                         return impl::unpack_arg<I>(std::forward<Values>(args)...);
                     } else {
                         /// TODO: rvalues would need to be copied and then moved here to
@@ -1123,10 +1123,10 @@ namespace impl {
                     return cpp_to_cpp<I>(defaults, std::forward<Values>(args)...);
 
                 } else if constexpr (Param<T>::kw) {
-                    if constexpr (I < source::kw_idx) {
+                    if constexpr (I < Inner::kw_idx) {
                         return impl::unpack_arg<I>(std::forward<Values>(args)...);
-                    } else if constexpr (source::template has<name>) {
-                        constexpr size_t idx = source::template idx<name>;
+                    } else if constexpr (Inner::template has<name>) {
+                        constexpr size_t idx = Inner::template idx<name>;
                         return impl::unpack_arg<idx>(std::forward<Values>(args)...);
                     } else {
                         if (iter == end) {
@@ -1147,8 +1147,8 @@ namespace impl {
                 } else if constexpr (Param<T>::args) {
                     using Pack = std::vector<type>;  /// TODO: can't store references
                     Pack vec;
-                    if constexpr (I < source::args_idx) {
-                        constexpr size_t diff = source::args_idx - I;
+                    if constexpr (I < Inner::args_idx) {
+                        constexpr size_t diff = Inner::args_idx - I;
                         vec.reserve(diff + size);
                         []<size_t... Js>(
                             std::index_sequence<Js...>,
@@ -1171,7 +1171,7 @@ namespace impl {
                     return cpp_to_cpp<I>(defaults, std::forward<Values>(args)...);
 
                 } else {
-                    if constexpr (I < source::kw_idx) {
+                    if constexpr (I < Inner::kw_idx) {
                         return impl::unpack_arg<I>(std::forward<Values>(args)...);
                     } else {
                         if (iter == end) {
@@ -1203,14 +1203,14 @@ namespace impl {
 
                 if constexpr (Param<T>::kwonly) {
                     auto val = map.find(name);
-                    if constexpr (source::template contains<name>) {
+                    if constexpr (Inner::template contains<name>) {
                         if (val != map.end()) {
                             throw TypeError(
                                 "duplicate value for parameter '" + name +
                                 "' at index " + std::to_string(I)
                             );
                         }
-                        constexpr size_t idx = source::template idx<name>;
+                        constexpr size_t idx = Inner::template idx<name>;
                         return impl::unpack_arg<idx>(std::forward<Values>(args)...);
                     } else {
                         if (val != map.end()) {
@@ -1230,7 +1230,7 @@ namespace impl {
 
                 } else if constexpr (Param<T>::kw) {
                     auto val = map.find(name);
-                    if constexpr (I < source::kw_idx) {
+                    if constexpr (I < Inner::kw_idx) {
                         if (val != map.end()) {
                             throw TypeError(
                                 "duplicate value for parameter '" + name +
@@ -1238,14 +1238,14 @@ namespace impl {
                             );
                         }
                         return impl::unpack_arg<I>(std::forward<Values>(args)...);
-                    } else if constexpr (source::template has<name>) {
+                    } else if constexpr (Inner::template has<name>) {
                         if (val != map.end()) {
                             throw TypeError(
                                 "duplicate value for parameter '" + name +
                                 "' at index " + std::to_string(I)
                             );
                         }
-                        constexpr size_t idx = source::template idx<name>;
+                        constexpr size_t idx = Inner::template idx<name>;
                         return impl::unpack_arg<idx>(std::forward<Values>(args)...);
                     } else {
                         if (val != map.end()) {
@@ -1276,7 +1276,7 @@ namespace impl {
                     ) {
                         (build_kwargs<Js>(pack, std::forward<Values>(args)...), ...);
                     }(
-                        std::make_index_sequence<source::n - source::kw_idx>{},
+                        std::make_index_sequence<Inner::n - Inner::kw_idx>{},
                         pack,
                         std::forward<Values>(args)...
                     );
@@ -1322,7 +1322,7 @@ namespace impl {
 
                 } else if constexpr (Param<T>::kw) {
                     auto val = map.find(name);
-                    if constexpr (I < source::kw_idx) {
+                    if constexpr (I < Inner::kw_idx) {
                         if (val != map.end()) {
                             throw TypeError(
                                 "duplicate value for parameter '" + name +
@@ -1330,14 +1330,14 @@ namespace impl {
                             );
                         }
                         return impl::unpack_arg<I>(std::forward<Values>(args)...);
-                    } else if constexpr (source::template has<name>) {
+                    } else if constexpr (Inner::template has<name>) {
                         if (val != map.end()) {
                             throw TypeError(
                                 "duplicate value for parameter '" + name +
                                 "' at index " + std::to_string(I)
                             );
                         }
-                        constexpr size_t idx = source::template idx<name>;
+                        constexpr size_t idx = Inner::template idx<name>;
                         return impl::unpack_arg<idx>(std::forward<Values>(args)...);
                     } else {
                         if (iter != end) {
@@ -1484,7 +1484,7 @@ namespace impl {
                 } else if constexpr (Param<T>::kwargs) {
                     std::unordered_map<std::string, type> map;
                     if (kwnames != nullptr) {
-                        auto sequence = std::make_index_sequence<target::n_kw>{};
+                        auto sequence = std::make_index_sequence<Outer::n_kw>{};
                         for (size_t i = 0; i < kwcount; ++i) {
                             Py_ssize_t length;
                             const char* kwname = PyUnicode_AsUTF8AndSize(
@@ -1493,7 +1493,7 @@ namespace impl {
                             );
                             if (kwname == nullptr) {
                                 Exception::from_python();
-                            } else if (!target::contains(sequence)) {
+                            } else if (!Outer::contains(sequence)) {
                                 map.emplace(
                                     std::string(kwname, length),
                                     reinterpret_borrow<Object>(args[nargs + i])
@@ -1545,7 +1545,7 @@ namespace impl {
                     try {
                         PyTuple_SET_ITEM(
                             kwnames,
-                            J - source::kw_idx,
+                            J - Inner::kw_idx,
                             Py_NewRef(impl::TemplateString<name>::ptr)
                         );
                         args[J + 1] = release(as_object(
@@ -1587,7 +1587,7 @@ namespace impl {
                             if (name == nullptr) {
                                 Exception::from_python();
                             }
-                            PyTuple_SET_ITEM(kwnames, curr - source::kw_idx, name);
+                            PyTuple_SET_ITEM(kwnames, curr - Inner::kw_idx, name);
                             args[curr] = release(as_object(value));
                             ++curr;
                         }
@@ -1643,8 +1643,8 @@ namespace impl {
                 std::vector<std::string> extra;
                 for (const auto& [key, value] : kwargs) {
                     bool is_empty = key == "";
-                    bool match = ((key == Param<Arg<Is>>::name) || ...);
-                    if (source::contains(key.c_str())) {
+                    bool match = ((key == Param<at<Is>>::name) || ...);
+                    if (Inner::contains(key.c_str())) {
                         throw TypeError("duplicate keyword argument: '" + key + "'");
                     } else if (is_empty || !match) {
                         extra.push_back(key);
@@ -1663,6 +1663,35 @@ namespace impl {
                     throw TypeError(message);
                 }
             }
+
+        public:
+            static constexpr size_t n               = sizeof...(Values);
+            static constexpr size_t n_pos           = Inner::n_pos;
+            static constexpr size_t n_kw            = Inner::n_kw;
+
+            template <StaticStr Name>
+            static constexpr bool has               = Inner::template has<Name>;
+            static constexpr bool has_pos           = Inner::has_pos;
+            static constexpr bool has_kw            = Inner::has_kw;
+            static constexpr bool has_args          = Inner::has_args;
+            static constexpr bool has_kwargs        = Inner::has_kwargs;
+
+            template <StaticStr Name> requires (has<Name>)
+            static constexpr size_t idx             = Inner::template idx<Name>;
+            static constexpr size_t kw_idx          = Inner::kw_idx;
+            static constexpr size_t args_idx        = Inner::args_idx;
+            static constexpr size_t kwargs_idx      = Inner::kwargs_idx;
+
+            template <size_t I> requires (I < n)
+            using at = Inner::template at<I>;
+            template <size_t I> requires (I < kw_idx)
+            using Arg = Inner::template Arg<I>;
+            template <StaticStr Name> requires (has<Name>)
+            using Kwarg = Inner::template Kwarg<Name>;
+
+            /* Call operator is only enabled if source arguments are well-formed and
+            match the target signature. */
+            static constexpr bool enable = Inner::valid && enable_recursive<0, 0>;
 
             /* Invoke an external C++ function using the given arguments and default
             values. */
@@ -1687,7 +1716,7 @@ namespace impl {
 
                 //     // if there are no parameter packs, then we simply reorder the arguments
                 //     // and call the function directly
-                //     if constexpr (!source::has_args && !source::has_kwargs) {
+                //     if constexpr (!Inner::has_args && !Inner::has_kwargs) {
                 //         if constexpr (std::is_void_v<Return>) {
                 //             func({Arguments<Source...>::template cpp<Is>(
                 //                 defaults,
@@ -1702,8 +1731,8 @@ namespace impl {
 
                 //     // variadic positional arguments are passed as an iterator range, which
                 //     // must be exhausted after the function call completes
-                //     } else if constexpr (source::has_args && !source::has_kwargs) {
-                //         auto var_args = impl::unpack_arg<source::args_index>(
+                //     } else if constexpr (Inner::has_args && !Inner::has_kwargs) {
+                //         auto var_args = impl::unpack_arg<Inner::args_index>(
                 //             std::forward<Source>(args)...
                 //         );
                 //         auto iter = var_args.begin();
@@ -1716,7 +1745,7 @@ namespace impl {
                 //                 end,
                 //                 std::forward<Source>(args)...
                 //             )}...);
-                //             if constexpr (!target::has_args) {
+                //             if constexpr (!Outer::has_args) {
                 //                 impl::assert_var_args_are_consumed(iter, end);
                 //             }
                 //         } else {
@@ -1727,7 +1756,7 @@ namespace impl {
                 //                 end,
                 //                 std::forward<Source>(args)...
                 //             )}...);
-                //             if constexpr (!target::has_args) {
+                //             if constexpr (!Outer::has_args) {
                 //                 impl::assert_var_args_are_consumed(iter, end);
                 //             }
                 //             return result;
@@ -1735,13 +1764,13 @@ namespace impl {
 
                 //     // variadic keyword arguments are passed as a dictionary, which must be
                 //     // validated up front to ensure all keys are recognized
-                //     } else if constexpr (!source::has_args && source::has_kwargs) {
-                //         auto var_kwargs = impl::unpack_arg<source::kwargs_index>(
+                //     } else if constexpr (!Inner::has_args && Inner::has_kwargs) {
+                //         auto var_kwargs = impl::unpack_arg<Inner::kwargs_index>(
                 //             std::forward<Source>(args)...
                 //         );
-                //         if constexpr (!target::has_kwargs) {
+                //         if constexpr (!Outer::has_kwargs) {
                 //             impl::assert_var_kwargs_are_recognized<target>(
-                //                 std::make_index_sequence<target::size>{},
+                //                 std::make_index_sequence<Outer::size>{},
                 //                 var_kwargs
                 //             );
                 //         }
@@ -1761,16 +1790,16 @@ namespace impl {
 
                 //     // interpose the two if there are both positional and keyword argument packs
                 //     } else {
-                //         auto var_kwargs = impl::unpack_arg<source::kwargs_index>(
+                //         auto var_kwargs = impl::unpack_arg<Inner::kwargs_index>(
                 //             std::forward<Source>(args)...
                 //         );
-                //         if constexpr (!target::has_kwargs) {
+                //         if constexpr (!Outer::has_kwargs) {
                 //             impl::assert_var_kwargs_are_recognized<target>(
-                //                 std::make_index_sequence<target::size>{},
+                //                 std::make_index_sequence<Outer::size>{},
                 //                 var_kwargs
                 //             );
                 //         }
-                //         auto var_args = impl::unpack_arg<source::args_index>(
+                //         auto var_args = impl::unpack_arg<Inner::args_index>(
                 //             std::forward<Source>(args)...
                 //         );
                 //         auto iter = var_args.begin();
@@ -1784,7 +1813,7 @@ namespace impl {
                 //                 var_kwargs,
                 //                 std::forward<Source>(args)...
                 //             )}...);
-                //             if constexpr (!target::has_args) {
+                //             if constexpr (!Outer::has_args) {
                 //                 impl::assert_var_args_are_consumed(iter, end);
                 //             }
                 //         } else {
@@ -1796,14 +1825,14 @@ namespace impl {
                 //                 var_kwargs,
                 //                 std::forward<Source>(args)...
                 //             )}...);
-                //             if constexpr (!target::has_args) {
+                //             if constexpr (!Outer::has_args) {
                 //                 impl::assert_var_args_are_consumed(iter, end);
                 //             }
                 //             return result;
                 //         }
                 //     }
                 // }(
-                //     std::make_index_sequence<target::size>{},
+                //     std::make_index_sequence<Outer::size>{},
                 //     defaults,
                 //     std::forward<Func>(func),
                 //     std::forward<Source>(args)...
@@ -2080,194 +2109,6 @@ namespace impl {
         static constexpr bool matches = Signature<decltype(&T::operator())>::template matches<Func>;
     };
 
-    /* An interface to a std::tuple holding default values for all of the optional
-    arguments in the target signature. */
-    template <typename... Target>
-    struct Defaults {
-    private:
-        using target = Signature<Target...>;
-
-        template <size_t I>
-        struct Value  {
-            using annotation = target::template type<I>;
-            using type = std::remove_cvref_t<typename Param<annotation>::type>;
-            static constexpr StaticStr name = Param<annotation>::name;
-            static constexpr size_t index = I;
-            type value;
-        };
-
-        template <size_t I, typename Tuple, typename... Ts>
-        struct TupleType { using type = Tuple; };
-        template <size_t I, typename... Defaults, typename T, typename... Ts>
-        struct TupleType<I, std::tuple<Defaults...>, T, Ts...> {
-            template <typename U>
-            struct ToValue {
-                using type = TupleType<I + 1, std::tuple<Defaults...>, Ts...>::type;
-            };
-            template <typename U> requires (Param<U>::opt)
-            struct ToValue<U> {
-                using type = TupleType<I + 1, std::tuple<Defaults..., Value<I>>, Ts...>::type;
-            };
-            using type = ToValue<T>::type;
-        };
-
-        template <size_t I, typename... Ts>
-        struct find_helper { static constexpr size_t value = 0; };
-        template <size_t I, typename T, typename... Ts>
-        struct find_helper<I, std::tuple<T, Ts...>> { static constexpr size_t value = 
-            (I == T::index) ? 0 : 1 + find_helper<I, std::tuple<Ts...>>::value;
-        };
-
-    public:
-
-        /* A std::tuple type where each element is a Value<I> wrapper around all the
-        arguments marked as ::opt in the target signature. */
-        using tuple = TupleType<0, std::tuple<>, Target...>::type;
-
-        /* The total number of (optional) arguments that the function accepts, not
-        including variadic positional or keyword arguments. */
-        static constexpr size_t size = std::tuple_size<tuple>::value;
-
-        /* The number of (optional) positional-only arguments that the function
-        accepts, not including variadic positional arguments. */
-        static constexpr size_t pos_size = target::pos_opt_count;
-
-        /* The number of (optional) keyword-only arguments that the function accepts,
-        not including variadic keyword arguments. */
-        static constexpr size_t kw_size = target::kw_only_opt_count;
-
-        /* Given an index into the target signature, find the corresponding index in
-        the `type` tuple if that index corresponds to a default value.  Otherwise,
-        return the size of the defaults tuple. */
-        template <size_t I>
-        static constexpr size_t find = find_helper<I, tuple>::value;
-
-        /* Find the index of the named argument, or `size` if the argument is not
-        present. */
-        template <StaticStr name>
-        static constexpr size_t index = find<target::template index<name>>;
-
-        /* Check if the named argument is present in the defaults tuple. */
-        template <StaticStr name>
-        static constexpr bool contains = index<name> != size;
-
-    private:
-
-        tuple values;
-
-        template <typename... Source>
-        struct Constructor {
-            using source = Signature<Source...>;
-
-            /* Recursively check whether the default values fully satisfy the target
-            signature.  `I` refers to the index in the defaults tuple, while `J` refers
-            to the index of the source signature given to the Function constructor. */
-            template <size_t I, size_t J>
-            static constexpr bool enable_recursive = true;
-            template <size_t I, size_t J> requires (I < size && J < source::size)
-            static constexpr bool enable_recursive<I, J> = [] {
-                using Value = std::tuple_element<I, tuple>::type;
-                using Arg = source::template type<J>;
-                if constexpr (Param<Arg>::pos) {
-                    if constexpr (!std::convertible_to<
-                        typename Param<Arg>::type,
-                        typename Value::type
-                    >) {
-                        return false;
-                    }
-                } else if constexpr (Param<Arg>::kw) {
-                    if constexpr (
-                        !target::template contains<Param<Arg>::name> ||
-                        !source::template contains<Value::name>
-                    ) {
-                        return false;
-                    } else {
-                        constexpr size_t idx = index<Param<Arg>::name>;
-                        using Match = std::tuple_element<idx, tuple>::type;
-                        if constexpr (!std::convertible_to<
-                            typename Param<Arg>::type,
-                            typename Match::type
-                        >) {
-                            return false;
-                        }
-                    }
-                } else {
-                    return false;
-                }
-                return enable_recursive<I + 1, J + 1>;
-            }();
-
-            /* Constructor is only enabled if the default values are fully satisfied. */
-            static constexpr bool enable =
-                source::valid && source::size == size  && enable_recursive<0, 0>;
-
-            template <size_t I>
-            static constexpr decltype(auto) build_recursive(Source&&... values) {
-                if constexpr (I < source::kw_index) {
-                    return impl::unpack_arg<I>(std::forward<Source>(values)...);
-                } else {
-                    using Value = std::tuple_element<I, tuple>::type;
-                    return impl::unpack_arg<source::template index<Value::name>>(
-                        std::forward<Source>(values)...
-                    ).value;
-                }
-            }
-
-            /* Invoke the constructor to build the default values tuple from the
-            provided arguments, reordering them as needed to account for keywords. */
-            template <size_t... Is>
-            static constexpr tuple operator()(
-                std::index_sequence<Is...>,
-                Source&&... values
-            ) {
-                return {build_recursive<Is>(std::forward<Source>(values)...)...};
-            }
-
-        };
-
-    public:
-
-        /* Indicates whether the source arguments fully satisfy the default values in
-        the target signature. */
-        template <typename... Source>
-        static constexpr bool enable = Constructor<Source...>::enable;
-
-        template <typename... Source> requires (enable<Source...>)
-        Defaults(Source&&... source) : values(Constructor<Source...>{}(
-            std::index_sequence_for<Source...>{},
-            std::forward<Source>(source)...
-        )) {}
-
-        Defaults(const Defaults& other) = default;
-        Defaults(Defaults&& other) = default;
-
-        /* Get the default value associated with the target argument at index I. */
-        template <size_t I>
-        auto& get() {
-            return std::get<find<I>>(values).value;
-        };
-
-        /* Get the default value associated with the target argument at index I. */
-        template <size_t I>
-        const auto& get() const {
-            return std::get<find<I>>(values).value;
-        };
-
-        /* Get the default value associated with the named target argument. */
-        template <StaticStr name>
-        auto& get() {
-            return std::get<index<name>>(values).value;
-        };
-
-        /* Get the default value associated with the named target argument. */
-        template <StaticStr name>
-        const auto& get() const {
-            return std::get<index<name>>(values).value;
-        };
-
-    };
-
-
 }
 
 
@@ -2420,11 +2261,16 @@ struct Interface<Function<F>> : impl::FunctionTag {
     they are present.  If no such argument is present, this will return `n`. */
     static constexpr size_t kwargs_idx = impl::Signature<F>::Parameters::kwargs_index;
 
-    /* Get the (possibly) annotated type of the argument at index I. */
+    /* Get the (possibly annotated) type of the argument at index I of the function's
+    signature. */
     template <size_t I> requires (I < n)
+    using at = impl::Signature<F>::Parameters::template at<I>;
+
+    /* Get the type of the positional argument at index I. */
+    template <size_t I> requires (I < args_idx && I < kwonly_idx)
     using Arg = impl::Signature<F>::Parameters::template Arg<I>;
 
-    /* Get the annotated type of the named argument. */
+    /* Get the type of the named keyword argument. */
     template <StaticStr Name> requires (has<Name>)
     using Kwarg = impl::Signature<F>::Parameters::template Kwarg<Name>;
 
