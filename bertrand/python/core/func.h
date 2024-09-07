@@ -511,66 +511,13 @@ namespace impl {
     public:
 
         /* If the target signature does not conform to Python calling conventions, throw
-        an informative compile error. */
+        an informative compile error describing the problem. */
         static constexpr bool valid = validate<0, Args...>;
 
         /* Check whether the signature contains a keyword with the given name, where
         the name can only be known at runtime. */
         static bool contains(const char* name) {
             return ((std::strcmp(Param<Args>::name, name) == 0) || ...);
-        }
-
-        /// TODO: perhaps these assertions are placed inside the Bind<> struct,
-        /// alongside all the internal logic for invoke(), so that it can be used
-        /// within the Defaults constructor as-is without any additional machinery.
-
-        /* After invoking a function with variadic positional arguments, the argument
-        iterators must be exhausted, otherwise there are additional positional arguments
-        that were not consumed. */
-        template <std::input_iterator Iter, std::sentinel_for<Iter> End>
-        static void assert_args_are_consumed(Iter& iter, const End& end) {
-            if (iter != end) {
-                std::string message =
-                    "too many arguments in positional parameter pack: ['" + repr(*iter);
-                while (++iter != end) {
-                    message += "', '";
-                    message += repr(*iter);
-                }
-                message += "']";
-                throw TypeError(message);
-            }
-        }
-
-        /* Before invoking a function with variadic keyword arguments, those arguments
-        need to be scanned to ensure each of them are recognized and do not interfere
-        with other keyword arguments given in the source signature. */
-        template <typename Source, size_t... Is, typename Kwargs>
-        static void assert_kwargs_are_recognized(
-            std::index_sequence<Is...>,
-            Kwargs&& kwargs
-        ) {
-            std::vector<std::string> extra;
-            for (const auto& [key, value] : kwargs) {
-                bool is_empty = key == "";
-                bool match = ((key == Param<Arg<Is>>::name) || ...);
-                if (Source::contains(key.c_str())) {
-                    throw TypeError("duplicate keyword argument: '" + key + "'");
-                } else if (is_empty || !match) {
-                    extra.push_back(key);
-                }
-            }
-            if (!extra.empty()) {
-                auto iter = extra.begin();
-                auto end = extra.end();
-                std::string message =
-                    "unexpected keyword arguments: ['" + repr(*iter);
-                while (++iter != end) {
-                    message += "', '";
-                    message += repr(*iter);
-                }
-                message += "']";
-                throw TypeError(message);
-            }
         }
 
         struct Defaults {
@@ -691,17 +638,46 @@ namespace impl {
             template <size_t I> requires (Param<typename Parameters::Arg<I>>::opt)
             static constexpr size_t find = _find<I, Tuple>::value;
 
+        private:
+
+            template <size_t J, typename... Values>
+            static constexpr decltype(auto) build_recursive(Values&&... values) {
+                using source = Parameters<Values...>;
+                using S = source::template Arg<J>;
+                using type = Param<S>::type;
+                constexpr StaticStr name = Param<S>::name;
+
+                if constexpr (Param<S>::kw) {
+                    constexpr size_t idx = source::template idx<name>;
+                    return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
+
+                } else if constexpr (Param<S>::args) {
+                    /// TODO: some wierd logic here
+
+                } else if constexpr (Param<S>::kwargs) {
+                    /// TODO: same
+
+                } else {
+                    return impl::unpack_arg<J>(std::forward<Values>(values)...);
+                }
+            }
+
+            template <size_t... Is, typename... Values>
+            static constexpr Tuple build(std::index_sequence<Is...>, Values&&... values) {
+                return {build_recursive<Is>(std::forward<Values>(values)...)...};
+            }
+
+        public:
             Tuple values;
 
             /* The default values' constructor takes Python-style arguments just like
             the call operator, and is only enabled if the call signature is well-formed
             and all optional arguments have been accounted for. */
             template <typename... Values> requires (Bind<Values...>::enable)
-            constexpr Defaults(Values&&... values) {
-                /// TODO: do stuff  This might need to be a forward declaration, and
-                /// then filled in after Bind<> has been defined, so that it uses the
-                /// same logic as the call operator.
-            }
+            constexpr Defaults(Values&&... values) : values(build(
+                std::index_sequence_for<Values...>{},
+                std::forward<Values>(values)...
+            )) {}
             constexpr Defaults(const Defaults& other) = default;
             constexpr Defaults(Defaults&& other) = default;
 
@@ -1024,11 +1000,828 @@ namespace impl {
             match the target signature. */
             static constexpr bool enable = source::valid && enable_recursive<0, 0>;
 
-        };
+            //////////////////////////
+            ////    C++ -> C++    ////
+            //////////////////////////
 
-        /// TODO: maybe Defaults are placed here as well, so that they can be inferred
-        /// from the target signature.  They would use Bind<> to call the constructor,
-        /// so that everything uses the same logic.
+            /* The cpp_to_cpp() method is used to convert an index sequence over the
+             * enclosing signature into the corresponding values pulled from either the
+             * call site or the function's defaults.  It is complicated by the presence
+             * of variadic parameter packs in both the target signature and the call
+             * arguments, which have to be handled as a cross product of possible
+             * combinations.
+             *
+             * Unless a variadic parameter pack is given at the call site, all of these
+             * are resolved entirely at compile time by reordering the arguments using
+             * template recursion.  However, because the size of a variadic parameter
+             * pack cannot be determined at compile time, calls that use these will have
+             * to extract values at runtime, and may therefore raise an error if a
+             * corresponding value does not exist in the parameter pack, or if there are
+             * extras that are not included in the target signature.
+             */
+
+            /// TODO: this side of things might need modifications to be able to handle
+            /// the `self` parameter.
+
+            /// TODO: I also need to think hard about references and lifetimes.  If
+            /// we're pulling from the call arguments, then I should be able to just
+            /// forward those directly.  Default values may need some copying/moving
+            /// to yield the expected type.  Also, the containers for *args, **kwargs
+            /// are not able to store references, so this gets rather complicated.
+            /// Luckily for *args, **kwargs, they'll always store a homogenous type, so
+            /// I can probably just use std::reference_wrapper<>.
+
+            template <size_t I>
+            static constexpr Param<Target<I>>::type cpp_to_cpp(
+                const Defaults& defaults,
+                Values&&... args
+            ) {
+                using T = Target<I>;
+                using type = Param<T>::type;
+                constexpr StaticStr name = Param<T>::name;
+
+                if constexpr (Param<T>::kwonly) {
+                    if constexpr (source::template has<name>) {
+                        constexpr size_t idx = source::template idx<name>;
+                        return impl::unpack_arg<idx>(std::forward<Values>(args)...);
+                    } else {
+                        return defaults.template get<I>();
+                    }
+
+                } else if constexpr (Param<T>::kw) {
+                    if constexpr (I < source::kw_idx) {
+                        return impl::unpack_arg<I>(std::forward<Values>(args)...);
+                    } else if constexpr (source::template has<name>) {
+                        constexpr size_t idx = source::template idx<name>;
+                        return impl::unpack_arg<idx>(std::forward<Values>(args)...);
+                    } else {
+                        return defaults.template get<I>();
+                    }
+
+                } else if constexpr (Param<T>::args) {
+                    using Pack = std::vector<type>;
+                    Pack vec;
+                    if constexpr (I < source::kw_idx) {
+                        constexpr size_t diff = source::kw_idx - I;
+                        vec.reserve(diff);
+                        []<size_t... Js>(
+                            std::index_sequence<Js...>,
+                            Pack& vec,
+                            Values&&... args
+                        ) {
+                            (vec.push_back(
+                                impl::unpack_arg<I + Js>(std::forward<Values>(args)...)
+                            ), ...);
+                        }(
+                            std::make_index_sequence<diff>{},
+                            vec,
+                            std::forward<Values>(args)...
+                        );
+                    }
+                    return vec;
+
+                } else if constexpr (Param<T>::kwargs) {
+                    using Pack = std::unordered_map<std::string, type>;
+                    Pack pack;
+                    []<size_t... Js>(
+                        std::index_sequence<Js...>,
+                        Pack& pack,
+                        Values&&... args
+                    ) {
+                        (build_kwargs<Js>(pack, std::forward<Values>(args)...), ...);
+                    }(
+                        std::make_index_sequence<source::n - source::kw_idx>{},
+                        pack,
+                        std::forward<Values>(args)...
+                    );
+                    return pack;
+
+                } else {
+                    if constexpr (I < source::kw_idx) {
+                        return impl::unpack_arg<I>(std::forward<Values>(args)...);
+                    } else {
+                        /// TODO: rvalues would need to be copied and then moved here to
+                        /// conform to the correct type.
+                        return defaults.template get<I>();
+                    }
+                }
+            }
+
+            template <size_t I, std::input_iterator Iter, std::sentinel_for<Iter> End>
+            static constexpr Param<Target<I>>::type cpp_to_cpp(
+                const Defaults& defaults,
+                size_t size,
+                Iter& iter,
+                const End& end,
+                Values&&... args
+            ) {
+                using T = Target<I>;
+                using type = Param<T>::type;
+                constexpr StaticStr name = Param<T>::name;
+
+                if constexpr (Param<T>::kwonly) {
+                    return cpp_to_cpp<I>(defaults, std::forward<Values>(args)...);
+
+                } else if constexpr (Param<T>::kw) {
+                    if constexpr (I < source::kw_idx) {
+                        return impl::unpack_arg<I>(std::forward<Values>(args)...);
+                    } else if constexpr (source::template has<name>) {
+                        constexpr size_t idx = source::template idx<name>;
+                        return impl::unpack_arg<idx>(std::forward<Values>(args)...);
+                    } else {
+                        if (iter == end) {
+                            if constexpr (Param<T>::opt) {
+                                return defaults.template get<I>();
+                            } else {
+                                throw TypeError(
+                                    "could not unpack positional args - no match for "
+                                    "parameter '" + name + "' at index " +
+                                    std::to_string(I)
+                                );
+                            }
+                        } else {
+                            return *(iter++);
+                        }
+                    }
+
+                } else if constexpr (Param<T>::args) {
+                    using Pack = std::vector<type>;  /// TODO: can't store references
+                    Pack vec;
+                    if constexpr (I < source::args_idx) {
+                        constexpr size_t diff = source::args_idx - I;
+                        vec.reserve(diff + size);
+                        []<size_t... Js>(
+                            std::index_sequence<Js...>,
+                            Pack& vec,
+                            Values&&... args
+                        ) {
+                            (vec.push_back(
+                                impl::unpack_arg<I + Js>(std::forward<Values>(args)...)
+                            ), ...);
+                        }(
+                            std::make_index_sequence<diff>{},
+                            vec,
+                            std::forward<Values>(args)...
+                        );
+                        vec.insert(vec.end(), iter, end);
+                    }
+                    return vec;
+
+                } else if constexpr (Param<T>::kwargs) {
+                    return cpp_to_cpp<I>(defaults, std::forward<Values>(args)...);
+
+                } else {
+                    if constexpr (I < source::kw_idx) {
+                        return impl::unpack_arg<I>(std::forward<Values>(args)...);
+                    } else {
+                        if (iter == end) {
+                            if constexpr (Param<T>::opt) {
+                                return defaults.template get<I>();
+                            } else {
+                                throw TypeError(
+                                    "could not unpack positional args - no match for "
+                                    "positional-only parameter at index " +
+                                    std::to_string(I)
+                                );
+                            }
+                        } else {
+                            return *(iter++);
+                        }
+                    }
+                }
+            }
+
+            template <size_t I, typename Mapping>
+            static constexpr Param<Target<I>>::type cpp_to_cpp(
+                const Defaults& defaults,
+                const Mapping& map,
+                Values&&... args
+            ) {
+                using T = Target<I>;
+                using type = Param<T>::type;
+                constexpr StaticStr name = Param<T>::name;
+
+                if constexpr (Param<T>::kwonly) {
+                    auto val = map.find(name);
+                    if constexpr (source::template contains<name>) {
+                        if (val != map.end()) {
+                            throw TypeError(
+                                "duplicate value for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                        constexpr size_t idx = source::template idx<name>;
+                        return impl::unpack_arg<idx>(std::forward<Values>(args)...);
+                    } else {
+                        if (val != map.end()) {
+                            return *val;
+                        } else {
+                            if constexpr (Param<T>::opt) {
+                                return defaults.template get<I>();
+                            } else {
+                                throw TypeError(
+                                    "could not unpack keyword args - no match for "
+                                    "parameter '" + name + "' at index " +
+                                    std::to_string(I)
+                                );
+                            }
+                        }
+                    }
+
+                } else if constexpr (Param<T>::kw) {
+                    auto val = map.find(name);
+                    if constexpr (I < source::kw_idx) {
+                        if (val != map.end()) {
+                            throw TypeError(
+                                "duplicate value for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                        return impl::unpack_arg<I>(std::forward<Values>(args)...);
+                    } else if constexpr (source::template has<name>) {
+                        if (val != map.end()) {
+                            throw TypeError(
+                                "duplicate value for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                        constexpr size_t idx = source::template idx<name>;
+                        return impl::unpack_arg<idx>(std::forward<Values>(args)...);
+                    } else {
+                        if (val != map.end()) {
+                            return *val;
+                        } else {
+                            if constexpr (Param<T>::opt) {
+                                return defaults.template get<I>();
+                            } else {
+                                throw TypeError(
+                                    "could not unpack keyword args - no match for "
+                                    "parameter '" + name + "' at index " +
+                                    std::to_string(I)
+                                );
+                            }
+                        }
+                    }
+
+                } else if constexpr (Param<T>::args) {
+                    return cpp_to_cpp<I>(defaults, std::forward<Values>(args)...);
+
+                } else if constexpr (Param<T>::kwargs) {
+                    using Pack = std::unordered_map<std::string, type>;
+                    Pack pack;
+                    []<size_t... Js>(
+                        std::index_sequence<Js...>,
+                        Pack& pack,
+                        Values&&... args
+                    ) {
+                        (build_kwargs<Js>(pack, std::forward<Values>(args)...), ...);
+                    }(
+                        std::make_index_sequence<source::n - source::kw_idx>{},
+                        pack,
+                        std::forward<Values>(args)...
+                    );
+                    for (const auto& [key, value] : map) {
+                        if (pack.contains(key)) {
+                            throw TypeError(
+                                "duplicate value for parameter '" + key + "'"
+                            );
+                        }
+                        pack[key] = value;
+                    }
+                    return pack;
+
+                } else {
+                    return cpp_to_cpp<I>(defaults, std::forward<Values>(args)...);
+                }
+            }
+
+            template <
+                size_t I,
+                std::input_iterator Iter,
+                std::sentinel_for<Iter> End,
+                typename Mapping
+            >
+            static constexpr Param<Target<I>>::type cpp_to_cpp(
+                const Defaults& defaults,
+                size_t size,
+                Iter& iter,
+                const End& end,
+                const Mapping& map,
+                Values&&... args
+            ) {
+                using T = Target<I>;
+                using type = Param<T>::type;
+                constexpr StaticStr name = Param<T>::name;
+
+                if constexpr (Param<T>::kwonly) {
+                    return cpp_to_cpp<I>(
+                        defaults,
+                        map,
+                        std::forward<Values>(args)...
+                    );
+
+                } else if constexpr (Param<T>::kw) {
+                    auto val = map.find(name);
+                    if constexpr (I < source::kw_idx) {
+                        if (val != map.end()) {
+                            throw TypeError(
+                                "duplicate value for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                        return impl::unpack_arg<I>(std::forward<Values>(args)...);
+                    } else if constexpr (source::template has<name>) {
+                        if (val != map.end()) {
+                            throw TypeError(
+                                "duplicate value for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                        constexpr size_t idx = source::template idx<name>;
+                        return impl::unpack_arg<idx>(std::forward<Values>(args)...);
+                    } else {
+                        if (iter != end) {
+                            return *(iter++);
+                        } else if (val != map.end()) {
+                            return *val;
+                        } else {
+                            if constexpr (Param<T>::opt) {
+                                return defaults.template get<I>();
+                            } else {
+                                throw TypeError(
+                                    "could not unpack args - no match for parameter '" +
+                                    name + "' at index " + std::to_string(I)
+                                );
+                            }
+                        }
+                    }
+
+                } else if constexpr (Param<T>::args) {
+                    return cpp_to_cpp<I>(
+                        defaults,
+                        size,
+                        iter,
+                        end,
+                        std::forward<Values>(args)...
+                    );
+
+                } else if constexpr (Param<T>::kwargs) {
+                    return cpp_to_cpp<I>(
+                        defaults,
+                        map,
+                        std::forward<Values>(args)...
+                    );
+
+                } else {
+                    return cpp_to_cpp<I>(
+                        defaults,
+                        size,
+                        iter,
+                        end,
+                        std::forward<Values>(args)...
+                    );
+                }
+            }
+
+            /////////////////////////////
+            ////    PYTHON -> C++    ////
+            /////////////////////////////
+
+            /* The py_to_cpp() method is used to convert an index sequence over the
+             * enclosing signature into the corresponding values pulled from either an
+             * array of Python vectorcall arguments or the function's defaults.  This
+             * requires us to parse an array of PyObject* pointers with a binary layout
+             * that looks something like this:
+             *
+             *                          ( kwnames tuple )
+             *      -------------------------------------
+             *      | x | p | p | p |...| k | k | k |...|
+             *      -------------------------------------
+             *            ^             ^
+             *            |             nargs ends here
+             *            *args starts here
+             *
+             * Where 'x' is an optional first element that can be temporarily written to
+             * in order to efficiently forward the `self` argument for bound methods,
+             * etc.  The presence of this argument is determined by the
+             * PY_VECTORCALL_ARGUMENTS_OFFSET flag, which is encoded in nargs.  You can
+             * check for its presence by bitwise AND-ing against nargs, and the true
+             * number of arguments must be extracted using `PyVectorcall_NARGS(nargs)`
+             * to account for this.
+             *
+             * If PY_VECTORCALL_ARGUMENTS_OFFSET is set and 'x' is written to, then it must
+             * always be reset to its original value before the function returns.  This
+             * allows for nested forwarding/scoping using the same argument list, with no
+             * extra allocations.
+             */
+
+            template <size_t I>
+            static Param<Target<I>>::type py_to_cpp(
+                const Defaults& defaults,
+                PyObject* const* args,
+                size_t nargsf,
+                PyObject* kwnames,
+                size_t kwcount
+            ) {
+                using T = Target<I>;
+                using type = Param<T>::type;
+                constexpr StaticStr name = Param<T>::name;
+                bool has_self = nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET;
+                size_t nargs = PyVectorcall_NARGS(nargsf);
+
+                if constexpr (Param<T>::kwonly) {
+                    if (kwnames != nullptr) {
+                        for (size_t i = 0; i < kwcount; ++i) {
+                            const char* kwname = PyUnicode_AsUTF8(
+                                PyTuple_GET_ITEM(kwnames, i)
+                            );
+                            if (kwname == nullptr) {
+                                Exception::from_python();
+                            } else if (std::strcmp(kwname, name) == 0) {
+                                return reinterpret_borrow<Object>(args[i]);
+                            }
+                        }
+                    }
+                    if constexpr (Param<T>::opt) {
+                        return defaults.template get<I>();
+                    } else {
+                        throw TypeError(
+                            "missing required keyword-only argument '" + name + "'"
+                        );
+                    }
+
+                } else if constexpr (Param<T>::kw) {
+                    if (I < nargs) {
+                        return reinterpret_borrow<Object>(args[I]);
+                    } else if (kwnames != nullptr) {
+                        for (size_t i = 0; i < kwcount; ++i) {
+                            const char* kwname = PyUnicode_AsUTF8(
+                                PyTuple_GET_ITEM(kwnames, i)
+                            );
+                            if (kwname == nullptr) {
+                                Exception::from_python();
+                            } else if (std::strcmp(kwname, name) == 0) {
+                                return reinterpret_borrow<Object>(args[nargs + i]);
+                            }
+                        }
+                    }
+                    if constexpr (Param<T>::opt) {
+                        return defaults.template get<I>();
+                    } else {
+                        throw TypeError(
+                            "missing required argument '" + name + "' at index " +
+                            std::to_string(I)
+                        );
+                    }
+
+                } else if constexpr (Param<T>::args) {
+                    std::vector<type> vec;
+                    for (size_t i = I; i < nargs; ++i) {
+                        vec.push_back(reinterpret_borrow<Object>(args[i]));
+                    }
+                    return vec;
+
+                } else if constexpr (Param<T>::kwargs) {
+                    std::unordered_map<std::string, type> map;
+                    if (kwnames != nullptr) {
+                        auto sequence = std::make_index_sequence<target::n_kw>{};
+                        for (size_t i = 0; i < kwcount; ++i) {
+                            Py_ssize_t length;
+                            const char* kwname = PyUnicode_AsUTF8AndSize(
+                                PyTuple_GET_ITEM(kwnames, i),
+                                &length
+                            );
+                            if (kwname == nullptr) {
+                                Exception::from_python();
+                            } else if (!target::contains(sequence)) {
+                                map.emplace(
+                                    std::string(kwname, length),
+                                    reinterpret_borrow<Object>(args[nargs + i])
+                                );
+                            }
+                        }
+                    }
+                    return map;
+
+                } else {
+                    if (I < nargs) {
+                        return reinterpret_borrow<Object>(args[I]);
+                    }
+                    if constexpr (Param<T>::opt) {
+                        return defaults.template get<I>();
+                    } else {
+                        throw TypeError(
+                            "missing required positional-only argument at index " +
+                            std::to_string(I)
+                        );
+                    }
+                }
+            }
+
+            /////////////////////////////
+            ////    C++ -> PYTHON    ////
+            /////////////////////////////
+
+            /* The cpp_to_py() method is used to allocate a Python vectorcall argument
+             * array and populate it according to a C++ argument list.  This is
+             * essentially the inverse of the py_to_cpp() method, and requires us to
+             * allocate an array with the same binary layout as described above.  That
+             * array can then be used to efficiently call a Python function using the
+             * vectorcall protocol, which is the fastest possible way to call a Python
+             * function from C++.
+             */
+
+            template <size_t J>
+            static void cpp_to_py(
+                PyObject* kwnames,
+                PyObject** args,
+                Values&&... values
+            ) {
+                using S = Source<J>;
+                using type = Param<S>::type;
+                constexpr StaticStr name = Param<S>::name;
+
+                if constexpr (Param<S>::kw) {
+                    try {
+                        PyTuple_SET_ITEM(
+                            kwnames,
+                            J - source::kw_idx,
+                            Py_NewRef(impl::TemplateString<name>::ptr)
+                        );
+                        args[J + 1] = release(as_object(
+                            impl::unpack_arg<J>(std::forward<Values>(values)...)
+                        ));
+                    } catch (...) {
+                        for (size_t i = 1; i <= J; ++i) {
+                            Py_XDECREF(args[i]);
+                        }
+                    }
+
+                } else if constexpr (Param<S>::args) {
+                    size_t curr = J + 1;
+                    try {
+                        const auto& var_args = impl::unpack_arg<J>(
+                            std::forward<Values>(values)...
+                        );
+                        for (const auto& value : var_args) {
+                            args[curr] = release(as_object(value));
+                            ++curr;
+                        }
+                    } catch (...) {
+                        for (size_t i = 1; i < curr; ++i) {
+                            Py_XDECREF(args[i]);
+                        }
+                    }
+
+                } else if constexpr (Param<S>::kwargs) {
+                    size_t curr = J + 1;
+                    try {
+                        const auto& var_kwargs = impl::unpack_arg<J>(
+                            std::forward<Values>(values)...
+                        );
+                        for (const auto& [key, value] : var_kwargs) {
+                            PyObject* name = PyUnicode_FromStringAndSize(
+                                key.data(),
+                                key.size()
+                            );
+                            if (name == nullptr) {
+                                Exception::from_python();
+                            }
+                            PyTuple_SET_ITEM(kwnames, curr - source::kw_idx, name);
+                            args[curr] = release(as_object(value));
+                            ++curr;
+                        }
+                    } catch (...) {
+                        for (size_t i = 1; i < curr; ++i) {
+                            Py_XDECREF(args[i]);
+                        }
+                    }
+
+                } else {
+                    try {
+                        args[J + 1] = release(as_object(
+                            impl::unpack_arg<J>(std::forward<Values>(values)...)
+                        ));
+                    } catch (...) {
+                        for (size_t i = 1; i <= J; ++i) {
+                            Py_XDECREF(args[i]);
+                        }
+                    }
+                }
+            }
+
+            //////////////////////
+            ////    INVOKE    ////
+            //////////////////////
+
+            /* After invoking a function with variadic positional arguments, the
+            argument iterators must be exhausted, otherwise there are additional
+            positional arguments that were not consumed. */
+            template <std::input_iterator Iter, std::sentinel_for<Iter> End>
+            static void assert_args_are_consumed(Iter& iter, const End& end) {
+                if (iter != end) {
+                    std::string message =
+                        "too many arguments in positional parameter pack: ['" +
+                        repr(*iter);
+                    while (++iter != end) {
+                        message += "', '";
+                        message += repr(*iter);
+                    }
+                    message += "']";
+                    throw TypeError(message);
+                }
+            }
+
+            /* Before invoking a function with variadic keyword arguments, those
+            arguments need to be scanned to ensure each of them are recognized and do
+            not interfere with other keyword arguments given in the source signature. */
+            template <size_t... Is, typename Kwargs>
+            static void assert_kwargs_are_recognized(
+                std::index_sequence<Is...>,
+                Kwargs&& kwargs
+            ) {
+                std::vector<std::string> extra;
+                for (const auto& [key, value] : kwargs) {
+                    bool is_empty = key == "";
+                    bool match = ((key == Param<Arg<Is>>::name) || ...);
+                    if (source::contains(key.c_str())) {
+                        throw TypeError("duplicate keyword argument: '" + key + "'");
+                    } else if (is_empty || !match) {
+                        extra.push_back(key);
+                    }
+                }
+                if (!extra.empty()) {
+                    auto iter = extra.begin();
+                    auto end = extra.end();
+                    std::string message =
+                        "unexpected keyword arguments: ['" + repr(*iter);
+                    while (++iter != end) {
+                        message += "', '";
+                        message += repr(*iter);
+                    }
+                    message += "']";
+                    throw TypeError(message);
+                }
+            }
+
+            /* Invoke an external C++ function using the given arguments and default
+            values. */
+            template <typename Func>
+                requires (enable && std::is_invocable_v<Func, Args...>)
+            static decltype(auto) operator()(
+                const Defaults& defaults,
+                Func&& func,
+                Values&&... args
+            ) {
+                // using Return = std::invoke_result_t<Func, Args...>;
+                // return []<size_t... Is>(
+                //     std::index_sequence<Is...>,
+                //     const Defaults& defaults,
+                //     Func&& func,
+                //     Values&&... args
+                // ) {
+
+                //     // NOTE: we MUST use aggregate initialization of argument proxies in order
+                //     // to extend the lifetime of temporaries for the duration of the function
+                //     // call.  This is the only guaranteed way of avoiding UB in this context.
+
+                //     // if there are no parameter packs, then we simply reorder the arguments
+                //     // and call the function directly
+                //     if constexpr (!source::has_args && !source::has_kwargs) {
+                //         if constexpr (std::is_void_v<Return>) {
+                //             func({Arguments<Source...>::template cpp<Is>(
+                //                 defaults,
+                //                 std::forward<Source>(args)...
+                //             )}...);
+                //         } else {
+                //             return func({Arguments<Source...>::template cpp<Is>(
+                //                 defaults,
+                //                 std::forward<Source>(args)...
+                //             )}...);
+                //         }
+
+                //     // variadic positional arguments are passed as an iterator range, which
+                //     // must be exhausted after the function call completes
+                //     } else if constexpr (source::has_args && !source::has_kwargs) {
+                //         auto var_args = impl::unpack_arg<source::args_index>(
+                //             std::forward<Source>(args)...
+                //         );
+                //         auto iter = var_args.begin();
+                //         auto end = var_args.end();
+                //         if constexpr (std::is_void_v<Return>) {
+                //             func({Arguments<Source...>::template cpp<Is>(
+                //                 defaults,
+                //                 var_args.size(),
+                //                 iter,
+                //                 end,
+                //                 std::forward<Source>(args)...
+                //             )}...);
+                //             if constexpr (!target::has_args) {
+                //                 impl::assert_var_args_are_consumed(iter, end);
+                //             }
+                //         } else {
+                //             decltype(auto) result = func({Arguments<Source...>::template cpp<Is>(
+                //                 defaults,
+                //                 var_args.size(),
+                //                 iter,
+                //                 end,
+                //                 std::forward<Source>(args)...
+                //             )}...);
+                //             if constexpr (!target::has_args) {
+                //                 impl::assert_var_args_are_consumed(iter, end);
+                //             }
+                //             return result;
+                //         }
+
+                //     // variadic keyword arguments are passed as a dictionary, which must be
+                //     // validated up front to ensure all keys are recognized
+                //     } else if constexpr (!source::has_args && source::has_kwargs) {
+                //         auto var_kwargs = impl::unpack_arg<source::kwargs_index>(
+                //             std::forward<Source>(args)...
+                //         );
+                //         if constexpr (!target::has_kwargs) {
+                //             impl::assert_var_kwargs_are_recognized<target>(
+                //                 std::make_index_sequence<target::size>{},
+                //                 var_kwargs
+                //             );
+                //         }
+                //         if constexpr (std::is_void_v<Return>) {
+                //             func({Arguments<Source...>::template cpp<Is>(
+                //                 defaults,
+                //                 var_kwargs,
+                //                 std::forward<Source>(args)...
+                //             )}...);
+                //         } else {
+                //             return func({Arguments<Source...>::template cpp<Is>(
+                //                 defaults,
+                //                 var_kwargs,
+                //                 std::forward<Source>(args)...
+                //             )}...);
+                //         }
+
+                //     // interpose the two if there are both positional and keyword argument packs
+                //     } else {
+                //         auto var_kwargs = impl::unpack_arg<source::kwargs_index>(
+                //             std::forward<Source>(args)...
+                //         );
+                //         if constexpr (!target::has_kwargs) {
+                //             impl::assert_var_kwargs_are_recognized<target>(
+                //                 std::make_index_sequence<target::size>{},
+                //                 var_kwargs
+                //             );
+                //         }
+                //         auto var_args = impl::unpack_arg<source::args_index>(
+                //             std::forward<Source>(args)...
+                //         );
+                //         auto iter = var_args.begin();
+                //         auto end = var_args.end();
+                //         if constexpr (std::is_void_v<Return>) {
+                //             func({Arguments<Source...>::template cpp<Is>(
+                //                 defaults,
+                //                 var_args.size(),
+                //                 iter,
+                //                 end,
+                //                 var_kwargs,
+                //                 std::forward<Source>(args)...
+                //             )}...);
+                //             if constexpr (!target::has_args) {
+                //                 impl::assert_var_args_are_consumed(iter, end);
+                //             }
+                //         } else {
+                //             decltype(auto) result = func({Arguments<Source...>::template cpp<Is>(
+                //                 defaults,
+                //                 var_args.size(),
+                //                 iter,
+                //                 end,
+                //                 var_kwargs,
+                //                 std::forward<Source>(args)...
+                //             )}...);
+                //             if constexpr (!target::has_args) {
+                //                 impl::assert_var_args_are_consumed(iter, end);
+                //             }
+                //             return result;
+                //         }
+                //     }
+                // }(
+                //     std::make_index_sequence<target::size>{},
+                //     defaults,
+                //     std::forward<Func>(func),
+                //     std::forward<Source>(args)...
+                // );
+            }
+
+            /* Invoke an external Python function using the given arguments.  This will
+            always return a new reference to a raw Python object, or throw a runtime
+            error if the arguments are malformed in some way. */
+            template <typename = void> requires (enable)
+            static PyObject* operator()(
+                PyObject* func,
+                Values&&... args
+            ) {
+
+            }
+
+        };
 
     };
 
@@ -1274,70 +2067,6 @@ namespace impl {
         template <typename Func>
         static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
     };
-
-    /// TODO: templating on an explicit `this` function pointer is not yet supported,
-    /// even in the latest versions of clang (19.0+).  This is possibly something to
-    /// bring up in the clang discourse, with a toy example:
-    ///
-    /// struct Foo {
-    ///     void method(this Foo& self) {
-    ///         std::cout << "hello, world!\n";
-    ///     }
-    ///     // void method() {
-    ///     //     std::cout << "hello, world!\n";
-    ///     // }
-    /// };
-    ///
-    /// int main() {
-    ///     Foo foo;
-    ///     std::cout << demangle(typeid(&Foo::method).name()) << '\n';
-    /// }
-    ///
-    /// Depending on the comments, you either get a pure static function pointer, or a
-    /// member function pointer, but never a unique indicator for a `this` function,
-    /// which is relevant for the `py::Function` class.
-
-    // template <typename R, typename C, typename... A>
-    // struct GetSignature<R(C::*)(this C&, A...)> {
-    //     using type = R(C::*)(A...);
-    //     static constexpr bool enable = true;
-    // };
-    // template <typename R, typename C, typename... A>
-    // struct GetSignature<R(C::*)(this C&, A...) noexcept> {
-    //     using type = R(C::*)(A...);
-    //     static constexpr bool enable = true;
-    // };
-    // template <typename R, typename C, typename... A>
-    // struct GetSignature<R(C::*)(this const C&, A...)> {
-    //     using type = R(C::*)(A...) const;
-    //     static constexpr bool enable = true;
-    // };
-    // template <typename R, typename C, typename... A>
-    // struct GetSignature<R(C::*)(this const C&, A...) noexcept> {
-    //     using type = R(C::*)(A...) const;
-    //     static constexpr bool enable = true;
-    // };
-    // template <typename R, typename C, typename... A>
-    // struct GetSignature<R(C::*)(this volatile C&, A...)> {
-    //     using type = R(C::*)(A...) volatile;
-    //     static constexpr bool enable = true;
-    // };
-    // template <typename R, typename C, typename... A>
-    // struct GetSignature<R(C::*)(this volatile C&, A...) noexcept> {
-    //     using type = R(C::*)(A...) volatile;
-    //     static constexpr bool enable = true;
-    // };
-    // template <typename R, typename C, typename... A>
-    // struct GetSignature<R(C::*)(this const volatile C&, A...)> {
-    //     using type = R(C::*)(A...) const volatile;
-    //     static constexpr bool enable = true;
-    // };
-    // template <typename R, typename C, typename... A>
-    // struct GetSignature<R(C::*)(this const volatile C&, A...) noexcept> {
-    //     using type = R(C::*)(A...) const volatile;
-    //     static constexpr bool enable = true;
-    // };
-
     template <impl::has_call_operator T>
     struct Signature<T> {
         static constexpr bool enable = Signature<decltype(&T::operator())>::enable;
@@ -1538,976 +2267,6 @@ namespace impl {
 
     };
 
-    /* Translates arguments from the call site to the target signature as long as it is
-    fully satisfied, accounting for keyword args, default values, and variadic
-    parameter packs. */
-    template <typename target, typename... Source>
-    struct Arguments {
-    private:
-        using source = Signature<Source...>;
-
-        template <size_t I>
-        using TGT = target::template type<I>;
-        template <size_t J>
-        using SRC = source::template type<J>;
-
-        /* Upon encountering a variadic positional pack in the target signature,
-        recursively traverse the remaining source positional arguments and ensure that
-        each is convertible to the target type. */
-        template <size_t J, typename POS>
-        static constexpr bool consume_target_args = true;
-        template <size_t J, typename POS> requires (J < source::kw_index)
-        static constexpr bool consume_target_args<J, POS> = [] {
-            if constexpr (Param<SRC<J>>::args) {
-                if constexpr (!std::convertible_to<typename Param<SRC<J>>::type, POS>) {
-                    return false;
-                }
-            } else {
-                if constexpr (!std::convertible_to<SRC<J>, POS>) {
-                    return false;
-                }
-            }
-            return consume_target_args<J + 1, POS>;
-        }();
-
-        /* Upon encountering a variadic keyword pack in the target signature,
-        recursively traverse the source keyword arguments and extract any that aren't
-        present in the target signature, ensuring they are convertible to the target
-        type. */
-        template <size_t J, typename KW>
-        static constexpr bool consume_target_kwargs = true;
-        template <size_t J, typename KW> requires (J < source::size)
-        static constexpr bool consume_target_kwargs<J, KW> = [] {
-            if constexpr (Param<SRC<J>>::kwargs) {
-                if constexpr (!std::convertible_to<typename Param<SRC<J>>::type, KW>) {
-                    return false;
-                }
-            } else {
-                if constexpr (
-                    (
-                        target::has_args &&
-                        target::template index<Param<SRC<J>>::name> < target::args_index
-                    ) || (
-                        !target::template contains<Param<SRC<J>>::name> &&
-                        !std::convertible_to<typename Param<SRC<J>>::type, KW>
-                    )
-                ) {
-                    return false;
-                }
-            }
-            return consume_target_kwargs<J + 1, KW>;
-        }();
-
-        /* Upon encountering a variadic positional pack in the source signature,
-        recursively traverse the target positional arguments and ensure that the source
-        type is convertible to each target type. */
-        template <size_t I, typename POS>
-        static constexpr bool consume_source_args = true;
-        template <size_t I, typename POS> requires (I < target::size && I <= target::args_index)
-        static constexpr bool consume_source_args<I, POS> = [] {
-            if constexpr (Param<TGT<I>>::args) {
-                if constexpr (!std::convertible_to<POS, typename Param<TGT<I>>::type>) {
-                    return false;
-                }
-            } else {
-                if constexpr (
-                    !std::convertible_to<POS, typename Param<TGT<I>>::type> ||
-                    source::template contains<Param<TGT<I>>::name>
-                ) {
-                    return false;
-                }
-            }
-            return consume_source_args<I + 1, POS>;
-        }();
-
-        /* Upon encountering a variadic keyword pack in the source signature,
-        recursively traverse the target keyword arguments and extract any that aren't
-        present in the source signature, ensuring that the source type is convertible
-        to each target type. */
-        template <size_t I, typename KW>
-        static constexpr bool consume_source_kwargs = true;
-        template <size_t I, typename KW> requires (I < target::size)
-        static constexpr bool consume_source_kwargs<I, KW> = [] {
-            // TODO: does this work as expected?
-            if constexpr (Param<TGT<I>>::kwargs) {
-                if constexpr (!std::convertible_to<KW, typename Param<TGT<I>>::type>) {
-                    return false;
-                }
-            } else {
-                if constexpr (!std::convertible_to<KW, typename Param<TGT<I>>::type>) {
-                    return false;
-                }
-            }
-            return consume_source_kwargs<I + 1, KW>;
-        }();
-
-        /* Recursively check whether the source arguments conform to Python calling
-        conventions (i.e. no positional arguments after a keyword, no duplicate
-        keywords, etc.), fully satisfy the target signature, and are convertible to the
-        expected types, after accounting for parameter packs in both signatures.
-
-        The actual algorithm is quite complex, especially since it is evaluated at
-        compile time via template recursion and must validate both signatures at once.
-        Here's a rough outline of how it works:
-
-            1.  Generate two indices, I and J, which are used to traverse over the
-                target and source signatures, respectively.
-            2.  For each I, J, inspect the target argument at index I:
-                a.  If the target argument is positional-only, check that the source
-                    argument is not a keyword, otherwise check that the target argument
-                    is marked as optional.
-                b.  If the target argument is positional-or-keyword, check that the
-                    source argument meets the criteria for (a), or that the source
-                    signature contains a matching keyword argument.
-                c.  If the target argument is keyword-only, check that the source's
-                    positional arguments have been exhausted, and that the source
-                    signature contains a matching keyword argument or the target
-                    argument is marked as optional.
-                d.  If the target argument is variadic positional, recur until all
-                    source positional arguments have been exhausted, ensuring that
-                    each is convertible to the target type.
-                e.  If the target argument is variadic keyword, recur until all source
-                    keyword arguments have been exhausted, ensuring that each is
-                    convertible to the target type.
-            3.  Then inspect the source argument at index J:
-                a.  If the source argument is positional, check that it is convertible
-                    to the target type.
-                b.  If the source argument is keyword, check that the target signature
-                    contains a matching keyword argument, and that the source argument
-                    is convertible to the target type.
-                c.  If the source argument is variadic positional, recur until all
-                    target positional arguments have been exhausted, ensuring that each
-                    is convertible from the source type.
-                d.  If the source argument is variadic keyword, recur until all target
-                    keyword arguments have been exhausted, ensuring that each is
-                    convertible from the source type.
-            4.  Advance to the next argument pair and repeat until all arguments have
-                been checked.  If there are more target arguments than source arguments,
-                then the remaining target arguments must be optional or variadic.  If
-                there are more source arguments than target arguments, then we return
-                false, as the only way to satisfy the target signature is for it to
-                include variadic arguments, which would have avoided this case.
-
-        If all of these conditions are met, then the call operator is enabled and the
-        arguments can be translated by the reordering operators listed below.
-        Otherwise, the call operator is disabled and the arguments are rejected in a
-        way that allows LSPs to provide informative feedback to the user. */
-        template <size_t I, size_t J>
-        static constexpr bool enable_recursive = true;
-        template <size_t I, size_t J> requires (I < target::size && J >= source::size)
-        static constexpr bool enable_recursive<I, J> = [] {
-            if constexpr (Param<TGT<I>>::args || Param<TGT<I>>::opt) {
-                return enable_recursive<I + 1, J>;
-            } else if constexpr (Param<TGT<I>>::kwargs) {
-                return consume_target_kwargs<source::kw_index, typename Param<TGT<I>>::type>;
-            }
-            return false;
-        }();
-        template <size_t I, size_t J> requires (I >= target::size && J < source::size)
-        static constexpr bool enable_recursive<I, J> = false;
-        template <size_t I, size_t J> requires (I < target::size && J < source::size)
-        static constexpr bool enable_recursive<I, J> = [] {
-            // ensure target arguments are present & expand variadic parameter packs
-            if constexpr (Param<TGT<I>>::pos) {
-                if constexpr (
-                    (J >= source::kw_index && !Param<TGT<I>>::opt) ||
-                    (
-                        Param<TGT<I>>::name != "" &&
-                        source::template contains<Param<TGT<I>>::name>
-                    )
-                ) {
-                    return false;
-                }
-            } else if constexpr (Param<TGT<I>>::kw_only) {
-                if constexpr (
-                    J < source::kw_index ||
-                    (
-                        !source::template contains<Param<TGT<I>>::name> &&
-                        !Param<TGT<I>>::opt
-                    )
-                ) {
-                    return false;
-                }
-            } else if constexpr (Param<TGT<I>>::kw) {
-                if constexpr ((
-                    J < source::kw_index &&
-                    source::template contains<Param<TGT<I>>::name>
-                ) || (
-                    J >= source::kw_index &&
-                    !source::template contains<Param<TGT<I>>::name> &&
-                    !Param<TGT<I>>::opt
-                )) {
-                    return false;
-                }
-            } else if constexpr (Param<TGT<I>>::args) {
-                if constexpr (!consume_target_args<J, typename Param<TGT<I>>::type>) {
-                    return false;
-                }
-                return enable_recursive<I + 1, source::kw_index>;  // skip to source keywords
-            } else if constexpr (Param<TGT<I>>::kwargs) {
-                return consume_target_kwargs<
-                    source::kw_index,
-                    typename Param<TGT<I>>::type
-                >;  // end of expression
-            } else {
-                return false;  // not reachable
-            }
-
-            // validate source arguments & expand unpacking operators
-            if constexpr (Param<SRC<J>>::pos) {
-                if constexpr (!std::convertible_to<SRC<J>, TGT<I>>) {
-                    return false;
-                }
-            } else if constexpr (Param<SRC<J>>::kw) {
-                if constexpr (target::template contains<Param<SRC<J>>::name>) {
-                    using type = TGT<target::template index<Param<SRC<J>>::name>>;
-                    if constexpr (!std::convertible_to<SRC<J>, type>) {
-                        return false;
-                    }
-                } else if constexpr (!target::has_kwargs) {
-                    using type = Param<TGT<target::kwargs_index>>::type;
-                    if constexpr (!std::convertible_to<SRC<J>, type>) {
-                        return false;
-                    }
-                }
-            } else if constexpr (Param<SRC<J>>::args) {
-                if constexpr (!consume_source_args<I, typename Param<SRC<J>>::type>) {
-                    return false;
-                }
-                return enable_recursive<target::args_index + 1, J + 1>;  // skip to target keywords
-            } else if constexpr (Param<SRC<J>>::kwargs) {
-                return consume_source_kwargs<I, typename Param<SRC<J>>::type>;  // end of expression
-            } else {
-                return false;  // not reachable
-            }
-
-            // advance to next argument pair
-            return enable_recursive<I + 1, J + 1>;
-        }();
-
-        template <size_t I, typename T>
-        static constexpr void build_kwargs(
-            std::unordered_map<std::string, T>& map,
-            Source&&... args
-        ) {
-            using Arg = SRC<source::kw_index + I>;
-            if constexpr (!target::template contains<Param<Arg>::name>) {
-                map.emplace(
-                    Param<Arg>::name,
-                    impl::unpack_arg<source::kw_index + I>(
-                        std::forward<Source>(args)...
-                    )
-                );
-            }
-        }
-
-    public:
-
-        /* Call operator is only enabled if source arguments are well-formed and match
-        the target signature. */
-        static constexpr bool enable = source::valid && enable_recursive<0, 0>;
-
-        //////////////////////////
-        ////    C++ -> C++    ////
-        //////////////////////////
-
-        /* The cpp() method is used to convert an index sequence over the target
-         * signature into the corresponding values passed from the call site or drawn
-         * from the function's defaults.  It is complicated by the presence of variadic
-         * parameter packs in both the target signature and the call arguments, which
-         * have to be handled as a cross product of possible combinations.  This yields
-         * a total of 20 cases, which are represented as 5 separate specializations for
-         * each of the possible target categories, as well as 4 different calling
-         * conventions based on the presence of *args and/or **kwargs at the call site.
-         *
-         * Unless a variadic parameter pack is given at the call site, all of these
-         * are resolved entirely at compile time by reordering the arguments using
-         * template recursion.  However, because the size of a variadic parameter pack
-         * cannot be determined at compile time, calls that use these will have to
-         * extract values at runtime, and may therefore raise an error if a
-         * corresponding value does not exist in the parameter pack, or if there are
-         * extras that are not included in the target signature.
-         */
-
-        #define NO_UNPACK \
-            template <size_t I>
-        #define ARGS_UNPACK \
-            template <size_t I, typename Iter, std::sentinel_for<Iter> End>
-        #define KWARGS_UNPACK \
-            template <size_t I, typename Mapping>
-        #define ARGS_KWARGS_UNPACK \
-            template <size_t I, typename Iter, std::sentinel_for<Iter> End, typename Mapping>
-
-        NO_UNPACK
-        static constexpr std::decay_t<typename Param<TGT<I>>::type> cpp(
-            const Defaults& defaults,
-            Source&&... args
-        ) {
-            if constexpr (I < source::kw_index) {
-                return impl::unpack_arg<I>(std::forward<Source>(args)...);
-            } else {
-                return defaults.template get<I>();
-            }
-        }
-
-        NO_UNPACK requires (Param<TGT<I>>::kw && !Param<TGT<I>>::kw_only)
-        static constexpr std::decay_t<typename Param<TGT<I>>::type> cpp(
-            const Defaults& defaults,
-            Source&&... args
-        ) {
-            if constexpr (I < source::kw_index) {
-                return impl::unpack_arg<I>(std::forward<Source>(args)...);
-            } else if constexpr (source::template contains<Param<TGT<I>>::name>) {
-                constexpr size_t idx = source::template index<Param<TGT<I>>::name>;
-                return impl::unpack_arg<idx>(std::forward<Source>(args)...);
-            } else {
-                return defaults.template get<I>();
-            }
-        }
-
-        NO_UNPACK requires (Param<TGT<I>>::kw_only)
-        static constexpr std::decay_t<typename Param<TGT<I>>::type> cpp(
-            const Defaults& defaults,
-            Source&&... args
-        ) {
-            if constexpr (source::template contains<Param<TGT<I>>::name>) {
-                constexpr size_t idx = source::template index<Param<TGT<I>>::name>;
-                return impl::unpack_arg<idx>(std::forward<Source>(args)...);
-            } else {
-                return defaults.template get<I>();
-            }
-        }
-
-        NO_UNPACK requires (Param<TGT<I>>::args)
-        static constexpr auto cpp(
-            const Defaults& defaults,
-            Source&&... args
-        ) {
-            using Pack = std::vector<typename Param<TGT<I>>::type>;
-            Pack vec;
-            if constexpr (I < source::kw_index) {
-                constexpr size_t diff = source::kw_index - I;
-                vec.reserve(diff);
-                []<size_t... Js>(
-                    std::index_sequence<Js...>,
-                    Pack& vec,
-                    Source&&... args
-                ) {
-                    (vec.push_back(impl::unpack_arg<I + Js>(std::forward<Source>(args)...)), ...);
-                }(
-                    std::make_index_sequence<diff>{},
-                    vec,
-                    std::forward<Source>(args)...
-                );
-            }
-            return vec;
-        }
-
-        NO_UNPACK requires (Param<TGT<I>>::kwargs)
-        static constexpr auto cpp(
-            const Defaults& defaults,
-            Source&&... args
-        ) {
-            using Pack = std::unordered_map<std::string, typename Param<TGT<I>>::type>;
-            Pack pack;
-            []<size_t... Js>(
-                std::index_sequence<Js...>,
-                Pack& pack,
-                Source&&... args
-            ) {
-                (build_kwargs<Js>(pack, std::forward<Source>(args)...), ...);
-            }(
-                std::make_index_sequence<source::size - source::kw_index>{},
-                pack,
-                std::forward<Source>(args)...
-            );
-            return pack;
-        }
-
-        ARGS_UNPACK
-        static constexpr std::decay_t<typename Param<TGT<I>>::type> cpp(
-            const Defaults& defaults,
-            size_t size,
-            Iter& iter,
-            const End& end,
-            Source&&... args
-        ) {
-            if constexpr (I < source::kw_index) {
-                return impl::unpack_arg<I>(std::forward<Source>(args)...);
-            } else {
-                if (iter == end) {
-                    if constexpr (Param<TGT<I>>::opt) {
-                        return defaults.template get<I>();
-                    } else {
-                        throw TypeError(
-                            "could not unpack positional args - no match for "
-                            "positional-only parameter at index " +
-                            std::to_string(I)
-                        );
-                    }
-                } else {
-                    return *(iter++);
-                }
-            }
-        }
-
-        ARGS_UNPACK requires (Param<TGT<I>>::kw && !Param<TGT<I>>::kw_only)
-        static constexpr std::decay_t<typename Param<TGT<I>>::type> cpp(
-            const Defaults& defaults,
-            size_t size,
-            Iter& iter,
-            const End& end,
-            Source&&... args
-        ) {
-            if constexpr (I < source::kw_index) {
-                return impl::unpack_arg<I>(std::forward<Source>(args)...);
-            } else if constexpr (source::template contains<Param<TGT<I>>::name>) {
-                constexpr size_t idx = source::template index<Param<TGT<I>>::name>;
-                return impl::unpack_arg<idx>(std::forward<Source>(args)...);
-            } else {
-                if (iter == end) {
-                    if constexpr (Param<TGT<I>>::opt) {
-                        return defaults.template get<I>();
-                    } else {
-                        throw TypeError(
-                            "could not unpack positional args - no match for "
-                            "parameter '" + std::string(TGT<I>::name) + "' at index " +
-                            std::to_string(I)
-                        );
-                    }
-                } else {
-                    return *(iter++);
-                }
-            }
-        }
-
-        ARGS_UNPACK requires (Param<TGT<I>>::kw_only)
-        static constexpr std::decay_t<typename Param<TGT<I>>::type> cpp(
-            const Defaults& defaults,
-            size_t size,
-            Iter& iter,
-            const End& end,
-            Source&&... args
-        ) {
-            return cpp<I>(defaults, std::forward<Source>(args)...);  // no unpack
-        }
-
-        ARGS_UNPACK requires (Param<TGT<I>>::args)
-        static constexpr auto cpp(
-            const Defaults& defaults,
-            size_t size,
-            Iter& iter,
-            const End& end,
-            Source&&... args
-        ) {
-            using Pack = std::vector<typename Param<TGT<I>>::type>;
-            Pack vec;
-            if constexpr (I < source::args_index) {
-                constexpr size_t diff = source::args_index - I;
-                vec.reserve(diff + size);
-                []<size_t... Js>(
-                    std::index_sequence<Js...>,
-                    Pack& vec,
-                    Source&&... args
-                ) {
-                    (vec.push_back(
-                        impl::unpack_arg<I + Js>(std::forward<Source>(args)...)
-                    ), ...);
-                }(
-                    std::make_index_sequence<diff>{},
-                    vec,
-                    std::forward<Source>(args)...
-                );
-                vec.insert(vec.end(), iter, end);
-            }
-            return vec;
-        }
-
-        ARGS_UNPACK requires (Param<T<I>>::kwargs)
-        static constexpr auto cpp(
-            const Defaults& defaults,
-            size_t size,
-            Iter& iter,
-            const End& end,
-            Source&&... args
-        ) {
-            return cpp<I>(defaults, std::forward<Source>(args)...);  // no unpack
-        }
-
-        KWARGS_UNPACK
-        static constexpr std::decay_t<typename Param<T<I>>::type> cpp(
-            const Defaults& defaults,
-            const Mapping& map,
-            Source&&... args
-        ) {
-            return cpp<I>(defaults, std::forward<Source>(args)...);  // no unpack
-        }
-
-        KWARGS_UNPACK requires (Param<T<I>>::kw && !Param<T<I>>::kw_only)
-        static constexpr std::decay_t<typename Param<T<I>>::type> cpp(
-            const Defaults& defaults,
-            const Mapping& map,
-            Source&&... args
-        ) {
-            auto val = map.find(T<I>::name);
-            if constexpr (I < source::kw_index) {
-                if (val != map.end()) {
-                    throw TypeError(
-                        "duplicate value for parameter '" + std::string(T<I>::name) +
-                        "' at index " + std::to_string(I)
-                    );
-                }
-                return impl::unpack_arg<I>(std::forward<Source>(args)...);
-            } else if constexpr (source::template contains<Param<T<I>>::name>) {
-                if (val != map.end()) {
-                    throw TypeError(
-                        "duplicate value for parameter '" + std::string(T<I>::name) +
-                        "' at index " + std::to_string(I)
-                    );
-                }
-                constexpr size_t idx = source::template index<Param<T<I>>::name>;
-                return impl::unpack_arg<idx>(std::forward<Source>(args)...);
-            } else {
-                if (val != map.end()) {
-                    return *val;
-                } else {
-                    if constexpr (Param<T<I>>::opt) {
-                        return defaults.template get<I>();
-                    } else {
-                        throw TypeError(
-                            "could not unpack keyword args - no match for "
-                            "parameter '" + std::string(T<I>::name) + "' at index " +
-                            std::to_string(I)
-                        );
-                    }
-                }
-            }
-        }
-
-        KWARGS_UNPACK requires (Param<T<I>>::kw_only)
-        static constexpr std::decay_t<typename Param<T<I>>::type> cpp(
-            const Defaults& defaults,
-            const Mapping& map,
-            Source&&... args
-        ) {
-            auto val = map.find(T<I>::name);
-            if constexpr (source::template contains<Param<T<I>>::name>) {
-                if (val != map.end()) {
-                    throw TypeError(
-                        "duplicate value for parameter '" + std::string(T<I>::name) +
-                        "' at index " + std::to_string(I)
-                    );
-                }
-                constexpr size_t idx = source::template index<Param<T<I>>::name>;
-                return impl::unpack_arg<idx>(std::forward<Source>(args)...);
-            } else {
-                if (val != map.end()) {
-                    return *val;
-                } else {
-                    if constexpr (Param<T<I>>::opt) {
-                        return defaults.template get<I>();
-                    } else {
-                        throw TypeError(
-                            "could not unpack keyword args - no match for "
-                            "parameter '" + std::string(T<I>::name) + "' at index " +
-                            std::to_string(I)
-                        );
-                    }
-                }
-            }
-        }
-
-        KWARGS_UNPACK requires (Param<T<I>>::args)
-        static constexpr auto cpp(
-            const Defaults& defaults,
-            const Mapping& map,
-            Source&&... args
-        ) {
-            return cpp<I>(defaults, std::forward<Source>(args)...);  // no unpack
-        }
-
-        KWARGS_UNPACK requires (Param<T<I>>::kwargs)
-        static constexpr auto cpp(
-            const Defaults& defaults,
-            const Mapping& map,
-            Source&&... args
-        ) {
-            using Pack = std::unordered_map<std::string, typename Param<T<I>>::type>;
-            Pack pack;
-            []<size_t... Js>(
-                std::index_sequence<Js...>,
-                Pack& pack,
-                Source&&... args
-            ) {
-                (build_kwargs<Js>(pack, std::forward<Source>(args)...), ...);
-            }(
-                std::make_index_sequence<source::size - source::kw_index>{},
-                pack,
-                std::forward<Source>(args)...
-            );
-            for (const auto& [key, value] : map) {
-                if (pack.contains(key)) {
-                    throw TypeError("duplicate value for parameter '" + key + "'");
-                }
-                pack[key] = value;
-            }
-            return pack;
-        }
-
-        ARGS_KWARGS_UNPACK
-        static constexpr std::decay_t<typename Param<T<I>>::type> cpp(
-            const Defaults& defaults,
-            size_t size,
-            Iter& iter,
-            const End& end,
-            const Mapping& map,
-            Source&&... args
-        ) {
-            return cpp<I>(
-                defaults,
-                size,
-                iter,
-                end,
-                std::forward<Source>(args)...
-            );  // positional unpack
-        }
-
-        ARGS_KWARGS_UNPACK requires (Param<T<I>>::kw && !Param<T<I>>::kw_only)
-        static constexpr std::decay_t<typename Param<T<I>>::type> cpp(
-            const Defaults& defaults,
-            size_t size,
-            Iter& iter,
-            const End& end,
-            const Mapping& map,
-            Source&&... args
-        ) {
-            auto val = map.find(T<I>::name);
-            if constexpr (I < source::kw_index) {
-                if (val != map.end()) {
-                    throw TypeError(
-                        "duplicate value for parameter '" + std::string(T<I>::name) +
-                        "' at index " + std::to_string(I)
-                    );
-                }
-                return impl::unpack_arg<I>(std::forward<Source>(args)...);
-            } else if constexpr (source::template contains<Param<T<I>>::name>) {
-                if (val != map.end()) {
-                    throw TypeError(
-                        "duplicate value for parameter '" + std::string(T<I>::name) +
-                        "' at index " + std::to_string(I)
-                    );
-                }
-                constexpr size_t idx = source::template index<Param<T<I>>::name>;
-                return impl::unpack_arg<idx>(std::forward<Source>(args)...);
-            } else {
-                if (iter != end) {
-                    return *(iter++);
-                } else if (val != map.end()) {
-                    return *val;
-                } else {
-                    if constexpr (Param<T<I>>::opt) {
-                        return defaults.template get<I>();
-                    } else {
-                        throw TypeError(
-                            "could not unpack args - no match for parameter '" +
-                            std::string(T<I>::name) + "' at index " +
-                            std::to_string(I)
-                        );
-                    }
-                }
-            }
-        }
-
-        ARGS_KWARGS_UNPACK requires (Param<T<I>>::kw_only)
-        static constexpr std::decay_t<typename Param<T<I>>::type> cpp(
-            const Defaults& defaults,
-            size_t size,
-            Iter& iter,
-            const End& end,
-            const Mapping& map,
-            Source&&... args
-        ) {
-            return cpp<I>(
-                defaults,
-                map,
-                std::forward<Source>(args)...
-            );  // keyword unpack
-        }
-
-        ARGS_KWARGS_UNPACK requires (Param<T<I>>::args)
-        static constexpr auto cpp(
-            const Defaults& defaults,
-            size_t size,
-            Iter& iter,
-            const End& end,
-            const Mapping& map,
-            Source&&... args
-        ) {
-            return cpp<I>(
-                defaults,
-                size,
-                iter,
-                end,
-                std::forward<Source>(args)...
-            );  // positional unpack
-        }
-
-        ARGS_KWARGS_UNPACK requires (Param<T<I>>::kwargs)
-        static constexpr auto cpp(
-            const Defaults& defaults,
-            size_t size,
-            Iter& iter,
-            const End& end,
-            const Mapping& map,
-            Source&&... args
-        ) {
-            return cpp<I>(
-                defaults,
-                map,
-                std::forward<Source>(args)...
-            );  // keyword unpack
-        }
-
-        #undef NO_UNPACK
-        #undef ARGS_UNPACK
-        #undef KWARGS_UNPACK
-        #undef ARGS_KWARGS_UNPACK
-
-        /////////////////////////////
-        ////    Python -> C++    ////
-        /////////////////////////////
-
-        /* NOTE: these wrappers will always use the vectorcall protocol where possible,
-         * which is the fastest calling convention available in CPython.  This requires
-         * us to parse or allocate an array of PyObject* pointers with a binary layout
-         * that looks something like this:
-         *
-         *                          { kwnames tuple }
-         *      -------------------------------------
-         *      | x | p | p | p |...| k | k | k |...|
-         *      -------------------------------------
-         *            ^             ^
-         *            |             nargs ends here
-         *            *args starts here
-         *
-         * Where 'x' is an optional first element that can be temporarily written to
-         * in order to efficiently forward the `self` argument for bound methods, etc.
-         * The presence of this argument is determined by the
-         * PY_VECTORCALL_ARGUMENTS_OFFSET flag, which is encoded in nargs.  You can
-         * check for its presence by bitwise AND-ing against nargs, and the true
-         * number of arguments must be extracted using `PyVectorcall_NARGS(nargs)`
-         * to account for this.
-         *
-         * If PY_VECTORCALL_ARGUMENTS_OFFSET is set and 'x' is written to, then it must
-         * always be reset to its original value before the function returns.  This
-         * allows for nested forwarding/scoping using the same argument list, with no
-         * extra allocations.
-         */
-
-        template <size_t I>
-        static std::decay_t<typename Param<T<I>>::type> from_python(
-            const Defaults& defaults,
-            PyObject* const* array,
-            size_t nargs,
-            PyObject* kwnames,
-            size_t kwcount
-        ) {
-            if (I < nargs) {
-                return reinterpret_borrow<Object>(array[I]);
-            }
-            if constexpr (Param<T<I>>::opt) {
-                return defaults.template get<I>();
-            } else {
-                throw TypeError(
-                    "missing required positional-only argument at index " +
-                    std::to_string(I)
-                );
-            }
-        }
-
-        template <size_t I> requires (Param<T<I>>::kw)
-        static std::decay_t<typename Param<T<I>>::type> from_python(
-            const Defaults& defaults,
-            PyObject* const* array,
-            size_t nargs,
-            PyObject* kwnames,
-            size_t kwcount
-        ) {
-            if (I < nargs) {
-                return reinterpret_borrow<Object>(array[I]);
-            } else if (kwnames != nullptr) {
-                for (size_t i = 0; i < kwcount; ++i) {
-                    const char* name = PyUnicode_AsUTF8(
-                        PyTuple_GET_ITEM(kwnames, i)
-                    );
-                    if (name == nullptr) {
-                        Exception::from_python();
-                    } else if (std::strcmp(name, Param<T<I>>::name) == 0) {
-                        return reinterpret_borrow<Object>(array[nargs + i]);
-                    }
-                }
-            }
-            if constexpr (Param<T<I>>::opt) {
-                return defaults.template get<I>();
-            } else {
-                throw TypeError(
-                    "missing required argument '" + std::string(T<I>::name) +
-                    "' at index " + std::to_string(I)
-                );
-            }
-        }
-
-        template <size_t I> requires (Param<T<I>>::kw_only)
-        static std::decay_t<typename Param<T<I>>::type> from_python(
-            const Defaults& defaults,
-            PyObject* const* array,
-            size_t nargs,
-            PyObject* kwnames,
-            size_t kwcount
-        ) {
-            if (kwnames != nullptr) {
-                for (size_t i = 0; i < kwcount; ++i) {
-                    const char* name = PyUnicode_AsUTF8(
-                        PyTuple_GET_ITEM(kwnames, i)
-                    );
-                    if (name == nullptr) {
-                        Exception::from_python();
-                    } else if (std::strcmp(name, Param<T<I>>::name) == 0) {
-                        return reinterpret_borrow<Object>(array[i]);
-                    }
-                }
-            }
-            if constexpr (Param<T<I>>::opt) {
-                return defaults.template get<I>();
-            } else {
-                throw TypeError(
-                    "missing required keyword-only argument '" +
-                    std::string(T<I>::name) + "'"
-                );
-            }
-        }
-
-        template <size_t I> requires (Param<T<I>>::args)
-        static auto from_python(
-            const Defaults& defaults,
-            PyObject* const* array,
-            size_t nargs,
-            PyObject* kwnames,
-            size_t kwcount
-        ) {
-            std::vector<typename Param<T<I>>::type> vec;
-            for (size_t i = I; i < nargs; ++i) {
-                vec.push_back(reinterpret_borrow<Object>(array[i]));
-            }
-            return vec;
-        }
-
-        template <size_t I> requires (Param<T<I>>::kwargs)
-        static auto from_python(
-            const Defaults& defaults,
-            PyObject* const* array,
-            size_t nargs,
-            PyObject* kwnames,
-            size_t kwcount
-        ) {
-            std::unordered_map<std::string, typename Param<T<I>>::type> map;
-            if (kwnames != nullptr) {
-                auto sequence = std::make_index_sequence<target::kw_count>{};
-                for (size_t i = 0; i < kwcount; ++i) {
-                    Py_ssize_t length;
-                    const char* name = PyUnicode_AsUTF8AndSize(
-                        PyTuple_GET_ITEM(kwnames, i),
-                        &length
-                    );
-                    if (name == nullptr) {
-                        Exception::from_python();
-                    } else if (!target::has_keyword(sequence)) {
-                        map.emplace(
-                            std::string(name, length),
-                            reinterpret_borrow<Object>(array[nargs + i])
-                        );
-                    }
-                }
-            }
-            return map;
-        }
-
-        /////////////////////////////
-        ////    C++ -> Python    ////
-        /////////////////////////////
-
-        template <size_t J>
-        static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
-            try {
-                array[J + 1] = release(as_object(
-                    impl::unpack_arg<J>(std::forward<Source>(args)...)
-                ));
-            } catch (...) {
-                for (size_t i = 1; i <= J; ++i) {
-                    Py_XDECREF(array[i]);
-                }
-            }
-        }
-
-        template <size_t J> requires (Param<S<J>>::kw)
-        static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
-            try {
-                PyTuple_SET_ITEM(
-                    kwnames,
-                    J - source::kw_index,
-                    Py_NewRef(impl::TemplateString<Param<S<J>>::name>::ptr)
-                );
-                array[J + 1] = release(as_object(
-                    impl::unpack_arg<J>(std::forward<Source>(args)...)
-                ));
-            } catch (...) {
-                for (size_t i = 1; i <= J; ++i) {
-                    Py_XDECREF(array[i]);
-                }
-            }
-        }
-
-        template <size_t J> requires (Param<S<J>>::args)
-        static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
-            size_t curr = J + 1;
-            try {
-                const auto& var_args = impl::unpack_arg<J>(std::forward<Source>(args)...);
-                for (const auto& value : var_args) {
-                    array[curr] = release(as_object(value));
-                    ++curr;
-                }
-            } catch (...) {
-                for (size_t i = 1; i < curr; ++i) {
-                    Py_XDECREF(array[i]);
-                }
-            }
-        }
-
-        template <size_t J> requires (Param<S<J>>::kwargs)
-        static void to_python(PyObject* kwnames, PyObject** array, Source&&... args) {
-            size_t curr = J + 1;
-            try {
-                const auto& var_kwargs = impl::unpack_arg<J>(std::forward<Source>(args)...);
-                for (const auto& [key, value] : var_kwargs) {
-                    PyObject* name = PyUnicode_FromStringAndSize(
-                        key.data(),
-                        key.size()
-                    );
-                    if (name == nullptr) {
-                        Exception::from_python();
-                    }
-                    PyTuple_SET_ITEM(kwnames, curr - source::kw_index, name);
-                    array[curr] = release(as_object(value));
-                    ++curr;
-                }
-            } catch (...) {
-                for (size_t i = 1; i < curr; ++i) {
-                    Py_XDECREF(array[i]);
-                }
-            }
-        }
-
-    };
 
 }
 
@@ -2696,9 +2455,7 @@ struct Interface<Function<F>> : impl::FunctionTag {
             impl::Signature<F>::template matches<Func> &&
             impl::Signature<F>::Parameters::template Bind<Args...>::enable
         )
-    static Return invoke(const Defaults& defaults, Func&& func, Args&&... args) {
-
-    };
+    static Return invoke(const Defaults& defaults, Func&& func, Args&&... args);
 
     /* Call an external Python function using Python-style arguments.  The optional
     `Return` template parameter specifies an intermediate return type, which is used to
@@ -2709,9 +2466,7 @@ struct Interface<Function<F>> : impl::FunctionTag {
     equal to that type will avoid any extra checks at the expense of safety.  */
     template <typename Return = Object, typename... Args>
         requires (impl::Signature<F>::Parameters::template Bind<Args...>::enable)
-    static Return invoke(PyObject* func, Args&&... args) {
-
-    }
+    static Return invoke(PyObject* func, Args&&... args);
 
     __declspec(property(get=_get_name, put=_set_name)) std::string __name__;
     [[nodiscard]] std::string _get_name(this const auto& self);
