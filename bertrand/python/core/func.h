@@ -639,11 +639,11 @@ namespace impl {
             return ((std::strcmp(Param<Args>::name, name) == 0) || ...);
         }
 
-        /* After invoking a function with variadic positional arguments, the
-        argument iterators must be exhausted, otherwise there are additional
-        positional arguments that were not consumed. */
+        /* After invoking a function with variadic positional arguments, the argument
+        iterators must be fully consumed, otherwise there are additional positional
+        arguments that were not consumed. */
         template <std::input_iterator Iter, std::sentinel_for<Iter> End>
-        static void assert_args_are_consumed(Iter& iter, const End& end) {
+        static void assert_args_are_exhausted(Iter& iter, const End& end) {
             if (iter != end) {
                 std::string message =
                     "too many arguments in positional parameter pack: ['" +
@@ -657,40 +657,38 @@ namespace impl {
             }
         }
 
-        /* Before invoking a function with variadic keyword arguments, those
-        arguments need to be scanned to ensure each of them are recognized and do
-        not interfere with other keyword arguments given in the source signature. */
-        template <typename Outer, typename Inner, size_t... Is, typename Map>
-        static void assert_kwargs_are_recognized(
-            std::index_sequence<Is...>,
-            const Map& kwargs
-        ) {
-            std::vector<std::string> extra;
-            for (const auto& [key, value] : kwargs) {
-                bool is_empty = key == "";
-                bool match = ((key == Param<typename Outer::template at<Is>>::name) || ...);
-                if (Inner::contains(key.c_str())) {
-                    throw TypeError("duplicate keyword argument: '" + key + "'");
-                } else if (is_empty || !match) {
-                    extra.push_back(key);
+        /* Before invoking a function with variadic keyword arguments, those arguments
+        need to be scanned to ensure each of them are recognized and do not interfere
+        with other keyword arguments given in the source signature. */
+        template <typename Outer, typename Inner, typename Map>
+        static void assert_kwargs_are_recognized(const Map& kwargs) {
+            []<size_t... Is>(std::index_sequence<Is...>, const Map& kwargs) {
+                std::vector<std::string> extra;
+                for (const auto& [key, value] : kwargs) {
+                    if (
+                        key == "" ||
+                        !((key == Param<typename Outer::template at<Is>>::name) || ...)
+                    ) {
+                        extra.push_back(key);
+                    }
                 }
-            }
-            if (!extra.empty()) {
-                auto iter = extra.begin();
-                auto end = extra.end();
-                std::string message =
-                    "unexpected keyword arguments: ['" + repr(*iter);
-                while (++iter != end) {
-                    message += "', '";
-                    message += repr(*iter);
+                if (!extra.empty()) {
+                    auto iter = extra.begin();
+                    auto end = extra.end();
+                    std::string message =
+                        "unexpected keyword arguments: ['" + repr(*iter);
+                    while (++iter != end) {
+                        message += "', '";
+                        message += repr(*iter);
+                    }
+                    message += "']";
+                    throw TypeError(message);
                 }
-                message += "']";
-                throw TypeError(message);
-            }
+            }(std::make_index_sequence<Outer::n>{}, kwargs);
         }
 
-        /* A tuple holding the default values for each argument marked as optional in
-        the enclosing signature. */
+        /* A tuple holding the default values for each argument that is marked as
+        optional in the enclosing signature. */
         struct Defaults {
         private:
             using Outer = Parameters;
@@ -814,91 +812,180 @@ namespace impl {
 
         private:
 
-            template <size_t J, typename... Values>
-            static constexpr decltype(auto) build_recursive(Values&&... values) {
+            template <size_t I, typename... Values>
+            static constexpr decltype(auto) element(Values&&... values) {
                 using observed = Parameters<Values...>;
-                using S = observed::template at<J>;
+                using T = Inner::template at<I>;
+                constexpr StaticStr name = Param<T>::name;
 
-                if constexpr (Param<S>::kw) {
-                    constexpr size_t idx = observed::template idx<Param<S>::name>;
+                if constexpr (Param<T>::kwonly) {
+                    constexpr size_t idx = observed::template idx<name>;
                     return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
 
+                } else if constexpr (Param<T>::kw) {
+                    if constexpr (I < observed::kw_idx) {
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                    } else {
+                        constexpr size_t idx = observed::template idx<name>;
+                        return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
+                    }
+
                 } else {
-                    return impl::unpack_arg<J>(std::forward<Values>(values)...);
+                    return impl::unpack_arg<I>(std::forward<Values>(values)...);
                 }
             }
 
             template <
-                size_t J,
+                size_t I,
                 typename... Values,
                 std::input_iterator Iter,
                 std::sentinel_for<Iter> End
             >
-            static constexpr decltype(auto) build_recursive(
+            static constexpr decltype(auto) element(
                 size_t args_size,
-                const Iter& iter,
+                Iter& iter,
                 const End& end,
                 Values&&... values
             ) {
                 using observed = Parameters<Values...>;
-                using S = observed::template at<J>;
+                using T = Inner::template at<I>;
+                constexpr StaticStr name = Param<T>::name;
 
-                if constexpr (Param<S>::kw) {
-                    constexpr size_t idx = observed::template idx<Param<S>::name>;
+                if constexpr (Param<T>::kwonly) {
+                    constexpr size_t idx = observed::template idx<name>;
                     return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
 
-                } else if constexpr (Param<S>::args) {
-                    /// TODO: I would need to generate an index sequence for the
-                    /// difference between the current index J and the default values'
-                    /// kwonly_idx.
-                    /// TODO: if there are also kwargs present, then I'll have to
-                    /// proceed accordingly, and generate another index sequence over
-                    /// the end of the args and the remaining arguments.
+                } else if constexpr (Param<T>::kw) {
+                    if constexpr (I < observed::kw_idx) {
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                    } else {
+                        if (iter != end) {
+                            if constexpr (observed::template has<name>) {
+                                throw TypeError(
+                                    "conflicting values for parameter '" + name +
+                                    "' at index " + std::to_string(I)
+                                );
+                            } else {
+                                decltype(auto) result = *iter;
+                                ++iter;
+                                return result;
+                            }
 
-                    /// TODO: maybe I need to pass in an iterator and mapping here in
-                    /// order to properly unpack the variadic positional arguments.
-                    /// That might mean that I need 4 overloads of this function, for
-                    /// each combination of args and kwargs, and then equivalent
-                    /// constexpr branches in the build() function based on whether
-                    /// such arguments are detected in the constructor.
+                        } else {
+                            if constexpr (observed::template has<name>) {
+                                constexpr size_t idx = observed::template idx<name>;
+                                return impl::unpack_arg<idx>(
+                                    std::forward<Values>(values)...
+                                ).value;
+                            } else {
+                                throw TypeError(
+                                    "no match for parameter '" + name +
+                                    "' at index " + std::to_string(I)
+                                );
+                            }
+                        }
+                    }
 
                 } else {
-                    return impl::unpack_arg<J>(std::forward<Values>(values)...);
+                    if constexpr (I < observed::kw_idx) {
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                    } else {
+                        if (iter != end) {
+                            decltype(auto) result = *iter;
+                            ++iter;
+                            return result;
+                        } else {
+                            throw TypeError(
+                                "no match for positional-only parmater at index " +
+                                std::to_string(I)
+                            );
+                        }
+                    }
                 }
             }
 
             template <
-                size_t J,
+                size_t I,
                 typename... Values,
                 typename Map
             >
-            static constexpr decltype(auto) build_recursive(
+            static constexpr decltype(auto) element(
                 const Map& map,
                 Values&&... values
             ) {
                 using observed = Parameters<Values...>;
-                using S = observed::template at<J>;
+                using T = Inner::template at<I>;
+                constexpr StaticStr name = Param<T>::name;
 
-                if constexpr (Param<S>::kw) {
-                    constexpr size_t idx = observed::template idx<Param<S>::name>;
-                    return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
+                if constexpr (Param<T>::kwonly) {
+                    auto item = map.find(name);
+                    if constexpr (observed::template has<name>) {
+                        if (item != map.end()) {
+                            throw TypeError(
+                                "conflicting values for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                        constexpr size_t idx = observed::template idx<name>;
+                        return impl::unpack_arg<idx>(
+                            std::forward<Values>(values)...
+                        ).value;
+                    } else {
+                        if (item != map.end()) {
+                            return item->second;
+                        } else {
+                            throw TypeError(
+                                "no match for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                    }
 
-                } else if constexpr (Param<S>::kwargs) {
-                    /// TODO: same
+                } else if constexpr (Param<T>::kw) {
+                    auto item = map.find(name);
+                    if constexpr (I < observed::kw_idx) {
+                        if (item != map.end()) {
+                            throw TypeError(
+                                "conflicting values for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                    } else if constexpr (observed::template has<name>) {
+                        if (item != map.end()) {
+                            throw TypeError(
+                                "conflicting values for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                        constexpr size_t idx = observed::template idx<name>;
+                        return impl::unpack_arg<idx>(
+                            std::forward<Values>(values)...
+                        ).value;
+                    } else {
+                        if (item != map.end()) {
+                            return item->second;
+                        } else {
+                            throw TypeError(
+                                "no match for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                    }
 
                 } else {
-                    return impl::unpack_arg<J>(std::forward<Values>(values)...);
+                    return impl::unpack_arg<I>(std::forward<Values>(values)...);
                 }
             }
 
             template <
-                size_t J,
+                size_t I,
                 typename... Values,
                 std::input_iterator Iter,
                 std::sentinel_for<Iter> End,
                 typename Map
             >
-            static constexpr decltype(auto) build_recursive(
+            static constexpr decltype(auto) element(
                 size_t args_size,
                 Iter& iter,
                 const End& end,
@@ -906,42 +993,99 @@ namespace impl {
                 Values&&... values
             ) {
                 using observed = Parameters<Values...>;
-                using S = observed::template at<J>;
+                using T = Inner::template at<I>;
+                constexpr StaticStr name = Param<T>::name;
 
-                if constexpr (Param<S>::kw) {
-                    constexpr size_t idx = observed::template idx<Param<S>::name>;
-                    return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
+                if constexpr (Param<T>::kwonly) {
+                    return element<I>(
+                        map,
+                        std::forward<Values>(values)...
+                    );
 
-                } else if constexpr (Param<S>::args) {
-                    /// TODO: same
-
-                } else if constexpr (Param<S>::kwargs) {
-                    /// TODO: same
+                } else if constexpr (Param<T>::kw) {
+                    auto item = map.find(name);
+                    if constexpr (I < observed::kw_idx) {
+                        if (item != map.end()) {
+                            throw TypeError(
+                                "conflicting values for parameter '" + name +
+                                "' at index " + std::to_string(I)
+                            );
+                        }
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
+                    } else {
+                        if (iter != end) {
+                            if constexpr (observed::template has<name>) {
+                                throw TypeError(
+                                    "conflicting values for parameter '" + name +
+                                    "' at index " + std::to_string(I)
+                                );
+                            } else {
+                                if (item != map.end()) {
+                                    throw TypeError(
+                                        "conflicting values for parameter '" + name +
+                                        "' at index " + std::to_string(I)
+                                    );
+                                } else {
+                                    decltype(auto) result = *iter;
+                                    ++iter;
+                                    return result;
+                                }
+                            }
+                        } else {
+                            if constexpr (observed::template has<name>) {
+                                if (item != map.end()) {
+                                    throw TypeError(
+                                        "conflicting values for parameter '" + name +
+                                        "' at index " + std::to_string(I)
+                                    );
+                                } else {
+                                    constexpr size_t idx = observed::template idx<name>;
+                                    return impl::unpack_arg<idx>(
+                                        std::forward<Values>(values)...
+                                    ).value;
+                                }
+                            } else {
+                                if (item != map.end()) {
+                                    return item->second;
+                                } else {
+                                    throw TypeError(
+                                        "no match for parameter '" + name +
+                                        "' at index " + std::to_string(I)
+                                    );
+                                }
+                            }
+                        }
+                    }
 
                 } else {
-                    return impl::unpack_arg<J>(std::forward<Values>(values)...);
+                    return element<I>(
+                        args_size,
+                        iter,
+                        end,
+                        std::forward<Values>(values)...
+                    );
                 }
             }
 
-            template <size_t... Js, typename... Values>
-            static constexpr Tuple build(std::index_sequence<Js...>, Values&&... values) {
+            template <size_t... Is, typename... Values>
+            static constexpr Tuple build(
+                std::index_sequence<Is...>,
+                Values&&... values
+            ) {
                 using observed = Parameters<Values...>;
 
                 if constexpr (observed::has_args && observed::has_kwargs) {
                     const auto& kwargs = impl::unpack_arg<observed::kwargs_idx>(
                         std::forward<Values>(values)...
                     );
-                    assert_kwargs_are_recognized<Inner, observed>(
-                        std::make_index_sequence<Inner::n>{},
-                        kwargs
-                    );
+                    assert_kwargs_are_recognized<Inner, observed>(kwargs);
                     const auto& args = impl::unpack_arg<observed::args_idx>(
                         std::forward<Values>(values)...
                     );
                     auto iter = std::ranges::begin(args);
                     auto end = std::ranges::end(args);
                     Tuple result = {{
-                        build_recursive<Js>(
+                        element<Is>(
                             std::size(args),
                             iter,
                             end,
@@ -949,7 +1093,7 @@ namespace impl {
                             std::forward<Values>(values)...
                         )
                     }...};
-                    assert_args_are_consumed(iter, end);
+                    assert_args_are_exhausted(iter, end);
                     return result;
 
                 } else if constexpr (observed::has_args) {
@@ -959,32 +1103,25 @@ namespace impl {
                     auto iter = std::ranges::begin(args);
                     auto end = std::ranges::end(args);
                     Tuple result = {{
-                        build_recursive<Js>(
+                        element<Is>(
                             std::size(args),
                             iter,
                             end,
                             std::forward<Values>(values)...
                         )
                     }...};
-                    assert_args_are_consumed(iter, end);
+                    assert_args_are_exhausted(iter, end);
                     return result;
 
                 } else if constexpr (observed::has_kwargs) {
                     const auto& kwargs = impl::unpack_arg<observed::kwargs_idx>(
                         std::forward<Values>(values)...
                     );
-                    assert_kwargs_are_recognized<Inner, observed>(
-                        std::make_index_sequence<Inner::n>{},
-                        kwargs
-                    );
-                    return {{
-                        build_recursive<Js>(kwargs, std::forward<Values>(values)...)
-                    }...};
+                    assert_kwargs_are_recognized<Inner, observed>(kwargs);
+                    return {{element<Is>(kwargs, std::forward<Values>(values)...)}...};
 
                 } else {
-                    return {{
-                        build_recursive<Js>(std::forward<Values>(values)...)
-                    }...};
+                    return {{element<Is>(std::forward<Values>(values)...)}...};
                 }
             }
 
@@ -996,7 +1133,7 @@ namespace impl {
             and all optional arguments have been accounted for. */
             template <typename... Values> requires (Bind<Values...>::enable)
             constexpr Defaults(Values&&... values) : values(build(
-                std::index_sequence_for<Values...>{},
+                std::make_index_sequence<Inner::n>{},
                 std::forward<Values>(values)...
             )) {}
             constexpr Defaults(const Defaults& other) = default;
@@ -1033,8 +1170,8 @@ namespace impl {
         };
 
         /* A helper that binds observed arguments to the enclosing signature and
-        performs the translation necessary to invoke a matching function in either
-        Python or C++. */
+        performs the necessary translation to invoke a matching C++ or Python
+        function. */
         template <typename... Values>
         struct Bind {
         private:
@@ -1336,18 +1473,10 @@ namespace impl {
             /// TODO: this side of things might need modifications to be able to handle
             /// the `self` parameter.
 
-            /// TODO: I also need to think hard about references and lifetimes.  If
-            /// we're pulling from the call arguments, then I should be able to just
-            /// forward those directly.  Default values may need some copying/moving
-            /// to yield the expected type.  Also, the containers for *args, **kwargs
-            /// are not able to store references, so this gets rather complicated.
-            /// Luckily for *args, **kwargs, they'll always store a homogenous type, so
-            /// I can probably just use std::reference_wrapper<>.
-
             template <size_t I>
             static constexpr Param<Target<I>>::type cpp_to_cpp(
                 const Defaults& defaults,
-                Values&&... args
+                Values&&... values
             ) {
                 using T = Target<I>;
                 using type = Param<T>::type;
@@ -1356,17 +1485,17 @@ namespace impl {
                 if constexpr (Param<T>::kwonly) {
                     if constexpr (Inner::template has<name>) {
                         constexpr size_t idx = Inner::template idx<name>;
-                        return impl::unpack_arg<idx>(std::forward<Values>(args)...);
+                        return impl::unpack_arg<idx>(std::forward<Values>(values)...);
                     } else {
                         return defaults.template get<I>();
                     }
 
                 } else if constexpr (Param<T>::kw) {
                     if constexpr (I < Inner::kw_idx) {
-                        return impl::unpack_arg<I>(std::forward<Values>(args)...);
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else if constexpr (Inner::template has<name>) {
                         constexpr size_t idx = Inner::template idx<name>;
-                        return impl::unpack_arg<idx>(std::forward<Values>(args)...);
+                        return impl::unpack_arg<idx>(std::forward<Values>(values)...);
                     } else {
                         return defaults.template get<I>();
                     }
@@ -1388,7 +1517,7 @@ namespace impl {
                         }(
                             std::make_index_sequence<diff>{},
                             vec,
-                            std::forward<Values>(args)...
+                            std::forward<Values>(values)...
                         );
                     }
                     return vec;
@@ -1405,16 +1534,14 @@ namespace impl {
                     }(
                         std::make_index_sequence<Inner::n - Inner::kw_idx>{},
                         pack,
-                        std::forward<Values>(args)...
+                        std::forward<Values>(values)...
                     );
                     return pack;
 
                 } else {
                     if constexpr (I < Inner::kw_idx) {
-                        return impl::unpack_arg<I>(std::forward<Values>(args)...);
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else {
-                        /// TODO: rvalues would need to be copied and then moved here to
-                        /// conform to the correct type.
                         return defaults.template get<I>();
                     }
                 }
@@ -1423,37 +1550,48 @@ namespace impl {
             template <size_t I, std::input_iterator Iter, std::sentinel_for<Iter> End>
             static constexpr Param<Target<I>>::type cpp_to_cpp(
                 const Defaults& defaults,
-                size_t size,
+                size_t args_size,
                 Iter& iter,
                 const End& end,
-                Values&&... args
+                Values&&... values
             ) {
                 using T = Target<I>;
                 using type = Param<T>::type;
                 constexpr StaticStr name = Param<T>::name;
 
                 if constexpr (Param<T>::kwonly) {
-                    return cpp_to_cpp<I>(defaults, std::forward<Values>(args)...);
+                    return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
 
                 } else if constexpr (Param<T>::kw) {
                     if constexpr (I < Inner::kw_idx) {
-                        return impl::unpack_arg<I>(std::forward<Values>(args)...);
-                    } else if constexpr (Inner::template has<name>) {
-                        constexpr size_t idx = Inner::template idx<name>;
-                        return impl::unpack_arg<idx>(std::forward<Values>(args)...);
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else {
-                        if (iter == end) {
-                            if constexpr (Param<T>::opt) {
-                                return defaults.template get<I>();
-                            } else {
+                        if (iter != end) {
+                            if constexpr (Inner::template has<name>) {
                                 throw TypeError(
-                                    "could not unpack positional args - no match for "
-                                    "parameter '" + name + "' at index " +
-                                    std::to_string(I)
+                                    "conflicting values for parameter '" + name +
+                                    "' at index " + std::to_string(I)
                                 );
+                            } else {
+                                decltype(auto) result = *iter;
+                                ++iter;
+                                return result;
                             }
+
                         } else {
-                            return *(iter++);
+                            if constexpr (Inner::template has<name>) {
+                                constexpr size_t idx = Inner::template idx<name>;
+                                return impl::unpack_arg<idx>(std::forward<Values>(values)...);
+                            } else {
+                                if constexpr (Param<T>::opt) {
+                                    return defaults.template get<I>();
+                                } else {
+                                    throw TypeError(
+                                        "no match for parameter '" + name +
+                                        "' at index " + std::to_string(I)
+                                    );
+                                }
+                            }
                         }
                     }
 
@@ -1462,7 +1600,7 @@ namespace impl {
                     Pack vec;
                     if constexpr (I < Inner::args_idx) {
                         constexpr size_t diff = Inner::args_idx - I;
-                        vec.reserve(diff + size);
+                        vec.reserve(diff + args_size);
                         []<size_t... Js>(
                             std::index_sequence<Js...>,
                             Pack& vec,
@@ -1474,31 +1612,32 @@ namespace impl {
                         }(
                             std::make_index_sequence<diff>{},
                             vec,
-                            std::forward<Values>(args)...
+                            std::forward<Values>(values)...
                         );
                         vec.insert(vec.end(), iter, end);
                     }
                     return vec;
 
                 } else if constexpr (Param<T>::kwargs) {
-                    return cpp_to_cpp<I>(defaults, std::forward<Values>(args)...);
+                    return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
 
                 } else {
                     if constexpr (I < Inner::kw_idx) {
-                        return impl::unpack_arg<I>(std::forward<Values>(args)...);
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else {
-                        if (iter == end) {
+                        if (iter != end) {
+                            decltype(auto) result = *iter;
+                            ++iter;
+                            return result;
+                        } else {
                             if constexpr (Param<T>::opt) {
                                 return defaults.template get<I>();
                             } else {
                                 throw TypeError(
-                                    "could not unpack positional args - no match for "
-                                    "positional-only parameter at index " +
+                                    "no match for positional-only parameter at index " +
                                     std::to_string(I)
                                 );
                             }
-                        } else {
-                            return *(iter++);
                         }
                     }
                 }
@@ -1508,76 +1647,74 @@ namespace impl {
             static constexpr Param<Target<I>>::type cpp_to_cpp(
                 const Defaults& defaults,
                 const Mapping& map,
-                Values&&... args
+                Values&&... values
             ) {
                 using T = Target<I>;
                 using type = Param<T>::type;
                 constexpr StaticStr name = Param<T>::name;
 
                 if constexpr (Param<T>::kwonly) {
-                    auto val = map.find(name);
-                    if constexpr (Inner::template contains<name>) {
-                        if (val != map.end()) {
+                    auto item = map.find(name);
+                    if constexpr (Inner::template has<name>) {
+                        if (item != map.end()) {
                             throw TypeError(
-                                "duplicate value for parameter '" + name +
+                                "conflicting value for parameter '" + name +
                                 "' at index " + std::to_string(I)
                             );
                         }
                         constexpr size_t idx = Inner::template idx<name>;
-                        return impl::unpack_arg<idx>(std::forward<Values>(args)...);
+                        return impl::unpack_arg<idx>(std::forward<Values>(values)...);
                     } else {
-                        if (val != map.end()) {
-                            return *val;
+                        if (item != map.end()) {
+                            return item->second;
                         } else {
                             if constexpr (Param<T>::opt) {
                                 return defaults.template get<I>();
                             } else {
                                 throw TypeError(
-                                    "could not unpack keyword args - no match for "
-                                    "parameter '" + name + "' at index " +
-                                    std::to_string(I)
+                                    "no match for parameter '" + name +
+                                    "' at index " + std::to_string(I)
                                 );
                             }
                         }
                     }
 
                 } else if constexpr (Param<T>::kw) {
-                    auto val = map.find(name);
+                    auto item = map.find(name);
                     if constexpr (I < Inner::kw_idx) {
-                        if (val != map.end()) {
+                        if (item != map.end()) {
                             throw TypeError(
-                                "duplicate value for parameter '" + name +
+                                "conflicting value for parameter '" + name +
                                 "' at index " + std::to_string(I)
                             );
                         }
-                        return impl::unpack_arg<I>(std::forward<Values>(args)...);
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else if constexpr (Inner::template has<name>) {
-                        if (val != map.end()) {
+                        if (item != map.end()) {
                             throw TypeError(
-                                "duplicate value for parameter '" + name +
+                                "conflicting value for parameter '" + name +
                                 "' at index " + std::to_string(I)
                             );
                         }
                         constexpr size_t idx = Inner::template idx<name>;
-                        return impl::unpack_arg<idx>(std::forward<Values>(args)...);
+                        return impl::unpack_arg<idx>(std::forward<Values>(values)...);
                     } else {
-                        if (val != map.end()) {
-                            return *val;
+                        if (item != map.end()) {
+                            return item->second;
                         } else {
                             if constexpr (Param<T>::opt) {
                                 return defaults.template get<I>();
                             } else {
                                 throw TypeError(
-                                    "could not unpack keyword args - no match for "
-                                    "parameter '" + name + "' at index " +
-                                    std::to_string(I)
+                                    "no match for parameter '" + name +
+                                    "' at index " + std::to_string(I)
                                 );
                             }
                         }
                     }
 
                 } else if constexpr (Param<T>::args) {
-                    return cpp_to_cpp<I>(defaults, std::forward<Values>(args)...);
+                    return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
 
                 } else if constexpr (Param<T>::kwargs) {
                     using Pack = std::unordered_map<std::string, type>;
@@ -1585,13 +1722,13 @@ namespace impl {
                     []<size_t... Js>(
                         std::index_sequence<Js...>,
                         Pack& pack,
-                        Values&&... args
+                        Values&&... values
                     ) {
-                        (build_kwargs<Js>(pack, std::forward<Values>(args)...), ...);
+                        (build_kwargs<Js>(pack, std::forward<Values>(values)...), ...);
                     }(
                         std::make_index_sequence<Inner::n - Inner::kw_idx>{},
                         pack,
-                        std::forward<Values>(args)...
+                        std::forward<Values>(values)...
                     );
                     for (const auto& [key, value] : map) {
                         if (pack.contains(key)) {
@@ -1604,7 +1741,7 @@ namespace impl {
                     return pack;
 
                 } else {
-                    return cpp_to_cpp<I>(defaults, std::forward<Values>(args)...);
+                    return cpp_to_cpp<I>(defaults, std::forward<Values>(values)...);
                 }
             }
 
@@ -1616,11 +1753,11 @@ namespace impl {
             >
             static constexpr Param<Target<I>>::type cpp_to_cpp(
                 const Defaults& defaults,
-                size_t size,
+                size_t args_size,
                 Iter& iter,
                 const End& end,
                 const Mapping& map,
-                Values&&... args
+                Values&&... values
             ) {
                 using T = Target<I>;
                 using type = Param<T>::type;
@@ -1630,41 +1767,64 @@ namespace impl {
                     return cpp_to_cpp<I>(
                         defaults,
                         map,
-                        std::forward<Values>(args)...
+                        std::forward<Values>(values)...
                     );
 
                 } else if constexpr (Param<T>::kw) {
-                    auto val = map.find(name);
+                    auto item = map.find(name);
                     if constexpr (I < Inner::kw_idx) {
-                        if (val != map.end()) {
+                        if (item != map.end()) {
                             throw TypeError(
-                                "duplicate value for parameter '" + name +
+                                "conflicting values for parameter '" + name +
                                 "' at index " + std::to_string(I)
                             );
                         }
-                        return impl::unpack_arg<I>(std::forward<Values>(args)...);
-                    } else if constexpr (Inner::template has<name>) {
-                        if (val != map.end()) {
-                            throw TypeError(
-                                "duplicate value for parameter '" + name +
-                                "' at index " + std::to_string(I)
-                            );
-                        }
-                        constexpr size_t idx = Inner::template idx<name>;
-                        return impl::unpack_arg<idx>(std::forward<Values>(args)...);
+                        return impl::unpack_arg<I>(std::forward<Values>(values)...);
                     } else {
                         if (iter != end) {
-                            return *(iter++);
-                        } else if (val != map.end()) {
-                            return *val;
-                        } else {
-                            if constexpr (Param<T>::opt) {
-                                return defaults.template get<I>();
-                            } else {
+                            if constexpr (Inner::template has<name>) {
                                 throw TypeError(
-                                    "could not unpack args - no match for parameter '" +
-                                    name + "' at index " + std::to_string(I)
+                                    "conflicting values for parameter '" + name +
+                                    "' at index " + std::to_string(I)
                                 );
+                            } else {
+                                if (item != map.end()) {
+                                    throw TypeError(
+                                        "conflicting values for parameter '" + name +
+                                        "' at index " + std::to_string(I)
+                                    );
+                                } else {
+                                    decltype(auto) result = *iter;
+                                    ++iter;
+                                    return result;
+                                }
+                            }
+                        } else {
+                            if constexpr (Inner::template has<name>) {
+                                if (item != map.end()) {
+                                    throw TypeError(
+                                        "conflicting values for parameter '" + name +
+                                        "' at index " + std::to_string(I)
+                                    );
+                                } else {
+                                    constexpr size_t idx = Inner::template idx<name>;
+                                    return impl::unpack_arg<idx>(
+                                        std::forward<Values>(values)...
+                                    ).value;
+                                }
+                            } else {
+                                if (item != map.end()) {
+                                    return item->second;
+                                } else {
+                                    if constexpr (Param<T>::opt) {
+                                        return defaults.template get<I>();
+                                    } else {
+                                        throw TypeError(
+                                            "no match for parameter '" + name +
+                                            "' at index " + std::to_string(I)
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -1672,26 +1832,26 @@ namespace impl {
                 } else if constexpr (Param<T>::args) {
                     return cpp_to_cpp<I>(
                         defaults,
-                        size,
+                        args_size,
                         iter,
                         end,
-                        std::forward<Values>(args)...
+                        std::forward<Values>(values)...
                     );
 
                 } else if constexpr (Param<T>::kwargs) {
                     return cpp_to_cpp<I>(
                         defaults,
                         map,
-                        std::forward<Values>(args)...
+                        std::forward<Values>(values)...
                     );
 
                 } else {
                     return cpp_to_cpp<I>(
                         defaults,
-                        size,
+                        args_size,
                         iter,
                         end,
-                        std::forward<Values>(args)...
+                        std::forward<Values>(values)...
                     );
                 }
             }
@@ -1965,10 +2125,7 @@ namespace impl {
                             std::forward<Values>(values)...
                         );
                         if constexpr (!Outer::has_kwargs) {
-                            assert_kwargs_are_recognized<Outer, Inner>(
-                                std::make_index_sequence<Outer::n>{},
-                                kwargs
-                            );
+                            assert_kwargs_are_recognized<Outer, Inner>(kwargs);
                         }
                         const auto& args = impl::unpack_arg<Inner::args_idx>(
                             std::forward<Values>(values)...
@@ -1987,7 +2144,7 @@ namespace impl {
                                 )
                             }...);
                             if constexpr (!Outer::has_args) {
-                                assert_args_are_consumed(iter, end);
+                                assert_args_are_exhausted(iter, end);
                             }
                         } else {
                             decltype(auto) result = func({
@@ -2001,7 +2158,7 @@ namespace impl {
                                 )
                             }...);
                             if constexpr (!Outer::has_args) {
-                                assert_args_are_consumed(iter, end);
+                                assert_args_are_exhausted(iter, end);
                             }
                             return result;
                         }
@@ -2025,7 +2182,7 @@ namespace impl {
                                 )
                             }...);
                             if constexpr (!Outer::has_args) {
-                                assert_args_are_consumed(iter, end);
+                                assert_args_are_exhausted(iter, end);
                             }
                         } else {
                             decltype(auto) result = func({
@@ -2038,7 +2195,7 @@ namespace impl {
                                 )
                             }...);
                             if constexpr (!Outer::has_args) {
-                                assert_args_are_consumed(iter, end);
+                                assert_args_are_exhausted(iter, end);
                             }
                             return result;
                         }
@@ -2050,10 +2207,7 @@ namespace impl {
                             std::forward<Values>(values)...
                         );
                         if constexpr (!Outer::has_kwargs) {
-                            assert_kwargs_are_recognized<Outer, Inner>(
-                                std::make_index_sequence<Outer::n>{},
-                                kwargs
-                            );
+                            assert_kwargs_are_recognized<Outer, Inner>(kwargs);
                         }
                         if constexpr (std::is_void_v<Return>) {
                             func({
