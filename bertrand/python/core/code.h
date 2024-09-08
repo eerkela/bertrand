@@ -482,6 +482,10 @@ struct Interface<Type<Frame>> {
 };
 
 
+template <impl::is<cpptrace::stacktrace_frame> F>
+struct __object__<F>                                        : Returns<Frame> {};
+
+
 template <typename T, impl::is<Frame> Base>
 struct __isinstance__<T, Base>                              : Returns<bool> {
     static constexpr bool operator()(T&& obj) {

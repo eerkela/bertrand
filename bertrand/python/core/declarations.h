@@ -309,7 +309,7 @@ struct Returns : impl::BertrandTag {
 
 
 template <typename T>
-struct __as_object__                                        : Disable {};
+struct __object__                                        : Disable {};
 template <typename Derived, typename Base>
 struct __isinstance__                                       : Disable {};
 template <typename Derived, typename Base>
@@ -418,6 +418,12 @@ template <typename L, typename R>
 struct __xor__                                              : Disable {};
 template <typename L, typename R>
 struct __ixor__                                             : Disable {};
+
+
+// auto x = py::obj<Foo>(args...);
+
+template <typename T> requires (__object__<T>::enable)
+using obj = __object__<T>::type;
 
 
 /* A Python interface mixin which can be used to reflect multiple inheritance within
@@ -1355,60 +1361,60 @@ namespace impl {
 
     template <typename T>
     concept type_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, TypeTag>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, TypeTag>;
 
     template <typename T>
     concept none_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, NoneType>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, NoneType>;
 
     template <typename T>
     concept notimplemented_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, NotImplementedType>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, NotImplementedType>;
 
     template <typename T>
     concept ellipsis_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, EllipsisType>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, EllipsisType>;
 
     template <typename T>
     concept slice_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, Slice>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Slice>;
 
     template <typename T>
     concept module_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, ModuleTag>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, ModuleTag>;
 
     template <typename T>
     concept bool_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, Bool>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Bool>;
 
     template <typename T>
     concept int_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, Int>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Int>;
 
     template <typename T>
     concept float_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, Float>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Float>;
 
     template <typename T>
     concept str_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, Str>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Str>;
 
     template <typename T>
     concept bytes_like = (
         string_literal<T> ||
         std::same_as<std::decay_t<T>, void*> || (
-            __as_object__<std::remove_cvref_t<T>>::enable &&
-            std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, Bytes>
+            __object__<std::remove_cvref_t<T>>::enable &&
+            std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Bytes>
         )
     );
 
@@ -1416,8 +1422,8 @@ namespace impl {
     concept bytearray_like = (
         string_literal<T> ||
         std::same_as<std::decay_t<T>, void*> || (
-            __as_object__<std::remove_cvref_t<T>>::enable &&
-            std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, ByteArray>
+            __object__<std::remove_cvref_t<T>>::enable &&
+            std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, ByteArray>
         )
     );
 
@@ -1426,66 +1432,66 @@ namespace impl {
 
     template <typename T>
     concept timedelta_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, Timedelta>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Timedelta>;
 
     template <typename T>
     concept timezone_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, Timezone>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Timezone>;
 
     template <typename T>
     concept date_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, Date>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Date>;
 
     template <typename T>
     concept time_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, Time>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Time>;
 
     template <typename T>
     concept datetime_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, Datetime>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Datetime>;
 
     template <typename T>
     concept range_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, Range>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, Range>;
 
     template <typename T>
     concept tuple_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, TupleTag>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, TupleTag>;
 
     template <typename T>
     concept list_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, ListTag>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, ListTag>;
 
     template <typename T>
     concept set_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, SetTag>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, SetTag>;
 
     template <typename T>
     concept frozenset_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, FrozenSetTag>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, FrozenSetTag>;
 
     template <typename T>
     concept anyset_like = set_like<T> || frozenset_like<T>;
 
     template <typename T>
     concept dict_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, DictTag>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, DictTag>;
 
     template <typename T>
     concept mappingproxy_like =
-        __as_object__<std::remove_cvref_t<T>>::enable &&
-        std::derived_from<typename __as_object__<std::remove_cvref_t<T>>::type, MappingProxyTag>;
+        __object__<std::remove_cvref_t<T>>::enable &&
+        std::derived_from<typename __object__<std::remove_cvref_t<T>>::type, MappingProxyTag>;
 
     template <typename T>
     concept anydict_like = dict_like<T> || mappingproxy_like<T>;

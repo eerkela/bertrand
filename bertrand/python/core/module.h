@@ -1019,7 +1019,7 @@ struct __init__<Module<Name>>                               : Returns<Module<Nam
 dynamic object. */
 template <StaticStr Name, StaticStr Attr>
 struct __getattr__<Module<Name>, Attr>                       : Returns<Object> {};
-template <StaticStr Name, StaticStr Attr, typename Value> requires (__as_object__<Value>::enable)
+template <StaticStr Name, StaticStr Attr, typename Value> requires (__object__<Value>::enable)
 struct __setattr__<Module<Name>, Attr, Value>                : Returns<void> {};
 template <StaticStr Name, StaticStr Attr>
 struct __delattr__<Module<Name>, Attr>                       : Returns<void> {};

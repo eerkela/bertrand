@@ -22,9 +22,33 @@ template <StaticStr Name, typename T>
 struct Arg : impl::ArgTag {
 private:
 
+    template <bool optional>
+    struct Positional;
+    template <bool optional>
+    struct Keyword;
+
     template <bool positional, bool keyword>
     struct Optional : impl::ArgTag {
+    private:
+
+        template <bool pos, bool kw>
+        struct NoOpt {
+            using type = Arg;
+        };
+
+        template <>
+        struct NoOpt<true, false> {
+            using type = Positional<false>;
+        };
+
+        template <>
+        struct NoOpt<false, true> {
+            using type = Keyword<false>;
+        };
+
+    public:
         using type = T;
+        using no_opt = NoOpt<positional, keyword>::type;
         static constexpr StaticStr name = Name;
         static constexpr bool is_pos = positional;
         static constexpr bool is_kw = keyword;
@@ -137,9 +161,17 @@ namespace impl {
     /* Represents a keyword parameter pack obtained by double-dereferencing a Python
     object. */
     template <impl::python_like T> requires (impl::mapping_like<T>)
-    struct KwargPack : BertrandTag {
+    struct KwargPack : ArgTag {
         using key_type = T::key_type;
         using mapped_type = T::mapped_type;
+        using type = mapped_type;
+
+        static constexpr StaticStr name = "";
+        static constexpr bool is_pos = false;
+        static constexpr bool is_kw = false;
+        static constexpr bool is_opt = false;
+        static constexpr bool is_args = false;
+        static constexpr bool is_kwargs = true;
 
         T value;
 
@@ -198,7 +230,16 @@ namespace impl {
     /* Represents a positional parameter pack obtained by dereferencing a Python
     object. */
     template <impl::python_like T> requires (impl::iterable<T>)
-    struct ArgPack : BertrandTag {
+    struct ArgPack : ArgTag {
+        using type = iter_type<T>;
+
+        static constexpr StaticStr name = "";
+        static constexpr bool is_pos = false;
+        static constexpr bool is_kw = false;
+        static constexpr bool is_opt = false;
+        static constexpr bool is_args = true;
+        static constexpr bool is_kwargs = false;
+
         T value;
 
         auto begin() const { return std::ranges::begin(value); }
@@ -244,6 +285,7 @@ namespace impl {
     template <typename T>
     struct Param : BertrandTag {
         using type                          = T;
+        using no_opt                        = T;
         static constexpr StaticStr name     = "";
         static constexpr bool opt           = false;
         static constexpr bool pos           = true;
@@ -252,14 +294,74 @@ namespace impl {
         static constexpr bool kwonly        = false;
         static constexpr bool args          = false;
         static constexpr bool kwargs        = false;
-        using no_opt                        = T;
     };
 
     /* Inspect an argument annotation in a py::Function. */
     template <inherits<ArgTag> T>
     struct Param<T> : BertrandTag {
-        using U = std::remove_reference_t<T>;
+    private:
+
+        template <typename U>
+        struct NoOpt {
+            using type = T;
+        };
+        template <typename U> requires (U::is_opt)
+        struct NoOpt<U> {
+            template <typename T2>
+            struct qualify {
+                using type = U::no_opt;
+            };
+            template <typename T2>
+            struct qualify<T2&> {
+                using type = U::no_opt&;
+            };
+            template <typename T2>
+            struct qualify<T2&&> {
+                using type = U::no_opt&&;
+            };
+            template <typename T2>
+            struct qualify<const T2> {
+                using type = const U::no_opt;
+            };
+            template <typename T2>
+            struct qualify<const T2&> {
+                using type = const U::no_opt&;
+            };
+            template <typename T2>
+            struct qualify<const T2&&> {
+                using type = const U::no_opt&&;
+            };
+            template <typename T2>
+            struct qualify<volatile T2> {
+                using type = volatile U::no_opt;
+            };
+            template <typename T2>
+            struct qualify<volatile T2&> {
+                using type = volatile U::no_opt&;
+            };
+            template <typename T2>
+            struct qualify<volatile T2&&> {
+                using type = volatile U::no_opt&&;
+            };
+            template <typename T2>
+            struct qualify<const volatile T2> {
+                using type = const volatile U::no_opt;
+            };
+            template <typename T2>
+            struct qualify<const volatile T2&> {
+                using type = const volatile U::no_opt&;
+            };
+            template <typename T2>
+            struct qualify<const volatile T2&&> {
+                using type = const volatile U::no_opt&&;
+            };
+            using type = qualify<T>;
+        };
+
+    public:
+        using U                             = std::remove_reference_t<T>;
         using type                          = U::type;
+        using no_opt                        = NoOpt<U>::type;
         static constexpr StaticStr name     = U::name;
         static constexpr bool opt           = U::is_opt;
         static constexpr bool pos           = U::is_pos;
@@ -268,10 +370,26 @@ namespace impl {
         static constexpr bool kwonly        = U::is_kw && !U::is_pos;
         static constexpr bool args          = U::is_args;
         static constexpr bool kwargs        = U::is_kwargs;
-        /// TODO: allow an alias to remove the optional qualifier from the argument
-        /// annotation
-        using no_opt                        = void;  // TODO: do some stuff
     };
+
+    template <typename T>
+    struct Param<KwargPack<T>> : BertrandTag {
+
+    };
+
+    /// TODO: I need to add a parameter for Self, and then handle it carefully in the
+    /// call operator.  This won't affect the defaults, since `self` cannot be
+    /// optional by definition.  I'm not entirely sure how this needs to work,
+    /// especially considering how the std::function wrapper will need to be stored,
+    /// but perhaps that's a problem that needs to be solved in the __python__ wrapper
+    /// itself, or perhaps in the bindings, via a member dereference operator.  Perhaps
+    /// if all you do to implement it is pass a member function pointer, then I can
+    /// generate a lambda that captures the member function pointer and adds a `self`
+    /// argument, which is dereferenced to forward the remaining arguments.  That would
+    /// automate the process and possibly add a layer wherein everything is stored
+    /// lambdas rather than std::functions, which could be more efficient and avoid the
+    /// only remaining overhead.  For that to work, though, all of the functions would
+    /// need to be wrapped in lambdas for consistency, which adds some extra complexity.
 
     /* Analyze an annotated function signature by inspecting each argument and
     extracting metadata that allows call signatures to be resolved at compile time. */
@@ -521,31 +639,61 @@ namespace impl {
             return ((std::strcmp(Param<Args>::name, name) == 0) || ...);
         }
 
+        /* After invoking a function with variadic positional arguments, the
+        argument iterators must be exhausted, otherwise there are additional
+        positional arguments that were not consumed. */
+        template <std::input_iterator Iter, std::sentinel_for<Iter> End>
+        static void assert_args_are_consumed(Iter& iter, const End& end) {
+            if (iter != end) {
+                std::string message =
+                    "too many arguments in positional parameter pack: ['" +
+                    repr(*iter);
+                while (++iter != end) {
+                    message += "', '";
+                    message += repr(*iter);
+                }
+                message += "']";
+                throw TypeError(message);
+            }
+        }
+
+        /* Before invoking a function with variadic keyword arguments, those
+        arguments need to be scanned to ensure each of them are recognized and do
+        not interfere with other keyword arguments given in the source signature. */
+        template <typename Outer, typename Inner, size_t... Is, typename Map>
+        static void assert_kwargs_are_recognized(
+            std::index_sequence<Is...>,
+            const Map& kwargs
+        ) {
+            std::vector<std::string> extra;
+            for (const auto& [key, value] : kwargs) {
+                bool is_empty = key == "";
+                bool match = ((key == Param<typename Outer::template at<Is>>::name) || ...);
+                if (Inner::contains(key.c_str())) {
+                    throw TypeError("duplicate keyword argument: '" + key + "'");
+                } else if (is_empty || !match) {
+                    extra.push_back(key);
+                }
+            }
+            if (!extra.empty()) {
+                auto iter = extra.begin();
+                auto end = extra.end();
+                std::string message =
+                    "unexpected keyword arguments: ['" + repr(*iter);
+                while (++iter != end) {
+                    message += "', '";
+                    message += repr(*iter);
+                }
+                message += "']";
+                throw TypeError(message);
+            }
+        }
+
         /* A tuple holding the default values for each argument marked as optional in
         the enclosing signature. */
         struct Defaults {
         private:
             using Outer = Parameters;
-
-            /// TODO: Value might not want to remove the reference of the ::type, but
-            /// only for the value itself, so that I can forward them correctly when
-            /// calling the function.  If something must be accepted as an rvalue, but
-            /// has a default value, then this would generate a copy of the value in
-            /// the defaults tuple, and then move it when calling the function.  Same
-            /// for temporaries that are passed by value, but not lvalues, which can
-            /// simply reference the stored value.
-            /// -> What about python objects as default values?  In this case, the
-            /// object wrapper would be copied and moved, but that would just be a
-            /// reference count on the underlying object, so it's somewhat unclear how
-            /// state should be managed.  The only two ways I can see to do this are:
-            ///     1.  Store the actual initializer in a getter of some kind and
-            ///         re-evaluate it, converting to the expected parameter type each
-            ///         time the default value is accessed.
-            ///     2.  Warn about the same semantics as Python, where mutable default
-            ///         values should not be used.
-            /// If I can get 1. to work, then that would potentially be the best
-            /// outcome, but 2. is also viable, and may be faster in some cases since
-            /// more work is done upfront.
 
             /* The type of a single value in the defaults tuple.  The templated index
             is used to correlate the default value with its corresponding argument in
@@ -557,6 +705,27 @@ namespace impl {
                 static constexpr StaticStr name = Param<annotation>::name;
                 static constexpr size_t index = I;
                 std::remove_reference_t<type> value;
+
+                /* Retrieve the default value as its proper type, including reference
+                qualifiers. */
+                type get() {
+                    if constexpr (std::is_rvalue_reference_v<type>) {
+                        return std::remove_cvref_t<type>(value);
+                    } else {
+                        return value;
+                    }
+                }
+
+                /* Retrieve the default value as its proper type, including reference
+                qualifiers. */
+                type get() const {
+                    if constexpr (std::is_rvalue_reference_v<type>) {
+                        return std::remove_cvref_t<type>(value);
+                    } else {
+                        return value;
+                    }
+                }
+
             };
 
             /* Build a sub-signature holding only the arguments marked as optional from
@@ -649,15 +818,70 @@ namespace impl {
             static constexpr decltype(auto) build_recursive(Values&&... values) {
                 using observed = Parameters<Values...>;
                 using S = observed::template at<J>;
-                using type = Param<S>::type;
-                constexpr StaticStr name = Param<S>::name;
 
                 if constexpr (Param<S>::kw) {
-                    constexpr size_t idx = observed::template idx<name>;
+                    constexpr size_t idx = observed::template idx<Param<S>::name>;
+                    return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
+
+                } else {
+                    return impl::unpack_arg<J>(std::forward<Values>(values)...);
+                }
+            }
+
+            template <
+                size_t J,
+                typename... Values,
+                std::input_iterator Iter,
+                std::sentinel_for<Iter> End
+            >
+            static constexpr decltype(auto) build_recursive(
+                size_t args_size,
+                const Iter& iter,
+                const End& end,
+                Values&&... values
+            ) {
+                using observed = Parameters<Values...>;
+                using S = observed::template at<J>;
+
+                if constexpr (Param<S>::kw) {
+                    constexpr size_t idx = observed::template idx<Param<S>::name>;
                     return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
 
                 } else if constexpr (Param<S>::args) {
-                    /// TODO: some wierd logic here
+                    /// TODO: I would need to generate an index sequence for the
+                    /// difference between the current index J and the default values'
+                    /// kwonly_idx.
+                    /// TODO: if there are also kwargs present, then I'll have to
+                    /// proceed accordingly, and generate another index sequence over
+                    /// the end of the args and the remaining arguments.
+
+                    /// TODO: maybe I need to pass in an iterator and mapping here in
+                    /// order to properly unpack the variadic positional arguments.
+                    /// That might mean that I need 4 overloads of this function, for
+                    /// each combination of args and kwargs, and then equivalent
+                    /// constexpr branches in the build() function based on whether
+                    /// such arguments are detected in the constructor.
+
+                } else {
+                    return impl::unpack_arg<J>(std::forward<Values>(values)...);
+                }
+            }
+
+            template <
+                size_t J,
+                typename... Values,
+                typename Map
+            >
+            static constexpr decltype(auto) build_recursive(
+                const Map& map,
+                Values&&... values
+            ) {
+                using observed = Parameters<Values...>;
+                using S = observed::template at<J>;
+
+                if constexpr (Param<S>::kw) {
+                    constexpr size_t idx = observed::template idx<Param<S>::name>;
+                    return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
 
                 } else if constexpr (Param<S>::kwargs) {
                     /// TODO: same
@@ -667,9 +891,101 @@ namespace impl {
                 }
             }
 
-            template <size_t... Is, typename... Values>
-            static constexpr Tuple build(std::index_sequence<Is...>, Values&&... values) {
-                return {build_recursive<Is>(std::forward<Values>(values)...)...};
+            template <
+                size_t J,
+                typename... Values,
+                std::input_iterator Iter,
+                std::sentinel_for<Iter> End,
+                typename Map
+            >
+            static constexpr decltype(auto) build_recursive(
+                size_t args_size,
+                Iter& iter,
+                const End& end,
+                const Map& map,
+                Values&&... values
+            ) {
+                using observed = Parameters<Values...>;
+                using S = observed::template at<J>;
+
+                if constexpr (Param<S>::kw) {
+                    constexpr size_t idx = observed::template idx<Param<S>::name>;
+                    return impl::unpack_arg<idx>(std::forward<Values>(values)...).value;
+
+                } else if constexpr (Param<S>::args) {
+                    /// TODO: same
+
+                } else if constexpr (Param<S>::kwargs) {
+                    /// TODO: same
+
+                } else {
+                    return impl::unpack_arg<J>(std::forward<Values>(values)...);
+                }
+            }
+
+            template <size_t... Js, typename... Values>
+            static constexpr Tuple build(std::index_sequence<Js...>, Values&&... values) {
+                using observed = Parameters<Values...>;
+
+                if constexpr (observed::has_args && observed::has_kwargs) {
+                    const auto& kwargs = impl::unpack_arg<observed::kwargs_idx>(
+                        std::forward<Values>(values)...
+                    );
+                    assert_kwargs_are_recognized<Inner, observed>(
+                        std::make_index_sequence<Inner::n>{},
+                        kwargs
+                    );
+                    const auto& args = impl::unpack_arg<observed::args_idx>(
+                        std::forward<Values>(values)...
+                    );
+                    auto iter = std::ranges::begin(args);
+                    auto end = std::ranges::end(args);
+                    Tuple result = {{
+                        build_recursive<Js>(
+                            std::size(args),
+                            iter,
+                            end,
+                            kwargs,
+                            std::forward<Values>(values)...
+                        )
+                    }...};
+                    assert_args_are_consumed(iter, end);
+                    return result;
+
+                } else if constexpr (observed::has_args) {
+                    const auto& args = impl::unpack_arg<observed::args_idx>(
+                        std::forward<Values>(values)...
+                    );
+                    auto iter = std::ranges::begin(args);
+                    auto end = std::ranges::end(args);
+                    Tuple result = {{
+                        build_recursive<Js>(
+                            std::size(args),
+                            iter,
+                            end,
+                            std::forward<Values>(values)...
+                        )
+                    }...};
+                    assert_args_are_consumed(iter, end);
+                    return result;
+
+                } else if constexpr (observed::has_kwargs) {
+                    const auto& kwargs = impl::unpack_arg<observed::kwargs_idx>(
+                        std::forward<Values>(values)...
+                    );
+                    assert_kwargs_are_recognized<Inner, observed>(
+                        std::make_index_sequence<Inner::n>{},
+                        kwargs
+                    );
+                    return {{
+                        build_recursive<Js>(kwargs, std::forward<Values>(values)...)
+                    }...};
+
+                } else {
+                    return {{
+                        build_recursive<Js>(std::forward<Values>(values)...)
+                    }...};
+                }
             }
 
         public:
@@ -689,35 +1005,36 @@ namespace impl {
             /* Get the default value at index I of the tuple.  Use find<> to correlate
             an index from the enclosing signature if needed. */
             template <size_t I> requires (I < n)
-            auto& get() {
-                return std::get<I>(values).value;
+            decltype(auto) get() {
+                return std::get<I>(values).get();
             }
 
             /* Get the default value at index I of the tuple.  Use find<> to correlate
             an index from the enclosing signature if needed. */
             template <size_t I> requires (I < n)
-            const auto& get() const {
-                return std::get<I>(values).value;
+            decltype(auto) get() const {
+                return std::get<I>(values).get();
             }
 
             /* Get the default value associated with the named argument, if it is
             marked as optional. */
             template <StaticStr Name> requires (has<Name>)
-            auto& get() {
-                return std::get<idx<Name>>(values).value;
+            decltype(auto) get() {
+                return std::get<idx<Name>>(values).get();
             }
 
             /* Get the default value associated with the named argument, if it is
             marked as optional. */
             template <StaticStr Name> requires (has<Name>)
-            const auto& get() const {
-                return std::get<idx<Name>>(values).value;
+            decltype(auto) get() const {
+                return std::get<idx<Name>>(values).get();
             }
 
         };
 
         /* A helper that binds observed arguments to the enclosing signature and
-        performs the translation necessary to invoke a matching function. */
+        performs the translation necessary to invoke a matching function in either
+        Python or C++. */
         template <typename... Values>
         struct Bind {
         private:
@@ -999,10 +1316,6 @@ namespace impl {
                     );
                 }
             }
-
-            //////////////////////////
-            ////    C++ -> C++    ////
-            //////////////////////////
 
             /* The cpp_to_cpp() method is used to convert an index sequence over the
              * enclosing signature into the corresponding values pulled from either the
@@ -1383,10 +1696,6 @@ namespace impl {
                 }
             }
 
-            /////////////////////////////
-            ////    PYTHON -> C++    ////
-            /////////////////////////////
-
             /* The py_to_cpp() method is used to convert an index sequence over the
              * enclosing signature into the corresponding values pulled from either an
              * array of Python vectorcall arguments or the function's defaults.  This
@@ -1493,7 +1802,7 @@ namespace impl {
                             );
                             if (kwname == nullptr) {
                                 Exception::from_python();
-                            } else if (!Outer::contains(sequence)) {
+                            } else if (!Outer::contains(kwname)) {
                                 map.emplace(
                                     std::string(kwname, length),
                                     reinterpret_borrow<Object>(args[nargs + i])
@@ -1517,10 +1826,6 @@ namespace impl {
                     }
                 }
             }
-
-            /////////////////////////////
-            ////    C++ -> PYTHON    ////
-            /////////////////////////////
 
             /* The cpp_to_py() method is used to allocate a Python vectorcall argument
              * array and populate it according to a C++ argument list.  This is
@@ -1610,60 +1915,6 @@ namespace impl {
                 }
             }
 
-            //////////////////////
-            ////    INVOKE    ////
-            //////////////////////
-
-            /* After invoking a function with variadic positional arguments, the
-            argument iterators must be exhausted, otherwise there are additional
-            positional arguments that were not consumed. */
-            template <std::input_iterator Iter, std::sentinel_for<Iter> End>
-            static void assert_args_are_consumed(Iter& iter, const End& end) {
-                if (iter != end) {
-                    std::string message =
-                        "too many arguments in positional parameter pack: ['" +
-                        repr(*iter);
-                    while (++iter != end) {
-                        message += "', '";
-                        message += repr(*iter);
-                    }
-                    message += "']";
-                    throw TypeError(message);
-                }
-            }
-
-            /* Before invoking a function with variadic keyword arguments, those
-            arguments need to be scanned to ensure each of them are recognized and do
-            not interfere with other keyword arguments given in the source signature. */
-            template <size_t... Is, typename Kwargs>
-            static void assert_kwargs_are_recognized(
-                std::index_sequence<Is...>,
-                Kwargs&& kwargs
-            ) {
-                std::vector<std::string> extra;
-                for (const auto& [key, value] : kwargs) {
-                    bool is_empty = key == "";
-                    bool match = ((key == Param<at<Is>>::name) || ...);
-                    if (Inner::contains(key.c_str())) {
-                        throw TypeError("duplicate keyword argument: '" + key + "'");
-                    } else if (is_empty || !match) {
-                        extra.push_back(key);
-                    }
-                }
-                if (!extra.empty()) {
-                    auto iter = extra.begin();
-                    auto end = extra.end();
-                    std::string message =
-                        "unexpected keyword arguments: ['" + repr(*iter);
-                    while (++iter != end) {
-                        message += "', '";
-                        message += repr(*iter);
-                    }
-                    message += "']";
-                    throw TypeError(message);
-                }
-            }
-
         public:
             static constexpr size_t n               = sizeof...(Values);
             static constexpr size_t n_pos           = Inner::n_pos;
@@ -1697,146 +1948,155 @@ namespace impl {
             values. */
             template <typename Func>
                 requires (enable && std::is_invocable_v<Func, Args...>)
-            static decltype(auto) operator()(
+            static auto operator()(
                 const Defaults& defaults,
                 Func&& func,
-                Values&&... args
-            ) {
-                // using Return = std::invoke_result_t<Func, Args...>;
-                // return []<size_t... Is>(
-                //     std::index_sequence<Is...>,
-                //     const Defaults& defaults,
-                //     Func&& func,
-                //     Values&&... args
-                // ) {
+                Values&&... values
+            ) -> std::invoke_result_t<Func, Args...> {
+                using Return = std::invoke_result_t<Func, Args...>;
+                return []<size_t... Is>(
+                    std::index_sequence<Is...>,
+                    const Defaults& defaults,
+                    Func&& func,
+                    Values&&... values
+                ) {
+                    if constexpr (Inner::has_args && Inner::has_kwargs) {
+                        const auto& kwargs = impl::unpack_arg<Inner::kwargs_idx>(
+                            std::forward<Values>(values)...
+                        );
+                        if constexpr (!Outer::has_kwargs) {
+                            assert_kwargs_are_recognized<Outer, Inner>(
+                                std::make_index_sequence<Outer::n>{},
+                                kwargs
+                            );
+                        }
+                        const auto& args = impl::unpack_arg<Inner::args_idx>(
+                            std::forward<Values>(values)...
+                        );
+                        auto iter = std::ranges::begin(args);
+                        auto end = std::ranges::end(args);
+                        if constexpr (std::is_void_v<Return>) {
+                            func({
+                                cpp_to_cpp<Is>(
+                                    defaults,
+                                    std::size(args),
+                                    iter,
+                                    end,
+                                    kwargs,
+                                    std::forward<Values>(values)...
+                                )
+                            }...);
+                            if constexpr (!Outer::has_args) {
+                                assert_args_are_consumed(iter, end);
+                            }
+                        } else {
+                            decltype(auto) result = func({
+                                cpp_to_cpp<Is>(
+                                    defaults,
+                                    std::size(args),
+                                    iter,
+                                    end,
+                                    kwargs,
+                                    std::forward<Values>(values)...
+                                )
+                            }...);
+                            if constexpr (!Outer::has_args) {
+                                assert_args_are_consumed(iter, end);
+                            }
+                            return result;
+                        }
 
-                //     // NOTE: we MUST use aggregate initialization of argument proxies in order
-                //     // to extend the lifetime of temporaries for the duration of the function
-                //     // call.  This is the only guaranteed way of avoiding UB in this context.
+                    // variadic positional arguments are passed as an iterator range, which
+                    // must be exhausted after the function call completes
+                    } else if constexpr (Inner::has_args) {
+                        const auto& args = impl::unpack_arg<Inner::args_idx>(
+                            std::forward<Values>(values)...
+                        );
+                        auto iter = std::ranges::begin(args);
+                        auto end = std::ranges::end(args);
+                        if constexpr (std::is_void_v<Return>) {
+                            func({
+                                cpp_to_cpp<Is>(
+                                    defaults,
+                                    std::size(args),
+                                    iter,
+                                    end,
+                                    std::forward<Values>(values)...
+                                )
+                            }...);
+                            if constexpr (!Outer::has_args) {
+                                assert_args_are_consumed(iter, end);
+                            }
+                        } else {
+                            decltype(auto) result = func({
+                                cpp_to_cpp<Is>(
+                                    defaults,
+                                    std::size(args),
+                                    iter,
+                                    end,
+                                    std::forward<Source>(values)...
+                                )
+                            }...);
+                            if constexpr (!Outer::has_args) {
+                                assert_args_are_consumed(iter, end);
+                            }
+                            return result;
+                        }
 
-                //     // if there are no parameter packs, then we simply reorder the arguments
-                //     // and call the function directly
-                //     if constexpr (!Inner::has_args && !Inner::has_kwargs) {
-                //         if constexpr (std::is_void_v<Return>) {
-                //             func({Arguments<Source...>::template cpp<Is>(
-                //                 defaults,
-                //                 std::forward<Source>(args)...
-                //             )}...);
-                //         } else {
-                //             return func({Arguments<Source...>::template cpp<Is>(
-                //                 defaults,
-                //                 std::forward<Source>(args)...
-                //             )}...);
-                //         }
+                    // variadic keyword arguments are passed as a dictionary, which must be
+                    // validated up front to ensure all keys are recognized
+                    } else if constexpr (Inner::has_kwargs) {
+                        const auto& kwargs = impl::unpack_arg<Inner::kwargs_idx>(
+                            std::forward<Values>(values)...
+                        );
+                        if constexpr (!Outer::has_kwargs) {
+                            assert_kwargs_are_recognized<Outer, Inner>(
+                                std::make_index_sequence<Outer::n>{},
+                                kwargs
+                            );
+                        }
+                        if constexpr (std::is_void_v<Return>) {
+                            func({
+                                cpp_to_cpp<Is>(
+                                    defaults,
+                                    kwargs,
+                                    std::forward<Values>(values)...
+                                )
+                            }...);
+                        } else {
+                            return func({
+                                cpp_to_cpp<Is>(
+                                    defaults,
+                                    kwargs,
+                                    std::forward<Values>(values)...
+                                )
+                            }...);
+                        }
 
-                //     // variadic positional arguments are passed as an iterator range, which
-                //     // must be exhausted after the function call completes
-                //     } else if constexpr (Inner::has_args && !Inner::has_kwargs) {
-                //         auto var_args = impl::unpack_arg<Inner::args_index>(
-                //             std::forward<Source>(args)...
-                //         );
-                //         auto iter = var_args.begin();
-                //         auto end = var_args.end();
-                //         if constexpr (std::is_void_v<Return>) {
-                //             func({Arguments<Source...>::template cpp<Is>(
-                //                 defaults,
-                //                 var_args.size(),
-                //                 iter,
-                //                 end,
-                //                 std::forward<Source>(args)...
-                //             )}...);
-                //             if constexpr (!Outer::has_args) {
-                //                 impl::assert_var_args_are_consumed(iter, end);
-                //             }
-                //         } else {
-                //             decltype(auto) result = func({Arguments<Source...>::template cpp<Is>(
-                //                 defaults,
-                //                 var_args.size(),
-                //                 iter,
-                //                 end,
-                //                 std::forward<Source>(args)...
-                //             )}...);
-                //             if constexpr (!Outer::has_args) {
-                //                 impl::assert_var_args_are_consumed(iter, end);
-                //             }
-                //             return result;
-                //         }
-
-                //     // variadic keyword arguments are passed as a dictionary, which must be
-                //     // validated up front to ensure all keys are recognized
-                //     } else if constexpr (!Inner::has_args && Inner::has_kwargs) {
-                //         auto var_kwargs = impl::unpack_arg<Inner::kwargs_index>(
-                //             std::forward<Source>(args)...
-                //         );
-                //         if constexpr (!Outer::has_kwargs) {
-                //             impl::assert_var_kwargs_are_recognized<target>(
-                //                 std::make_index_sequence<Outer::size>{},
-                //                 var_kwargs
-                //             );
-                //         }
-                //         if constexpr (std::is_void_v<Return>) {
-                //             func({Arguments<Source...>::template cpp<Is>(
-                //                 defaults,
-                //                 var_kwargs,
-                //                 std::forward<Source>(args)...
-                //             )}...);
-                //         } else {
-                //             return func({Arguments<Source...>::template cpp<Is>(
-                //                 defaults,
-                //                 var_kwargs,
-                //                 std::forward<Source>(args)...
-                //             )}...);
-                //         }
-
-                //     // interpose the two if there are both positional and keyword argument packs
-                //     } else {
-                //         auto var_kwargs = impl::unpack_arg<Inner::kwargs_index>(
-                //             std::forward<Source>(args)...
-                //         );
-                //         if constexpr (!Outer::has_kwargs) {
-                //             impl::assert_var_kwargs_are_recognized<target>(
-                //                 std::make_index_sequence<Outer::size>{},
-                //                 var_kwargs
-                //             );
-                //         }
-                //         auto var_args = impl::unpack_arg<Inner::args_index>(
-                //             std::forward<Source>(args)...
-                //         );
-                //         auto iter = var_args.begin();
-                //         auto end = var_args.end();
-                //         if constexpr (std::is_void_v<Return>) {
-                //             func({Arguments<Source...>::template cpp<Is>(
-                //                 defaults,
-                //                 var_args.size(),
-                //                 iter,
-                //                 end,
-                //                 var_kwargs,
-                //                 std::forward<Source>(args)...
-                //             )}...);
-                //             if constexpr (!Outer::has_args) {
-                //                 impl::assert_var_args_are_consumed(iter, end);
-                //             }
-                //         } else {
-                //             decltype(auto) result = func({Arguments<Source...>::template cpp<Is>(
-                //                 defaults,
-                //                 var_args.size(),
-                //                 iter,
-                //                 end,
-                //                 var_kwargs,
-                //                 std::forward<Source>(args)...
-                //             )}...);
-                //             if constexpr (!Outer::has_args) {
-                //                 impl::assert_var_args_are_consumed(iter, end);
-                //             }
-                //             return result;
-                //         }
-                //     }
-                // }(
-                //     std::make_index_sequence<Outer::size>{},
-                //     defaults,
-                //     std::forward<Func>(func),
-                //     std::forward<Source>(args)...
-                // );
+                    // interpose the two if there are both positional and keyword argument packs
+                    } else {
+                        if constexpr (std::is_void_v<Return>) {
+                            func({
+                                cpp_to_cpp<Is>(
+                                    defaults,
+                                    std::forward<Source>(values)...
+                                )
+                            }...);
+                        } else {
+                            return func({
+                                cpp_to_cpp<Is>(
+                                    defaults,
+                                    std::forward<Source>(values)...
+                                )
+                            }...);
+                        }
+                    }
+                }(
+                    std::make_index_sequence<Outer::n>{},
+                    defaults,
+                    std::forward<Func>(func),
+                    std::forward<Source>(values)...
+                );
             }
 
             /* Invoke an external Python function using the given arguments.  This will
@@ -2112,6 +2372,34 @@ namespace impl {
 }
 
 
+/// TODO: maximum efficiency would require me to implement separate overloads for
+/// py::Function based on whether you supply a function pointer or a stateless lambda
+/// which can be converted to a function pointer, in which case I store that within
+/// the Python representation and forward calls accordingly.  That would allow me to
+/// avoid type erasure, which would yield the same performance as a direct function
+/// call, with all the same inlining and optimizations that would be applied at the
+/// C++ level.  Capturing lambdas and other function objects would have to go through
+/// std::function instead, which would pay the extra indirection cost, but would still
+/// allow `py::Function` to represent both cases as greedily as possible.
+/// -> The way to implement this is to check whether the argument has a call operator,
+/// and can be implicitly converted to the function pointer type.  If so, then I can
+/// use the happy path, and will happily do so.
+/// -> Note that for member functions, I would have to store two pointers, one for the
+/// member function and another for its static equivalent, where self is passed as the
+/// first argument.  If a matching member function is passed, then I store it in the
+/// first pointer and then generate a wrapper that's stored in the second slot and
+/// simply dereferences the first pointer on the self argument.  If a static function
+/// pointer or an object that can be converted to such a pointer is given, then I
+/// store it directly in the second slot and leave the first slot null.  When the
+/// function is called, only the second slot will ever actually be used.  In the
+/// Python case, I'll check for a self argument in the vectorcall array, and in the
+/// C++ case, I would just inject the self argument into the constructor, and then
+/// pass it into the invocation function as the first argument, which calls the
+/// static function pointer and so on and so forth.  That means member functions are
+/// perfectly represented, and are constructible from both function pointers and
+/// callable objects, which may be implemented using static syntax.
+
+
 template <typename F> requires (impl::Signature<F>::enable)
 struct Interface<Function<F>> : impl::FunctionTag {
     static_assert(impl::Signature<F>::valid, "invalid function signature");
@@ -2367,8 +2655,179 @@ struct Interface<Function<F>> : impl::FunctionTag {
     /// additional __self__ and __func__ properties?
 
 };
-template <typename Signature> requires (impl::GetSignature<Signature>::enable)
-struct Interface<Type<Function<Signature>>> {
+template <typename F> requires (impl::Signature<F>::enable)
+struct Interface<Type<Function<F>>> {
+    static_assert(impl::Signature<F>::valid, "invalid function signature");
+
+    /* The normalized function pointer type for this specialization. */
+    using Signature = Interface<Function<F>>::Signature;
+
+    /* The function's return type. */
+    using Return = Interface<Function<F>>::Return;
+
+    /* The type of the function's `self` argument, or void if it is not a member
+    function. */
+    using Self = Interface<Function<F>>::Self;
+
+    /* A type holding the function's default values, which are inferred from the input
+    signature and stored as a `std::tuple`. */
+    using Defaults = Interface<Function<F>>::Defaults;
+
+    /* The total number of arguments that the function accepts, not counting `self`. */
+    static constexpr size_t n = Interface<Function<F>>::n;
+
+    /* The total number of positional arguments that the function accepts, counting
+    both positional-or-keyword and positional-only arguments, but not keyword-only,
+    variadic positional or keyword arguments, or `self`. */
+    static constexpr size_t n_pos = Interface<Function<F>>::n_pos;
+
+    /* The total number of positional-only arguments that the function accepts. */
+    static constexpr size_t n_posonly = Interface<Function<F>>::n_posonly;
+
+    /* The total number of keyword arguments that the function accepts, counting
+    both positional-or-keyword and keyword-only arguments, but not positional-only or
+    variadic positional or keyword arguments, or `self`. */
+    static constexpr size_t n_kw = Interface<Function<F>>::n_kw;
+
+    /* The total number of keyword-only arguments that the function accepts. */
+    static constexpr size_t n_kwonly = Interface<Function<F>>::n_kwonly;
+
+    /* The total number of optional arguments that are present in the function
+    signature, including both positional and keyword arguments. */
+    static constexpr size_t n_opt = Interface<Function<F>>::n_opt;
+
+    /* The total number of optional positional arguments that the function accepts,
+    counting both positional-only and positional-or-keyword arguments, but not
+    keyword-only or variadic positional or keyword arguments, or `self`. */
+    static constexpr size_t n_opt_pos = Interface<Function<F>>::n_opt_pos;
+
+    /* The total number of optional positional-only arguments that the function
+    accepts. */
+    static constexpr size_t n_opt_posonly = Interface<Function<F>>::n_opt_posonly;
+
+    /* The total number of optional keyword arguments that the function accepts,
+    counting both keyword-only and positional-or-keyword arguments, but not
+    positional-only or variadic positional or keyword arguments, or `self`. */
+    static constexpr size_t n_opt_kw = Interface<Function<F>>::n_opt_kw;
+
+    /* The total number of optional keyword-only arguments that the function
+    accepts. */
+    static constexpr size_t n_opt_kwonly = Interface<Function<F>>::n_opt_kwonly;
+
+    /* Check if the named argument is present in the function signature. */
+    template <StaticStr Name>
+    static constexpr bool has = Interface<Function<F>>::template has<Name>;
+
+    /* Check if the function accepts any positional arguments, counting both
+    positional-or-keyword and positional-only arguments, but not keyword-only,
+    variadic positional or keyword arguments, or `self`. */
+    static constexpr bool has_pos = Interface<Function<F>>::has_pos;
+
+    /* Check if the function accepts any positional-only arguments. */
+    static constexpr bool has_posonly = Interface<Function<F>>::has_posonly;
+
+    /* Check if the function accepts any keyword arguments, counting both
+    positional-or-keyword and keyword-only arguments, but not positional-only or
+    variadic positional or keyword arguments, or `self`. */
+    static constexpr bool has_kw = Interface<Function<F>>::has_kw;
+
+    /* Check if the function accepts any keyword-only arguments. */
+    static constexpr bool has_kwonly = Interface<Function<F>>::has_kwonly;
+
+    /* Check if the function accepts at least one optional argument. */
+    static constexpr bool has_opt = Interface<Function<F>>::has_opt;
+
+    /* Check if the function accepts at least one optional positional argument.  This
+    will match either positional-or-keyword or positional-only arguments. */
+    static constexpr bool has_opt_pos = Interface<Function<F>>::has_opt_pos;
+
+    /* Check if the function accepts at least one optional positional-only argument. */
+    static constexpr bool has_opt_posonly = Interface<Function<F>>::has_opt_posonly;
+
+    /* Check if the function accepts at least one optional keyword argument.  This will
+    match either positional-or-keyword or keyword-only arguments. */
+    static constexpr bool has_opt_kw = Interface<Function<F>>::has_opt_kw;
+
+    /* Check if the function accepts at least one optional keyword-only argument. */
+    static constexpr bool has_opt_kwonly = Interface<Function<F>>::has_opt_kwonly;
+
+    /* Check if the function has a `self` parameter, indicating that it can be called
+    as a member function. */
+    static constexpr bool has_self = Interface<Function<F>>::has_self;
+
+    /* Check if the function accepts variadic positional arguments. */
+    static constexpr bool has_args = Interface<Function<F>>::has_args;
+
+    /* Check if the function accepts variadic keyword arguments. */
+    static constexpr bool has_kwargs = Interface<Function<F>>::has_kwargs;
+
+    /* Find the index of the named argument, if it is present. */
+    template <StaticStr Name> requires (has<Name>)
+    static constexpr size_t idx = Interface<Function<F>>::template idx<Name>;
+
+    /* Find the index of the first keyword argument that appears in the function
+    signature.  This will match either a positional-or-keyword argument or a
+    keyword-only argument.  If no such argument is present, this will return `n`. */
+    static constexpr size_t kw_idx = Interface<Function<F>>::kw_index;
+
+    /* Find the index of the first keyword-only argument that appears in the function
+    signature.  If no such argument is present, this will return `n`. */
+    static constexpr size_t kwonly_idx = Interface<Function<F>>::kw_only_index;
+
+    /* Find the index of the first optional argument in the function signature.  If no
+    such argument is present, this will return `n`. */
+    static constexpr size_t opt_idx = Interface<Function<F>>::opt_index;
+
+    /* Find the index of the first optional positional argument in the function
+    signature.  This will match either a positional-or-keyword argument or a
+    positional-only argument.  If no such argument is present, this will return `n`. */
+    static constexpr size_t opt_pos_idx = Interface<Function<F>>::opt_pos_index;
+
+    /* Find the index of the first optional positional-only argument in the function
+    signature.  If no such argument is present, this will return `n`. */
+    static constexpr size_t opt_posonly_idx = Interface<Function<F>>::opt_posonly_index;
+
+    /* Find the index of the first optional keyword argument in the function signature.
+    This will match either a positional-or-keyword argument or a keyword-only argument.
+    If no such argument is present, this will return `n`. */
+    static constexpr size_t opt_kw_idx = Interface<Function<F>>::opt_kw_index;
+
+    /* Find the index of the first optional keyword-only argument in the function
+    signature.  If no such argument is present, this will return `n`. */
+    static constexpr size_t opt_kwonly_idx = Interface<Function<F>>::opt_kwonly_index;
+
+    /* Find the index of the variadic positional arguments in the function signature,
+    if they are present.  If no such argument is present, this will return `n`. */
+    static constexpr size_t args_idx = Interface<Function<F>>::args_index;
+
+    /* Find the index of the variadic keyword arguments in the function signature, if
+    they are present.  If no such argument is present, this will return `n`. */
+    static constexpr size_t kwargs_idx = Interface<Function<F>>::kwargs_index;
+
+    /* Get the (possibly annotated) type of the argument at index I of the function's
+    signature. */
+    template <size_t I> requires (I < n)
+    using at = Interface<Function<F>>::template at<I>;
+
+    /* Get the type of the positional argument at index I. */
+    template <size_t I> requires (I < args_idx && I < kwonly_idx)
+    using Arg = Interface<Function<F>>::template Arg<I>;
+
+    /* Get the type of the named keyword argument. */
+    template <StaticStr Name> requires (has<Name>)
+    using Kwarg = Interface<Function<F>>::template Kwarg<Name>;
+
+    /* Get the type expected by the function's variadic positional arguments, or void
+    if it does not accept variadic positional arguments. */
+    using Args = Interface<Function<F>>::Args;
+
+    /* Get the type expected by the function's variadic keyword arguments, or void if
+    it does not accept variadic keyword arguments. */
+    using Kwargs = Interface<Function<F>>::Kwargs;
+
+
+
+
     template <impl::inherits<Interface> Self>
     [[nodiscard]] static std::string __name__(const Self& self) {
         return self.__name__;
@@ -3227,27 +3686,27 @@ Function(std::string, std::string, F, D...) -> Function<
 
 
 template <typename R, typename... A>
-struct __as_object__<R(A...)> : Returns<Function<R(A...)>> {};
+struct __object__<R(A...)> : Returns<Function<R(A...)>> {};
 template <typename R, typename... A>
-struct __as_object__<R(*)(A...)> : Returns<Function<R(A...)>> {};
+struct __object__<R(*)(A...)> : Returns<Function<R(A...)>> {};
 template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...)> : Returns<Function<R(A...)>> {};
+struct __object__<R(C::*)(A...)> : Returns<Function<R(A...)>> {};
 template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...) noexcept> : Returns<Function<R(A...)>> {};
+struct __object__<R(C::*)(A...) noexcept> : Returns<Function<R(A...)>> {};
 template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...) const> : Returns<Function<R(A...)>> {};
+struct __object__<R(C::*)(A...) const> : Returns<Function<R(A...)>> {};
 template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...) const noexcept> : Returns<Function<R(A...)>> {};
+struct __object__<R(C::*)(A...) const noexcept> : Returns<Function<R(A...)>> {};
 template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...) volatile> : Returns<Function<R(A...)>> {};
+struct __object__<R(C::*)(A...) volatile> : Returns<Function<R(A...)>> {};
 template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...) volatile noexcept> : Returns<Function<R(A...)>> {};
+struct __object__<R(C::*)(A...) volatile noexcept> : Returns<Function<R(A...)>> {};
 template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...) const volatile> : Returns<Function<R(A...)>> {};
+struct __object__<R(C::*)(A...) const volatile> : Returns<Function<R(A...)>> {};
 template <typename R, typename C, typename... A>
-struct __as_object__<R(C::*)(A...) const volatile noexcept> : Returns<Function<R(A...)>> {};
+struct __object__<R(C::*)(A...) const volatile noexcept> : Returns<Function<R(A...)>> {};
 template <typename R, typename... A>
-struct __as_object__<std::function<R(A...)>> : Returns<Function<R(A...)>> {};
+struct __object__<std::function<R(A...)>> : Returns<Function<R(A...)>> {};
 
 
 template <typename T, typename R, typename... A>

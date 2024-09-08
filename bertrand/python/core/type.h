@@ -63,14 +63,14 @@ Python equivalents (py::Type<int>() == py::Type<py::Int>()). */
 template <typename T>
     requires (
         !std::derived_from<std::remove_cvref_t<T>, Object> &&
-        __as_object__<std::remove_cvref_t<T>>::enable
+        __object__<std::remove_cvref_t<T>>::enable
     )
-struct Type<T> : Type<typename __as_object__<std::remove_cvref_t<T>>::type> {};
+struct Type<T> : Type<typename __object__<std::remove_cvref_t<T>>::type> {};
 
 
 /* Explicitly call `Type(obj)` to deduce the Python type of an arbitrary object. */
-template <typename T> requires (__as_object__<T>::enable)
-explicit Type(const T&) -> Type<typename __as_object__<T>::type>;
+template <typename T> requires (__object__<T>::enable)
+explicit Type(const T&) -> Type<typename __object__<T>::type>;
 
 
 /* All types are default-constructible by invoking the `__import__()` hook. */
@@ -95,12 +95,12 @@ struct __init__<Type<Type<T>>> : Returns<Type<Type<T>>> {
 
 
 /* Implement the CTAD guide by default-initializing the corresponding Type. */
-template <typename T> requires (__as_object__<T>::enable)
-struct __explicit_init__<Type<typename __as_object__<T>::type>, T> :
-    Returns<Type<typename __as_object__<T>::type>>
+template <typename T> requires (__object__<T>::enable)
+struct __explicit_init__<Type<typename __object__<T>::type>, T> :
+    Returns<Type<typename __object__<T>::type>>
 {
     static auto operator()(const T& obj) {
-        return Type<typename __as_object__<T>::type>();
+        return Type<typename __object__<T>::type>();
     }
 };
 
@@ -186,8 +186,8 @@ struct __issubclass__<T, Type<Cls>> : Returns<bool> {
 equivalent C++ alias. */
 template <typename From, typename To> requires (
     std::derived_from<
-        Interface<typename __as_object__<From>::type>,
-        Interface<typename __as_object__<To>::type>
+        Interface<typename __object__<From>::type>,
+        Interface<typename __object__<To>::type>
     >
 )
 struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
@@ -204,17 +204,17 @@ struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
 applying a runtime `issubclass()` check. */
 template <typename From, typename To> requires (
     !std::same_as<
-        typename __as_object__<To>::type,
-        typename __as_object__<From>::type
+        typename __object__<To>::type,
+        typename __object__<From>::type
     > &&
     std::derived_from<
-        Interface<typename __as_object__<To>::type>,
-        Interface<typename __as_object__<From>::type>
+        Interface<typename __object__<To>::type>,
+        Interface<typename __object__<From>::type>
     >
 )
 struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
     static auto operator()(const Type<From>& from) {
-        if (issubclass<typename __as_object__<To>::type>(from)) {
+        if (issubclass<typename __object__<To>::type>(from)) {
             return reinterpret_borrow<Type<To>>(ptr(from));
         } else {
             throw TypeError(
@@ -224,7 +224,7 @@ struct __cast__<Type<From>, Type<To>> : Returns<Type<To>> {
         }
     }
     static auto operator()(Type<From>&& from) {
-        if (issubclass<typename __as_object__<To>::type>(from)) {
+        if (issubclass<typename __object__<To>::type>(from)) {
             return reinterpret_steal<Type<To>>(release(from));
         } else {
             throw TypeError(
@@ -5248,7 +5248,7 @@ specialization by applying a dynamic `issubclass()` check. */
 template <impl::has_export To>
 struct __cast__<BertrandMeta, Type<To>>                     : Returns<Type<To>> {
     static auto operator()(const BertrandMeta& from) {
-        if (issubclass<typename __as_object__<To>::type>(from)) {
+        if (issubclass<typename __object__<To>::type>(from)) {
             return reinterpret_borrow<Type<To>>(ptr(from));
         } else {
             throw TypeError(
@@ -5258,7 +5258,7 @@ struct __cast__<BertrandMeta, Type<To>>                     : Returns<Type<To>> 
         }
     }
     static auto operator()(BertrandMeta&& from) {
-        if (issubclass<typename __as_object__<To>::type>(from)) {
+        if (issubclass<typename __object__<To>::type>(from)) {
             return reinterpret_steal<Type<To>>(release(from));
         } else {
             throw TypeError(
@@ -6306,43 +6306,43 @@ private:
             static constexpr bool value = false;
 
             template <typename R, typename... Ts>
-                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                requires (__object__<R>::enable && (__object__<Ts>::enable && ...))
             static constexpr bool value<R(*)(Ts...)> = true;
 
             template <typename R, typename T, typename... Ts>
-                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                requires (__object__<R>::enable && (__object__<Ts>::enable && ...))
             static constexpr bool value<R(T::*)(Ts...)> = true;
 
             template <typename R, typename T, typename... Ts>
-                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                requires (__object__<R>::enable && (__object__<Ts>::enable && ...))
             static constexpr bool value<R(T::*)(Ts...) const> = true;
 
             template <typename R, typename T, typename... Ts>
-                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                requires (__object__<R>::enable && (__object__<Ts>::enable && ...))
             static constexpr bool value<R(T::*)(Ts...) volatile> = true;
 
             template <typename R, typename T, typename... Ts>
-                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                requires (__object__<R>::enable && (__object__<Ts>::enable && ...))
             static constexpr bool value<R(T::*)(Ts...) const volatile> = true;
 
             template <typename R, typename... Ts>
-                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                requires (__object__<R>::enable && (__object__<Ts>::enable && ...))
             static constexpr bool value<R(*)(Ts...) noexcept> = true;
 
             template <typename R, typename T, typename... Ts>
-                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                requires (__object__<R>::enable && (__object__<Ts>::enable && ...))
             static constexpr bool value<R(T::*)(Ts...) noexcept> = true;
 
             template <typename R, typename T, typename... Ts>
-                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                requires (__object__<R>::enable && (__object__<Ts>::enable && ...))
             static constexpr bool value<R(T::*)(Ts...) const noexcept> = true;
 
             template <typename R, typename T, typename... Ts>
-                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                requires (__object__<R>::enable && (__object__<Ts>::enable && ...))
             static constexpr bool value<R(T::*)(Ts...) volatile noexcept> = true;
 
             template <typename R, typename T, typename... Ts>
-                requires (__as_object__<R>::enable && (__as_object__<Ts>::enable && ...))
+                requires (__object__<R>::enable && (__object__<Ts>::enable && ...))
             static constexpr bool value<R(T::*)(Ts...) const volatile noexcept> = true;
 
         };
@@ -8150,7 +8150,7 @@ public:
 
     /* Expose an immutable member variable to Python as a getset descriptor,
     which synchronizes its state. */
-    template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
+    template <StaticStr Name, typename T> requires (__object__<T>::enable)
     void var(const T Cls::*value) {
         if (members.contains(Name)) {
             throw AttributeError(
@@ -8216,7 +8216,7 @@ public:
 
     /* Expose a mutable member variable to Python as a getset descriptor, which
     synchronizes its state. */
-    template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
+    template <StaticStr Name, typename T> requires (__object__<T>::enable)
     void var(T Cls::*value) {
         if (members.contains(Name)) {
             throw AttributeError(
@@ -8327,7 +8327,7 @@ public:
 
     /* Expose an immutable static variable to Python using the `__getattr__()`
     slot of the metatype, which synchronizes its state. */
-    template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
+    template <StaticStr Name, typename T> requires (__object__<T>::enable)
     void class_var(const T& value) {
         if (members.contains(Name)) {
             throw AttributeError(
@@ -8367,7 +8367,7 @@ public:
 
     /* Expose a mutable static variable to Python using the `__getattr__()` and
     `__setattr__()` slots of the metatype, which synchronizes its state.  */
-    template <StaticStr Name, typename T> requires (__as_object__<T>::enable)
+    template <StaticStr Name, typename T> requires (__object__<T>::enable)
     void class_var(T& value) {
         if (members.contains(Name)) {
             throw AttributeError(
@@ -8857,8 +8857,8 @@ public:
     be overloaded from either side of the language boundary.  */
     template <StaticStr Name, typename Return, typename... Target>
         requires (
-            __as_object__<std::remove_cvref_t<Return>>::enable &&
-            (__as_object__<std::remove_cvref_t<Target>>::enable && ...)
+            __object__<std::remove_cvref_t<Return>>::enable &&
+            (__object__<std::remove_cvref_t<Target>>::enable && ...)
         )
     void method(Return(Cls::*func)(Target...)) {
         /// TODO: check for an existing overload set with the same name and
@@ -8885,8 +8885,8 @@ public:
     overloaded from either side of the language boundary.  */
     template <StaticStr Name, typename Return, typename... Target>
         requires (
-            __as_object__<std::remove_cvref_t<Return>>::enable &&
-            (__as_object__<std::remove_cvref_t<Target>>::enable && ...)
+            __object__<std::remove_cvref_t<Return>>::enable &&
+            (__object__<std::remove_cvref_t<Target>>::enable && ...)
         )
     void class_method(Return(*func)(Target...)) {
         /// TODO: function refactor
@@ -9444,7 +9444,7 @@ namespace impl {
 }
 
 
-/// NOTE: all types must manually define __as_object__ as they are generated, since it
+/// NOTE: all types must manually define __object__ as they are generated, since it
 /// can't be deduced any other way.
 
 

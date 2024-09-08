@@ -258,7 +258,7 @@ represent C++ types using the stream insertion operator (<<) or std::to_string. 
 else fails, falls back to demangling the result of typeid(obj).name(). */
 template <typename T>
 [[nodiscard]] std::string repr(T&& obj) {
-    if constexpr (__as_object__<T>::enable) {
+    if constexpr (__object__<T>::enable) {
         PyObject* str = PyObject_Repr(
             ptr(as_object(std::forward<T>(obj)))
         );
@@ -1913,12 +1913,12 @@ L& operator^=(L& lhs, R&& rhs) {
 
 template <typename T>
     requires (
-        __as_object__<T>::enable &&
-        impl::has_cpp<typename __as_object__<T>::type> &&
-        std::same_as<T, impl::cpp_type<typename __as_object__<T>::type>>
+        __object__<T>::enable &&
+        impl::has_cpp<typename __object__<T>::type> &&
+        std::same_as<T, impl::cpp_type<typename __object__<T>::type>>
     )
-[[nodiscard]] auto wrap(T& obj) -> __as_object__<T>::type {
-    using Wrapper = __as_object__<T>::type;
+[[nodiscard]] auto wrap(T& obj) -> __object__<T>::type {
+    using Wrapper = __object__<T>::type;
     using Variant = decltype(ptr(std::declval<Wrapper>())->m_cpp);
     Type<Wrapper> type;
     PyTypeObject* type_ptr = ptr(type);
@@ -1933,12 +1933,12 @@ template <typename T>
 
 template <typename T>
     requires (
-        __as_object__<T>::enable &&
-        impl::has_cpp<typename __as_object__<T>::type> &&
-        std::same_as<T, impl::cpp_type<typename __as_object__<T>::type>>
+        __object__<T>::enable &&
+        impl::has_cpp<typename __object__<T>::type> &&
+        std::same_as<T, impl::cpp_type<typename __object__<T>::type>>
     )
-[[nodiscard]] auto wrap(const T& obj) -> __as_object__<T>::type {
-    using Wrapper = __as_object__<T>::type;
+[[nodiscard]] auto wrap(const T& obj) -> __object__<T>::type {
+    using Wrapper = __object__<T>::type;
     using Variant = decltype(ptr(std::declval<Wrapper>())->m_cpp);
     Type<Wrapper> type;
     PyTypeObject* type_ptr = ptr(type);
@@ -2098,7 +2098,7 @@ auto __cast__<From, To>::operator()(From&& from) {
 
 
 template <impl::inherits<Object> From, impl::cpp_like To>
-    requires (__as_object__<To>::enable && std::integral<To>)
+    requires (__object__<To>::enable && std::integral<To>)
 To __explicit_cast__<From, To>::operator()(From&& from) {
     long long result = PyLong_AsLongLong(ptr(from));
     if (result == -1 && PyErr_Occurred()) {
@@ -2117,7 +2117,7 @@ To __explicit_cast__<From, To>::operator()(From&& from) {
 
 
 template <impl::inherits<Object> From, impl::cpp_like To>
-    requires (__as_object__<To>::enable && std::floating_point<To>)
+    requires (__object__<To>::enable && std::floating_point<To>)
 To __explicit_cast__<From, To>::operator()(From&& from) {
     double result = PyFloat_AsDouble(ptr(from));
     if (result == -1.0 && PyErr_Occurred()) {

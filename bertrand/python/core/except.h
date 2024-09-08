@@ -99,6 +99,10 @@ struct Interface<Type<Traceback>> {
 };
 
 
+template <impl::is<cpptrace::stacktrace> T>
+struct __object__<T>                                        : Returns<Traceback> {};
+
+
 /* Converting a `cpptrace::stacktrace_frame` into a Python frame object will synthesize
 an interpreter frame with an empty bytecode object. */
 template <impl::is<cpptrace::stacktrace> T>

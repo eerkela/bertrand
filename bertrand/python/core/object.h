@@ -30,13 +30,13 @@ template <std::derived_from<Object> T>
 
 /* Convert an arbitrary C++ value to an equivalent Python object if it isn't one
 already. */
-template <typename T> requires (__as_object__<std::remove_cvref_t<T>>::enable)
+template <typename T> requires (__object__<std::remove_cvref_t<T>>::enable)
 [[nodiscard]] decltype(auto) as_object(T&& value) {
-    using AsObj = __as_object__<std::remove_cvref_t<T>>;
+    using AsObj = __object__<std::remove_cvref_t<T>>;
     static_assert(
         !std::same_as<typename AsObj::type, Object>,
         "C++ types cannot be converted to py::Object directly.  Check your "
-        "specialization of __as_object__ for this type and ensure the Return type "
+        "specialization of __object__ for this type and ensure the Return type "
         "derives from py::Object, and is not py::Object itself."
     );
     if constexpr (impl::has_call_operator<AsObj>) {
@@ -58,11 +58,11 @@ undefined behavior will occur.  It is mostly intended for internal use in order 
 expose shared state to Python, for instance to model exported global variables. */
 template <typename T>
     requires (
-        __as_object__<T>::enable &&
-        impl::has_cpp<typename __as_object__<T>::type> &&
-        impl::is<T, impl::cpp_type<typename __as_object__<T>::type>>
+        __object__<T>::enable &&
+        impl::has_cpp<typename __object__<T>::type> &&
+        impl::is<T, impl::cpp_type<typename __object__<T>::type>>
     )
-[[nodiscard]] auto wrap(T& obj) -> __as_object__<T>::type;  // defined in ops.h
+[[nodiscard]] auto wrap(T& obj) -> __object__<T>::type;  // defined in ops.h
 
 
 /* Wrap a non-owning, immutable reference to a C++ object into a `py::Object` proxy
@@ -76,11 +76,11 @@ undefined behavior will occur.  It is mostly intended for internal use in order 
 expose shared state to Python, for instance to model exported global variables. */
 template <typename T>
     requires (
-        __as_object__<T>::enable &&
-        impl::has_cpp<typename __as_object__<T>::type> &&
-        impl::is<T, impl::cpp_type<typename __as_object__<T>::type>>
+        __object__<T>::enable &&
+        impl::has_cpp<typename __object__<T>::type> &&
+        impl::is<T, impl::cpp_type<typename __object__<T>::type>>
     )
-[[nodiscard]] auto wrap(const T& obj) -> __as_object__<T>::type;  // defined in ops.h
+[[nodiscard]] auto wrap(const T& obj) -> __object__<T>::type;  // defined in ops.h
 
 
 /* Retrieve a reference to the internal C++ object that backs a `py::Object` wrapper,
@@ -684,7 +684,7 @@ struct __init__<Object>                                     : Returns<Object> {
 
 
 /* Implicitly convert any C++ value into a py::Object by invoking as_object(). */
-template <impl::cpp_like T> requires (__as_object__<T>::enable)
+template <impl::cpp_like T> requires (__object__<T>::enable)
 struct __init__<Object, T>                                  : Returns<Object> {
     static auto operator()(T&& value) {
         return reinterpret_steal<Object>(
@@ -737,12 +737,12 @@ struct __cast__<From, To>                                   : Returns<To> {
 
 
 /* Implicitly convert a Python object into any recognized C++ type by checking for an
-equivalent Python type via __as_object__, implicitly converting to that type, and then
+equivalent Python type via __object__, implicitly converting to that type, and then
 implicitly converting the result to the C++ type in a 2-step process. */
-template <impl::is<Object> From, impl::cpp_like To> requires (__as_object__<To>::enable)
+template <impl::is<Object> From, impl::cpp_like To> requires (__object__<To>::enable)
 struct __cast__<From, To>                                   : Returns<To> {
     static auto operator()(From&& self) {
-        using Intermediate = __as_object__<To>::type;
+        using Intermediate = __object__<To>::type;
         return impl::implicit_cast<To>(
             impl::implicit_cast<Intermediate>(std::forward<From>(self))
         );
@@ -751,13 +751,13 @@ struct __cast__<From, To>                                   : Returns<To> {
 
 
 /* Explicitly convert a Python object into any C++ type by checking for an equivalent
-Python type via __as_object__, explicitly converting to that type, and then explicitly
+Python type via __object__, explicitly converting to that type, and then explicitly
 converting to the C++ type in a 2-step process. */
 template <impl::inherits<Object> From, impl::cpp_like To>
-    requires (__as_object__<To>::enable)
+    requires (__object__<To>::enable)
 struct __explicit_cast__<From, To>                          : Returns<To> {
     static auto operator()(From&& from) {
-        using Intermediate = __as_object__<To>::type;
+        using Intermediate = __object__<To>::type;
         return static_cast<To>(
             static_cast<Intermediate>(std::forward<From>(from))
         );
@@ -768,7 +768,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 /* Explicitly convert a Python object into a C++ integer by calling `int(obj)` at the
 Python level. */
 template <impl::inherits<Object> From, impl::cpp_like To>
-    requires (__as_object__<To>::enable && std::integral<To>)
+    requires (__object__<To>::enable && std::integral<To>)
 struct __explicit_cast__<From, To>                          : Returns<To> {
     static To operator()(From&& from);  // defined in ops.h
 };
@@ -777,7 +777,7 @@ struct __explicit_cast__<From, To>                          : Returns<To> {
 /* Explicitly convert a Python object into a C++ floating-point number by calling
 `float(obj)` at the Python level. */
 template <impl::inherits<Object> From, impl::cpp_like To>
-    requires (__as_object__<To>::enable && std::floating_point<To>)
+    requires (__object__<To>::enable && std::floating_point<To>)
 struct __explicit_cast__<From, To>                          : Returns<To> {
     static To operator()(From&& from);  // defined in ops.h
 };
@@ -943,7 +943,7 @@ struct __lshift__<Stream, Self>                             : Returns<Stream&> {
 
 
 template <impl::inherits<Object> T>
-struct __as_object__<T>                                     : Returns<T> {
+struct __object__<T>                                     : Returns<T> {
     static decltype(auto) operator()(T&& value) { return std::forward<T>(value); }
 };
 
