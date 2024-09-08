@@ -7,6 +7,10 @@
 #include "object.h"
 
 
+/// TODO: this file should include the implementation for Object's call operator, just
+/// below the dereference operator, at the end of the file.
+
+
 namespace py {
 
 
@@ -281,6 +285,20 @@ template <impl::python_like Self> requires (impl::iterable<Self>)
 
 namespace impl {
 
+    /// TODO: I need to add a parameter for Self, and then handle it carefully in the
+    /// call operator.  This won't affect the defaults, since `self` cannot be
+    /// optional by definition.  I'm not entirely sure how this needs to work,
+    /// especially considering how the std::function wrapper will need to be stored,
+    /// but perhaps that's a problem that needs to be solved in the __python__ wrapper
+    /// itself, or perhaps in the bindings, via a member dereference operator.  Perhaps
+    /// if all you do to implement it is pass a member function pointer, then I can
+    /// generate a lambda that captures the member function pointer and adds a `self`
+    /// argument, which is dereferenced to forward the remaining arguments.  That would
+    /// automate the process and possibly add a layer wherein everything is stored
+    /// lambdas rather than std::functions, which could be more efficient and avoid the
+    /// only remaining overhead.  For that to work, though, all of the functions would
+    /// need to be wrapped in lambdas for consistency, which adds some extra complexity.
+
     /* Inspect an unannotated C++ argument in a py::Function. */
     template <typename T>
     struct Param : BertrandTag {
@@ -371,25 +389,6 @@ namespace impl {
         static constexpr bool args          = U::is_args;
         static constexpr bool kwargs        = U::is_kwargs;
     };
-
-    template <typename T>
-    struct Param<KwargPack<T>> : BertrandTag {
-
-    };
-
-    /// TODO: I need to add a parameter for Self, and then handle it carefully in the
-    /// call operator.  This won't affect the defaults, since `self` cannot be
-    /// optional by definition.  I'm not entirely sure how this needs to work,
-    /// especially considering how the std::function wrapper will need to be stored,
-    /// but perhaps that's a problem that needs to be solved in the __python__ wrapper
-    /// itself, or perhaps in the bindings, via a member dereference operator.  Perhaps
-    /// if all you do to implement it is pass a member function pointer, then I can
-    /// generate a lambda that captures the member function pointer and adds a `self`
-    /// argument, which is dereferenced to forward the remaining arguments.  That would
-    /// automate the process and possibly add a layer wherein everything is stored
-    /// lambdas rather than std::functions, which could be more efficient and avoid the
-    /// only remaining overhead.  For that to work, though, all of the functions would
-    /// need to be wrapped in lambdas for consistency, which adds some extra complexity.
 
     /* Analyze an annotated function signature by inspecting each argument and
     extracting metadata that allows call signatures to be resolved at compile time. */
@@ -627,18 +626,6 @@ namespace impl {
             return validate<I + 1, Ts...>;
         }();
 
-    public:
-
-        /* If the target signature does not conform to Python calling conventions, throw
-        an informative compile error describing the problem. */
-        static constexpr bool valid = validate<0, Args...>;
-
-        /* Check whether the signature contains a keyword with the given name, where
-        the name can only be known at runtime. */
-        static bool contains(const char* name) {
-            return ((std::strcmp(Param<Args>::name, name) == 0) || ...);
-        }
-
         /* After invoking a function with variadic positional arguments, the argument
         iterators must be fully consumed, otherwise there are additional positional
         arguments that were not consumed. */
@@ -685,6 +672,18 @@ namespace impl {
                     throw TypeError(message);
                 }
             }(std::make_index_sequence<Outer::n>{}, kwargs);
+        }
+
+    public:
+
+        /* If the target signature does not conform to Python calling conventions, throw
+        an informative compile error describing the problem. */
+        static constexpr bool valid = validate<0, Args...>;
+
+        /* Check whether the signature contains a keyword with the given name, where
+        the name can only be known at runtime. */
+        static bool contains(const char* name) {
+            return ((std::strcmp(Param<Args>::name, name) == 0) || ...);
         }
 
         /* A tuple holding the default values for each argument that is marked as
@@ -2104,6 +2103,9 @@ namespace impl {
             match the target signature. */
             static constexpr bool enable = Inner::valid && enable_recursive<0, 0>;
 
+            /// TODO: both of these call operators need to be updated to handle the
+            /// `self` parameter.
+
             /* Invoke an external C++ function using the given arguments and default
             values. */
             template <typename Func>
@@ -2259,9 +2261,181 @@ namespace impl {
             template <typename = void> requires (enable)
             static PyObject* operator()(
                 PyObject* func,
-                Values&&... args
+                Values&&... values
             ) {
+                return []<size_t... Is>(
+                    std::index_sequence<Is...>,
+                    PyObject* func,
+                    Values&&... values
+                ) {
+                    PyObject* result;
 
+                    // if there are no arguments, we can use the no-args protocol
+                    if constexpr (Inner::n == 0) {
+                        result = PyObject_CallNoArgs(func);
+
+                    // if there are no variadic arguments, we can stack allocate the argument
+                    // array with a fixed size
+                    } else if constexpr (!Inner::has_args && !Inner::has_kwargs) {
+                        // if there is only one argument, we can use the one-arg protocol
+                        if constexpr (Inner::n == 1) {
+                            if constexpr (Inner::has_kw) {
+                                result = PyObject_CallOneArg(
+                                    func,
+                                    ptr(as_object(
+                                        impl::unpack_arg<0>(
+                                            std::forward<Values>(values)...
+                                        ).value
+                                    ))
+                                );
+                            } else {
+                                result = PyObject_CallOneArg(
+                                    func,
+                                    ptr(as_object(
+                                        impl::unpack_arg<0>(
+                                            std::forward<Values>(values)...
+                                        )
+                                    ))
+                                );
+                            }
+
+                        // if there is more than one argument, we construct a vectorcall
+                        // argument array
+                        } else {
+                            PyObject* array[Inner::n + 1];
+                            array[0] = nullptr;
+                            PyObject* kwnames;
+                            if constexpr (Inner::has_kw) {
+                                kwnames = PyTuple_New(Inner::n_kw);
+                            } else {
+                                kwnames = nullptr;
+                            }
+                            (
+                                cpp_to_python<Is>(
+                                    kwnames,
+                                    array,  // 1-indexed
+                                    std::forward<Values>(values)...
+                                ),
+                                ...
+                            );
+                            Py_ssize_t npos = Inner::n - Inner::n_kw;
+                            result = PyObject_Vectorcall(
+                                func,
+                                array,
+                                npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                                kwnames
+                            );
+                            for (size_t i = 1; i <= Inner::n; ++i) {
+                                Py_XDECREF(array[i]);  // release all argument references
+                            }
+                        }
+
+                    // otherwise, we have to heap-allocate the array with a variable size
+                    } else if constexpr (Inner::has_args && !Inner::has_kwargs) {
+                        const auto& args = impl::unpack_arg<Inner::args_idx>(
+                            std::forward<Values>(values)...
+                        );
+                        size_t nargs = Inner::n - 1 + std::size(args);
+                        PyObject** array = new PyObject*[nargs + 1];
+                        array[0] = nullptr;
+                        PyObject* kwnames;
+                        if constexpr (Inner::has_kw) {
+                            kwnames = PyTuple_New(Inner::n_kw);
+                        } else {
+                            kwnames = nullptr;
+                        }
+                        (
+                            cpp_to_python<Is>(
+                                kwnames,
+                                array,
+                                std::forward<Values>(values)...
+                            ),
+                            ...
+                        );
+                        Py_ssize_t npos = Inner::n - 1 - Inner::n_kw + std::size(args);
+                        result = PyObject_Vectorcall(
+                            func,
+                            array,
+                            npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            nullptr
+                        );
+                        for (size_t i = 1; i <= Inner::n; ++i) {
+                            Py_XDECREF(array[i]);
+                        }
+                        delete[] array;
+
+                    // The following specializations handle the cross product of
+                    // positional/keyword parameter packs which differ only in initialization
+                    } else if constexpr (!Inner::has_args && Inner::has_kwargs) {
+                        const auto& kwargs = impl::unpack_arg<Inner::kwargs_idx>(
+                            std::forward<Values>(values)...
+                        );
+                        size_t nargs = Inner::n - 1 + std::size(kwargs);
+                        PyObject** array = new PyObject*[nargs + 1];
+                        array[0] = nullptr;
+                        PyObject* kwnames = PyTuple_New(Inner::n_kw + std::size(kwargs));
+                        (
+                            cpp_to_python<Is>(
+                                kwnames,
+                                array,
+                                std::forward<Values>(values)...
+                            ),
+                            ...
+                        );
+                        Py_ssize_t npos = Inner::n - 1 - Inner::n_kw;
+                        result = PyObject_Vectorcall(
+                            func,
+                            array,
+                            npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            kwnames
+                        );
+                        for (size_t i = 1; i <= Inner::n; ++i) {
+                            Py_XDECREF(array[i]);
+                        }
+                        delete[] array;
+
+                    } else {
+                        const auto& args = impl::unpack_arg<Inner::args_idx>(
+                            std::forward<Values>(values)...
+                        );
+                        const auto& kwargs = impl::unpack_arg<Inner::kwargs_idx>(
+                            std::forward<Values>(values)...
+                        );
+                        size_t nargs = Inner::n - 2 + std::size(args) + std::size(kwargs);
+                        PyObject** array = new PyObject*[nargs + 1];
+                        array[0] = nullptr;
+                        PyObject* kwnames = PyTuple_New(Inner::n_kw + std::size(kwargs));
+                        (
+                            cpp_to_python<Is>(
+                                kwnames,
+                                array,
+                                std::forward<Values>(values)...
+                            ),
+                            ...
+                        );
+                        size_t npos = Inner::n - 2 - Inner::n_kw + std::size(args);
+                        result = PyObject_Vectorcall(
+                            func,
+                            array,
+                            npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
+                            kwnames
+                        );
+                        for (size_t i = 1; i <= Inner::n; ++i) {
+                            Py_XDECREF(array[i]);
+                        }
+                        delete[] array;
+                    }
+
+                    // A null return value indicates an error
+                    if (result == nullptr) {
+                        Exception::from_python();
+                    }
+                    return result;  // will be None if the function returns void
+                }(
+                    std::make_index_sequence<Outer::n>{},
+                    func,
+                    std::forward<Values>(values)...
+                );
             }
 
         };
@@ -2271,40 +2445,67 @@ namespace impl {
     /* Introspect the proper signature for a py::Function instance from a generic
     function pointer, reference, or object, such as a lambda type. */
     template <typename R, typename... A>
-    struct Signature<R(A...)> {
+    struct Signature<R(A...)> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = false;
         static constexpr bool has_noexcept = false;
-        using type = R(*)(A...);
         using Return = R;
         using Self = void;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(*)(A...);
+        template <typename R2>
+        using with_return = R2(A...);
+        template <typename C>
+        using with_self = std::conditional_t<
+            std::is_void_v<C>,
+            R(A...),
+            R(C::*)(A...)
+        >;
+        template <typename... A2>
+        using with_args = R(A2...);
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, A...>;
     };
     template <typename R, typename... A>
-    struct Signature<R(A...) noexcept> {
+    struct Signature<R(A...) noexcept> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = false;
         static constexpr bool has_noexcept = true;
-        using type = R(*)(A...);
         using Return = R;
         using Self = void;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(*)(A...);
+        template <typename R2>
+        using with_return = R2(A...) noexcept;
+        template <typename C>
+        using with_self = std::conditional_t<
+            std::is_void_v<C>,
+            R(A...) noexcept,
+            R(C::*)(A...) noexcept
+        >;
+        template <typename... A2>
+        using with_args = R(A2...) noexcept;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, A...>;
     };
     template <typename R, typename... A>
-    struct Signature<R(*)(A...)> {
+    struct Signature<R(*)(A...)> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = false;
         static constexpr bool has_noexcept = false;
-        using type = R(*)(A...);
         using Return = R;
         using Self = void;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(*)(A...);
+        template <typename R2>
+        using with_return = R2(*)(A...);
+        template <typename C>
+        using with_self = std::conditional_t<
+            std::is_void_v<C>,
+            R(*)(A...),
+            R(C::*)(A...)
+        >;
+        template <typename... A2>
+        using with_args = R(*)(A2...);
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, A...>;
     };
     template <typename R, typename... A>
     struct Signature<R(*)(A...) noexcept> {
@@ -2312,11 +2513,21 @@ namespace impl {
         static constexpr bool has_self = false;
         static constexpr bool has_noexcept = true;
         using type = R(*)(A...);
+        template <typename R2>
+        using with_return = R2(*)(A...) noexcept;
+        template <typename C>
+        using with_self = std::conditional_t<
+            std::is_void_v<C>,
+            R(*)(A...) noexcept,
+            R(C::*)(A...) noexcept
+        >;
+        template <typename... A2>
+        using with_args = R(*)(A2...) noexcept;
         using Return = R;
         using Self = void;
         using Parameters = impl::Parameters<A...>;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, A...>;
     };
     template <typename R, typename C, typename... A>
     struct Signature<R(C::*)(A...)> {
@@ -2324,203 +2535,356 @@ namespace impl {
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
         using type = R(C::*)(A...);
+        template <typename R2>
+        using with_return = R2(C::*)(A...);
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...),
+            R(C2::*)(A...)
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...);
         using Return = R;
         using Self = C&;
         using Parameters = impl::Parameters<A...>;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) &> {
+    struct Signature<R(C::*)(A...) &> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
+        using Return = R;
+        using Self = C&;
         using type = R(C::*)(A...);
-        using Return = R;
-        using Self = C&;
-        using Parameters = impl::Parameters<A...>;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) &;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...),
+            R(C2::*)(A...) &
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) &;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) noexcept> {
+    struct Signature<R(C::*)(A...) noexcept> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
+        using Return = R;
+        using Self = C&;
         using type = R(C::*)(A...);
-        using Return = R;
-        using Self = C&;
-        using Parameters = impl::Parameters<A...>;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) noexcept;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...) noexcept,
+            R(C2::*)(A...) noexcept
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) noexcept;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) & noexcept > {
+    struct Signature<R(C::*)(A...) & noexcept> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
+        using Return = R;
+        using Self = C&;
         using type = R(C::*)(A...);
-        using Return = R;
-        using Self = C&;
-        using Parameters = impl::Parameters<A...>;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) & noexcept;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...) noexcept,
+            R(C2::*)(A...) & noexcept
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) & noexcept;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const> {
+    struct Signature<R(C::*)(A...) const> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
-        using type = R(C::*)(A...) const;
         using Return = R;
         using Self = const C&;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(C::*)(A...) const;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) const;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...),
+            R(C2::*)(A...) const
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) const;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const &> {
+    struct Signature<R(C::*)(A...) const &> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
-        using type = R(C::*)(A...) const;
         using Return = R;
         using Self = const C&;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(C::*)(A...) const;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) const &;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...),
+            R(C2::*)(A...) const &
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) const &;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const noexcept> {
+    struct Signature<R(C::*)(A...) const noexcept> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
-        using type = R(C::*)(A...) const;
         using Return = R;
         using Self = const C&;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(C::*)(A...) const;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) const noexcept;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...) noexcept,
+            R(C2::*)(A...) const noexcept
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) const noexcept;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const & noexcept> {
+    struct Signature<R(C::*)(A...) const & noexcept> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
-        using type = R(C::*)(A...) const;
         using Return = R;
         using Self = const C&;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(C::*)(A...) const;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) const & noexcept;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...) noexcept,
+            R(C2::*)(A...) const & noexcept
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) const & noexcept;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile> {
+    struct Signature<R(C::*)(A...) volatile> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
-        using type = R(C::*)(A...) volatile;
         using Return = R;
         using Self = volatile C&;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(C::*)(A...) volatile;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) volatile;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...),
+            R(C2::*)(A...) volatile
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) volatile;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile &> {
+    struct Signature<R(C::*)(A...) volatile &> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
-        using type = R(C::*)(A...) volatile;
         using Return = R;
         using Self = volatile C&;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(C::*)(A...) volatile;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) volatile &;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...),
+            R(C2::*)(A...) volatile &
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) volatile &;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile noexcept> {
+    struct Signature<R(C::*)(A...) volatile noexcept> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
-        using type = R(C::*)(A...) volatile;
         using Return = R;
         using Self = volatile C&;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(C::*)(A...) volatile;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) volatile noexcept;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...) noexcept,
+            R(C2::*)(A...) volatile noexcept
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) volatile noexcept;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile & noexcept> {
+    struct Signature<R(C::*)(A...) volatile & noexcept> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
-        using type = R(C::*)(A...) volatile;
         using Return = R;
         using Self = volatile C&;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(C::*)(A...) volatile;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) volatile & noexcept;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...) noexcept,
+            R(C2::*)(A...) volatile & noexcept
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) volatile & noexcept;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile> {
+    struct Signature<R(C::*)(A...) const volatile> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
-        using type = R(C::*)(A...) const volatile;
         using Return = R;
         using Self = const volatile C&;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(C::*)(A...) const volatile;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) const volatile;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...),
+            R(C2::*)(A...) const volatile
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) const volatile;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile &> {
+    struct Signature<R(C::*)(A...) const volatile &> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
-        using type = R(C::*)(A...) const volatile;
         using Return = R;
         using Self = const volatile C&;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(C::*)(A...) const volatile;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) const volatile &;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...),
+            R(C2::*)(A...) const volatile &
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) const volatile &;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile noexcept> {
+    struct Signature<R(C::*)(A...) const volatile noexcept> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
-        using type = R(C::*)(A...) const volatile;
         using Return = R;
         using Self = const volatile C&;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(C::*)(A...) const volatile;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) const volatile noexcept;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...) noexcept,
+            R(C2::*)(A...) const volatile noexcept
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) const volatile noexcept;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile & noexcept> {
+    struct Signature<R(C::*)(A...) const volatile & noexcept> : impl::Parameters<A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
-        using type = R(C::*)(A...) const volatile;
         using Return = R;
         using Self = const volatile C&;
-        using Parameters = impl::Parameters<A...>;
+        using type = R(C::*)(A...) const volatile;
+        template <typename R2>
+        using with_return = R2(C::*)(A...) const volatile & noexcept;
+        template <typename C2>
+        using with_self = std::conditional_t<
+            std::is_void_v<C2>,
+            R(*)(A...) noexcept,
+            R(C2::*)(A...) const volatile & noexcept
+        >;
+        template <typename... A2>
+        using with_args = R(C::*)(A2...) const volatile & noexcept;
         template <typename Func>
-        static constexpr bool matches = std::is_invocable_r_v<R, Func, Self, A...>;
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <impl::has_call_operator T>
-    struct Signature<T> {
+    struct Signature<T> : Signature<decltype(&T::operator())>::Parameters {
+        /// TODO: what about member functions?  The lambda's call operator will always
+        /// use the lambda type?
+        /// -> What I probably need is a template helper that removes the enclosing
+        /// class from a member function pointer, so that this will never forward to a
+        /// member specialization.
         static constexpr bool enable = Signature<decltype(&T::operator())>::enable;
         static constexpr bool has_self = Signature<decltype(&T::operator())>::has_self;
         static constexpr bool has_noexcept = Signature<decltype(&T::operator())>::has_noexcept;
         using type = Signature<decltype(&T::operator())>::type;
-        using Return = Signature<decltype(&T::operator())>::Return;
-        using Self = Signature<decltype(&T::operator())>::Self;
-        using Parameters = Signature<decltype(&T::operator())>::Parameters;
+        template <typename R>
+        using with_return = Signature<decltype(&T::operator())>::template with_return<R>;
+        template <typename C>
+        using with_self = Signature<decltype(&T::operator())>::template with_self<C>;
+        template <typename... A>
+        using with_args = Signature<decltype(&T::operator())>::template with_args<A...>;
         template <typename Func>
-        static constexpr bool matches = Signature<decltype(&T::operator())>::template matches<Func>;
+        static constexpr bool compatible = Signature<decltype(&T::operator())>::template compatible<Func>;
     };
 
 }
@@ -2554,6 +2918,24 @@ namespace impl {
 /// callable objects, which may be implemented using static syntax.
 
 
+/// TODO: I actually can't create a static wrapper around a member function pointer
+/// because I can't capture the member function within the static function.  What I can
+/// do is outlaw passing member functions entirely, and force the user to always
+/// provide a static version, with the self argument explicitly specified.  I can still
+/// do a pointer optimization for this case, as long as the function can be converted to
+/// such a pointer, but ALL other cases will have to use std::function instead.
+
+
+/// TODO: I would also need some way to disambiguate static functions from member
+/// functions when doing CTAD.  This is probably accomplished by providing an extra
+/// argument to the constructor which holds the `self` value, and is implicitly
+/// convertible to the function's first parameter type.  In that case, the CTAD
+/// guide would always deduce to a member function over a static function.  If the
+/// extra argument is given and is not convertible to the first parameter type, then
+/// we issue a compile error, and if the extra argument is not given at all, then we
+/// interpret it as a static function.
+
+
 template <typename F> requires (impl::Signature<F>::enable)
 struct Interface<Function<F>> : impl::FunctionTag {
     static_assert(impl::Signature<F>::valid, "invalid function signature");
@@ -2570,166 +2952,185 @@ struct Interface<Function<F>> : impl::FunctionTag {
 
     /* A type holding the function's default values, which are inferred from the input
     signature and stored as a `std::tuple`. */
-    using Defaults = impl::Signature<F>::Parameters::Defaults;
+    using Defaults = impl::Signature<F>::Defaults;
+
+    /* Instantiate a new function type with the same arguments, but a different return
+    type. */
+    template <typename R>
+    using with_return = Function<typename impl::Signature<F>::template with_return<R>>;
+
+    /* Instantiate a new function type with the same return type, but different
+    arguments. */
+    template <typename... A>
+    using with_args = Function<typename impl::Signature<F>::template with_args<A...>>;
+
+    /* Instantiate a new function type with the same return type and arguments, but
+    bound to a particular type. */
+    template <typename C>
+    using with_self = Function<typename impl::Signature<F>::template with_self<C>>;
+
+    /* Check whether a target function can be called with this function signature, i.e.
+    that it can be invoked with this function's parameters and returns a type that
+    can be converted to this function's return type. */
+    template <typename Func>
+    static constexpr bool compatible = impl::Signature<F>::template compatible<Func>;
+
+    /* Check whether the function is invocable with the given arguments at
+    compile-time. */
+    template <typename... Args>
+    static constexpr bool invocable = impl::Signature<F>::template Bind<Args...>::enable;
 
     /* The total number of arguments that the function accepts, not counting `self`. */
-    static constexpr size_t n = impl::Signature<F>::Parameters::n;
+    static constexpr size_t n = impl::Signature<F>::n;
 
     /* The total number of positional arguments that the function accepts, counting
     both positional-or-keyword and positional-only arguments, but not keyword-only,
     variadic positional or keyword arguments, or `self`. */
-    static constexpr size_t n_pos = impl::Signature<F>::Parameters::n_pos;
+    static constexpr size_t n_pos = impl::Signature<F>::n_pos;
 
     /* The total number of positional-only arguments that the function accepts. */
-    static constexpr size_t n_posonly = impl::Signature<F>::Parameters::n_posonly;
+    static constexpr size_t n_posonly = impl::Signature<F>::n_posonly;
 
     /* The total number of keyword arguments that the function accepts, counting
     both positional-or-keyword and keyword-only arguments, but not positional-only or
     variadic positional or keyword arguments, or `self`. */
-    static constexpr size_t n_kw = impl::Signature<F>::Parameters::n_kw;
+    static constexpr size_t n_kw = impl::Signature<F>::n_kw;
 
     /* The total number of keyword-only arguments that the function accepts. */
-    static constexpr size_t n_kwonly = impl::Signature<F>::Parameters::n_kwonly;
+    static constexpr size_t n_kwonly = impl::Signature<F>::n_kwonly;
 
     /* The total number of optional arguments that are present in the function
     signature, including both positional and keyword arguments. */
-    static constexpr size_t n_opt = impl::Signature<F>::Parameters::n_opt;
+    static constexpr size_t n_opt = impl::Signature<F>::n_opt;
 
     /* The total number of optional positional arguments that the function accepts,
     counting both positional-only and positional-or-keyword arguments, but not
     keyword-only or variadic positional or keyword arguments, or `self`. */
-    static constexpr size_t n_opt_pos = impl::Signature<F>::Parameters::n_opt_pos;
+    static constexpr size_t n_opt_pos = impl::Signature<F>::n_opt_pos;
 
     /* The total number of optional positional-only arguments that the function
     accepts. */
-    static constexpr size_t n_opt_posonly = impl::Signature<F>::Parameters::n_opt_posonly;
+    static constexpr size_t n_opt_posonly = impl::Signature<F>::n_opt_posonly;
 
     /* The total number of optional keyword arguments that the function accepts,
     counting both keyword-only and positional-or-keyword arguments, but not
     positional-only or variadic positional or keyword arguments, or `self`. */
-    static constexpr size_t n_opt_kw = impl::Signature<F>::Parameters::n_opt_kw;
+    static constexpr size_t n_opt_kw = impl::Signature<F>::n_opt_kw;
 
     /* The total number of optional keyword-only arguments that the function
     accepts. */
-    static constexpr size_t n_opt_kwonly = impl::Signature<F>::Parameters::n_opt_kwonly;
+    static constexpr size_t n_opt_kwonly = impl::Signature<F>::n_opt_kwonly;
 
     /* Check if the named argument is present in the function signature. */
     template <StaticStr Name>
-    static constexpr bool has = impl::Signature<F>::Parameters::template has<Name>;
+    static constexpr bool has = impl::Signature<F>::template has<Name>;
 
     /* Check if the function accepts any positional arguments, counting both
     positional-or-keyword and positional-only arguments, but not keyword-only,
     variadic positional or keyword arguments, or `self`. */
-    static constexpr bool has_pos = impl::Signature<F>::Parameters::has_pos;
+    static constexpr bool has_pos = impl::Signature<F>::has_pos;
 
     /* Check if the function accepts any positional-only arguments. */
-    static constexpr bool has_posonly = impl::Signature<F>::Parameters::has_posonly;
+    static constexpr bool has_posonly = impl::Signature<F>::has_posonly;
 
     /* Check if the function accepts any keyword arguments, counting both
     positional-or-keyword and keyword-only arguments, but not positional-only or
     variadic positional or keyword arguments, or `self`. */
-    static constexpr bool has_kw = impl::Signature<F>::Parameters::has_kw;
+    static constexpr bool has_kw = impl::Signature<F>::has_kw;
 
     /* Check if the function accepts any keyword-only arguments. */
-    static constexpr bool has_kwonly = impl::Signature<F>::Parameters::has_kwonly;
+    static constexpr bool has_kwonly = impl::Signature<F>::has_kwonly;
 
     /* Check if the function accepts at least one optional argument. */
-    static constexpr bool has_opt = impl::Signature<F>::Parameters::has_opt;
+    static constexpr bool has_opt = impl::Signature<F>::has_opt;
 
     /* Check if the function accepts at least one optional positional argument.  This
     will match either positional-or-keyword or positional-only arguments. */
-    static constexpr bool has_opt_pos = impl::Signature<F>::Parameters::has_opt_pos;
+    static constexpr bool has_opt_pos = impl::Signature<F>::has_opt_pos;
 
     /* Check if the function accepts at least one optional positional-only argument. */
-    static constexpr bool has_opt_posonly = impl::Signature<F>::Parameters::has_opt_posonly;
+    static constexpr bool has_opt_posonly = impl::Signature<F>::has_opt_posonly;
 
     /* Check if the function accepts at least one optional keyword argument.  This will
     match either positional-or-keyword or keyword-only arguments. */
-    static constexpr bool has_opt_kw = impl::Signature<F>::Parameters::has_opt_kw;
+    static constexpr bool has_opt_kw = impl::Signature<F>::has_opt_kw;
 
     /* Check if the function accepts at least one optional keyword-only argument. */
-    static constexpr bool has_opt_kwonly = impl::Signature<F>::Parameters::has_opt_kwonly;
+    static constexpr bool has_opt_kwonly = impl::Signature<F>::has_opt_kwonly;
 
     /* Check if the function has a `self` parameter, indicating that it can be called
     as a member function. */
     static constexpr bool has_self = impl::Signature<F>::has_self;
 
     /* Check if the function accepts variadic positional arguments. */
-    static constexpr bool has_args = impl::Signature<F>::Parameters::has_args;
+    static constexpr bool has_args = impl::Signature<F>::has_args;
 
     /* Check if the function accepts variadic keyword arguments. */
-    static constexpr bool has_kwargs = impl::Signature<F>::Parameters::has_kwargs;
+    static constexpr bool has_kwargs = impl::Signature<F>::has_kwargs;
 
     /* Find the index of the named argument, if it is present. */
     template <StaticStr Name> requires (has<Name>)
-    static constexpr size_t idx = impl::Signature<F>::Parameters::template idx<Name>;
+    static constexpr size_t idx = impl::Signature<F>::template idx<Name>;
 
     /* Find the index of the first keyword argument that appears in the function
     signature.  This will match either a positional-or-keyword argument or a
     keyword-only argument.  If no such argument is present, this will return `n`. */
-    static constexpr size_t kw_idx = impl::Signature<F>::Parameters::kw_index;
+    static constexpr size_t kw_idx = impl::Signature<F>::kw_index;
 
     /* Find the index of the first keyword-only argument that appears in the function
     signature.  If no such argument is present, this will return `n`. */
-    static constexpr size_t kwonly_idx = impl::Signature<F>::Parameters::kw_only_index;
+    static constexpr size_t kwonly_idx = impl::Signature<F>::kw_only_index;
 
     /* Find the index of the first optional argument in the function signature.  If no
     such argument is present, this will return `n`. */
-    static constexpr size_t opt_idx = impl::Signature<F>::Parameters::opt_index;
+    static constexpr size_t opt_idx = impl::Signature<F>::opt_index;
 
     /* Find the index of the first optional positional argument in the function
     signature.  This will match either a positional-or-keyword argument or a
     positional-only argument.  If no such argument is present, this will return `n`. */
-    static constexpr size_t opt_pos_idx = impl::Signature<F>::Parameters::opt_pos_index;
+    static constexpr size_t opt_pos_idx = impl::Signature<F>::opt_pos_index;
 
     /* Find the index of the first optional positional-only argument in the function
     signature.  If no such argument is present, this will return `n`. */
-    static constexpr size_t opt_posonly_idx = impl::Signature<F>::Parameters::opt_posonly_index;
+    static constexpr size_t opt_posonly_idx = impl::Signature<F>::opt_posonly_index;
 
     /* Find the index of the first optional keyword argument in the function signature.
     This will match either a positional-or-keyword argument or a keyword-only argument.
     If no such argument is present, this will return `n`. */
-    static constexpr size_t opt_kw_idx = impl::Signature<F>::Parameters::opt_kw_index;
+    static constexpr size_t opt_kw_idx = impl::Signature<F>::opt_kw_index;
 
     /* Find the index of the first optional keyword-only argument in the function
     signature.  If no such argument is present, this will return `n`. */
-    static constexpr size_t opt_kwonly_idx = impl::Signature<F>::Parameters::opt_kwonly_index;
+    static constexpr size_t opt_kwonly_idx = impl::Signature<F>::opt_kwonly_index;
 
     /* Find the index of the variadic positional arguments in the function signature,
     if they are present.  If no such argument is present, this will return `n`. */
-    static constexpr size_t args_idx = impl::Signature<F>::Parameters::args_index;
+    static constexpr size_t args_idx = impl::Signature<F>::args_index;
 
     /* Find the index of the variadic keyword arguments in the function signature, if
     they are present.  If no such argument is present, this will return `n`. */
-    static constexpr size_t kwargs_idx = impl::Signature<F>::Parameters::kwargs_index;
+    static constexpr size_t kwargs_idx = impl::Signature<F>::kwargs_index;
 
     /* Get the (possibly annotated) type of the argument at index I of the function's
     signature. */
     template <size_t I> requires (I < n)
-    using at = impl::Signature<F>::Parameters::template at<I>;
+    using at = impl::Signature<F>::template at<I>;
 
     /* Get the type of the positional argument at index I. */
     template <size_t I> requires (I < args_idx && I < kwonly_idx)
-    using Arg = impl::Signature<F>::Parameters::template Arg<I>;
+    using Arg = impl::Signature<F>::template Arg<I>;
 
     /* Get the type of the named keyword argument. */
     template <StaticStr Name> requires (has<Name>)
-    using Kwarg = impl::Signature<F>::Parameters::template Kwarg<Name>;
+    using Kwarg = impl::Signature<F>::template Kwarg<Name>;
 
     /* Get the type expected by the function's variadic positional arguments, or void
     if it does not accept variadic positional arguments. */
-    using Args = impl::Signature<F>::Parameters::Args;
+    using Args = impl::Signature<F>::Args;
 
     /* Get the type expected by the function's variadic keyword arguments, or void if
     it does not accept variadic keyword arguments. */
-    using Kwargs = impl::Signature<F>::Parameters::Kwargs;
-
-    /// TODO: add an invocable<> predicate to check if the function can be called with
-    /// the given arguments.
-
-
-
-
+    using Kwargs = impl::Signature<F>::Kwargs;
 
     /* Call an external C++ function that matches the target signature using
     Python-style arguments.  The default values (if any) must be provided as an
@@ -2739,22 +3140,75 @@ struct Interface<Function<F>> : impl::FunctionTag {
     This helper has no runtime overhead over a traditional C++ function call, not
     counting any implicit logic when constructing default values. */
     template <typename Func, typename... Args>
-        requires (
-            impl::Signature<F>::template matches<Func> &&
-            impl::Signature<F>::Parameters::template Bind<Args...>::enable
-        )
-    static Return invoke(const Defaults& defaults, Func&& func, Args&&... args);
+        requires (compatible<Func> && invocable<Args...>)
+    static Return invoke(const Defaults& defaults, Func&& func, Args&&... args) {
+        using Call = impl::Signature<F>::template Bind<Args...>;
+        return Call{}(
+            defaults,
+            std::forward<Func>(func),
+            std::forward<Args>(args)...
+        );
+    }
 
     /* Call an external Python function using Python-style arguments.  The optional
-    `Return` template parameter specifies an intermediate return type, which is used to
-    interpret the result of the raw CPython call.  The intermediate result will then be
-    implicitly converted to the function's final return type, triggering type safety
-    checks along the way.  The default value is `Object`, which always incurs a check
-    on conversion.  If the exact return type is known in advance, then setting `Return`
-    equal to that type will avoid any extra checks at the expense of safety.  */
-    template <typename Return = Object, typename... Args>
-        requires (impl::Signature<F>::Parameters::template Bind<Args...>::enable)
-    static Return invoke(PyObject* func, Args&&... args);
+    `R` template parameter specifies an interim return type, which is used to interpret
+    the result of the raw CPython call.  The interim result will then be implicitly
+    converted to the function's final return type.  The default value is `Object`,
+    which incurs an additional dynamic type check on conversion.  If the exact return
+    type is known in advance, then setting `R` equal to that type will avoid any extra
+    checks or conversions at the expense of safety if that type is incorrect.  */
+    template <typename R = Object, typename... Args> requires (invocable<Args...>)
+    static Return invoke(PyObject* func, Args&&... args) {
+        static_assert(
+            !std::is_reference_v<R>,
+            "Interim return type must not be a reference"
+        );
+        static_assert(
+            std::derived_from<R, Object>,
+            "Interim return type must be a subclass of Object"
+        );
+
+        /// TODO: this type check gets wierd.  I'll have to revisit it when I immerse
+        /// myself in the type system again.  I need a way to traverse from
+        /// `Type<Function>` to the parent template interface, so this has the lowest
+        /// overhead possible.
+
+        // bypass the Python interpreter if the function is an instance of the coupled
+        // function type, which guarantees that the template signatures exactly match
+        if (PyType_IsSubtype(Py_TYPE(func), &PyFunction::type)) {
+            PyFunction* func = reinterpret_cast<PyFunction*>(ptr(func));
+            if constexpr (std::is_void_v<Return>) {
+                invoke(
+                    func->defaults,
+                    func->func,
+                    std::forward<Source>(args)...
+                );
+            } else {
+                return invoke(
+                    func->defaults,
+                    func->func,
+                    std::forward<Source>(args)...
+                );
+            }
+        }
+
+        using Call = impl::Signature<F>::template Bind<Args...>;
+        PyObject* result = Call{}(
+            func,
+            std::forward<Args>(args)...
+        );
+
+        // Python void functions return a reference to None, which we must release
+        if constexpr (std::is_void_v<Return>) {
+            Py_DECREF(result);
+        } else {
+            return reinterpret_steal<R>(result);
+        }
+    }
+
+    /// TODO: when getting and setting these properties, do I need to use an Attr
+    /// proxy?
+
 
     __declspec(property(get=_get_name, put=_set_name)) std::string __name__;
     [[nodiscard]] std::string _get_name(this const auto& self);
@@ -3182,41 +3636,6 @@ protected:
     static_assert(impl::Signature<Target...>::valid);
 
 public:
-
-    /// TODO: perhaps these should be placed in the interface for each specialization.
-
-    /* The total number of arguments that the function accepts, not including variadic
-    positional or keyword arguments. */
-    static constexpr size_t size = target::size - target::has_args - target::has_kwargs;
-
-    /* The number of positional-only arguments that the function accepts, not including
-    variadic positional arguments. */
-    static constexpr size_t pos_size = target::pos_count;
-
-    /* The number of keyword-only arguments that the function accepts, not including
-    variadic keyword arguments. */
-    static constexpr size_t kw_size = target::kw_only_count;
-
-    /* Indicates whether an argument with the given name is present. */
-    template <StaticStr name>
-    static constexpr bool has_arg =
-        target::template contains<name> &&
-        target::template index<name> < target::kw_only_index;
-
-    /* indicates whether a keyword argument with the given name is present. */
-    template <StaticStr name>
-    static constexpr bool has_kwarg =
-        target::template contains<name> &&
-        target::template index<name> >= target::kw_index;
-
-    /* Indicates whether the function accepts variadic positional arguments. */
-    static constexpr bool has_var_args = target::has_args;
-
-    /* Indicates whether the function accepts variadic keyword arguments. */
-    static constexpr bool has_var_kwargs = target::has_kwargs;
-
-    using Defaults = impl::Defaults<Target...>;
-
     struct __python__ : def<__python__, Function>, PyObject {
         static constexpr StaticStr __doc__ =
 R"doc(A Python wrapper around a templated C++ `std::function`.
@@ -3366,25 +3785,6 @@ check against this root type will determine whether the function is implemented 
 
     };
 
-    using ReturnType = Return;
-    using ArgTypes = std::tuple<typename impl::Param<Target>::type...>;
-    using Annotations = std::tuple<Target...>;
-
-    /* Instantiate a new function type with the same arguments but a different return
-    type. */
-    template <typename R>
-    using with_return = Function<R(Target...)>;
-
-    /* Instantiate a new function type with the same return type but different
-    argument annotations. */
-    template <typename... Ts>
-    using with_args = Function<Return(Ts...)>;
-
-    /* Template constraint that evaluates to true if this function can be called with
-    the templated argument types. */
-    template <typename... Source>
-    static constexpr bool invocable = impl::Arguments<Source...>::enable;
-
     // TODO: constructor should fail if the function type is a subclass of my root
     // function type, but not a subclass of this specific function type.  This
     // indicates a type mismatch in the function signature, which is a violation of
@@ -3410,365 +3810,6 @@ check against this root type will determine whether the function is implemented 
         std::forward<Args>(args)...
     ) {}
 
-    /// TODO: invoke() should be unified for both Python functions and C++ functions.
-    /// the python overload will take a PyObject* as the first argument, followed by
-    /// Python-style argument annotations for the call itself.  The C++ overload will
-    /// take a Defaults tuple followed by a function that is invocable with the target
-    /// signature.  There will also have to be two additional overloads for when
-    /// invoke() is called on a Python object.  If the object is implemented in C++,
-    /// unwrap it and forward to invoke() on the C++ object.  If it is implemented in
-    /// Python, get its ptr() and forward to invoke() on the Python object.
-
-    /* Call an external C++ function that matches the target signature using the
-    given defaults and Python-style arguments. */
-    template <typename Func, typename... Source>
-        requires (std::is_invocable_r_v<Return, Func, Target...> && invocable<Source...>)
-    static Return invoke(const Defaults& defaults, Func&& func, Source&&... args) {
-        return []<size_t... Is>(
-            std::index_sequence<Is...>,
-            const Defaults& defaults,
-            Func&& func,
-            Source&&... args
-        ) {
-            using source = impl::Signature<Source...>;
-
-            // NOTE: we MUST use aggregate initialization of argument proxies in order
-            // to extend the lifetime of temporaries for the duration of the function
-            // call.  This is the only guaranteed way of avoiding UB in this context.
-
-            // if there are no parameter packs, then we simply reorder the arguments
-            // and call the function directly
-            if constexpr (!source::has_args && !source::has_kwargs) {
-                if constexpr (std::is_void_v<Return>) {
-                    func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        std::forward<Source>(args)...
-                    )}...);
-                } else {
-                    return func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        std::forward<Source>(args)...
-                    )}...);
-                }
-
-            // variadic positional arguments are passed as an iterator range, which
-            // must be exhausted after the function call completes
-            } else if constexpr (source::has_args && !source::has_kwargs) {
-                auto var_args = impl::unpack_arg<source::args_index>(
-                    std::forward<Source>(args)...
-                );
-                auto iter = var_args.begin();
-                auto end = var_args.end();
-                if constexpr (std::is_void_v<Return>) {
-                    func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_args.size(),
-                        iter,
-                        end,
-                        std::forward<Source>(args)...
-                    )}...);
-                    if constexpr (!target::has_args) {
-                        impl::assert_var_args_are_consumed(iter, end);
-                    }
-                } else {
-                    decltype(auto) result = func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_args.size(),
-                        iter,
-                        end,
-                        std::forward<Source>(args)...
-                    )}...);
-                    if constexpr (!target::has_args) {
-                        impl::assert_var_args_are_consumed(iter, end);
-                    }
-                    return result;
-                }
-
-            // variadic keyword arguments are passed as a dictionary, which must be
-            // validated up front to ensure all keys are recognized
-            } else if constexpr (!source::has_args && source::has_kwargs) {
-                auto var_kwargs = impl::unpack_arg<source::kwargs_index>(
-                    std::forward<Source>(args)...
-                );
-                if constexpr (!target::has_kwargs) {
-                    impl::assert_var_kwargs_are_recognized<target>(
-                        std::make_index_sequence<target::size>{},
-                        var_kwargs
-                    );
-                }
-                if constexpr (std::is_void_v<Return>) {
-                    func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_kwargs,
-                        std::forward<Source>(args)...
-                    )}...);
-                } else {
-                    return func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_kwargs,
-                        std::forward<Source>(args)...
-                    )}...);
-                }
-
-            // interpose the two if there are both positional and keyword argument packs
-            } else {
-                auto var_kwargs = impl::unpack_arg<source::kwargs_index>(
-                    std::forward<Source>(args)...
-                );
-                if constexpr (!target::has_kwargs) {
-                    impl::assert_var_kwargs_are_recognized<target>(
-                        std::make_index_sequence<target::size>{},
-                        var_kwargs
-                    );
-                }
-                auto var_args = impl::unpack_arg<source::args_index>(
-                    std::forward<Source>(args)...
-                );
-                auto iter = var_args.begin();
-                auto end = var_args.end();
-                if constexpr (std::is_void_v<Return>) {
-                    func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_args.size(),
-                        iter,
-                        end,
-                        var_kwargs,
-                        std::forward<Source>(args)...
-                    )}...);
-                    if constexpr (!target::has_args) {
-                        impl::assert_var_args_are_consumed(iter, end);
-                    }
-                } else {
-                    decltype(auto) result = func({Arguments<Source...>::template cpp<Is>(
-                        defaults,
-                        var_args.size(),
-                        iter,
-                        end,
-                        var_kwargs,
-                        std::forward<Source>(args)...
-                    )}...);
-                    if constexpr (!target::has_args) {
-                        impl::assert_var_args_are_consumed(iter, end);
-                    }
-                    return result;
-                }
-            }
-        }(
-            std::make_index_sequence<target::size>{},
-            defaults,
-            std::forward<Func>(func),
-            std::forward<Source>(args)...
-        );
-    }
-
-    /* Call an external Python function using Python-style arguments.  The optional
-    `R` template parameter specifies an interim return type, which is used to interpret
-    the result of the raw CPython call.  The interim result will then be implicitly
-    converted to the function's final return type.  The default value is `Object`,
-    which incurs an additional dynamic type check on conversion.  If the exact return
-    type is known in advance, then setting `R` equal to that type will avoid any extra
-    checks or conversions at the expense of safety if that type is incorrect.  */
-    template <typename R = Object, typename... Source> requires (invocable<Source...>)
-    static Return invoke(PyObject* func, Source&&... args) {
-        static_assert(
-            std::derived_from<R, Object>,
-            "Interim return type must be a subclass of Object"
-        );
-
-        // bypass the Python interpreter if the function is an instance of the coupled
-        // function type, which guarantees that the template signatures exactly match
-        if (PyType_IsSubtype(Py_TYPE(func), &PyFunction::type)) {
-            PyFunction* func = reinterpret_cast<PyFunction*>(ptr(func));
-            if constexpr (std::is_void_v<Return>) {
-                invoke(
-                    func->defaults,
-                    func->func,
-                    std::forward<Source>(args)...
-                );
-            } else {
-                return invoke(
-                    func->defaults,
-                    func->func,
-                    std::forward<Source>(args)...
-                );
-            }
-        }
-
-        // fall back to an optimized Python call
-        return []<size_t... Is>(
-            std::index_sequence<Is...>,
-            PyObject* func,
-            Source&&... args
-        ) {
-            using source = Signature<Source...>;
-            PyObject* result;
-
-            // if there are no arguments, we can use the no-args protocol
-            if constexpr (source::size == 0) {
-                result = PyObject_CallNoArgs(func);
-
-            // if there are no variadic arguments, we can stack allocate the argument
-            // array with a fixed size
-            } else if constexpr (!source::has_args && !source::has_kwargs) {
-                // if there is only one argument, we can use the one-arg protocol
-                if constexpr (source::size == 1) {
-                    if constexpr (source::has_kw) {
-                        result = PyObject_CallOneArg(
-                            func,
-                            ptr(as_object(
-                                impl::unpack_arg<0>(std::forward<Source>(args)...).value
-                            ))
-                        );
-                    } else {
-                        result = PyObject_CallOneArg(
-                            func,
-                            ptr(as_object(
-                                impl::unpack_arg<0>(std::forward<Source>(args)...)
-                            ))
-                        );
-                    }
-
-                // if there is more than one argument, we construct a vectorcall
-                // argument array
-                } else {
-                    // PY_VECTORCALL_ARGUMENTS_OFFSET requires an extra element
-                    PyObject* array[source::size + 1];
-                    array[0] = nullptr;  // first element is reserved for 'self'
-                    PyObject* kwnames;
-                    if constexpr (source::has_kw) {
-                        kwnames = PyTuple_New(source::kw_count);
-                    } else {
-                        kwnames = nullptr;
-                    }
-                    (
-                        Arguments<Source...>::template to_python<Is>(
-                            kwnames,
-                            array,  // 1-indexed
-                            std::forward<Source>(args)...
-                        ),
-                        ...
-                    );
-                    Py_ssize_t npos = source::size - source::kw_count;
-                    result = PyObject_Vectorcall(
-                        func,
-                        array + 1,  // skip the first element
-                        npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        kwnames
-                    );
-                    for (size_t i = 1; i <= source::size; ++i) {
-                        Py_XDECREF(array[i]);  // release all argument references
-                    }
-                }
-
-            // otherwise, we have to heap-allocate the array with a variable size
-            } else if constexpr (source::has_args && !source::has_kwargs) {
-                auto var_args =
-                    impl::unpack_arg<source::args_index>(std::forward<Source>(args)...);
-                size_t nargs = source::size - 1 + var_args.size();
-                PyObject** array = new PyObject*[nargs + 1];
-                array[0] = nullptr;
-                PyObject* kwnames;
-                if constexpr (source::has_kw) {
-                    kwnames = PyTuple_New(source::kw_count);
-                } else {
-                    kwnames = nullptr;
-                }
-                (
-                    Arguments<Source...>::template to_python<Is>(
-                        kwnames,
-                        array,
-                        std::forward<Source>(args)...
-                    ),
-                    ...
-                );
-                Py_ssize_t npos = source::size - 1 - source::kw_count + var_args.size();
-                result = PyObject_Vectorcall(
-                    func,
-                    array + 1,
-                    npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                    nullptr
-                );
-                for (size_t i = 1; i <= source::size; ++i) {
-                    Py_XDECREF(array[i]);
-                }
-                delete[] array;
-
-            // The following specializations handle the cross product of
-            // positional/keyword parameter packs which differ only in initialization
-            } else if constexpr (!source::has_args && source::has_kwargs) {
-                auto var_kwargs =
-                    impl::unpack_arg<source::kwargs_index>(std::forward<Source>(args)...);
-                size_t nargs = source::size - 1 + var_kwargs.size();
-                PyObject** array = new PyObject*[nargs + 1];
-                array[0] = nullptr;
-                PyObject* kwnames = PyTuple_New(source::kw_count + var_kwargs.size());
-                (
-                    Arguments<Source...>::template to_python<Is>(
-                        kwnames,
-                        array,
-                        std::forward<Source>(args)...
-                    ),
-                    ...
-                );
-                Py_ssize_t npos = source::size - 1 - source::kw_count;
-                result = PyObject_Vectorcall(
-                    func,
-                    array + 1,
-                    npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                    kwnames
-                );
-                for (size_t i = 1; i <= source::size; ++i) {
-                    Py_XDECREF(array[i]);
-                }
-                delete[] array;
-
-            } else {
-                auto var_args =
-                    impl::unpack_arg<source::args_index>(std::forward<Source>(args)...);
-                auto var_kwargs =
-                    impl::unpack_arg<source::kwargs_index>(std::forward<Source>(args)...);
-                size_t nargs = source::size - 2 + var_args.size() + var_kwargs.size();
-                PyObject** array = new PyObject*[nargs + 1];
-                array[0] = nullptr;
-                PyObject* kwnames = PyTuple_New(source::kw_count + var_kwargs.size());
-                (
-                    Arguments<Source...>::template to_python<Is>(
-                        kwnames,
-                        array,
-                        std::forward<Source>(args)...
-                    ),
-                    ...
-                );
-                size_t npos = source::size - 2 - source::kw_count + var_args.size();
-                result = PyObject_Vectorcall(
-                    func,
-                    array + 1,
-                    npos | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                    kwnames
-                );
-                for (size_t i = 1; i <= source::size; ++i) {
-                    Py_XDECREF(array[i]);
-                }
-                delete[] array;
-            }
-
-            // A null return value indicates an error
-            if (result == nullptr) {
-                Exception::from_python();
-            }
-
-            // Python void functions return a reference to None, which we must release
-            if constexpr (std::is_void_v<Return>) {
-                Py_DECREF(result);
-            } else {
-                return reinterpret_steal<R>(result);
-            }
-        }(
-            std::make_index_sequence<sizeof...(Source)>{},
-            func,
-            std::forward<Source>(args)...
-        );
-    }
 
     /// TODO: operator() should be a specialization of __call__
 
@@ -3974,6 +4015,7 @@ struct __init__<Function<Return(Target...)>, Name, Doc, Func, Values...> {
         ));
     }
 };
+
 
 
 
