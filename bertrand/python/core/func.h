@@ -2449,162 +2449,146 @@ namespace impl {
     given, cvref-qualified type.  Passing void as the enclosing class will return the
     non-member function pointer as-is. */
     template <typename Func, typename Self>
-    struct _as_member_func;
+    struct _as_member_func {
+        static constexpr bool enable = false;
+    };
     template <typename R, typename... A, typename Self>
         requires (std::is_void_v<std::remove_cvref_t<Self>>)
     struct _as_member_func<R(*)(A...), Self> {
+        static constexpr bool enable = true;
         using type = R(*)(A...);
     };
     template <typename R, typename... A, typename Self>
         requires (std::is_void_v<std::remove_cvref_t<Self>>)
     struct _as_member_func<R(*)(A...) noexcept, Self> {
+        static constexpr bool enable = true;
         using type = R(*)(A...) noexcept;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...), Self> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...);
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...) noexcept, Self> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) noexcept;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...), Self&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) &;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...) noexcept, Self&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) & noexcept;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...), Self&&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) &&;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...) noexcept, Self&&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) && noexcept;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...), const Self> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...) noexcept, const Self> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const noexcept;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...), const Self&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const &;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...) noexcept, const Self&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const & noexcept;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...), const Self&&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const &&;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...) noexcept, const Self&&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const && noexcept;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...), volatile Self> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...) noexcept, volatile Self> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile noexcept;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...), volatile Self&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile &;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...) noexcept, volatile Self&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile & noexcept;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...), volatile Self&&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile &&;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...) noexcept, volatile Self&&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile && noexcept;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...), const volatile Self> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...) noexcept, const volatile Self> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile noexcept;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...), const volatile Self&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile &;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...) noexcept, const volatile Self&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile & noexcept;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...), const volatile Self&&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile &&;
     };
     template <typename R, typename... A, typename Self>
     struct _as_member_func<R(*)(A...) noexcept, const volatile Self&&> {
+        static constexpr bool enable = true;
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile && noexcept;
     };
     template <typename Func, typename Self>
-    using as_member_func = typename _as_member_func<Func, Self>::type;
+    using as_member_func = _as_member_func<Func, Self>::type;
 
     /* Introspect the proper signature for a py::Function instance from a generic
     function pointer, reference, or object, such as a lambda type. */
-    template <typename R, typename... A>
-    struct Signature<R(A...)> : Parameters<A...> {
-        static constexpr bool enable = true;
-        static constexpr bool has_self = false;
-        static constexpr bool has_noexcept = false;
-        static constexpr bool has_lvalue = false;
-        static constexpr bool has_rvalue = false;
-        using Return = R;
-        using Self = void;
-        using Args = Parameters<A...>;
-        using type = R(A...);
-        using to_ptr = Signature<R(*)(A...)>;
-        using to_value = Signature;
-        template <typename R2>
-        using with_return = Signature<R2(A...)>;
-        template <typename C>
-        using with_self = Signature<as_member_func<R(*)(A...), C>>;
-        template <typename... A2>
-        using with_args = Signature<R(A2...)>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, A...>;
-    };
-    template <typename R, typename... A>
-    struct Signature<R(A...) noexcept> : Parameters<A...> {
-        static constexpr bool enable = true;
-        static constexpr bool has_self = false;
-        static constexpr bool has_noexcept = true;
-        static constexpr bool has_lvalue = false;
-        static constexpr bool has_rvalue = false;
-        using Return = R;
-        using Self = void;
-        using Args = Parameters<A...>;
-        using type = R(A...) noexcept;
-        using to_ptr = Signature<R(*)(A...) noexcept>;
-        using to_value = Signature;
-        template <typename R2>
-        using with_return = Signature<R2(A...) noexcept>;
-        template <typename C>
-        using with_self = Signature<as_member_func<R(*)(A...) noexcept, C>>;
-        template <typename... A2>
-        using with_args = Signature<R(A2...) noexcept>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, A...>;
-    };
     template <typename R, typename... A>
     struct Signature<R(*)(A...)> : Parameters<A...> {
         static constexpr bool enable = true;
@@ -2620,7 +2604,7 @@ namespace impl {
         using to_value = Signature<R(A...)>;
         template <typename R2>
         using with_return = Signature<R2(*)(A...)>;
-        template <typename C>
+        template <typename C> requires (as_member_func<R(*)(A...), C>::enable)
         using with_self = Signature<as_member_func<R(*)(A...), C>>;
         template <typename... A2>
         using with_args = Signature<R(*)(A2...)>;
@@ -2642,7 +2626,7 @@ namespace impl {
         using to_value = Signature<R(A...) noexcept>;
         template <typename R2>
         using with_return = Signature<R2(*)(A...) noexcept>;
-        template <typename C>
+        template <typename C> requires (as_member_func<R(*)(A...) noexcept, C>::enable)
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C>>;
         template <typename... A2>
         using with_args = Signature<R(*)(A2...) noexcept>;
@@ -2664,7 +2648,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...)>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...)>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...), C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...)>;
@@ -2684,7 +2668,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...) noexcept>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) noexcept>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...) noexcept, C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) noexcept>;
@@ -2706,7 +2690,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...)>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) &>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...), C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) &>;
@@ -2728,7 +2712,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...) noexcept>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) & noexcept>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...) noexcept, C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) & noexcept>;
@@ -2750,7 +2734,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...)>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...), C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const>;
@@ -2772,7 +2756,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...) noexcept>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const noexcept>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...) noexcept, C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const noexcept>;
@@ -2794,7 +2778,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...)>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const &>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...), C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const &>;
@@ -2816,7 +2800,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...) noexcept>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const & noexcept>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...) noexcept, C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const & noexcept>;
@@ -2838,7 +2822,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...)>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) volatile>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...), C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) volatile>;
@@ -2860,7 +2844,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...) noexcept>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) volatile noexcept>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...) noexcept, C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) volatile noexcept>;
@@ -2882,7 +2866,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...)>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) volatile &>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...), C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) volatile &>;
@@ -2904,7 +2888,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...) noexcept>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) volatile & noexcept>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...) noexcept, C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) volatile & noexcept>;
@@ -2926,7 +2910,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...)>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const volatile>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...), C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const volatile>;
@@ -2948,7 +2932,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...) noexcept>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const volatile noexcept>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...) noexcept, C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const volatile noexcept>;
@@ -2970,7 +2954,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...)>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const volatile &>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...), C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const volatile &>;
@@ -2992,7 +2976,7 @@ namespace impl {
         using to_value = Signature<R(Self, A...) noexcept>;
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const volatile & noexcept>;
-        template <typename C2>
+        template <typename C2> requires (as_member_func<R(*)(A...) noexcept, C2>::enable)
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const volatile & noexcept>;
@@ -3000,31 +2984,7 @@ namespace impl {
         static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
     template <impl::has_call_operator T> requires (Signature<decltype(&T::operator())>::enable)
-    struct Signature<T> : Signature<decltype(&T::operator())>::template with_self<void>::Args {
-    private:
-        using Parent = Signature<decltype(&T::operator())>::template with_self<void>;
-
-    public:
-        static constexpr bool enable = true;
-        static constexpr bool has_self = false;
-        static constexpr bool has_noexcept = Parent::has_noexcept;
-        static constexpr bool has_lvalue = Parent::has_lvalue;
-        static constexpr bool has_rvalue = Parent::has_rvalue;
-        using Return = Parent::Return;
-        using Self = Parent::Self;
-        using Args = Parent::Args;
-        using type = T;  // NOTE: this points to the lambda type!
-        using to_ptr = Parent::to_ptr;
-        using to_value = Parent::to_value;
-        template <typename R>
-        using with_return = Parent::template with_return<R>;
-        template <typename C>
-        using with_self = Parent::template with_self<C>;
-        template <typename... A>
-        using with_args = Parent::template with_args<A...>;
-        template <typename Func>
-        static constexpr bool compatible = Parent::template compatible<Func>;
-    };
+    struct Signature<T> : Signature<decltype(&T::operator())>::template with_self<void> {};
 
 }
 
@@ -3034,10 +2994,6 @@ namespace impl {
 /// type.  This needs to be accounted for in the Function<> specializations, and there
 /// needs to be a separate Function<> type for each Signature specialization, so that
 /// type information is never lost.
-
-
-
-
 
 
 
@@ -3726,7 +3682,7 @@ strong type safety guarantees on the function signature and disallow invalid cal
 using template constraints.  This means that proper call syntax is automatically
 enforced throughout the codebase, in a way that allows static analyzers to give proper
 syntax highlighting and LSP support. */
-template <typename F = Object(
+template <typename F = Object(*)(
     Arg<"args", const Object&>::args,
     Arg<"kwargs", const Object&>::kwargs
 )> requires (impl::Signature<F>::enable)
@@ -4049,10 +4005,13 @@ public:
 // during implicit conversion anyways.
 
 
-
-
-template <impl::is_callable_any F, typename... D> requires (!impl::python_like<F>)
-Function(F, D...) -> Function<typename impl::GetSignature<std::decay_t<F>>::type>;
+template <
+    impl::is_callable_any Func,
+    typename... D
+> requires (!impl::python_like<Func>)
+Function(Func&&, Defaults&&...) -> Function<
+    typename impl::Signature<std::remove_reference_t<Func>>::type
+>;
 template <impl::is_callable_any F, typename... D> requires (!impl::python_like<F>)
 Function(std::string, F, D...) -> Function<
     typename impl::GetSignature<std::decay_t<F>>::type
@@ -4063,28 +4022,450 @@ Function(std::string, std::string, F, D...) -> Function<
 >;
 
 
-template <typename R, typename... A>
-struct __object__<R(A...)> : Returns<Function<R(A...)>> {};
-template <typename R, typename... A>
-struct __object__<R(*)(A...)> : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __object__<R(C::*)(A...)> : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __object__<R(C::*)(A...) noexcept> : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __object__<R(C::*)(A...) const> : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __object__<R(C::*)(A...) const noexcept> : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __object__<R(C::*)(A...) volatile> : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __object__<R(C::*)(A...) volatile noexcept> : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __object__<R(C::*)(A...) const volatile> : Returns<Function<R(A...)>> {};
-template <typename R, typename C, typename... A>
-struct __object__<R(C::*)(A...) const volatile noexcept> : Returns<Function<R(A...)>> {};
-template <typename R, typename... A>
-struct __object__<std::function<R(A...)>> : Returns<Function<R(A...)>> {};
+#define NON_MEMBER_FUNC(IN, OUT) \
+    template <typename R, typename... A> \
+    struct __object__<IN> : Returns<Function<OUT>> {};
+
+#define MEMBER_FUNC(IN, OUT) \
+    template <typename R, typename C, typename... A> \
+    struct __object__<IN> : Returns<Function<OUT>> {};
+
+#define STD_MEM_FN(IN, OUT) \
+    template <typename R, typename C, typename... A> \
+    struct __object__<decltype(std::mem_fn(std::declval<IN>()))> : Returns<Function<OUT>> {};
+
+
+NON_MEMBER_FUNC(R(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(R(&)(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(&)(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(R(&&)(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(&&)(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(R(*)(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(*)(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(R(*&)(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(*&)(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(R(*&&)(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(*&&)(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(R(*const)(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(*const)(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(R(*const&)(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(*const&)(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(R(*const&&)(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(*const&&)(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(R(*volatile)(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(*volatile)(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(R(*volatile&)(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(*volatile&)(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(R(*volatile&&)(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(*volatile&&)(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(R(*const volatile)(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(*const volatile)(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(R(*const volatile&)(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(*const volatile&)(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(R(*const volatile&&)(A...), R(*)(A...))
+NON_MEMBER_FUNC(R(*const volatile&&)(A...) noexcept, R(*)(A...) noexcept)
+NON_MEMBER_FUNC(std::function<R(A...)>, R(*)(A...))
+NON_MEMBER_FUNC(std::function<R(A...)>&, R(*)(A...))
+NON_MEMBER_FUNC(std::function<R(A...)>&&, R(*)(A...))
+NON_MEMBER_FUNC(const std::function<R(A...)>, R(*)(A...))
+NON_MEMBER_FUNC(const std::function<R(A...)>&, R(*)(A...))
+NON_MEMBER_FUNC(const std::function<R(A...)>&&, R(*)(A...))
+NON_MEMBER_FUNC(volatile std::function<R(A...)>, R(*)(A...))
+NON_MEMBER_FUNC(volatile std::function<R(A...)>&, R(*)(A...))
+NON_MEMBER_FUNC(volatile std::function<R(A...)>&&, R(*)(A...))
+NON_MEMBER_FUNC(const volatile std::function<R(A...)>, R(*)(A...))
+NON_MEMBER_FUNC(const volatile std::function<R(A...)>&, R(*)(A...))
+NON_MEMBER_FUNC(const volatile std::function<R(A...)>&&, R(*)(A...))
+MEMBER_FUNC(R(C::*)(A...), R(C::*)(A...))
+MEMBER_FUNC(R(C::*)(A...) noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*)(A...) &, R(C::*)(A...))
+MEMBER_FUNC(R(C::*)(A...) & noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*)(A...) const, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*)(A...) const noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*)(A...) const &, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*)(A...) volatile, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*)(A...) volatile &, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*)(A...) const volatile, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*)(A...) const volatile &, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*&)(A...), R(C::*)(A...))
+MEMBER_FUNC(R(C::*&)(A...) noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*&)(A...) &, R(C::*)(A...))
+MEMBER_FUNC(R(C::*&)(A...) & noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*&)(A...) const, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*&)(A...) const &, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*&)(A...) volatile, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*&)(A...) volatile &, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*&)(A...) const volatile, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*&)(A...) const volatile &, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*&&)(A...), R(C::*)(A...))
+MEMBER_FUNC(R(C::*&&)(A...) noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*&&)(A...) &, R(C::*)(A...))
+MEMBER_FUNC(R(C::*&&)(A...) & noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*&&)(A...) const, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*&&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*&&)(A...) const &, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*&&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*&&)(A...) volatile, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*&&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*&&)(A...) volatile &, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*&&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*&&)(A...) const volatile, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*&&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*&&)(A...) const volatile &, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*&&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*const)(A...), R(C::*)(A...))
+MEMBER_FUNC(R(C::*const)(A...) noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*const)(A...) &, R(C::*)(A...))
+MEMBER_FUNC(R(C::*const)(A...) & noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*const)(A...) const, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*const)(A...) const noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*const)(A...) const &, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*const)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*const)(A...) volatile, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*const)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*const)(A...) volatile &, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*const)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*const)(A...) const volatile, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*const)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*const)(A...) const volatile &, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*const)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*const&)(A...), R(C::*)(A...))
+MEMBER_FUNC(R(C::*const&)(A...) noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*const&)(A...) &, R(C::*)(A...))
+MEMBER_FUNC(R(C::*const&)(A...) & noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*const&)(A...) const, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*const&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*const&)(A...) const &, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*const&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*const&)(A...) volatile, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*const&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*const&)(A...) volatile &, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*const&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*const&)(A...) const volatile, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*const&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*const&)(A...) const volatile &, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*const&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*const&&)(A...), R(C::*)(A...))
+MEMBER_FUNC(R(C::*const&&)(A...) noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*const&&)(A...) &, R(C::*)(A...))
+MEMBER_FUNC(R(C::*const&&)(A...) & noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*const&&)(A...) const, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*const&&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*const&&)(A...) const &, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*const&&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*const&&)(A...) volatile, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*const&&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*const&&)(A...) volatile &, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*const&&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*const&&)(A...) const volatile, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*const&&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*const&&)(A...) const volatile &, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*const&&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*volatile)(A...), R(C::*)(A...))
+MEMBER_FUNC(R(C::*volatile)(A...) noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*volatile)(A...) &, R(C::*)(A...))
+MEMBER_FUNC(R(C::*volatile)(A...) & noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*volatile)(A...) const, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*volatile)(A...) const noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*volatile)(A...) const &, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*volatile)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*volatile)(A...) volatile, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*volatile)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*volatile)(A...) volatile &, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*volatile)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*volatile)(A...) const volatile, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*volatile)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*volatile)(A...) const volatile &, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*volatile)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*volatile&)(A...), R(C::*)(A...))
+MEMBER_FUNC(R(C::*volatile&)(A...) noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*volatile&)(A...) &, R(C::*)(A...))
+MEMBER_FUNC(R(C::*volatile&)(A...) & noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*volatile&)(A...) const, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*volatile&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*volatile&)(A...) const &, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*volatile&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*volatile&)(A...) volatile, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*volatile&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*volatile&)(A...) volatile &, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*volatile&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*volatile&)(A...) const volatile, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*volatile&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*volatile&)(A...) const volatile &, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*volatile&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*volatile&&)(A...), R(C::*)(A...))
+MEMBER_FUNC(R(C::*volatile&&)(A...) noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*volatile&&)(A...) &, R(C::*)(A...))
+MEMBER_FUNC(R(C::*volatile&&)(A...) & noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*volatile&&)(A...) const, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*volatile&&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*volatile&&)(A...) const &, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*volatile&&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*volatile&&)(A...) volatile, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*volatile&&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*volatile&&)(A...) volatile &, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*volatile&&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*volatile&&)(A...) const volatile, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*volatile&&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*volatile&&)(A...) const volatile &, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*volatile&&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*const volatile)(A...), R(C::*)(A...))
+MEMBER_FUNC(R(C::*const volatile)(A...) noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*const volatile)(A...) &, R(C::*)(A...))
+MEMBER_FUNC(R(C::*const volatile)(A...) & noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*const volatile)(A...) const, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*const volatile)(A...) const noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*const volatile)(A...) const &, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*const volatile)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*const volatile)(A...) volatile, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*const volatile)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*const volatile)(A...) volatile &, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*const volatile)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*const volatile)(A...) const volatile, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*const volatile)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*const volatile)(A...) const volatile &, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*const volatile)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*const volatile&)(A...), R(C::*)(A...))
+MEMBER_FUNC(R(C::*const volatile&)(A...) noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*const volatile&)(A...) &, R(C::*)(A...))
+MEMBER_FUNC(R(C::*const volatile&)(A...) & noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*const volatile&)(A...) const, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*const volatile&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*const volatile&)(A...) const &, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*const volatile&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*const volatile&)(A...) volatile, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*const volatile&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*const volatile&)(A...) volatile &, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*const volatile&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*const volatile&)(A...) const volatile, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*const volatile&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*const volatile&)(A...) const volatile &, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*const volatile&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*const volatile&&)(A...), R(C::*)(A...))
+MEMBER_FUNC(R(C::*const volatile&&)(A...) noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*const volatile&&)(A...) &, R(C::*)(A...))
+MEMBER_FUNC(R(C::*const volatile&&)(A...) & noexcept, R(C::*)(A...) noexcept)
+MEMBER_FUNC(R(C::*const volatile&&)(A...) const, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*const volatile&&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*const volatile&&)(A...) const &, R(C::*)(A...) const)
+MEMBER_FUNC(R(C::*const volatile&&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+MEMBER_FUNC(R(C::*const volatile&&)(A...) volatile, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*const volatile&&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*const volatile&&)(A...) volatile &, R(C::*)(A...) volatile)
+MEMBER_FUNC(R(C::*const volatile&&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+MEMBER_FUNC(R(C::*const volatile&&)(A...) const volatile, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*const volatile&&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+MEMBER_FUNC(R(C::*const volatile&&)(A...) const volatile &, R(C::*)(A...) const volatile)
+MEMBER_FUNC(R(C::*const volatile&&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*)(A...), R(C::*)(A...))
+STD_MEM_FN(R(C::*)(A...) noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*)(A...) &, R(C::*)(A...))
+STD_MEM_FN(R(C::*)(A...) & noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*)(A...) const, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*)(A...) const noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*)(A...) const &, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*)(A...) volatile, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*)(A...) volatile &, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*)(A...) const volatile, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*)(A...) const volatile &, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*&)(A...), R(C::*)(A...))
+STD_MEM_FN(R(C::*&)(A...) noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*&)(A...) &, R(C::*)(A...))
+STD_MEM_FN(R(C::*&)(A...) & noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*&)(A...) const, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*&)(A...) const &, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*&)(A...) volatile, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*&)(A...) volatile &, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*&)(A...) const volatile, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*&)(A...) const volatile &, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*&&)(A...), R(C::*)(A...))
+STD_MEM_FN(R(C::*&&)(A...) noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*&&)(A...) &, R(C::*)(A...))
+STD_MEM_FN(R(C::*&&)(A...) & noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*&&)(A...) const, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*&&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*&&)(A...) const &, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*&&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*&&)(A...) volatile, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*&&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*&&)(A...) volatile &, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*&&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*&&)(A...) const volatile, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*&&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*&&)(A...) const volatile &, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*&&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*const)(A...), R(C::*)(A...))
+STD_MEM_FN(R(C::*const)(A...) noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*const)(A...) &, R(C::*)(A...))
+STD_MEM_FN(R(C::*const)(A...) & noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*const)(A...) const, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*const)(A...) const noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*const)(A...) const &, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*const)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*const)(A...) volatile, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*const)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*const)(A...) volatile &, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*const)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*const)(A...) const volatile, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*const)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*const)(A...) const volatile &, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*const)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*const&)(A...), R(C::*)(A...))
+STD_MEM_FN(R(C::*const&)(A...) noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*const&)(A...) &, R(C::*)(A...))
+STD_MEM_FN(R(C::*const&)(A...) & noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*const&)(A...) const, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*const&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*const&)(A...) const &, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*const&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*const&)(A...) volatile, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*const&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*const&)(A...) volatile &, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*const&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*const&)(A...) const volatile, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*const&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*const&)(A...) const volatile &, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*const&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*const&&)(A...), R(C::*)(A...))
+STD_MEM_FN(R(C::*const&&)(A...) noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*const&&)(A...) &, R(C::*)(A...))
+STD_MEM_FN(R(C::*const&&)(A...) & noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*const&&)(A...) const, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*const&&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*const&&)(A...) const &, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*const&&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*const&&)(A...) volatile, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*const&&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*const&&)(A...) volatile &, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*const&&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*const&&)(A...) const volatile, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*const&&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*const&&)(A...) const volatile &, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*const&&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*volatile)(A...), R(C::*)(A...))
+STD_MEM_FN(R(C::*volatile)(A...) noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*volatile)(A...) &, R(C::*)(A...))
+STD_MEM_FN(R(C::*volatile)(A...) & noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*volatile)(A...) const, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*volatile)(A...) const noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*volatile)(A...) const &, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*volatile)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*volatile)(A...) volatile, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*volatile)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*volatile)(A...) volatile &, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*volatile)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*volatile)(A...) const volatile, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*volatile)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*volatile)(A...) const volatile &, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*volatile)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*volatile&)(A...), R(C::*)(A...))
+STD_MEM_FN(R(C::*volatile&)(A...) noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*volatile&)(A...) &, R(C::*)(A...))
+STD_MEM_FN(R(C::*volatile&)(A...) & noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*volatile&)(A...) const, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*volatile&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*volatile&)(A...) const &, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*volatile&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*volatile&)(A...) volatile, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*volatile&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*volatile&)(A...) volatile &, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*volatile&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*volatile&)(A...) const volatile, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*volatile&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*volatile&)(A...) const volatile &, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*volatile&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*volatile&&)(A...), R(C::*)(A...))
+STD_MEM_FN(R(C::*volatile&&)(A...) noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*volatile&&)(A...) &, R(C::*)(A...))
+STD_MEM_FN(R(C::*volatile&&)(A...) & noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*volatile&&)(A...) const, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*volatile&&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*volatile&&)(A...) const &, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*volatile&&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*volatile&&)(A...) volatile, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*volatile&&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*volatile&&)(A...) volatile &, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*volatile&&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*volatile&&)(A...) const volatile, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*volatile&&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*volatile&&)(A...) const volatile &, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*volatile&&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*const volatile)(A...), R(C::*)(A...))
+STD_MEM_FN(R(C::*const volatile)(A...) noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*const volatile)(A...) &, R(C::*)(A...))
+STD_MEM_FN(R(C::*const volatile)(A...) & noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*const volatile)(A...) const, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*const volatile)(A...) const noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*const volatile)(A...) const &, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*const volatile)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*const volatile)(A...) volatile, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*const volatile)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*const volatile)(A...) volatile &, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*const volatile)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*const volatile)(A...) const volatile, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*const volatile)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*const volatile)(A...) const volatile &, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*const volatile)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*const volatile&)(A...), R(C::*)(A...))
+STD_MEM_FN(R(C::*const volatile&)(A...) noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*const volatile&)(A...) &, R(C::*)(A...))
+STD_MEM_FN(R(C::*const volatile&)(A...) & noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*const volatile&)(A...) const, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*const volatile&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*const volatile&)(A...) const &, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*const volatile&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*const volatile&)(A...) volatile, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*const volatile&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*const volatile&)(A...) volatile &, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*const volatile&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*const volatile&)(A...) const volatile, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*const volatile&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*const volatile&)(A...) const volatile &, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*const volatile&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*const volatile&&)(A...), R(C::*)(A...))
+STD_MEM_FN(R(C::*const volatile&&)(A...) noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*const volatile&&)(A...) &, R(C::*)(A...))
+STD_MEM_FN(R(C::*const volatile&&)(A...) & noexcept, R(C::*)(A...) noexcept)
+STD_MEM_FN(R(C::*const volatile&&)(A...) const, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*const volatile&&)(A...) const noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*const volatile&&)(A...) const &, R(C::*)(A...) const)
+STD_MEM_FN(R(C::*const volatile&&)(A...) const & noexcept, R(C::*)(A...) const noexcept)
+STD_MEM_FN(R(C::*const volatile&&)(A...) volatile, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*const volatile&&)(A...) volatile noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*const volatile&&)(A...) volatile &, R(C::*)(A...) volatile)
+STD_MEM_FN(R(C::*const volatile&&)(A...) volatile & noexcept, R(C::*)(A...) volatile noexcept)
+STD_MEM_FN(R(C::*const volatile&&)(A...) const volatile, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*const volatile&&)(A...) const volatile noexcept, R(C::*)(A...) const volatile noexcept)
+STD_MEM_FN(R(C::*const volatile&&)(A...) const volatile &, R(C::*)(A...) const volatile)
+STD_MEM_FN(R(C::*const volatile&&)(A...) const volatile & noexcept, R(C::*)(A...) const volatile noexcept)
+
+
+#undef NON_MEMBER_FUNC
+#undef MEMBER_FUNC
+#undef STD_MEM_FN
 
 
 template <typename T, typename R, typename... A>
