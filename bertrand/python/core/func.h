@@ -271,6 +271,9 @@ template <StaticStr name>
 constexpr impl::UnboundArg<name> arg {};
 
 
+/// TODO: list all the special rules of container unpacking here?
+
+
 /* Dereference operator is used to emulate Python container unpacking. */
 template <impl::python_like Self> requires (impl::iterable<Self>)
 [[nodiscard]] auto operator*(Self&& self) -> impl::ArgPack<Self> {
@@ -2446,115 +2449,115 @@ namespace impl {
     given, cvref-qualified type.  Passing void as the enclosing class will return the
     non-member function pointer as-is. */
     template <typename Func, typename Self>
-    struct _func_as_member;
+    struct _as_member_func;
     template <typename R, typename... A, typename Self>
         requires (std::is_void_v<std::remove_cvref_t<Self>>)
-    struct _func_as_member<R(*)(A...), Self> {
+    struct _as_member_func<R(*)(A...), Self> {
         using type = R(*)(A...);
     };
     template <typename R, typename... A, typename Self>
         requires (std::is_void_v<std::remove_cvref_t<Self>>)
-    struct _func_as_member<R(*)(A...) noexcept, Self> {
+    struct _as_member_func<R(*)(A...) noexcept, Self> {
         using type = R(*)(A...) noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...), Self> {
+    struct _as_member_func<R(*)(A...), Self> {
         using type = R(std::remove_cvref_t<Self>::*)(A...);
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...) noexcept, Self> {
+    struct _as_member_func<R(*)(A...) noexcept, Self> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...), Self&> {
+    struct _as_member_func<R(*)(A...), Self&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) &;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...) noexcept, Self&> {
+    struct _as_member_func<R(*)(A...) noexcept, Self&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) & noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...), Self&&> {
+    struct _as_member_func<R(*)(A...), Self&&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) &&;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...) noexcept, Self&&> {
+    struct _as_member_func<R(*)(A...) noexcept, Self&&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) && noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...), const Self> {
+    struct _as_member_func<R(*)(A...), const Self> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) const;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...) noexcept, const Self> {
+    struct _as_member_func<R(*)(A...) noexcept, const Self> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) const noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...), const Self&> {
+    struct _as_member_func<R(*)(A...), const Self&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) const &;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...) noexcept, const Self&> {
+    struct _as_member_func<R(*)(A...) noexcept, const Self&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) const & noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...), const Self&&> {
+    struct _as_member_func<R(*)(A...), const Self&&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) const &&;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...) noexcept, const Self&&> {
+    struct _as_member_func<R(*)(A...) noexcept, const Self&&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) const && noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...), volatile Self> {
+    struct _as_member_func<R(*)(A...), volatile Self> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...) noexcept, volatile Self> {
+    struct _as_member_func<R(*)(A...) noexcept, volatile Self> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...), volatile Self&> {
+    struct _as_member_func<R(*)(A...), volatile Self&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile &;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...) noexcept, volatile Self&> {
+    struct _as_member_func<R(*)(A...) noexcept, volatile Self&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile & noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...), volatile Self&&> {
+    struct _as_member_func<R(*)(A...), volatile Self&&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile &&;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...) noexcept, volatile Self&&> {
+    struct _as_member_func<R(*)(A...) noexcept, volatile Self&&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) volatile && noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...), const volatile Self> {
+    struct _as_member_func<R(*)(A...), const volatile Self> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...) noexcept, const volatile Self> {
+    struct _as_member_func<R(*)(A...) noexcept, const volatile Self> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...), const volatile Self&> {
+    struct _as_member_func<R(*)(A...), const volatile Self&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile &;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...) noexcept, const volatile Self&> {
+    struct _as_member_func<R(*)(A...) noexcept, const volatile Self&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile & noexcept;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...), const volatile Self&&> {
+    struct _as_member_func<R(*)(A...), const volatile Self&&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile &&;
     };
     template <typename R, typename... A, typename Self>
-    struct _func_as_member<R(*)(A...) noexcept, const volatile Self&&> {
+    struct _as_member_func<R(*)(A...) noexcept, const volatile Self&&> {
         using type = R(std::remove_cvref_t<Self>::*)(A...) const volatile && noexcept;
     };
     template <typename Func, typename Self>
-    using func_as_member = typename _func_as_member<Func, Self>::type;
+    using as_member_func = typename _as_member_func<Func, Self>::type;
 
     /* Introspect the proper signature for a py::Function instance from a generic
     function pointer, reference, or object, such as a lambda type. */
@@ -2574,7 +2577,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(A...)>;
         template <typename C>
-        using with_self = Signature<func_as_member<R(*)(A...), C>>;
+        using with_self = Signature<as_member_func<R(*)(A...), C>>;
         template <typename... A2>
         using with_args = Signature<R(A2...)>;
         template <typename Func>
@@ -2596,7 +2599,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(A...) noexcept>;
         template <typename C>
-        using with_self = Signature<func_as_member<R(*)(A...) noexcept, C>>;
+        using with_self = Signature<as_member_func<R(*)(A...) noexcept, C>>;
         template <typename... A2>
         using with_args = Signature<R(A2...) noexcept>;
         template <typename Func>
@@ -2618,7 +2621,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(*)(A...)>;
         template <typename C>
-        using with_self = Signature<func_as_member<R(*)(A...), C>>;
+        using with_self = Signature<as_member_func<R(*)(A...), C>>;
         template <typename... A2>
         using with_args = Signature<R(*)(A2...)>;
         template <typename Func>
@@ -2640,7 +2643,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(*)(A...) noexcept>;
         template <typename C>
-        using with_self = Signature<func_as_member<R(*)(A...) noexcept, C>>;
+        using with_self = Signature<as_member_func<R(*)(A...) noexcept, C>>;
         template <typename... A2>
         using with_args = Signature<R(*)(A2...) noexcept>;
         template <typename Func>
@@ -2662,9 +2665,29 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...)>;
         template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...), C2>>;
+        using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...)>;
+        template <typename Func>
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+    };
+    template <typename R, typename C, typename... A>
+    struct Signature<R(C::*)(A...) noexcept> : Parameters<A...> {
+        static constexpr bool enable = true;
+        static constexpr bool has_self = true;
+        static constexpr bool has_noexcept = true;
+        using Return = R;
+        using Self = C&;
+        using Args = Parameters<A...>;
+        using type = R(C::*)(A...);
+        using to_ptr = Signature<R(*)(Self, A...) noexcept>;
+        using to_value = Signature<R(Self, A...) noexcept>;
+        template <typename R2>
+        using with_return = Signature<R2(C::*)(A...) noexcept>;
+        template <typename C2>
+        using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
+        template <typename... A2>
+        using with_args = Signature<R(C::*)(A2...) noexcept>;
         template <typename Func>
         static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
@@ -2684,29 +2707,9 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) &>;
         template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...), C2>>;
+        using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) &>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
-    };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) noexcept> : Parameters<A...> {
-        static constexpr bool enable = true;
-        static constexpr bool has_self = true;
-        static constexpr bool has_noexcept = true;
-        using Return = R;
-        using Self = C&;
-        using Args = Parameters<A...>;
-        using type = R(C::*)(A...);
-        using to_ptr = Signature<R(*)(Self, A...) noexcept>;
-        using to_value = Signature<R(Self, A...) noexcept>;
-        template <typename R2>
-        using with_return = Signature<R2(C::*)(A...) noexcept>;
-        template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...) noexcept, C2>>;
-        template <typename... A2>
-        using with_args = Signature<R(C::*)(A2...) noexcept>;
         template <typename Func>
         static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
@@ -2726,7 +2729,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) & noexcept>;
         template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...) noexcept, C2>>;
+        using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) & noexcept>;
         template <typename Func>
@@ -2748,31 +2751,9 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const>;
         template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...), C2>>;
+        using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
-    };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const &> : Parameters<A...> {
-        static constexpr bool enable = true;
-        static constexpr bool has_self = true;
-        static constexpr bool has_noexcept = false;
-        static constexpr bool has_lvalue = true;
-        static constexpr bool has_rvalue = false;
-        using Return = R;
-        using Self = const C&;
-        using Args = Parameters<A...>;
-        using type = R(C::*)(A...) const;
-        using to_ptr = Signature<R(*)(Self, A...)>;
-        using to_value = Signature<R(Self, A...)>;
-        template <typename R2>
-        using with_return = Signature<R2(C::*)(A...) const &>;
-        template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...), C2>>;
-        template <typename... A2>
-        using with_args = Signature<R(C::*)(A2...) const &>;
         template <typename Func>
         static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
@@ -2792,9 +2773,31 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const noexcept>;
         template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...) noexcept, C2>>;
+        using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const noexcept>;
+        template <typename Func>
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+    };
+    template <typename R, typename C, typename... A>
+    struct Signature<R(C::*)(A...) const &> : Parameters<A...> {
+        static constexpr bool enable = true;
+        static constexpr bool has_self = true;
+        static constexpr bool has_noexcept = false;
+        static constexpr bool has_lvalue = true;
+        static constexpr bool has_rvalue = false;
+        using Return = R;
+        using Self = const C&;
+        using Args = Parameters<A...>;
+        using type = R(C::*)(A...) const;
+        using to_ptr = Signature<R(*)(Self, A...)>;
+        using to_value = Signature<R(Self, A...)>;
+        template <typename R2>
+        using with_return = Signature<R2(C::*)(A...) const &>;
+        template <typename C2>
+        using with_self = Signature<as_member_func<R(*)(A...), C2>>;
+        template <typename... A2>
+        using with_args = Signature<R(C::*)(A2...) const &>;
         template <typename Func>
         static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
@@ -2814,7 +2817,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const & noexcept>;
         template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...) noexcept, C2>>;
+        using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const & noexcept>;
         template <typename Func>
@@ -2836,31 +2839,9 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) volatile>;
         template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...), C2>>;
+        using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) volatile>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
-    };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile &> : Parameters<A...> {
-        static constexpr bool enable = true;
-        static constexpr bool has_self = true;
-        static constexpr bool has_noexcept = false;
-        static constexpr bool has_lvalue = true;
-        static constexpr bool has_rvalue = false;
-        using Return = R;
-        using Self = volatile C&;
-        using Args = Parameters<A...>;
-        using type = R(C::*)(A...) volatile;
-        using to_ptr = Signature<R(*)(Self, A...)>;
-        using to_value = Signature<R(Self, A...)>;
-        template <typename R2>
-        using with_return = Signature<R2(C::*)(A...) volatile &>;
-        template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...), C2>>;
-        template <typename... A2>
-        using with_args = Signature<R(C::*)(A2...) volatile &>;
         template <typename Func>
         static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
@@ -2880,9 +2861,31 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) volatile noexcept>;
         template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...) noexcept, C2>>;
+        using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) volatile noexcept>;
+        template <typename Func>
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+    };
+    template <typename R, typename C, typename... A>
+    struct Signature<R(C::*)(A...) volatile &> : Parameters<A...> {
+        static constexpr bool enable = true;
+        static constexpr bool has_self = true;
+        static constexpr bool has_noexcept = false;
+        static constexpr bool has_lvalue = true;
+        static constexpr bool has_rvalue = false;
+        using Return = R;
+        using Self = volatile C&;
+        using Args = Parameters<A...>;
+        using type = R(C::*)(A...) volatile;
+        using to_ptr = Signature<R(*)(Self, A...)>;
+        using to_value = Signature<R(Self, A...)>;
+        template <typename R2>
+        using with_return = Signature<R2(C::*)(A...) volatile &>;
+        template <typename C2>
+        using with_self = Signature<as_member_func<R(*)(A...), C2>>;
+        template <typename... A2>
+        using with_args = Signature<R(C::*)(A2...) volatile &>;
         template <typename Func>
         static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
@@ -2902,7 +2905,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) volatile & noexcept>;
         template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...) noexcept, C2>>;
+        using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) volatile & noexcept>;
         template <typename Func>
@@ -2924,31 +2927,9 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const volatile>;
         template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...), C2>>;
+        using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const volatile>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
-    };
-    template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile &> : Parameters<A...> {
-        static constexpr bool enable = true;
-        static constexpr bool has_self = true;
-        static constexpr bool has_noexcept = false;
-        static constexpr bool has_lvalue = true;
-        static constexpr bool has_rvalue = false;
-        using Return = R;
-        using Self = const volatile C&;
-        using Args = Parameters<A...>;
-        using type = R(C::*)(A...) const volatile;
-        using to_ptr = Signature<R(*)(Self, A...)>;
-        using to_value = Signature<R(Self, A...)>;
-        template <typename R2>
-        using with_return = Signature<R2(C::*)(A...) const volatile &>;
-        template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...), C2>>;
-        template <typename... A2>
-        using with_args = Signature<R(C::*)(A2...) const volatile &>;
         template <typename Func>
         static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
@@ -2968,9 +2949,31 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const volatile noexcept>;
         template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...) noexcept, C2>>;
+        using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const volatile noexcept>;
+        template <typename Func>
+        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+    };
+    template <typename R, typename C, typename... A>
+    struct Signature<R(C::*)(A...) const volatile &> : Parameters<A...> {
+        static constexpr bool enable = true;
+        static constexpr bool has_self = true;
+        static constexpr bool has_noexcept = false;
+        static constexpr bool has_lvalue = true;
+        static constexpr bool has_rvalue = false;
+        using Return = R;
+        using Self = const volatile C&;
+        using Args = Parameters<A...>;
+        using type = R(C::*)(A...) const volatile;
+        using to_ptr = Signature<R(*)(Self, A...)>;
+        using to_value = Signature<R(Self, A...)>;
+        template <typename R2>
+        using with_return = Signature<R2(C::*)(A...) const volatile &>;
+        template <typename C2>
+        using with_self = Signature<as_member_func<R(*)(A...), C2>>;
+        template <typename... A2>
+        using with_args = Signature<R(C::*)(A2...) const volatile &>;
         template <typename Func>
         static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
     };
@@ -2990,7 +2993,7 @@ namespace impl {
         template <typename R2>
         using with_return = Signature<R2(C::*)(A...) const volatile & noexcept>;
         template <typename C2>
-        using with_self = Signature<func_as_member<R(*)(A...) noexcept, C2>>;
+        using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const volatile & noexcept>;
         template <typename Func>
@@ -3010,7 +3013,7 @@ namespace impl {
         using Return = Parent::Return;
         using Self = Parent::Self;
         using Args = Parent::Args;
-        using type = T;
+        using type = T;  // NOTE: this points to the lambda type!
         using to_ptr = Parent::to_ptr;
         using to_value = Parent::to_value;
         template <typename R>
@@ -3021,112 +3024,6 @@ namespace impl {
         using with_args = Parent::template with_args<A...>;
         template <typename Func>
         static constexpr bool compatible = Parent::template compatible<Func>;
-    };
-
-    /* The function's Python representation, which is separated from the Functions
-    themselves to promote reuse.  This is the standard implementation, which stores
-    the function as a `std::function` wrapper, which introduces a small amount of
-    overhead. */
-    template <typename Sig>
-    struct PyFunction : PyObject {
-        using Defaults = Sig::Defaults;
-
-        std::string name;
-        std::string docstring;
-        std::function<typename Sig::to_value::type> func;
-        Defaults defaults;
-        vectorcallfunc call;
-
-        PyFunction(
-            std::string&& name,
-            std::string&& docstring,
-            std::function<typename Sig::to_value::type> func,
-            Defaults defaults
-        ) : name(std::move(name)),
-            docstring(std::move(docstring)),
-            func(std::move(func)),
-            defaults(std::move(defaults)),
-            call()  /// TODO: assign this
-        {}
-
-        /// TODO: implement Python-level call operator.
-
-    };
-
-    /* A specialization for functions and function objects that can be implicitly
-    converted to a function pointer, in which case we can avoid the `std::function`
-    wrapper and associated overhead. */
-    template <typename Sig>
-        requires (
-            !Sig::has_self &&
-            std::convertible_to<typename Sig::type, typename Sig::to_ptr::type>
-        )
-    struct PyFunction<Sig> : PyObject {
-        using Defaults = Sig::Defaults;
-
-        std::string name;
-        std::string docstring;
-        typename Sig::to_ptr::type func;
-        Defaults defaults;
-        vectorcallfunc call;
-
-        PyFunction(
-            std::string&& name,
-            std::string&& docstring,
-            typename Sig::to_ptr::type func,
-            Defaults&& defaults
-        ) : name(std::move(name)),
-            docstring(std::move(docstring)),
-            func(func),
-            defaults(std::move(defaults)),
-            call()  /// TODO: assign this
-        {}
-
-        /// TODO: implement Python-level call operator.
-
-    };
-
-    /* A specialization for member functions expecting a `self` parameter. */
-    template <typename Sig> requires (Sig::has_self)
-    struct PyFunction<Sig> : PyObject {
-        using Defaults = Sig::Defaults;
-
-        std::optional<std::remove_reference_t<typename Sig::Self>> self;
-        std::string name;
-        std::string docstring;
-        std::function<typename Sig::to_value::type> func;
-        Defaults defaults;
-        vectorcallfunc call;
-
-        PyFunction(
-            std::string&& name,
-            std::string&& docstring,
-            std::function<typename Sig::to_value::type>&& func,
-            Defaults&& defaults
-        ) : self(std::nullopt),
-            name(std::move(name)),
-            docstring(std::move(docstring)),
-            func(std::move(func)),
-            defaults(std::move(defaults)),
-            call()  /// TODO: assign this
-        {}
-
-        PyFunction(
-            std::remove_reference_t<typename Sig::Self>&& self,
-            std::string&& name,
-            std::string&& docstring,
-            std::function<typename Sig::to_value::type>&& func,
-            Defaults&& defaults
-        ) : self(std::move(self)),
-            name(std::move(name)),
-            docstring(std::move(docstring)),
-            func(std::move(func)),
-            defaults(std::move(defaults)),
-            call()  /// TODO: assign this
-        {}
-
-        /// TODO: implement Python-level call operator.
-
     };
 
 }
@@ -3143,40 +3040,6 @@ namespace impl {
 
 
 
-/// TODO: maximum efficiency would require me to implement separate overloads for
-/// py::Function based on whether you supply a function pointer or a stateless lambda
-/// which can be converted to a function pointer, in which case I store that within
-/// the Python representation and forward calls accordingly.  That would allow me to
-/// avoid type erasure, which would yield the same performance as a direct function
-/// call, with all the same inlining and optimizations that would be applied at the
-/// C++ level.  Capturing lambdas and other function objects would have to go through
-/// std::function instead, which would pay the extra indirection cost, but would still
-/// allow `py::Function` to represent both cases as greedily as possible.
-/// -> The way to implement this is to check whether the argument has a call operator,
-/// and can be implicitly converted to the function pointer type.  If so, then I can
-/// use the happy path, and will happily do so.
-/// -> Note that for member functions, I would have to store two pointers, one for the
-/// member function and another for its static equivalent, where self is passed as the
-/// first argument.  If a matching member function is passed, then I store it in the
-/// first pointer and then generate a wrapper that's stored in the second slot and
-/// simply dereferences the first pointer on the self argument.  If a static function
-/// pointer or an object that can be converted to such a pointer is given, then I
-/// store it directly in the second slot and leave the first slot null.  When the
-/// function is called, only the second slot will ever actually be used.  In the
-/// Python case, I'll check for a self argument in the vectorcall array, and in the
-/// C++ case, I would just inject the self argument into the constructor, and then
-/// pass it into the invocation function as the first argument, which calls the
-/// static function pointer and so on and so forth.  That means member functions are
-/// perfectly represented, and are constructible from both function pointers and
-/// callable objects, which may be implemented using static syntax.
-
-
-/// TODO: I actually can't create a static wrapper around a member function pointer
-/// because I can't capture the member function within the static function.  What I can
-/// do is outlaw passing member functions entirely, and force the user to always
-/// provide a static version, with the self argument explicitly specified.  I can still
-/// do a pointer optimization for this case, as long as the function can be converted to
-/// such a pointer, but ALL other cases will have to use std::function instead.
 
 
 /// TODO: I would also need some way to disambiguate static functions from member
@@ -3726,22 +3589,6 @@ struct Interface<Type<Function<F>>> {
 };
 
 
-/// TODO: this is all going to take some pretty deep thought to get correct.  Perhaps
-/// every kind of valid signature needs a separate specialization, so that the
-/// Interface<> traits always have the full template signature available to them.
-/// -> I could potentially lift the __python__ type into impl:: just below Signature
-/// in order to facilitate this.  It would have two basic forms, one which stores the
-/// function as a pointer, and the other which stores it as a std::function.  They
-/// have the same general interface otherwise, and all the function specializations
-/// would inherit from this type to avoid reimplementing everything too much.
-/// -> Maybe it's not possible to fully decouple everything, but I can at least try to
-/// avoid repeating myself as much as possible.  I might have to take a peacemeal
-/// approach to do this, though, unless I pipe in all the dependent types as template
-/// parameters, which might actually just work.  Each function specialization would
-/// probably need to write its own __export__ script, however, since I can't get
-/// access to the def<> helper from the outside.
-
-
 /* A universal function wrapper that can represent either a Python function exposed to
 C++, or a C++ function exposed to Python with equivalent semantics.  Supports keyword,
 optional, and variadic arguments through the `py::Arg` annotation.
@@ -3883,70 +3730,101 @@ template <typename F = Object(
     Arg<"args", const Object&>::args,
     Arg<"kwargs", const Object&>::kwargs
 )> requires (impl::Signature<F>::enable)
-struct Function : Function<typename impl::Signature<F>::type> {};
-
-
-/// TODO: in order to properly forward `self`, this class will need to be split into
-/// a bunch of different specializations, depending on how the self argument needs to
-/// be handled.  That will require me to move most of the shared logic into the impl::
-/// namespace.  The bound method versions might also have to implement a different
-/// Python type in order to handle the forwarding semantics.
-
-/// TODO: class methods can be indicated by a member method of Type<Wrapper>.  That
-/// would allow this mechanism to scale arbitrarily.
-
-
-/* Specialization for static functions without a bound `self` argument. */
-template <typename Return, typename... Target>
-struct Function<Return(*)(Target...)> : Object, Interface<Function<Return(*)(Target...)>> {
+struct Function : Object, Interface<Function<F>> {
 private:
-    using Interface = Interface<Function<Return(*)(Target...)>>;
 
-public:
-    struct __python__ : def<__python__, Function>, PyObject {
+    /// NOTE: The actual function type stored within the Python representation will
+    /// always explicitly list the `self` parameter first in the case of member
+    /// functions, following Python syntax.  This means that the internal function type
+    /// can subtly differ from the public template signature, but the end result will
+    /// be the same.  This translation is necessary to ensure consistent call behavior
+    /// in both languages, and to simplify the internal logic as much as possible.
+
+    /// NOTE: If the initializer can be converted to a function pointer (i.e. for
+    /// stateless lambdas or raw function pointers), then we store it as such and
+    /// avoid any overhead from `std::function`.  This means we only incur this overhead
+    /// if a capturing lambda or other functor is used which does not provide an
+    /// implicit conversion to a function pointer.  Using a tagged union to do this
+    /// introduces some overhead of its own, but is negligible compared to the overhead
+    /// of `std::function`. 
+
+    /* Implementation for non-member functions. */
+    template <typename Sig>
+    struct PyFunction : def<PyFunction<Sig>, Function>, PyObject {
         static constexpr StaticStr __doc__ =
-R"doc(A Python wrapper around a templated C++ `std::function`.
+R"doc(A Python wrapper around a C++ function.
 
 Notes
 -----
-This type is not directly instantiable from Python.  Instead, it serves as an entry
-point to the template hierarchy, which can be navigated by subscripting the type
-just like the `Callable` type hint.
+This type is not directly instantiable from Python.  Instead, it can only be accessed
+through the `bertrand.Function` template interface, which can be navigated by
+subscripting the interface similar to a `Callable` type hint.
 
 Examples
 --------
 >>> from bertrand import Function
 >>> Function[None, [int, str]]
-py::Function<void(const py::Int&, const py::Str&)>
+py::Function<void(*)(py::Int, py::Str)>
 >>> Function[int, ["x": int, "y": int]]
-py::Function<py::Int(py::Arg<"x", const py::Int&>, py::Arg<"y", const py::Int&>)>
+py::Function<py::Int(*)(py::Arg<"x", py::Int>, py::Arg<"y", py::Int>)>
+>>> Function[str, str, [str, ["maxsplit": int]]]
+py::Function<py::Str(py::Str::*)(py::Str, py::Arg<"maxsplit", py::Int>::opt)>
 
 As long as these types have been instantiated somewhere at the C++ level, then these
 accessors will resolve to a unique Python type that wraps that instantiation.  If no
-instantiation could be found, then a `TypeError` will be raised.
+C++ instantiation could be found, then a `TypeError` will be raised.
 
 Because each of these types is unique, they can be used with Python's `isinstance()`
 and `issubclass()` functions to check against the exact template signature.  A global
-check against this root type will determine whether the function is implemented in C++
-(True) or Python (False).)doc";
+check against the interface type will determine whether the function is implemented in
+C++ (True) or Python (False).
+
+TODO: explain how to properly subscript the interface and how arguments are translated
+to a corresponding C++ function signature.
+
+)doc";
 
         std::string name;
         std::string docstring;
-        std::function<Return(Target...)> func;
-        Interface::Defaults defaults;
-        vectorcallfunc vectorcall;
+        const bool is_ptr;
+        union {
+            Sig::to_ptr::type func_ptr;
+            std::function<typename Sig::to_value::type> func;
+        };
+        Sig::Defaults defaults;
+        vectorcallfunc call;
 
-        __python__(
+        PyFunction(
             std::string&& name,
             std::string&& docstring,
-            std::function<Return(Target...)>&& func,
-            Interface::Defaults&& defaults
+            Sig::to_ptr::type func,
+            Sig::Defaults&& defaults
         ) : name(std::move(name)),
             docstring(std::move(docstring)),
+            is_ptr(true),
+            func_ptr(func),
+            defaults(std::move(defaults)),
+            call(&__call__)
+        {}
+
+        PyFunction(
+            std::string&& name,
+            std::string&& docstring,
+            std::function<typename Sig::to_value::type>&& func,
+            Sig::Defaults&& defaults
+        ) : name(std::move(name)),
+            docstring(std::move(docstring)),
+            is_ptr(false),
             func(std::move(func)),
             defaults(std::move(defaults)),
-            vectorcall(&__vectorcall__)
+            call(&__call__)
         {}
+
+        ~PyFunction() {
+            if (!is_ptr) {
+                func.~function();
+            }
+        }
 
         template <StaticStr ModName>
         static Type<Function> __export__(Module<ModName> bindings) {
@@ -3955,11 +3833,8 @@ check against this root type will determine whether the function is implemented 
             /// forward reference here.
         }
 
-        /// TODO: have to do some checking to see if there's a self argument I need to
-        /// forward to.  Perhaps Function can be templated to accept member functions?
-
-        static PyObject* __vectorcall__(
-            __python__* self,
+        static PyObject* __call__(
+            PyFunction* self,
             PyObject* const* args,
             size_t nargsf,
             PyObject* kwnames
@@ -4038,9 +3913,9 @@ check against this root type will determine whether the function is implemented 
             }
         }
 
-        static PyObject* __repr__(__python__* self) {
+        static PyObject* __repr__(PyFunction* self) {
             static const std::string demangled =
-                impl::demangle(typeid(Function).name());
+                impl::demangle(typeid(Function<F>).name());
             std::string s = "<" + demangled + " at " +
                 std::to_string(reinterpret_cast<size_t>(self)) + ">";
             PyObject* string = PyUnicode_FromStringAndSize(s.c_str(), s.size());
@@ -4052,70 +3927,126 @@ check against this root type will determine whether the function is implemented 
 
     };
 
-    // TODO: constructor should fail if the function type is a subclass of my root
-    // function type, but not a subclass of this specific function type.  This
-    // indicates a type mismatch in the function signature, which is a violation of
-    // static type safety.  I can then print a helpful error message with the demangled
-    // function types which can show their differences.
-    // -> This can be implemented in the actual call operator itself, but it would be
-    // better to implement it on the constructor side.  Perhaps including it in the
-    // isinstance()/issubclass() checks would be sufficient, since those are used
-    // during implicit conversion anyways.
+    /* A specialization for member functions expecting a `self` parameter, which can
+    be supplied either during construction or dynamically at the call site according to
+    Python syntax. */
+    template <typename Sig> requires (Sig::has_self)
+    struct PyFunction<Sig> : def<PyFunction<Sig>, Function>, PyObject {
+        static constexpr StaticStr __doc__ =
+R"doc(TODO: another docstring describing member functions/methods, and how they
+differ from non-member functions.)doc";;
+
+        std::optional<std::remove_reference_t<typename Sig::Self>> self;
+        std::string name;
+        std::string docstring;
+        const bool is_ptr;
+        union {
+            Sig::to_ptr::type func_ptr;
+            std::function<typename Sig::to_value::type> func;
+        };
+        Sig::Defaults defaults;
+        vectorcallfunc call;
+
+        PyFunction(
+            std::string&& name,
+            std::string&& docstring,
+            Sig::to_ptr::type func,
+            Sig::Defaults&& defaults
+        ) : self(std::nullopt),
+            name(std::move(name)),
+            docstring(std::move(docstring)),
+            is_ptr(true),
+            func_ptr(func),
+            defaults(std::move(defaults)),
+            call(&__call__)
+        {}
+
+        PyFunction(
+            std::remove_reference_t<typename Sig::Self>&& self,
+            std::string&& name,
+            std::string&& docstring,
+            Sig::to_ptr::type func,
+            Sig::Defaults&& defaults
+        ) : self(std::move(self)),
+            name(std::move(name)),
+            docstring(std::move(docstring)),
+            is_ptr(true),
+            func_ptr(func),
+            defaults(std::move(defaults)),
+            call(&__call__)
+        {}
+
+        PyFunction(
+            std::string&& name,
+            std::string&& docstring,
+            std::function<typename Sig::to_value::type>&& func,
+            Sig::Defaults&& defaults
+        ) : self(std::nullopt),
+            name(std::move(name)),
+            docstring(std::move(docstring)),
+            is_ptr(false),
+            func(std::move(func)),
+            defaults(std::move(defaults)),
+            call(&__call__)
+        {}
+
+        PyFunction(
+            std::remove_reference_t<typename Sig::Self>&& self,
+            std::string&& name,
+            std::string&& docstring,
+            std::function<typename Sig::to_value::type>&& func,
+            Sig::Defaults&& defaults
+        ) : self(std::move(self)),
+            name(std::move(name)),
+            docstring(std::move(docstring)),
+            is_ptr(false),
+            func(std::move(func)),
+            defaults(std::move(defaults)),
+            call(&__call__)
+        {}
+
+        ~PyFunction() {
+            if (!is_ptr) {
+                func.~function();
+            }
+        }
+
+    };
+
+public:
+    using __python__ = PyFunction<impl::Signature<F>>;
 
     Function(PyObject* p, borrowed_t t) : Object(p, t) {}
     Function(PyObject* p, stolen_t t) : Object(p, t) {}
 
-    template <typename... Args> requires (implicit_ctor<Function>::template enable<Args...>)
-    Function(Args&&... args) : Object(
+    template <typename... A> requires (implicit_ctor<Function>::template enable<A...>)
+    Function(A&&... args) : Object(
         implicit_ctor<Function>{},
-        std::forward<Args>(args)...
+        std::forward<A>(args)...
     ) {}
 
-    template <typename... Args> requires (explicit_ctor<Function>::template enable<Args...>)
-    explicit Function(Args&&... args) : Object(
+    template <typename... A> requires (explicit_ctor<Function>::template enable<A...>)
+    explicit Function(A&&... args) : Object(
         explicit_ctor<Function>{},
-        std::forward<Args>(args)...
+        std::forward<A>(args)...
     ) {}
-
 };
 
 
-/* Specialization for mutable instance methods. */
-template <typename Return, typename Self, typename... Target>
-struct Function<Return(Self::*)(Target...)> :
-    Object, Interface<Function<Return(Self::*)(Target...)>>
-{
 
-};
+/// TODO: class methods can be indicated by a member method of Type<T>.  That
+/// would allow this mechanism to scale arbitrarily.
 
 
-/* Specialization for const instance methods. */
-template <typename Return, typename Self, typename... Target>
-struct Function<Return(Self::*)(Target...) const> :
-    Object, Interface<Function<Return(Self::*)(Target...) const>>
-{
-
-};
-
-
-/* Specialization for volatile instance methods. */
-template <typename Return, typename Self, typename... Target>
-struct Function<Return(Self::*)(Target...) volatile> :
-    Object, Interface<Function<Return(Self::*)(Target...) volatile>>
-{
-
-};
-
-
-/* Specialization for const volatile instance methods. */
-template <typename Return, typename Self, typename... Target>
-struct Function<Return(Self::*)(Target...) const volatile> :
-    Object, Interface<Function<Return(Self::*)(Target...) const volatile>>
-{
-
-};
-
-
+// TODO: constructor should fail if the function type is a subclass of my root
+// function type, but not a subclass of this specific function type.  This
+// indicates a type mismatch in the function signature, which is a violation of
+// static type safety.  I can then print a helpful error message with the demangled
+// function types which can show their differences.
+// -> This can be implemented in the actual call operator itself, but it would be
+// better to implement it on the constructor side.  Perhaps including it in the
+// isinstance()/issubclass() checks would be sufficient, since those are used
+// during implicit conversion anyways.
 
 
 
