@@ -5,8 +5,6 @@
 #include "except.h"
 #include "ops.h"
 #include "object.h"
-#include <cstddef>
-#include <string_view>
 
 
 /// TODO: this file should include the implementation for Object's call operator, just
@@ -3081,6 +3079,27 @@ namespace impl {
     template <impl::has_call_operator T> requires (Signature<decltype(&T::operator())>::enable)
     struct Signature<T> : Signature<decltype(&T::operator())>::template with_self<void> {};
 
+    /// TODO: I need a static parent class that serves as the template interface for
+    /// all function types, and which implements __class_getitem__ to allow for
+    /// similar class subscription syntax as for Python callables:
+    ///
+    /// Function[Foo: None, [bool, "x": int, "/", "y", "*args": float, "*", "z": str: ..., "**kwargs": type]]
+    /// 
+    /// This describes a bound method of Foo which returns void and takes a bool and
+    /// an int as positional parameters, the second of which is explicitly named "x"
+    /// (although this is ignored in the final key as a normalization).  It then
+    /// takes a positional-or-keyword argument named "y" with any type, followed by
+    /// an arbitrary number of positional arguments of type float.  Finally, it takes
+    /// a keyword-only argument named "z" with a default value, and then
+    /// an arbitrary number of keyword arguments pointing to type objects.
+
+    /// TODO: one of these signatures is going to have to be generated for each
+    /// function type, and must include at least a return type and parameter list,
+    /// which may be Function[None, []] for a void function with no arguments.
+    /// TODO: there has to also be some complex logic to make sure that type
+    /// identifiers are compatible, possibly requiring an overload of isinstance()/
+    /// issubclass() to ensure the same semantics are followed in both Python and C++.
+
 }
 
 
@@ -3798,9 +3817,80 @@ template <typename F = Object(*)(
 )> requires (impl::Signature<F>::enable)
 struct Function : Object, Interface<Function<F>> {
 private:
-    /// TODO: Lookup and trie maps now store PyTypeObject* specifically.  This should
-    /// actually be reversed, since the type might be a metaclass?
-    using Lookup = std::pair<std::string_view, PyTypeObject*>;
+
+    /* An individual entry in an overload key, which describes the expected type of a
+    single parameter, including its name, category, and whether it has a default
+    value. */
+    struct Param {
+        enum Category {
+            POS_DELIMITER,
+            KWONLY_DELIMITER,
+            POS,
+            KW,
+            KWONLY,
+            ARGS,
+            KWARGS,
+            POS_DEFAULT,
+            KW_DEFAULT,
+            KWONLY_DEFAULT,
+        };
+
+        std::string_view name;
+        Category category;
+        PyTypeObject* type;
+
+        bool delimiter() const noexcept {
+            return category < POS;
+        }
+
+        bool has_default() const noexcept {
+            return category > KWARGS;
+        }
+
+        bool pos() const noexcept {
+            return category == POS || category == POS_DEFAULT;
+        }
+
+        bool kw() const noexcept {
+            return category == KW || category == KW_DEFAULT;
+        }
+
+        bool kwonly() const noexcept {
+            return category == KWONLY || category == KWONLY_DEFAULT;
+        }
+
+        bool args() const noexcept {
+            return category == ARGS;
+        }
+
+        bool kwargs() const noexcept {
+            return category == KWARGS;
+        }
+
+        std::string description() const noexcept {
+            switch (category) {
+                case POS_DELIMITER: return "positional '/' delimiter";
+                case KWONLY_DELIMITER: return "keyword-only '*' delimiter";
+                case POS: return "positional";
+                case KW: return "keyword";
+                case KWONLY: return "keyword-only";
+                case ARGS: return "variadic positional";
+                case KWARGS: return "variadic keyword";
+                case POS_DEFAULT: return "positional with default";
+                case KW_DEFAULT: return "keyword with default";
+                case KWONLY_DEFAULT: return "keyword-only with default";
+                default: return "unknown";
+            }
+        }
+
+        size_t hash() const noexcept {
+            return impl::hash_combine(
+                std::hash<std::string_view>{}(name),
+                reinterpret_cast<size_t>(type),
+                static_cast<size_t>(category)
+            );
+        }
+    };
 
     /* Describes a single node in the function's overload trie. */
     struct Node {
@@ -3860,23 +3950,16 @@ private:
             Py_XDECREF(func);
         }
 
-        /// TODO: there should be a way to cache these results within the PyFunction
-        /// class, such that calling the function with the same arguments multiple
-        /// times will not require a full search of the trie each time.  This could
-        /// maybe be done by mixing the addresses of the argument types into a single
-        /// hash, which can very quickly be checked against a cache of previous calls.
-        /// That would be done before an argument vector can even be allocated, to
-        /// minimize overhead as much as possible, and the cache would be cleared
-        /// whenever a new overload is inserted or removed.
-        /// -> use the impl::hash_combine() function I just wrote into declarations.h
-        /// to combine the addresses of each type object for fast lookups.
+        /// TODO: perhaps search() should raise an error if the key does not fully
+        /// satisfy the function signature, regardless of whether a corresponding
+        /// overload is found.
 
         /* Topologically search the overload trie for a matching signature, starting
         from the current node.  This will recursively backtrack until a matching node
         is found or the trie is exhausted, returning nullptr on a failed search.  The
         results will be cached within the PyFunction representation to bypass this
         method on subsequent invocations. */
-        Node* search(const std::vector<Lookup>& key, size_t idx) const noexcept {
+        Node* search(const std::vector<Param>& key, size_t idx) const noexcept {
             // if we reach the end of the key, either return the current node if it is
             // terminal, or null to backtrack one level and continue searching
             if (idx == key.size()) {
@@ -3886,13 +3969,13 @@ private:
             // iterate through a topological argument map, checking `issubclass()` at
             // every index, recurring if a match is found
             constexpr auto traverse = [](
-                const std::vector<Lookup>& key,
+                const std::vector<Param>& key,
                 size_t idx,
-                const Lookup& lookup,
+                const Param& lookup,
                 const TopoMap& map
             ) -> Node* {
                 for (auto [type, node] : map) {
-                    if (Compare{}(lookup.second, type)) {
+                    if (Compare{}(lookup.type, type)) {
                         // If a match is found, increment the index and recur.  If this
                         // returns nullptr, continue searching
                         Node* result = node->search(key, idx + 1);
@@ -3904,11 +3987,11 @@ private:
                 return nullptr;
             };
 
-            const Lookup& lookup = key[idx];
-            if (lookup.first.empty()) {
+            const Param& lookup = key[idx];
+            if (lookup.name.empty()) {
                 return traverse(key, idx, lookup, positional);
             }
-            auto it = keyword.find(lookup.first);
+            auto it = keyword.find(lookup.name);
             if (it == keyword.end()) {
                 return nullptr;
             }
@@ -3933,7 +4016,7 @@ private:
 
         /* Insert a function into the overload trie, or throw a TypeError if it
         conflicts with another node and would thus be ambiguous. */
-        void insert(const std::vector<Lookup>& key, PyObject* func) {
+        void insert(const std::vector<Param>& key, PyObject* func) {
             Node* curr = this;
 
             // iterate through a topological argument map, checking for exact type
@@ -3942,15 +4025,13 @@ private:
             constexpr auto traverse = [](
                 TopoMap& map,
                 Node*& curr,
-                PyObject* type,
+                PyTypeObject* type,
                 PyObject* func
             ) -> void {
                 auto it = curr->positional.begin();
                 auto end = curr->positional.end();
                 while (it != end) {
-                    PyTypeObject* t1 = reinterpret_cast<PyTypeObject*>(it->first);
-                    PyTypeObject* t2 = reinterpret_cast<PyTypeObject*>(type);
-                    if (t1 == t2) {
+                    if (it->first == type) {
                         curr = it->second;
                         return;
                     }
@@ -3961,15 +4042,15 @@ private:
 
             // iterate through the key, inserting each argument type into the trie
             // until we reach the final node, which will store the terminal function
-            for (const Lookup& lookup : key) {
-                if (lookup.first.empty()) {
-                    traverse(curr, curr->positional, lookup.second, func);
+            for (const Param& lookup : key) {
+                if (lookup.name.empty()) {
+                    traverse(curr, curr->positional, lookup.type, func);
                 } else {
-                    auto it = curr->keyword.find(lookup.first);
+                    auto it = curr->keyword.find(lookup.name);
                     if (it == curr->keyword.end()) {
                         /// TODO: insert a keyword with an empty map
                     }
-                    traverse(curr, curr->keyword[lookup.first], lookup.second, func);
+                    traverse(curr, it->second, lookup.type, func);
                 }
             }
 
@@ -3983,7 +4064,7 @@ private:
 
         /* Remove a node from the overload trie and prune any dead-ends that lead to
         it.  Returns true if the node was found, or false otherwise. */
-        bool remove(const std::vector<Lookup>& key, size_t idx) noexcept {
+        bool remove(const std::vector<Param>& key, size_t idx) noexcept {
             // if we reach the end of the key, either return false if the current node
             // is not terminal, or clear the terminal function and prune the trie
             if (idx == key.size()) {
@@ -4003,13 +4084,13 @@ private:
             // iterate through a topological argument map, checking `issubclass()` at
             // every index, recurring if a match is found
             constexpr auto traverse = [](
-                const std::vector<Lookup>& key,
+                const std::vector<Param>& key,
                 size_t idx,
-                const Lookup& lookup,
+                const Param& lookup,
                 const TopoMap& map
             ) {
                 for (auto [type, node] : map) {
-                    if (Compare{}(lookup.second, type)) {
+                    if (Compare{}(lookup.type, type)) {
                         // if a match is found, increment the index and recur.  If this
                         // returns false, continue searching
                         bool result = node->remove(key, idx + 1);
@@ -4024,15 +4105,413 @@ private:
                 return false;
             };
 
-            const Lookup& lookup = key[idx];
-            if (lookup.first.empty()) {
+            const Param& lookup = key[idx];
+            if (lookup.name.empty()) {
                 return traverse(key, idx, lookup, positional);
             }
-            auto it = keyword.find(lookup.first);
+            auto it = keyword.find(lookup.name);
             if (it == keyword.end()) {
                 return false;
             }
             return traverse(key, idx, lookup, it->second);
+        }
+
+    };
+
+    /* A helper that inspects the signature of a pure Python function using the
+    `inspect` module and translates its inline annotations into overload keys, such
+    that Python functions can be easily added to the trie with no additional syntax.
+    Annotations will also be inspected when performing an `isinstance()` check on a
+    pure Python function against a templated `py::Function<...>` type, ensuring runtime
+    type safety when passing Python functions to C++.  Unless the annotations satisfy
+    the expected signature, such a conversion will cause an error. */
+    struct Inspect {
+    private:
+
+        /* Get an iterator over the parameters in the signature, and record its
+        length. */
+        PyObject* get_iter(Py_ssize_t& len) const {
+            PyObject* parameters = PyObject_GetAttr(
+                signature,
+                impl::TemplateString<"parameters">::ptr
+            );
+            if (parameters == nullptr) {
+                Exception::from_python();
+            }
+            PyObject* parameters_items = PyObject_CallMethodNoArgs(
+                parameters,
+                impl::TemplateString<"items">::ptr
+            );
+            Py_DECREF(parameters);
+            if (parameters_items == nullptr) {
+                Exception::from_python();
+            }
+            PyObject* iter = PyObject_GetIter(parameters_items);
+            Py_DECREF(parameters_items);
+            if (iter == nullptr) {
+                Exception::from_python();
+            }
+            len = PyObject_Length(parameters);
+            if (len == -1) {
+                Py_DECREF(iter);
+                Exception::from_python();
+            }
+            return iter;
+        }
+
+        static std::vector<std::vector<Lookup>> recursive_overloads(
+            std::vector<std::vector<Lookup>>&& overloads,
+            PyObject* iter,
+            Py_ssize_t len,
+            Py_ssize_t idx
+        ) {
+            if (idx == len) {
+                return std::move(overloads);
+            }
+            PyObject* item = PyIter_Next(iter);
+            if (item == nullptr) {
+                Exception::from_python();
+            }
+
+            PyObject* name = PyTuple_GET_ITEM(item, 0);
+            PyObject* parameter = PyTuple_GET_ITEM(item, 1);
+            PyObject* kind = PyObject_GetAttr(
+                parameter,
+                impl::TemplateString<"kind">::ptr
+            );
+            if (kind == nullptr) {
+                Py_DECREF(item);
+                Py_DECREF(iter);
+                Exception::from_python();
+            }
+            // PyObject* annotation = PyObject_GetAttr(
+            //     parameter,
+            //     impl::TemplateString<"annotation">::ptr
+            // );
+            // if (annotation == nullptr) {
+            //     Py_DECREF(kind);
+            //     Py_DECREF(item);
+            //     Py_DECREF(iter);
+            //     Exception::from_python();
+            // }
+            // int is_positional_only = PyObject_RichCompareBool(
+            //     kind,
+            //     POSITIONAL_ONLY,
+            //     Py_EQ
+            // );
+            // if (is_positional_only < 0) {
+            //     Exception::from_python();
+            // } else if (is_positional_only) {
+            //     vec.emplace_back(
+            //         "",
+
+            //     )
+
+            // } else {
+
+            // }
+
+
+
+            Py_DECREF(item);
+        }
+
+    public:
+        PyObject* func;
+
+        /// TODO: this is going to get really complicated trying to parse Python's
+        /// type hinting syntax and reflecting it in the overload keys.  Most likely,
+        /// what I will need to do to account for things like parametrized containers
+        /// is use the equivalent bertrand type rather than the Python type, so that
+        /// all parametrizations evaluate to a unique Python type.  That also means
+        /// isinstance() checks on these types will need to also match built-in
+        /// Python equivalents using iteration, to ensure that the overload logic
+        /// remains intact.
+        /// -> That may not work, since C++ can only work with the list types that
+        /// have been instantiated at the C++ level.  Although I might be able to
+        /// fall back to Container<> in those cases.
+        /// -> Also, how would you handle user-defined generics?  They would probably
+        /// all need to fall back to the origin type.  Perhaps I can search for
+        /// an equivalent bertrand type at the C++ level and apply the same
+        /// logic as for the Python types, falling back to the origin type if no
+        /// equivalent is found.
+        /// -> Maybe the way to support generics of these types is to modify the
+        /// bertrand.python type registration to map type OR GenericAlias objects to
+        /// a corresponding bertrand type, such that I can directly map the type
+        /// hint to a bertrand type if possible, or to the origin type if it is a
+        /// GenericAlias, or to the dynamic Object otherwise.  The only way that will
+        /// fully work is after modules have been defined, however, which is a long
+        /// way away.
+
+        PyObject* inspect;
+        PyObject* signature;  // inspect.Signature
+        PyObject* empty;  // inspect.Parameter.empty
+        PyObject* POSITIONAL_ONLY;  // inspect.Parameter.POSITIONAL_ONLY
+        PyObject* POSITIONAL_OR_KEYWORD;  // inspect.Parameter.POSITIONAL_OR_KEYWORD
+        PyObject* VAR_POSITIONAL;  // inspect.Parameter.VAR_POSITIONAL
+        PyObject* KEYWORD_ONLY;  // inspect.Parameter.KEYWORD_ONLY
+        PyObject* VAR_KEYWORD;  // inspect.Parameter.VAR_KEYWORD
+
+        PyObject* typing;
+        PyObject* annotations;  // result of typing.get_type_hints(func)
+        PyObject* Any;  // typing.Any -> object
+        PyObject* AnyStr;  // typing.AnyStr -> str
+        PyObject* LiteralString;  // typing.LiteralString -> str
+        PyObject* Never;  // typing.Never -> nullptr
+        PyObject* NoReturn;  // typing.NoReturn -> nullptr
+        PyObject* Self;  // typing.Self -> object
+        PyObject* Union;  // typing.Union -> recursively split into individual overloads
+        PyObject* Optional;  // typing.Optional -> recursively split into two overloads
+        PyObject* Literal;  // typing.Literal -> get the type within the literal
+        PyObject* TypeGuard;  // typing.TypeGuard -> bool
+        // PyObject* TypeVar;  // typing.TypeVar
+        // PyObject* TypeVarTuple;  // typing.TypeVarTuple
+        PyObject* get_origin;  // typing.get_origin
+        PyObject* get_args;  // typing.get_args
+
+        PyObject* types;
+        PyObject* GenericAlias;  // types.GenericAlias -> use get_origin() + get_args()
+        PyObject* UnionType;  // types.UnionType -> use get_args() to split into overloads
+        PyObject* TypeAliasType;  // types.TypeAliasType -> access .__value__
+
+        Inspect(PyObject* func) : func(Py_XNewRef(func)) {
+            inspect = PyImport_Import(impl::TemplateString<"inspect">::ptr);
+            if (inspect == nullptr) {
+                Py_DECREF(func);
+                Exception::from_python();
+            }
+            typing = PyImport_Import(impl::TemplateString<"typing">::ptr);
+            if (typing == nullptr) {
+                Py_DECREF(func);
+                Py_DECREF(inspect);
+                Exception::from_python();
+            }
+            PyObject* signature_func = PyObject_GetAttr(
+                inspect,
+                impl::TemplateString<"signature">::ptr
+            );
+            if (signature_func == nullptr) {
+                Py_DECREF(func);
+                Py_DECREF(inspect);
+                Py_DECREF(typing);
+                Exception::from_python();
+            }
+            signature = PyObject_CallOneArg(signature_func, func);
+            Py_DECREF(signature_func);
+            if (signature == nullptr) {
+                Py_DECREF(func);
+                Py_DECREF(inspect);
+                Py_DECREF(typing);
+                Exception::from_python();
+            }
+            PyObject* annotations_func = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"get_type_hints">::ptr
+            );
+            if (annotations_func == nullptr) {
+                Py_DECREF(func);
+                Py_DECREF(inspect);
+                Py_DECREF(typing);
+                Py_DECREF(signature);
+                Exception::from_python();
+            }
+            annotations = PyObject_CallOneArg(annotations_func, func);
+            Py_DECREF(annotations_func);
+            if (annotations == nullptr) {
+                Py_DECREF(func);
+                Py_DECREF(inspect);
+                Py_DECREF(typing);
+                Py_DECREF(signature);
+                Exception::from_python();
+            }
+            PyObject* parameter = PyObject_GetAttr(
+                inspect,
+                impl::TemplateString<"Parameter">::ptr
+            );
+            if (parameter == nullptr) {
+                Py_DECREF(func);
+                Py_DECREF(inspect);
+                Py_DECREF(typing);
+                Py_DECREF(signature);
+                Py_DECREF(annotations);
+                Exception::from_python();
+            }
+            empty = PyObject_GetAttr(
+                parameter,
+                impl::TemplateString<"empty">::ptr
+            );
+            if (empty == nullptr) {
+                Py_DECREF(func);
+                Py_DECREF(inspect);
+                Py_DECREF(typing);
+                Py_DECREF(signature);
+                Py_DECREF(annotations);
+                Py_DECREF(parameter);
+                Exception::from_python();
+            }
+            POSITIONAL_ONLY = PyObject_GetAttr(
+                parameter,
+                impl::TemplateString<"POSITIONAL_ONLY">::ptr
+            );
+            if (POSITIONAL_ONLY == nullptr) {
+                Py_DECREF(func);
+                Py_DECREF(inspect);
+                Py_DECREF(typing);
+                Py_DECREF(signature);
+                Py_DECREF(annotations);
+                Py_DECREF(empty);
+                Py_DECREF(parameter);
+                Exception::from_python();
+            }
+            POSITIONAL_OR_KEYWORD = PyObject_GetAttr(
+                parameter,
+                impl::TemplateString<"POSITIONAL_OR_KEYWORD">::ptr
+            );
+            if (POSITIONAL_OR_KEYWORD == nullptr) {
+                Py_DECREF(func);
+                Py_DECREF(inspect);
+                Py_DECREF(typing);
+                Py_DECREF(signature);
+                Py_DECREF(annotations);
+                Py_DECREF(empty);
+                Py_DECREF(POSITIONAL_ONLY);
+                Py_DECREF(parameter);
+                Exception::from_python();
+            }
+            VAR_POSITIONAL = PyObject_GetAttr(
+                parameter,
+                impl::TemplateString<"VAR_POSITIONAL">::ptr
+            );
+            if (VAR_POSITIONAL == nullptr) {
+                Py_DECREF(func);
+                Py_DECREF(inspect);
+                Py_DECREF(typing);
+                Py_DECREF(signature);
+                Py_DECREF(annotations);
+                Py_DECREF(empty);
+                Py_DECREF(POSITIONAL_ONLY);
+                Py_DECREF(POSITIONAL_OR_KEYWORD);
+                Py_DECREF(parameter);
+                Exception::from_python();
+            }
+            KEYWORD_ONLY = PyObject_GetAttr(
+                parameter,
+                impl::TemplateString<"KEYWORD_ONLY">::ptr
+            );
+            if (KEYWORD_ONLY == nullptr) {
+                Py_DECREF(func);
+                Py_DECREF(inspect);
+                Py_DECREF(typing);
+                Py_DECREF(signature);
+                Py_DECREF(annotations);
+                Py_DECREF(empty);
+                Py_DECREF(POSITIONAL_ONLY);
+                Py_DECREF(POSITIONAL_OR_KEYWORD);
+                Py_DECREF(VAR_POSITIONAL);
+                Py_DECREF(parameter);
+                Exception::from_python();
+            }
+            VAR_KEYWORD = PyObject_GetAttr(
+                parameter,
+                impl::TemplateString<"VAR_KEYWORD">::ptr
+            );
+            if (VAR_KEYWORD == nullptr) {
+                Py_DECREF(func);
+                Py_DECREF(inspect);
+                Py_DECREF(typing);
+                Py_DECREF(signature);
+                Py_DECREF(annotations);
+                Py_DECREF(empty);
+                Py_DECREF(POSITIONAL_ONLY);
+                Py_DECREF(POSITIONAL_OR_KEYWORD);
+                Py_DECREF(VAR_POSITIONAL);
+                Py_DECREF(KEYWORD_ONLY);
+                Py_DECREF(parameter);
+                Exception::from_python();
+            }
+            Py_DECREF(parameter);
+        }
+
+        Inspect(const Inspect& other) = delete;
+        Inspect(Inspect&& other) = delete;
+        Inspect& operator=(const Inspect& other) = delete;
+        Inspect& operator=(Inspect&& other) noexcept = delete;
+
+        ~Inspect() noexcept {
+            Py_XDECREF(func);
+            Py_XDECREF(inspect);
+            Py_XDECREF(typing);
+            Py_XDECREF(signature);
+            Py_XDECREF(annotations);
+            Py_XDECREF(empty);
+            Py_XDECREF(POSITIONAL_ONLY);
+            Py_XDECREF(POSITIONAL_OR_KEYWORD);
+            Py_XDECREF(VAR_POSITIONAL);
+            Py_XDECREF(KEYWORD_ONLY);
+            Py_XDECREF(VAR_KEYWORD);
+        }
+
+        /// TODO: this is going to have to return a collection of overload keys due
+        /// to the presence of union types in the Python function signature, which must
+        /// be collapsed somehow.  That may require recursion to properly handle.
+
+        std::vector<std::vector<Lookup>> overload_keys() const {
+            // get an iterator over the function's parameters
+            Py_ssize_t len;
+            PyObject* iter = get_iter(len);
+
+
+            std::vector<Lookup> vec;
+            vec.reserve(len);
+            PyObject* item;
+            while ((item = PyIter_Next(iter))) {
+                PyObject* name = PyTuple_GET_ITEM(item, 0);
+                PyObject* parameter = PyTuple_GET_ITEM(item, 1);
+                PyObject* kind = PyObject_GetAttr(
+                    parameter,
+                    impl::TemplateString<"kind">::ptr
+                );
+                if (kind == nullptr) {
+                    Py_DECREF(item);
+                    Py_DECREF(iter);
+                    Exception::from_python();
+                }
+                PyObject* annotation = PyObject_GetAttr(
+                    parameter,
+                    impl::TemplateString<"annotation">::ptr
+                );
+                if (annotation == nullptr) {
+                    Py_DECREF(kind);
+                    Py_DECREF(item);
+                    Py_DECREF(iter);
+                    Exception::from_python();
+                }
+                int is_positional_only = PyObject_RichCompareBool(
+                    kind,
+                    POSITIONAL_ONLY,
+                    Py_EQ
+                );
+                if (is_positional_only < 0) {
+                    Exception::from_python();
+                } else if (is_positional_only) {
+                    vec.emplace_back(
+                        "",
+
+                    )
+
+                } else {
+
+                }
+
+
+                Py_DECREF(item);
+            }
+            Py_DECREF(iter);
+            return vec;
+        }
+
+        bool satisfies() const {
+
         }
 
     };
@@ -4099,7 +4578,7 @@ to a corresponding C++ function signature.
         vectorcallfunc call;
         Node* root;
         size_t size;
-        std::unordered_map<size_t, Node*> cache;  // cached paths through the trie
+        std::unordered_map<size_t, Node*> cache;  // value may be null
 
         PyFunction(
             std::string&& name,
@@ -4145,6 +4624,37 @@ to a corresponding C++ function signature.
             /// TODO: manually initialize a heap type with a correct vectorcall offset.
             /// This has to be an instance of the metaclass, which may require a
             /// forward reference here.
+            /// -> Perhaps this should be a pure static type, which would avoid an
+            /// extra import statement whenever a function is called.  Same for the
+            /// metaclass defined after this, which is used to distinguish between
+            /// operands in the Python slots for binary operators.
+        }
+
+        /* Register an overload from Python. */
+        static PyObject* overload(
+            PyFunction* self,
+            PyObject* const* args,
+            size_t nargsf,
+            PyObject* kwnames
+        ) {
+
+            self->cache.clear();
+        }
+
+        /* Attach the function to a type as a descriptor. */
+        static PyObject* attach(
+            PyFunction* self,
+            PyObject* const* args,
+            size_t nargsf,
+            PyObject* kwnames
+        ) {
+
+        }
+
+        /* Manually clear the function's internal overload cache from Python. */
+        static PyObject* flush(PyFunction* self) {
+            self->cache.clear();
+            Py_RETURN_NONE;
         }
 
         /* Call the function from Python. */
@@ -4228,116 +4738,466 @@ to a corresponding C++ function signature.
             }
         }
 
+        /// TODO: maybe I should raise an error if the index does not fully satisfy the
+        /// function's signature?
+        /// -> Yes, and potentially __getitem__ should return a self reference.
+        /// use __contains__ if you want to check for the presence of an overload.
+
+        /* Convert a Python string into a coherent argument name, ensuring that it is
+        well-formed and does not contain any invalid characters. */
+        static std::string_view arg_name(PyObject* str) {
+            Py_ssize_t len;
+            const char* data = PyUnicode_AsUTF8AndSize(str, &len);
+            if (data == nullptr) {
+                Exception::from_python();
+            }
+            std::string_view view{name_data, name_len};
+            std::string_view sub = view.substr(
+                view.starts_with("*") +
+                view.starts_with("**")
+            );
+            /// TODO: check for duplicate names
+            if (sub.empty()) {
+                throw TypeError("argument name cannot be empty");
+            }
+            if (std::isdigit(sub.front())) {
+                throw TypeError(
+                    "argument name cannot start with a number: '" + sub + "'"
+                );
+            }
+            for (const char c : sub) {
+                if (!std::isalnum(c) && c != '_') {
+                    throw TypeError(
+                        "argument name must only contain alphanumerics and "
+                        "underscores: '" + sub + "'"
+                    );
+                }
+            }
+            return view;
+        }
+
+        /// TODO: In order to validate an overload key once it's been created, I can
+        /// very carefully recur over the overload key using both an index sequence
+        /// over the target signature and parallel index into the overload key.
+
+        /* Parse a Python object into a single entry in an overload key, . */
+        static Param get_param(
+            PyObject* item,
+            Py_ssize_t idx,
+            Py_ssize_t& posonly_idx,  // initialized to size
+            Py_ssize_t& kw_idx,  // initialized to size
+            Py_ssize_t& kwonly_idx,  // initialized to size
+            Py_ssize_t& args_idx,  // initialized to size
+            Py_ssize_t& kwargs_idx  // initialized to size
+        ) {
+            // raw types are interpreted as positional-only arguments
+            if (PyType_Check(item)) {
+                if (idx > posonly_idx) {
+                    throw TypeError(
+                        "positional-only argument cannot follow `/` delimiter: " +
+                        repr(reinterpret_borrow<Object>(item))
+                    );
+                } else if (idx > kw_idx) {
+                    throw TypeError(
+                        "positional-only argument cannot follow keyword argument: " +
+                        repr(reinterpret_borrow<Object>(item))
+                    );
+                } else if (idx > args_idx) {
+                    throw TypeError(
+                        "positional-only argument cannot follow variadic positional "
+                        "arguments " + repr(reinterpret_borrow<Object>(item))
+                    );
+                }
+                return {"", Param::POS, reinterpret_cast<PyTypeObject*>(key)};
+
+            // strings either represent an argument delimiter (such as "/" for
+            // positional-only parameters, or "*" for keyword-only args), or a
+            // dynamically-typed keyword argument.
+            } else if (PyUnicode_Check(item)) {
+                PyObject* pos_str = PyUnicode_FromStringAndSize("/", 1);
+                if (pos_str == nullptr) {
+                    Exception::from_python();
+                }
+                int rc = PyObject_RichCompareBool(item, pos_str, Py_EQ);
+                Py_DECREF(pos_str);
+                if (rc < 0) {
+                    Exception::from_python();
+                } else if (rc) {
+                    if (idx > posonly_idx) {
+                        throw TypeError(
+                            "positional-only argument delimiter '/' appears at "
+                            "conflicting indices: " + std::to_string(posonly_idx) +
+                            " and " + std::to_string(idx)
+                        );
+                    } else if (idx > kw_idx) {
+                        throw TypeError(
+                            "positional-only argument delimiter '/' cannot follow "
+                            "keyword arguments at index"
+                        );
+                    } else if (idx > args_idx) {
+                        throw TypeError(
+                            "positional-only argument delimiter '/' cannot follow "
+                            "variadic positional arguments"
+                        );
+                    } else if (idx > kwargs_idx) {
+                        throw TypeError(
+                            "positional-only argument delimiter '/' cannot follow "
+                            "variadic keyword arguments"
+                        );
+                    }
+                    posonly_idx = idx;
+                    return {"/", Param::POS_DELIMITER, nullptr};
+                }
+                PyObject* kw_str = PyUnicode_FromStringAndSize("*", 1);
+                if (kw_str == nullptr) {
+                    Exception::from_python();
+                }
+                rc = PyObject_RichCompareBool(item, kw_str, Py_EQ);
+                Py_DECREF(kw_str);
+                if (rc < 0) {
+                    Exception::from_python();
+                } else if (rc) {
+                    if (idx > kwonly_idx) {
+                        throw TypeError(
+                            "keyword-only argument delimiter '*' appears at "
+                            "conflicting indices: " + std::to_string(kwonly_idx) +
+                            " and " + std::to_string(idx)
+                        );
+                    } else if (idx > kwargs_idx) {
+                        throw TypeError(
+                            "keyword-only argument delimiter '*' cannot follow "
+                            "variadic keyword arguments"
+                        );
+                    }
+                    kwonly_idx = idx;
+                    return {"*", Param::KWONLY_DELIMITER, nullptr};
+                }
+                if (idx > kwargs_idx) {
+                    throw TypeError(
+                        "keyword arguments cannot follow variadic keyword arguments"
+                    );
+                }
+                std::string_view name = arg_name(item);
+                if (name.starts_with("**")) {
+                    if (idx > kwargs_idx) {
+                        throw TypeError(
+                            "variadic keyword arguments appear at conflicting "
+                            "indices: " + std::to_string(kwargs_idx) + " and " +
+                            std::to_string(idx)
+                        );
+                    }
+                    return {name.substr(2), Param::KWARGS, PyObject_Type};
+                } else if (name.starts_with("*")) {
+                    if (idx > args_idx) {
+                        throw TypeError(
+                            "variadic positional arguments appear at conflicting "
+                            "indices: " + std::to_string(args_idx) + " and " +
+                            std::to_string(idx)
+                        );
+                    }
+                    if (idx > kwonly_idx) {
+                        throw TypeError(
+                            "variadic positional arguments cannot follow keyword-only "
+                            "argument delimiter '*': " +
+                            repr(reinterpret_borrow<Object>(item))
+                        );
+                    }
+                    return {name.substr(1), Param::ARGS, PyObject_Type};
+                } else {
+                    return {
+                        std::move(name),
+                        idx > kwonly_idx ? Param::KWONLY : Param::KW,
+                        PyObject_Type
+                    };
+                }
+
+            // slices are interpreted as keyword or keyword-only arguments, depending
+            // on position with respect to the "*" delimiter
+            } else if (PySlice_Check(item)) {
+                PyObject* name;
+                PyTypeObject* type;
+                PySliceObject* slice = reinterpret_cast<PySliceObject*>(item);
+                if (PyUnicode_Check(slice->start)) {
+                    name = slice->start;
+                } else {
+                    throw TypeError(
+                        "keyword argument name must be a string, not: " +
+                        repr(reinterpret_borrow<Object>(slice->start))
+                    );
+                }
+                if (PyType_Check(slice->stop)) {
+                    type = reinterpret_cast<PyTypeObject*>(slice->stop);
+                } else {
+                    throw TypeError(
+                        "keyword argument type must be a type object, not: " +
+                        repr(reinterpret_borrow<Object>(slice->stop))
+                    );
+                }
+                if (idx > kwargs_idx) {
+                    throw TypeError(
+                        "keyword argument cannot follow variadic keyword arguments: " +
+                        repr(reinterpret_borrow<Object>(item))
+                    );
+                }
+                return {
+                    arg_name(name),
+                    slice->step == Py_None ?
+                        (idx > kwonly_idx ? Param::KWONLY : Param::KW) :
+                        (idx > kwonly_idx ? Param::KWONLY_DEFAULT : Param::KW_DEFAULT),
+                    reinterpret_cast<PyTypeObject*>(type)
+                };
+
+            // all other types are invalid
+            } else {
+                throw TypeError(
+                    "expected a type for a positional argument, a string for a "
+                    "keyword argument with a dynamic type, or a slice for a keyword "
+                    "argument with a specific type, not: " +
+                    repr(reinterpret_borrow<Object>(item))
+                );
+            }
+        }
+
+        /* Validate an overload key, ensuring that it matches the enclosing function
+        signature. */
+        template <size_t I>
+        static void validate_key(const std::vector<Param>& key, Py_ssize_t& idx) {
+            /// TODO: does issubclass<impl::Param<T>::type>(obj) work if T is a C++
+            /// type or a reference, etc.?
+            using T = typename Sig::template at<I>;
+            using type = __as_object__<
+                std::remove_cvref_t<typename impl::Param<T>::type>
+            >::type;
+            constexpr StaticStr name = impl::Param<T>::name;
+
+            if constexpr (impl::Param<T>::kwonly) {
+                if (idx < key.size()) {
+                    const Param& param = key[idx];
+                    if (param.name == name) {
+                        if (!param.kwonly()) {
+                            throw TypeError(
+                                "expected argument '" + name +
+                                "' to be keyword-only, not " + param.description()
+                            );
+                        }
+                        if (!issubclass<type>(reinterpret_borrow<Object>(
+                            reinterpret_cast<PyObject*>(param.type)
+                        ))) {
+                            throw TypeError(
+                                "expected keyword-only argument '" + name +
+                                "' to be a subclass of '" + repr(Type<type>()) +
+                                "', not: '" + repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(param.type)
+                                )) + "'"
+                            );
+                        }
+                        if (impl::Param<T>::opt ^ param.has_default()) {
+                            throw TypeError(
+                                "expected keyword-only argument '" +
+                                name + impl::Param<T>::opt ?
+                                    "' to have a default value" :
+                                    "' to not have a default value"
+                            );
+                        }
+                    } else if (!impl::Param<T>::opt) {
+                        throw TypeError(
+                            "missing required keyword-only argument: '" + name + "'"
+                        );
+                    }
+                } else if (!impl::Param<T>::opt) {
+                    throw TypeError(
+                        "missing required keyword-only argument: '" + name + "'"
+                    );
+                }
+
+            } else if constexpr (impl::Param<T>::kw) {
+                if (idx < key.size()) {
+                    const Param& param = key[idx];
+                    if (param.name == name) {
+                        if (!param.kw()) {
+                            throw TypeError(
+                                "expected argument '" + name +
+                                "' to be a positional-or-keyword argument, not " +
+                                param.description()
+                            );
+                        }
+                        if (!issubclass<type>(reinterpret_borrow<Object>(
+                            reinterpret_cast<PyObject*>(param.type)
+                        ))) {
+                            throw TypeError(
+                                "expected positional-or-keyword argument '" + name +
+                                "' to be a subclass of '" + repr(Type<type>()) +
+                                "', not: '" + repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(param.type)
+                                )) + "'"
+                            );
+                        }
+                        if (impl::Param<T>::opt ^ param.has_default()) {
+                            throw TypeError(
+                                "expected positional-or-keyword argument '" +
+                                name + impl::Param<T>::opt ?
+                                    "' to have a default value" :
+                                    "' to not have a default value"
+                            );
+                        }
+                    } else if (!impl::Param<T>::opt) {
+                        throw TypeError(
+                            "missing required positional-or-keyword argument: '" +
+                            name + "'"
+                        );
+                    }
+                } else if (!impl::Param<T>::opt) {
+                    throw TypeError(
+                        "missing required positional-or-keyword argument: '" +
+                        name + "'"
+                    );
+                }
+
+            } else if constexpr (impl::Param<T>::args) {
+                while (idx < key.size()) {
+                    const Param& param = key[idx];
+                    if (!param.pos()) {
+                        break;
+                    }
+                    if (!issubclass<type>(reinterpret_borrow<Object>(
+                        reinterpret_cast<PyObject*>(param.type)
+                    ))) {
+                        throw TypeError(
+                            "expected positional argument '" + name +
+                            "' to be a subclass of '" + repr(Type<type>()) +
+                            "', not: '" + repr(reinterpret_borrow<Object>(
+                                reinterpret_cast<PyObject*>(param.type)
+                            )) + "'"
+                        );
+                    }
+                    ++idx;
+                }
+                if (idx < key.size()) {
+                    const Param& param = key[idx];
+                    if (param.args()) {
+                        if (!issubclass<type>(reinterpret_borrow<Object>(
+                            reinterpret_cast<PyObject*>(param.type)
+                        ))) {
+                            throw TypeError(
+                                "expected variadic positional arguments '" + name +
+                                "' to be a subclass of '" + repr(Type<type>()) +
+                                "', not: '" + repr(reinterpret_borrow<Object>(
+                                    reinterpret_cast<PyObject*>(param.type)
+                                )) + "'"
+                            );
+                        }
+                    }
+                }
+
+            } else if constexpr (impl::Param<T>::kwargs) {
+
+
+            } else {
+
+            }
+        }
+
         /* Index the function to resolve a specific overload, as if the function were
-        being called normally. */
-        static PyObject* getitem(PyFunction* self, PyObject* key) {
+        being called normally.  Returns `None` if no overload can be found, indicating
+        that the function will be called with its base implementation. */
+        static PyObject* __getitem__(PyFunction* self, PyObject* key) {
+            constexpr auto resolve = [](PyObject* key) -> Param {
+
+
+            };
+
+
+            /// TODO: before doing anything else, convert the key to a vector of
+            /// parameter and then check whether or not it is valid for the function
+            /// signature.  If not, raise an error.  Otherwise, continue as normal.
+
             if (!self->root) {
                 return Py_NewRef(self);
             }
 
-            // positional arguments are given as raw type objects, whereas keyword
-            // arguments are passed as slices, which must be normalized.
-            constexpr auto resolve = [](PyObject* key) -> Lookup {
-                if (PySlice_Check(key)) {
-                    PyObject* name;
-                    PyTypeObject* type;
-                    PySliceObject* slice = reinterpret_cast<PySliceObject*>(key);
-                    if (PyUnicode_Check(slice->start)) {
-                        name = slice->start;
-                    } else {
-                        throw TypeError(
-                            "keyword argument name must be a string, not: " +
-                            repr(reinterpret_borrow<Object>(slice->start))
-                        );
-                    }
-                    if (PyType_Check(key)) {
-                        type = reinterpret_cast<PyTypeObject*>(slice->stop);
-                    } else {
-                        throw TypeError(
-                            "keyword argument type must be a type object, not: " +
-                            repr(reinterpret_borrow<Object>(slice->stop))
-                        );
-                    }
-                    Py_ssize_t name_len;
-                    const char* name_data = PyUnicode_AsUTF8AndSize(
-                        name,
-                        &name_len
-                    );
-                    if (name_data == nullptr) {
-                        Exception::from_python();
-                    }
-                    return Lookup{
-                        std::string_view{name_data, name_len},
-                        reinterpret_cast<PyTypeObject*>(type)
-                    };
-                } else if (PyType_Check(key)) {
-                    return Lookup{"", reinterpret_cast<PyTypeObject*>(key)};
-                } else {
-                    throw TypeError(
-                        "expected a type representing a positional argument "
-                        "or a slice representing a keyword argument, not: " +
-                        repr(reinterpret_borrow<Object>(key))
-                    );
+
+
+            // paths through the trie are cached to avoid redundant searches.  If no
+            // match is found, then the cache will store a null pointer, which gets
+            // translated to None and indicates that the function will be called with
+            // its base implementation, and not a custom overload.
+            constexpr auto get = [](
+                const std::vector<Lookup>& vec,
+                size_t hash,
+                PyFunction* self,
+                PyObject* key
+            ) -> PyObject* {
+                auto it = self->cache.find(hash);
+                if (it != self->cache.end()) {
+                    return Py_NewRef(it->second ? it->second->func : Py_None);
                 }
+                Node* node = self->root->search(vec, 0);
+                self->cache[hash] = node;
+                return Py_NewRef(node ? node->func : Py_None);
             };
 
             try {
                 // if the key is a scalar, then we analyze it as a single argument and
                 // avoid unnecessary allocations
                 if (!PyTuple_Check(key)) {
-                    Lookup lookup = resolve(key);
-                    if (reinterpret_cast<size_t>(lookup.second)) {
-                        return nullptr;
-                    }
-                    auto it = self->cache.find(reinterpret_cast<size_t>(lookup.second));
-                    if (it != self->cache.end()) {
-                        return Py_NewRef(it->second->func);
-                    }
-                    Node* node = self->root->search({lookup}, 0);
-                    return Py_NewRef(node ? node->func : self);
+                    std::vector<Lookup> vec = {resolve(key)};
+                    size_t hash = impl::hash_combine(
+                        std::hash<std::string_view>{}(vec.front().first),
+                        reinterpret_cast<size_t>(vec.front().second)
+                    );
+                    return get(vec, hash, self, key);
                 }
 
                 // otherwise, the key is a tuple, and we need to construct an argument
                 // vector from it in order to search the trie
-                size_t hash = 0;
                 Py_ssize_t size = PyTuple_GET_SIZE(key);
-                std::vector<Lookup> args;
-                args.reserve(size);
-
+                std::vector<Lookup> vec;
+                vec.reserve(size);
+                size_t hash = 0;
                 for (Py_ssize_t i = 0; i < size; ++i) {
-                    PyObject* item = PyTuple_GET_ITEM(key, i);
-                    args[i] = resolve(item);
-                    if (args[i].second == nullptr) {
-                        return nullptr;
-                    }
-                    impl::hash_combine(hash, args[i].second)
-
-                    if (PySlice_Check(item)) {
-                        if (PyUnicode)
-
-
-                    } else if (PyType_Check(item)) {
-                        hash = impl::hash_combine(hash, reinterpret_cast<size_t>(item));
-                    } else {
-                        PyErr_Format(
-                            PyExc_TypeError,
-                            "expected type object"
-                        );
-                        return nullptr;
-                    }
+                    vec[i] = resolve(PyTuple_GET_ITEM(key, i));
+                    const Lookup& lookup = vec[i];
+                    hash = impl::hash_combine(
+                        hash,
+                        std::hash<std::string_view>{}(lookup.first),
+                        reinterpret_cast<size_t>(lookup.second)
+                    );
                 }
+                return get(vec, hash, self, key);
 
             } catch (...) {
                 Exception::to_python();
                 return nullptr;
             }
-            
         }
 
-        /* Manually clear the function's internal lookup cache from Python. */
-        static PyObject* flush(PyFunction* self) {
+        /* Delete a matching overload, removing it from the overload trie. */
+        static int __delitem__(PyFunction* self, PyObject* key, PyObject* value) {
+            if (value) {
+                PyErr_SetString(
+                    PyExc_TypeError,
+                    "functions do not support item assignment: use "
+                    "`@func.overload` to register an overload instead"
+                );
+                return -1;
+            }
+
+            /// TODO: generate a lookup key from the Python object, and then
+            /// call self->root->remove() to delete the overload.
+
             self->cache.clear();
-            Py_RETURN_NONE;
+        }
+
+        /* Check whether the function is callable with a given key.  This just boils
+        down to constructing a key and checking whether it conforms to the */
+        static int __contains__(PyFunction* self, PyObject* key) {
+
+        }
+
+        /* `len(function)` will get the number of overloads that are currently being
+        tracked. */
+        static Py_ssize_t __len__(PyFunction* self) {
+            return self->size;
         }
 
         /* Default `repr()` demangles the function name + signature. */
@@ -4352,6 +5212,16 @@ to a corresponding C++ function signature.
             }
             return string;
         }
+
+        /// TODO: turns out I can make all functions introspectable via Python's
+        /// `inspect` module by adding a __signature__ attribute, although this is
+        /// subject to change, and I have to check against the Python source code.
+
+    private:
+
+        inline static PyMethodDef methods[] = {
+
+        };
 
     };
 

@@ -137,7 +137,7 @@ namespace impl {
     /* Merges several hashes into a single value.  Based on `boost::hash_combine`:
     https://www.boost.org/doc/libs/1_86_0/libs/container_hash/doc/html/hash.html#notes_hash_combine */
     template <std::convertible_to<size_t>... Hashes>
-    void hash_combine(size_t& seed, Hashes... hashes) noexcept {
+    size_t hash_combine(size_t first, Hashes... rest) noexcept {
         if constexpr (sizeof(size_t) == 4) {
             constexpr auto mix = [](size_t& seed, size_t value) {
                 seed += 0x9e3779b9 + value;
@@ -147,7 +147,7 @@ namespace impl {
                 seed *= 0x735a2d97;
                 seed ^= seed >> 15;
             };
-            (mix(seed, hashes), ...);
+            (mix(first, rest), ...);
         } else {
             constexpr auto mix = [](size_t& seed, size_t value) {
                 seed += 0x9e3779b9 + value;
@@ -157,8 +157,9 @@ namespace impl {
                 seed *= 0xe9846af9b1a615d;
                 seed ^= seed >> 28;
             };
-            (mix(seed, hashes), ...);
+            (mix(first, rest), ...);
         }
+        return first;
     }
 
     /* Introspect the proper signature for a py::Function instance from a generic
