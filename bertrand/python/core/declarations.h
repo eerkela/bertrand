@@ -134,10 +134,32 @@ namespace impl {
     template <size_t I, typename... Ts>
     using unpack_type = unpack_type_helper<I, Ts...>::type;
 
-    enum class Origin {
-        PYTHON,
-        CPP
-    };
+    /* Merges several hashes into a single value.  Based on `boost::hash_combine`:
+    https://www.boost.org/doc/libs/1_86_0/libs/container_hash/doc/html/hash.html#notes_hash_combine */
+    template <std::convertible_to<size_t>... Hashes>
+    void hash_combine(size_t& seed, Hashes... hashes) noexcept {
+        if constexpr (sizeof(size_t) == 4) {
+            constexpr auto mix = [](size_t& seed, size_t value) {
+                seed += 0x9e3779b9 + value;
+                seed ^= seed >> 16;
+                seed *= 0x21f0aaad;
+                seed ^= seed >> 15;
+                seed *= 0x735a2d97;
+                seed ^= seed >> 15;
+            };
+            (mix(seed, hashes), ...);
+        } else {
+            constexpr auto mix = [](size_t& seed, size_t value) {
+                seed += 0x9e3779b9 + value;
+                seed ^= seed >> 32;
+                seed *= 0xe9846af9b1a615d;
+                seed ^= seed >> 32;
+                seed *= 0xe9846af9b1a615d;
+                seed ^= seed >> 28;
+            };
+            (mix(seed, hashes), ...);
+        }
+    }
 
     /* Introspect the proper signature for a py::Function instance from a generic
     function pointer, reference, or object, such as a lambda. */

@@ -5,6 +5,8 @@
 #include "except.h"
 #include "ops.h"
 #include "object.h"
+#include <cstddef>
+#include <string_view>
 
 
 /// TODO: this file should include the implementation for Object's call operator, just
@@ -61,6 +63,14 @@ private:
         static constexpr bool is_kwargs = false;
 
         T value;
+
+        [[nodiscard]] operator T() && {
+            if constexpr (std::is_lvalue_reference_v<T>) {
+                return value;
+            } else {
+                return std::move(value);
+            }
+        }
     };
 
     template <bool optional>
@@ -75,6 +85,14 @@ private:
         static constexpr bool is_kwargs = false;
 
         T value;
+
+        [[nodiscard]] operator T() && {
+            if constexpr (std::is_lvalue_reference_v<T>) {
+                return value;
+            } else {
+                return std::move(value);
+            }
+        }
     };
 
     template <bool optional>
@@ -89,6 +107,14 @@ private:
         static constexpr bool is_kwargs = false;
 
         T value;
+
+        [[nodiscard]] operator T() && {
+            if constexpr (std::is_lvalue_reference_v<T>) {
+                return value;
+            } else {
+                return std::move(value);
+            }
+        }
     };
 
     struct Args : impl::ArgTag {
@@ -109,6 +135,10 @@ private:
         static constexpr bool is_kwargs = false;
 
         std::vector<type> value;
+
+        [[nodiscard]] operator std::vector<type>() && {
+            return std::move(value);
+        }
     };
 
     struct Kwargs : impl::ArgTag {
@@ -129,6 +159,10 @@ private:
         static constexpr bool is_kwargs = true;
 
         std::unordered_map<std::string, T> value;
+
+        [[nodiscard]] operator std::unordered_map<std::string, T>() && {
+            return std::move(value);
+        }
     };
 
 public:
@@ -149,6 +183,14 @@ public:
     static constexpr bool is_kwargs = false;
 
     T value;
+
+    [[nodiscard]] operator T() && {
+        if constexpr (std::is_lvalue_reference_v<T>) {
+            return value;
+        } else {
+            return std::move(value);
+        }
+    }
 };
 
 
@@ -392,6 +434,41 @@ namespace impl {
         static constexpr bool args          = U::is_args;
         static constexpr bool kwargs        = U::is_kwargs;
     };
+
+    /// TODO: Args... now includes the `self` argument as the first argument, which
+    /// should be fine, but may require adjustments to call logic.  It won't affect
+    /// any of the compile-time logic, nor should it change the `Defaults` class, since
+    /// the `self` argument cannot be optional by definition.
+    /// -> It may require adjustments to std::is_invocable_r_v<> in order to account
+    /// for member function pointers, which do not include the `self` argument as
+    /// written (this is handled by casting the input function type to its ptr
+    /// equivalent before proceeding with the check).  The only other change might be
+    /// in how the Python call protocols are invoked with respect to the descriptor
+    /// protocol and NoArgs/OneArg protocols.  Maybe the answer is to just uniformly
+    /// use the vectorcall protocol and place self on the special -1 index, which would
+    /// be fairly consistent.
+    /// -> The invoke() function is going to need to account for member functions being
+    /// passed in?  Maybe not?  If it's a member function, then the first argument is
+    /// always going to be the self argument, and then I just need to dereference the
+    /// function pointer to create the actual function call.  I have both parts already,
+    /// so it should be a simple matter of combining them.  That combination will
+    /// likely need a constexpr branch to account for it, as well as perhaps adjusting
+    /// the index sequence to account for it in the final call.  Rather than passing
+    /// all arguments on to the final call, I would exclude the first, which must be
+    /// provided according to the compile-time constraints.
+    /// -> The same adjustment would need to be made for the C++ to python argument
+    /// translation, wherein I need to allocate a vectorcall argument array.
+
+    /// TODO: variadic args/kwargs will likely need handling when performing
+    /// `compatible` checks.  A function that accepts arbitrary args/kwargs is, by
+    /// definition, compatible with any other function, since it can accept any
+    /// arguments, and all other functions accept only a subset.  compatible<> should
+    /// be thought of as a generality check.  One function is compatible with
+    /// another function if the first function can be called with the arguments of
+    /// the second function, and the return type of the first function is convertible
+    /// to the return type of the second function.
+    /// -> I should avoid std::is_invocable for that kind of check, since it will
+    /// not account for the annotated types.
 
     /* Analyze an annotated function signature by inspecting each argument and
     extracting metadata that allows call signatures to be resolved at compile time. */
@@ -2608,8 +2685,9 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...), C>>;
         template <typename... A2>
         using with_args = Signature<R(*)(A2...)>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, A...>;
     };
     template <typename R, typename... A>
     struct Signature<R(*)(A...) noexcept> : Parameters<A...> {
@@ -2630,11 +2708,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C>>;
         template <typename... A2>
         using with_args = Signature<R(*)(A2...) noexcept>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...)> : Parameters<A...> {
+    struct Signature<R(C::*)(A...)> : Parameters<C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -2652,11 +2731,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...)>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) noexcept> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) noexcept> : Parameters<C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -2672,11 +2752,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) noexcept>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) &> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) &> : Parameters<C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -2694,11 +2775,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) &>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) & noexcept> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) & noexcept> : Parameters<C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -2716,11 +2798,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) & noexcept>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) const> : Parameters<const C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -2738,11 +2821,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const noexcept> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) const noexcept> : Parameters<const C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -2760,11 +2844,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const noexcept>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const &> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) const &> : Parameters<const C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -2782,11 +2867,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const &>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const & noexcept> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) const & noexcept> : Parameters<const C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -2804,11 +2890,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const & noexcept>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) volatile> : Parameters<volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -2826,11 +2913,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) volatile>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile noexcept> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) volatile noexcept> : Parameters<volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -2848,11 +2936,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) volatile noexcept>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile &> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) volatile &> : Parameters<volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -2870,11 +2959,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) volatile &>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) volatile & noexcept> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) volatile & noexcept> : Parameters<volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -2892,11 +2982,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) volatile & noexcept>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) const volatile> : Parameters<const volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -2914,11 +3005,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const volatile>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile noexcept> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) const volatile noexcept> : Parameters<const volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -2936,11 +3028,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const volatile noexcept>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile &> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) const volatile &> : Parameters<const volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = false;
@@ -2958,11 +3051,12 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...), C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const volatile &>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <typename R, typename C, typename... A>
-    struct Signature<R(C::*)(A...) const volatile & noexcept> : Parameters<A...> {
+    struct Signature<R(C::*)(A...) const volatile & noexcept> : Parameters<const volatile C&, A...> {
         static constexpr bool enable = true;
         static constexpr bool has_self = true;
         static constexpr bool has_noexcept = true;
@@ -2980,8 +3074,9 @@ namespace impl {
         using with_self = Signature<as_member_func<R(*)(A...) noexcept, C2>>;
         template <typename... A2>
         using with_args = Signature<R(C::*)(A2...) const volatile & noexcept>;
-        template <typename Func>
-        static constexpr bool compatible = std::is_invocable_r_v<R, Func, Self, A...>;
+        template <typename Func> requires (Signature<Func>::enable)
+        static constexpr bool compatible =
+            std::is_invocable_r_v<R, typename Signature<Func>::to_ptr, Self, A...>;
     };
     template <impl::has_call_operator T> requires (Signature<decltype(&T::operator())>::enable)
     struct Signature<T> : Signature<decltype(&T::operator())>::template with_self<void> {};
@@ -3277,6 +3372,21 @@ struct Interface<Function<F>> : impl::FunctionTag {
             return reinterpret_steal<R>(result);
         }
     }
+
+    /* Register an overload for this function. */
+    void overload(const Function<F>& func) {
+
+    }
+
+    /* Attach the function as a bound method of a Python type. */
+    template <typename T>
+    void attach(Type<T>& type) {
+
+    }
+
+    /// TODO: index into a Function in order to resolve certain overloads.
+
+
 
     /// TODO: when getting and setting these properties, do I need to use an Attr
     /// proxy?
@@ -3688,6 +3798,244 @@ template <typename F = Object(*)(
 )> requires (impl::Signature<F>::enable)
 struct Function : Object, Interface<Function<F>> {
 private:
+    /// TODO: Lookup and trie maps now store PyTypeObject* specifically.  This should
+    /// actually be reversed, since the type might be a metaclass?
+    using Lookup = std::pair<std::string_view, PyTypeObject*>;
+
+    /* Describes a single node in the function's overload trie. */
+    struct Node {
+        /* Argument maps are topologically sorted such that parent classes are always
+        checked after subclasses, ensuring that the most specific matching overload is
+        always chosen. */
+        struct Compare {
+            static bool operator()(PyTypeObject* lhs, PyTypeObject* rhs) {
+                int result = PyObject_IsSubclass(
+                    reinterpret_cast<PyObject*>(lhs),
+                    reinterpret_cast<PyObject*>(rhs)
+                );
+                if (result == -1) {
+                    Exception::from_python();
+                }
+                return result;
+            }
+        };
+        using TopoMap = std::map<PyTypeObject*, Node*, Compare>;
+
+        size_t alive;  // number of functions that are reachable from this node
+        PyObject* func;  // can be null if this is not a terminal node
+        TopoMap positional;
+        std::unordered_map<std::string_view, TopoMap> keyword;
+        TopoMap args;
+        TopoMap kwargs;
+
+        /// TODO: the args and kwargs maps need special treatment to enforce
+        /// consistency.  The first time I try to match against a variadic argument,
+        /// I look it up in these maps and then force all subsequent arguments to
+        /// match against the same type.  I can't check the args map more than once
+        /// because that would allow potentially mixed *args types, which would
+        /// otherwise trigger a backtracking search.
+
+        Node(PyObject* func) : alive(0), func(Py_XNewRef(func)) {}
+        Node(const Node&) = delete;
+        Node(Node&&) = delete;
+        ~Node() noexcept {
+            for (auto [type, node] : positional) {
+                delete node;
+                Py_DECREF(type);
+            }
+            for (auto [name, map] : keyword) {
+                for (auto& [type, node] : map) {
+                    delete node;
+                    Py_DECREF(type);
+                }
+            }
+            for (auto [type, node] : args) {
+                delete node;
+                Py_DECREF(type);
+            }
+            for (auto [type, node] : kwargs) {
+                delete node;
+                Py_DECREF(type);
+            }
+            Py_XDECREF(func);
+        }
+
+        /// TODO: there should be a way to cache these results within the PyFunction
+        /// class, such that calling the function with the same arguments multiple
+        /// times will not require a full search of the trie each time.  This could
+        /// maybe be done by mixing the addresses of the argument types into a single
+        /// hash, which can very quickly be checked against a cache of previous calls.
+        /// That would be done before an argument vector can even be allocated, to
+        /// minimize overhead as much as possible, and the cache would be cleared
+        /// whenever a new overload is inserted or removed.
+        /// -> use the impl::hash_combine() function I just wrote into declarations.h
+        /// to combine the addresses of each type object for fast lookups.
+
+        /* Topologically search the overload trie for a matching signature, starting
+        from the current node.  This will recursively backtrack until a matching node
+        is found or the trie is exhausted, returning nullptr on a failed search.  The
+        results will be cached within the PyFunction representation to bypass this
+        method on subsequent invocations. */
+        Node* search(const std::vector<Lookup>& key, size_t idx) const noexcept {
+            // if we reach the end of the key, either return the current node if it is
+            // terminal, or null to backtrack one level and continue searching
+            if (idx == key.size()) {
+                return func ? this : nullptr;
+            }
+
+            // iterate through a topological argument map, checking `issubclass()` at
+            // every index, recurring if a match is found
+            constexpr auto traverse = [](
+                const std::vector<Lookup>& key,
+                size_t idx,
+                const Lookup& lookup,
+                const TopoMap& map
+            ) -> Node* {
+                for (auto [type, node] : map) {
+                    if (Compare{}(lookup.second, type)) {
+                        // If a match is found, increment the index and recur.  If this
+                        // returns nullptr, continue searching
+                        Node* result = node->search(key, idx + 1);
+                        if (result) {
+                            return result;
+                        }
+                    }
+                }
+                return nullptr;
+            };
+
+            const Lookup& lookup = key[idx];
+            if (lookup.first.empty()) {
+                return traverse(key, idx, lookup, positional);
+            }
+            auto it = keyword.find(lookup.first);
+            if (it == keyword.end()) {
+                return nullptr;
+            }
+            return traverse(key, idx, lookup, it->second);
+        }
+
+        /// TODO: insert() is going to have to be able to account for variadic
+        /// arguments in the inserted function, which need special handling within the
+        /// trie using some kind of self-referential node that consumes the remaining
+        /// arguments in that category.  Kwargs may need to be represented as an empty
+        /// key in the keyword map, which, if present, will be matched against the
+        /// remaining keyword arguments in the call.  This will by definition have only
+        /// a single child, which will be a self reference to the current node, such
+        /// that all remaining keyword arguments will be consumed by the function.
+        /// Perhaps the positional args can be handled similarly by just inserting a
+        /// key into the positional map that holds a similar self-reference.
+        /// -> Perhaps self references aren't great, since there could be other
+        /// overloads that can tamper with this system and cause unexpected behavior.
+        /// It might be better to store variadic args/kwargs separately in some way,
+        /// perhaps as a separate maps in addition to the standard positional and
+        /// keyword maps.
+
+        /* Insert a function into the overload trie, or throw a TypeError if it
+        conflicts with another node and would thus be ambiguous. */
+        void insert(const std::vector<Lookup>& key, PyObject* func) {
+            Node* curr = this;
+
+            // iterate through a topological argument map, checking for exact type
+            // identity at every index.  If a match is found, update curr to reflect
+            // it, otherwise insert a new node and continue.
+            constexpr auto traverse = [](
+                TopoMap& map,
+                Node*& curr,
+                PyObject* type,
+                PyObject* func
+            ) -> void {
+                auto it = curr->positional.begin();
+                auto end = curr->positional.end();
+                while (it != end) {
+                    PyTypeObject* t1 = reinterpret_cast<PyTypeObject*>(it->first);
+                    PyTypeObject* t2 = reinterpret_cast<PyTypeObject*>(type);
+                    if (t1 == t2) {
+                        curr = it->second;
+                        return;
+                    }
+                    ++it;
+                }
+                /// TODO: insert a new node if no match is found
+            };
+
+            // iterate through the key, inserting each argument type into the trie
+            // until we reach the final node, which will store the terminal function
+            for (const Lookup& lookup : key) {
+                if (lookup.first.empty()) {
+                    traverse(curr, curr->positional, lookup.second, func);
+                } else {
+                    auto it = curr->keyword.find(lookup.first);
+                    if (it == curr->keyword.end()) {
+                        /// TODO: insert a keyword with an empty map
+                    }
+                    traverse(curr, curr->keyword[lookup.first], lookup.second, func);
+                }
+            }
+
+            // if the final node already has a terminal function, then the overloads
+            // are ambiguous, and we raise a runtime error.
+            if (curr->func) {
+                throw TypeError("overload already exists for this signature");
+            }
+            curr->func = Py_NewRef(func);
+        }
+
+        /* Remove a node from the overload trie and prune any dead-ends that lead to
+        it.  Returns true if the node was found, or false otherwise. */
+        bool remove(const std::vector<Lookup>& key, size_t idx) noexcept {
+            // if we reach the end of the key, either return false if the current node
+            // is not terminal, or clear the terminal function and prune the trie
+            if (idx == key.size()) {
+                if (func) {
+                    PyObject* temp = func;
+                    func = nullptr;
+                    Py_DECREF(temp);
+                    if (--alive == 0) {
+                        delete this;
+                    }
+                    return true;
+                } else {
+                    return false;
+                }
+            }
+
+            // iterate through a topological argument map, checking `issubclass()` at
+            // every index, recurring if a match is found
+            constexpr auto traverse = [](
+                const std::vector<Lookup>& key,
+                size_t idx,
+                const Lookup& lookup,
+                const TopoMap& map
+            ) {
+                for (auto [type, node] : map) {
+                    if (Compare{}(lookup.second, type)) {
+                        // if a match is found, increment the index and recur.  If this
+                        // returns false, continue searching
+                        bool result = node->remove(key, idx + 1);
+                        if (result) {
+                            if (--node->alive == 0) {
+                                delete node;
+                            }
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            };
+
+            const Lookup& lookup = key[idx];
+            if (lookup.first.empty()) {
+                return traverse(key, idx, lookup, positional);
+            }
+            auto it = keyword.find(lookup.first);
+            if (it == keyword.end()) {
+                return false;
+            }
+            return traverse(key, idx, lookup, it->second);
+        }
+
+    };
 
     /// NOTE: The actual function type stored within the Python representation will
     /// always explicitly list the `self` parameter first in the case of member
@@ -3749,6 +4097,9 @@ to a corresponding C++ function signature.
         };
         Sig::Defaults defaults;
         vectorcallfunc call;
+        Node* root;
+        size_t size;
+        std::unordered_map<size_t, Node*> cache;  // cached paths through the trie
 
         PyFunction(
             std::string&& name,
@@ -3760,7 +4111,9 @@ to a corresponding C++ function signature.
             is_ptr(true),
             func_ptr(func),
             defaults(std::move(defaults)),
-            call(&__call__)
+            call(&__call__),
+            root(nullptr),
+            size(0)
         {}
 
         PyFunction(
@@ -3773,10 +4126,15 @@ to a corresponding C++ function signature.
             is_ptr(false),
             func(std::move(func)),
             defaults(std::move(defaults)),
-            call(&__call__)
+            call(&__call__),
+            root(nullptr),
+            size(0)
         {}
 
         ~PyFunction() {
+            if (root) {
+                delete root;
+            }
             if (!is_ptr) {
                 func.~function();
             }
@@ -3789,6 +4147,7 @@ to a corresponding C++ function signature.
             /// forward reference here.
         }
 
+        /* Call the function from Python. */
         static PyObject* __call__(
             PyFunction* self,
             PyObject* const* args,
@@ -3869,6 +4228,119 @@ to a corresponding C++ function signature.
             }
         }
 
+        /* Index the function to resolve a specific overload, as if the function were
+        being called normally. */
+        static PyObject* getitem(PyFunction* self, PyObject* key) {
+            if (!self->root) {
+                return Py_NewRef(self);
+            }
+
+            // positional arguments are given as raw type objects, whereas keyword
+            // arguments are passed as slices, which must be normalized.
+            constexpr auto resolve = [](PyObject* key) -> Lookup {
+                if (PySlice_Check(key)) {
+                    PyObject* name;
+                    PyTypeObject* type;
+                    PySliceObject* slice = reinterpret_cast<PySliceObject*>(key);
+                    if (PyUnicode_Check(slice->start)) {
+                        name = slice->start;
+                    } else {
+                        throw TypeError(
+                            "keyword argument name must be a string, not: " +
+                            repr(reinterpret_borrow<Object>(slice->start))
+                        );
+                    }
+                    if (PyType_Check(key)) {
+                        type = reinterpret_cast<PyTypeObject*>(slice->stop);
+                    } else {
+                        throw TypeError(
+                            "keyword argument type must be a type object, not: " +
+                            repr(reinterpret_borrow<Object>(slice->stop))
+                        );
+                    }
+                    Py_ssize_t name_len;
+                    const char* name_data = PyUnicode_AsUTF8AndSize(
+                        name,
+                        &name_len
+                    );
+                    if (name_data == nullptr) {
+                        Exception::from_python();
+                    }
+                    return Lookup{
+                        std::string_view{name_data, name_len},
+                        reinterpret_cast<PyTypeObject*>(type)
+                    };
+                } else if (PyType_Check(key)) {
+                    return Lookup{"", reinterpret_cast<PyTypeObject*>(key)};
+                } else {
+                    throw TypeError(
+                        "expected a type representing a positional argument "
+                        "or a slice representing a keyword argument, not: " +
+                        repr(reinterpret_borrow<Object>(key))
+                    );
+                }
+            };
+
+            try {
+                // if the key is a scalar, then we analyze it as a single argument and
+                // avoid unnecessary allocations
+                if (!PyTuple_Check(key)) {
+                    Lookup lookup = resolve(key);
+                    if (reinterpret_cast<size_t>(lookup.second)) {
+                        return nullptr;
+                    }
+                    auto it = self->cache.find(reinterpret_cast<size_t>(lookup.second));
+                    if (it != self->cache.end()) {
+                        return Py_NewRef(it->second->func);
+                    }
+                    Node* node = self->root->search({lookup}, 0);
+                    return Py_NewRef(node ? node->func : self);
+                }
+
+                // otherwise, the key is a tuple, and we need to construct an argument
+                // vector from it in order to search the trie
+                size_t hash = 0;
+                Py_ssize_t size = PyTuple_GET_SIZE(key);
+                std::vector<Lookup> args;
+                args.reserve(size);
+
+                for (Py_ssize_t i = 0; i < size; ++i) {
+                    PyObject* item = PyTuple_GET_ITEM(key, i);
+                    args[i] = resolve(item);
+                    if (args[i].second == nullptr) {
+                        return nullptr;
+                    }
+                    impl::hash_combine(hash, args[i].second)
+
+                    if (PySlice_Check(item)) {
+                        if (PyUnicode)
+
+
+                    } else if (PyType_Check(item)) {
+                        hash = impl::hash_combine(hash, reinterpret_cast<size_t>(item));
+                    } else {
+                        PyErr_Format(
+                            PyExc_TypeError,
+                            "expected type object"
+                        );
+                        return nullptr;
+                    }
+                }
+
+            } catch (...) {
+                Exception::to_python();
+                return nullptr;
+            }
+            
+        }
+
+        /* Manually clear the function's internal lookup cache from Python. */
+        static PyObject* flush(PyFunction* self) {
+            self->cache.clear();
+            Py_RETURN_NONE;
+        }
+
+        /* Default `repr()` demangles the function name + signature. */
         static PyObject* __repr__(PyFunction* self) {
             static const std::string demangled =
                 impl::demangle(typeid(Function<F>).name());
@@ -3902,6 +4374,8 @@ differ from non-member functions.)doc";;
         };
         Sig::Defaults defaults;
         vectorcallfunc call;
+        Node* root;
+        size_t size;
 
         PyFunction(
             std::string&& name,
@@ -3914,7 +4388,9 @@ differ from non-member functions.)doc";;
             is_ptr(true),
             func_ptr(func),
             defaults(std::move(defaults)),
-            call(&__call__)
+            call(&__call__),
+            root(nullptr),
+            size(0)
         {}
 
         PyFunction(
@@ -3929,7 +4405,9 @@ differ from non-member functions.)doc";;
             is_ptr(true),
             func_ptr(func),
             defaults(std::move(defaults)),
-            call(&__call__)
+            call(&__call__),
+            root(nullptr),
+            size(0)
         {}
 
         PyFunction(
@@ -3943,7 +4421,9 @@ differ from non-member functions.)doc";;
             is_ptr(false),
             func(std::move(func)),
             defaults(std::move(defaults)),
-            call(&__call__)
+            call(&__call__),
+            root(nullptr),
+            size(0)
         {}
 
         PyFunction(
@@ -3958,13 +4438,27 @@ differ from non-member functions.)doc";;
             is_ptr(false),
             func(std::move(func)),
             defaults(std::move(defaults)),
-            call(&__call__)
+            call(&__call__),
+            root(nullptr),
+            size(0)
         {}
 
         ~PyFunction() {
+            if (root) {
+                delete root;
+            }
             if (!is_ptr) {
                 func.~function();
             }
+        }
+
+        static PyObject* __call__(
+            PyFunction* self,
+            PyObject* const* args,
+            size_t nargsf,
+            PyObject* kwnames
+        ) {
+
         }
 
     };
@@ -3986,6 +4480,7 @@ public:
         explicit_ctor<Function>{},
         std::forward<A>(args)...
     ) {}
+
 };
 
 
@@ -4883,142 +5378,6 @@ namespace impl {
     }
 
 }
-
-
-/////////////////////////
-////    OVERLOADS    ////
-/////////////////////////
-
-
-/* An Python-compatible overload set that dispatches to a collection of functions using
-an efficient trie-based data structure. */
-struct Overload : Object {
-private:
-    using Base = Object;
-    friend class Type<OverloadSet>;
-
-    /* Argument maps are topologically sorted such that parent classes are always
-    checked after subclasses. */
-    struct Compare {
-        bool operator()(PyObject* lhs, PyObject* rhs) const {
-            int result = PyObject_IsSubclass(lhs, rhs);
-            if (result == -1) {
-                Exception::from_python();
-            }
-            return result;
-        }
-    };
-
-    /* Each node in the trie has 2 maps and a terminal function if this is the last
-    argument in the list.  The first map is a topological map of positional arguments
-    to the next node in the trie.  The second is a map of keyword names to another
-    topological map with the same behavior. */
-    struct Node {
-        std::map<PyObject*, Node*, Compare> positional;
-        std::unordered_map<std::string, std::map<PyObject*, Node*, Compare>> keyword;
-        PyObject* func = nullptr;
-    };
-
-    /* The Python representation of an Overload object. */
-    struct PyOverload {
-        PyObject_HEAD
-        Node root;  // describes the zeroth arg (return type) of the overload set
-        std::unordered_set<PyObject*> funcs;  // all functions in the overload set
-
-        static PyObject* overload(PyObject* self, PyObject* func) {
-            PyErr_SetString(PyExc_NotImplementedError, nullptr);
-        }
-
-        inline static PyMethodDef methods[] = {
-            {
-                "overload",
-                overload,
-                METH_O,
-                nullptr
-            },
-            {nullptr}
-        };
-
-        inline static PyTypeObject* type = {
-
-        };
-
-    };
-
-public:
-
-    OverloadSet(PyObject* p, borrowed_t t) : Base(p, t) {}
-    OverloadSet(PyObject* p, stolen_t t) : Base(p, t) {}
-
-    template <typename... Args> requires (implicit_ctor<OverloadSet>::template enable<Args...>)
-    OverloadSet(Args&&... args) : Base(
-        implicit_ctor<OverloadSet>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<OverloadSet>::template enable<Args...>)
-    explicit OverloadSet(Args&&... args) : Base(
-        explicit_ctor<OverloadSet>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    /* Add an overload from C++. */
-    template <typename Return, typename... Target>
-    void overload(const Function<Return(Target...)>& func) {
-
-    }
-
-    /* Attach the overload set to a type as a descriptor. */
-    template <StaticStr Name, typename T>
-    void attach(Type<T>& type) {
-
-    }
-
-    // TODO: index into an overload set to resolve a particular function
-
-};
-
-
-template <>
-struct Type<OverloadSet> : Object {
-    using __python__ = OverloadSet::PyOverload;
-
-    Type(PyObject* p, borrowed_t t) : Object(p, t) {}
-    Type(PyObject* p, stolen_t t) : Object(p, t) {}
-
-    template <typename... Args> requires (implicit_ctor<Type>::template enable<Args...>)
-    Type(Args&&... args) : Object(
-        implicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename... Args> requires (explicit_ctor<Type>::template enable<Args...>)
-    explicit Type(Args&&... args) : Object(
-        explicit_ctor<Type>{},
-        std::forward<Args>(args)...
-    ) {}
-
-    template <typename Return, typename... Target>
-    static void overload(OverloadSet& self, const Function<Return(Target...)>& func) {
-        self.overload(func);
-    }
-
-    template <StaticStr Name, typename T>
-    static void attach(OverloadSet& self, Type<T>& type) {
-        self.attach<Name>(type);
-    }
-
-};
-
-
-template <>
-struct __init__<Type<OverloadSet>> : Returns<Type<OverloadSet>> {
-    static Type<OverloadSet> operator()() {
-        return reinterpret_borrow<Type<OverloadSet>>(
-            reinterpret_cast<PyObject*>(Type<OverloadSet>::__python__::type)
-        );
-    }
-};
 
 
 }  // namespace py

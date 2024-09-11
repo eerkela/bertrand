@@ -299,19 +299,28 @@ public:
     /* Get the start object of the slice.  Note that this might not be an integer. */
     __declspec(property(get = _get_start)) Object start;
     [[nodiscard]] Object _get_start() const {
-        return getattr<"start">(*this);
+        PySliceObject* self = reinterpret_cast<PySliceObject*>(ptr(*this));
+        return self->start ?
+            reinterpret_borrow<Object>(self->start) :
+            reinterpret_borrow<Object>(Py_None);
     }
 
     /* Get the stop object of the slice.  Note that this might not be an integer. */
     __declspec(property(get = _get_stop)) Object stop;
     [[nodiscard]] Object _get_stop() const {
-        return getattr<"stop">(*this);
+        PySliceObject* self = reinterpret_cast<PySliceObject*>(ptr(*this));
+        return self->stop ?
+            reinterpret_borrow<Object>(self->stop) :
+            reinterpret_borrow<Object>(Py_None);
     }
 
     /* Get the step object of the slice.  Note that this might not be an integer. */
     __declspec(property(get = _get_step)) Object step;
     [[nodiscard]] Object _get_step() const {
-        return getattr<"step">(*this);
+        PySliceObject* self = reinterpret_cast<PySliceObject*>(ptr(*this));
+        return self->step ?
+            reinterpret_borrow<Object>(self->step) :
+            reinterpret_borrow<Object>(Py_None);
     }
 
     /* Normalize the indices of this slice against a container of the given length.
