@@ -182,6 +182,9 @@ public:
 
     T value;
 
+    /* rvalue argument proxies are generated whenever a function is called.  Making
+    them convertible to the underlying type means they can be used to call external
+    C++ functions that are not aware of Python argument annotations. */
     [[nodiscard]] operator T() && {
         if constexpr (std::is_lvalue_reference_v<T>) {
             return value;
@@ -195,16 +198,16 @@ public:
 namespace impl {
 
     template <StaticStr name>
-    struct UnboundArg : BertrandTag {
+    struct ArgFactory : BertrandTag {
         template <typename T>
         constexpr auto operator=(T&& value) const {
+            // aggregate initialization extends the lifetime of temporaries
             return Arg<name, T>{std::forward<T>(value)};
         }
     };
 
-    /* Represents a keyword parameter pack obtained by double-dereferencing a Python
-    object. */
-    template <impl::python_like T> requires (impl::mapping_like<T>)
+    /* A keyword parameter pack obtained by double-dereferencing a Python object. */
+    template <mapping_like T>
     struct KwargPack : ArgTag {
         using key_type = T::key_type;
         using mapped_type = T::mapped_type;
@@ -268,12 +271,10 @@ namespace impl {
         auto end() const { return std::ranges::end(transform()); }
         template <typename U = T> requires (can_iterate)
         auto cend() const { return end(); }
-
     };
 
-    /* Represents a positional parameter pack obtained by dereferencing a Python
-    object. */
-    template <impl::python_like T> requires (impl::iterable<T>)
+    /* A positional parameter pack obtained by dereferencing a Python object. */
+    template <iterable T>
     struct ArgPack : ArgTag {
         using type = iter_type<T>;
 
@@ -295,38 +296,7 @@ namespace impl {
         auto operator*() const {
             return KwargPack<T>{std::forward<T>(value)};
         }
-
     };
-
-}
-
-
-/* A compile-time factory for binding keyword arguments with Python syntax.  constexpr
-instances of this class can be used to provide an even more Pythonic syntax:
-
-    constexpr auto x = py::arg<"x">;
-    my_func(x = 42);
-*/
-template <StaticStr name>
-constexpr impl::UnboundArg<name> arg {};
-
-
-/// TODO: list all the special rules of container unpacking here?
-
-
-/* Dereference operator is used to emulate Python container unpacking. */
-template <impl::python_like Self> requires (impl::iterable<Self>)
-[[nodiscard]] auto operator*(Self&& self) -> impl::ArgPack<Self> {
-    return {std::forward<Self>(self)};
-}
-
-
-////////////////////////
-////    FUNCTION    ////
-////////////////////////
-
-
-namespace impl {
 
     /// TODO: I need to add a parameter for Self, and then handle it carefully in the
     /// call operator.  This won't affect the defaults, since `self` cannot be
@@ -433,99 +403,15 @@ namespace impl {
         static constexpr bool kwargs        = U::is_kwargs;
     };
 
-    /* An individual entry in an overload key, which describes the expected type of
-    a single parameter, including its name, category, and whether it has a default
-    value. */
-    struct OverloadParam {
-        enum Category {
-            POSONLY_DELIMITER,
-            KWONLY_DELIMITER,
-            POS,
-            KW,
-            KWONLY,
-            ARGS,
-            KWARGS,
-            POS_DEFAULT,
-            KW_DEFAULT,
-            KWONLY_DEFAULT,
-        };
-
-        std::string_view name;
-        Category category;
-        PyTypeObject* type;
-
-        bool posonly_delimiter() const noexcept {
-            return category == POSONLY_DELIMITER;
-        }
-
-        bool kwonly_delimiter() const noexcept {
-            return category == KWONLY_DELIMITER;
-        }
-
-        bool delimiter() const noexcept {
-            return category < POS;
-        }
-
-        bool has_default() const noexcept {
-            return category > KWARGS;
-        }
-
-        bool pos() const noexcept {
-            return category == POS || category == POS_DEFAULT;
-        }
-
-        bool kw() const noexcept {
-            return category == KW || category == KW_DEFAULT;
-        }
-
-        bool kwonly() const noexcept {
-            return category == KWONLY || category == KWONLY_DEFAULT;
-        }
-
-        bool args() const noexcept {
-            return category == ARGS;
-        }
-
-        bool kwargs() const noexcept {
-            return category == KWARGS;
-        }
-
-        std::string description() const noexcept {
-            switch (category) {
-                case POSONLY_DELIMITER: return "positional-only '/' delimiter";
-                case KWONLY_DELIMITER: return "keyword-only '*' delimiter";
-                case POS: return "positional";
-                case KW: return "keyword";
-                case KWONLY: return "keyword-only";
-                case ARGS: return "variadic positional";
-                case KWARGS: return "variadic keyword";
-                case POS_DEFAULT: return "positional with default";
-                case KW_DEFAULT: return "keyword with default";
-                case KWONLY_DEFAULT: return "keyword-only with default";
-                default: return "unknown";
-            }
-        }
-
-        size_t hash() const noexcept {
-            return impl::hash_combine(
-                std::hash<std::string_view>{}(name),
-                reinterpret_cast<size_t>(type),
-                static_cast<size_t>(category)
-            );
-        }
-    };
-
-    /// TODO: overload key should not include the delimiters themselves?
-
-    /* An overload key consisting of a sequence of OverloadParams, which describe a
-    Python-style call signature.  Keys of this form are used to insert into and
-    otherwise access the overload trie from Python. */
+    /* An overload key consisting of a sequence of parameter annotations, which
+    describe a Python-style call signature.  Keys of this form can be used to search a
+    function's overload trie during calls and other operations. */
     struct OverloadKey {
     private:
 
         /* Convert a Python string into a coherent argument name, ensuring that it
-        is well-formed and does not contain any invalid characters.  Leading '*'
-        characters will be preserved. */
+        is well-formed and does not contain any invalid characters.  Leading '*' and
+        '**' prefixes will be preserved. */
         static std::string_view param_name(PyObject* str) {
             Py_ssize_t len;
             const char* data = PyUnicode_AsUTF8AndSize(str, &len);
@@ -558,7 +444,86 @@ namespace impl {
         }
 
     public:
-        std::vector<OverloadParam> vec;
+        struct Param {
+            enum Category {
+                POSONLY_DELIMITER,
+                KWONLY_DELIMITER,
+                POS,
+                KW,
+                KWONLY,
+                ARGS,
+                KWARGS,
+                POS_DEFAULT,
+                KW_DEFAULT,
+                KWONLY_DEFAULT,
+            };
+
+            std::string_view name;
+            Category category;
+            PyTypeObject* type;
+
+            bool posonly_delimiter() const noexcept {
+                return category == POSONLY_DELIMITER;
+            }
+
+            bool kwonly_delimiter() const noexcept {
+                return category == KWONLY_DELIMITER;
+            }
+
+            bool delimiter() const noexcept {
+                return category < POS;
+            }
+
+            bool has_default() const noexcept {
+                return category > KWARGS;
+            }
+
+            bool pos() const noexcept {
+                return category == POS || category == POS_DEFAULT;
+            }
+
+            bool kw() const noexcept {
+                return category == KW || category == KW_DEFAULT;
+            }
+
+            bool kwonly() const noexcept {
+                return category == KWONLY || category == KWONLY_DEFAULT;
+            }
+
+            bool args() const noexcept {
+                return category == ARGS;
+            }
+
+            bool kwargs() const noexcept {
+                return category == KWARGS;
+            }
+
+            std::string description() const noexcept {
+                switch (category) {
+                    case POSONLY_DELIMITER: return "positional-only '/' delimiter";
+                    case KWONLY_DELIMITER: return "keyword-only '*' delimiter";
+                    case POS: return "positional";
+                    case KW: return "keyword";
+                    case KWONLY: return "keyword-only";
+                    case ARGS: return "variadic positional";
+                    case KWARGS: return "variadic keyword";
+                    case POS_DEFAULT: return "positional with default";
+                    case KW_DEFAULT: return "keyword with default";
+                    case KWONLY_DEFAULT: return "keyword-only with default";
+                    default: return "unknown";
+                }
+            }
+
+            size_t hash() const noexcept {
+                return impl::hash_combine(
+                    std::hash<std::string_view>{}(name),
+                    reinterpret_cast<size_t>(type),
+                    static_cast<size_t>(category)
+                );
+            }
+        };
+
+        std::vector<Param> vec;
         Py_ssize_t idx;
         Py_ssize_t posonly_idx;
         Py_ssize_t kw_idx;
@@ -575,23 +540,18 @@ namespace impl {
             vec.reserve(size);
         }
 
-        /// TODO: the way the key is built up is by generating an index sequence over
-        /// a target signature, and then consuming a sequence of __getitem__
-        /// annotations or a vectorcall array in the case of the call operator.  That's
-        /// the point at which any checks would be done, so as to avoid repeatedly
-        /// iterating over the signature.  That's necessary because I need some
-        /// reordering logic to account for keyword arguments that may not be in the
-        /// same order, in the case of the call operator.  __getitem__ signatures must
-        /// exactly match the keyword order in order not to interfere with
-        /// positional-or-keyword arguments.
-
         /// TODO: account for duplicate argument names when appending elements to the
         /// key?
+        /// -> This is only necessary for the subscript operator, since the call
+        /// operator will generate its keys via an index sequence over the template
+        /// signature, and may have a more efficient way of handling this than a
+        /// set-based lookup.  It's not necessary for function introspection either,
+        /// since those arguments are always guaranteed to be unique.
 
         /* Parse an overload parameter that is directly initialized and moved into the
-        key.  Automatically updates the key's indices based on the category of the
-        parameter. */
-        void param(OverloadParam&& par) {
+        key.  Automatically updates the key's hash and indices based on the category of
+        the parameter. */
+        void param(Param&& par) {
             if (par.pos()) {
                 if (default_idx == vec.size() && par.has_default()) {
                     default_idx = idx;
@@ -627,7 +587,7 @@ namespace impl {
         does not conform to Python calling conventions. */
         void getitem(PyObject* specifier) {
             std::string_view name;
-            OverloadParam::Category category;
+            Param::Category category;
             PyTypeObject* type;
 
             // raw types are interpreted as positional arguments
@@ -638,7 +598,7 @@ namespace impl {
                         repr(reinterpret_borrow<Object>(specifier))
                     );
                 }
-                category = OverloadParam::POS;
+                category = Param::POS;
                 type = reinterpret_cast<PyTypeObject*>(specifier);
 
             // slices are interpreted as keyword arguments
@@ -659,7 +619,7 @@ namespace impl {
                     );
                 }
                 name = param_name(slice->start);
-                category = OverloadParam::KW;
+                category = Param::KW;
                 type = reinterpret_cast<PyTypeObject*>(slice->stop);
 
             // everything else is invalid
@@ -681,7 +641,7 @@ namespace impl {
         invalid. */
         void class_getitem(PyObject* specifier) {
             std::string_view name;
-            OverloadParam::Category category;
+            Param::Category category;
             PyTypeObject* type;
 
             // raw types are interpreted as required, positional-only arguments
@@ -714,7 +674,7 @@ namespace impl {
                         repr(reinterpret_borrow<Object>(specifier))
                     );
                 }
-                category = OverloadParam::POS;
+                category = Param::POS;
                 type = reinterpret_cast<PyTypeObject*>(specifier);
 
             // slices are interpreted in several ways depending on their contents
@@ -753,7 +713,7 @@ namespace impl {
                             repr(reinterpret_borrow<Object>(specifier))
                         );
                     }
-                    category = OverloadParam::POS_DEFAULT;
+                    category = Param::POS_DEFAULT;
                     type = reinterpret_cast<PyTypeObject*>(slice->start);
 
                 // If the first element is a string, then the second element must
@@ -789,7 +749,7 @@ namespace impl {
                             );
                         }
                         name.remove_prefix(2);
-                        category = OverloadParam::KWARGS;
+                        category = Param::KWARGS;
 
                     // if the parameter name starts with "*", then it signifies a
                     // variadic positional argument
@@ -814,7 +774,7 @@ namespace impl {
                             );
                         }
                         name.remove_prefix(1);
-                        category = OverloadParam::ARGS;
+                        category = Param::ARGS;
 
                     // otherwise, it's a regular keyword argument
                     } else {
@@ -826,11 +786,11 @@ namespace impl {
                             );
                         } else if (slice->step == Py_Ellipsis) {
                             category = idx > kwonly_idx ?
-                                OverloadParam::KWONLY_DEFAULT :
-                                OverloadParam::KW_DEFAULT;
+                                Param::KWONLY_DEFAULT :
+                                Param::KW_DEFAULT;
                         } else if (slice->step == Py_None) {
                             if (idx > kwonly_idx) {
-                                category = OverloadParam::KWONLY;
+                                category = Param::KWONLY;
                             } else if (idx > default_idx) {
                                 throw TypeError(
                                     "parameter without a default value cannot follow "
@@ -838,7 +798,7 @@ namespace impl {
                                     repr(reinterpret_borrow<Object>(specifier))
                                 );
                             } else {
-                                category = OverloadParam::KW;
+                                category = Param::KW;
                             }
                         } else {
                             throw TypeError(
@@ -895,7 +855,7 @@ namespace impl {
                             "variadic keyword arguments"
                         );
                     }
-                    category = OverloadParam::POSONLY_DELIMITER;
+                    category = Param::POSONLY_DELIMITER;
 
                 // keyword-only delimiter
                 } else if (name == "*") {
@@ -911,7 +871,7 @@ namespace impl {
                             "variadic keyword arguments"
                         );
                     }
-                    category = OverloadParam::KWONLY_DELIMITER;
+                    category = Param::KWONLY_DELIMITER;
 
                 // everything else is invalid
                 } else {
@@ -934,29 +894,20 @@ namespace impl {
             param({name, category, type});
         }
 
-
         /// TODO: add a method to Parameters<> that produces a full subscript overload
         /// key from the enclosing signature, as well as another method to Bind<> that
-        /// produces a simplified one from a valid C++ parameter list.  The latter can
-        /// apply the simplified logic, since it will be used in the call operator.
-
-
-
-        /// TODO: place a method into Parameters<> that produces an overload key from
-        /// a __getitem__ signature.  There can be another helper on the Bind<> type
-        /// which produces an overload key from a valid C++ parameter list.  There also
-        /// needs to be a method that converts a Python vectorcall array into an
-        /// overload key, which is used in the Python call operator, perhaps
-        /// implemented within Function<> itself.
+        /// produces a simplified one from a valid C++ parameter list.  There also
+        /// needs to be a cousin for Python calls that does the same thing from a
+        /// vectorcall argument array.  Both of the latter can apply the simplified
+        /// logic, since it will be used in the call operator.
     };
 
-    /* A helper that inspects the signature of a pure Python function using the
-    `inspect` module and translates its inline annotations into overload keys, such
-    that Python functions can be easily added to the trie with no additional syntax.
-    Annotations will also be inspected when performing an `isinstance()` check on a
-    pure Python function against a templated `py::Function<...>` type, ensuring runtime
-    type safety when passing Python functions to C++.  Unless the annotations satisfy
-    the expected signature, such a conversion will cause an error. */
+    /// TODO: Inspect will require some interaction with the global type map, which
+    /// is not defined until modules are defined, so it will need to use forward
+    /// declarations to make everything work.
+
+    /* A helper that inspects pure Python functions and extracts their inline parameter
+    annotations so that they can be translated into overload keys. */
     struct Inspect {
     private:
 
@@ -1050,6 +1001,8 @@ namespace impl {
 
     public:
         PyObject* func;
+        PyObject* func_signature;  // result of inspect.signature(func)
+        PyObject* func_annotations;  // result of typing.get_type_hints(func)
 
         /// TODO: this is going to get really complicated trying to parse Python's
         /// type hinting syntax and reflecting it in the overload keys.  Most likely,
@@ -1076,7 +1029,9 @@ namespace impl {
         /// way away.
 
         PyObject* inspect;
-        PyObject* signature;  // inspect.Signature
+        PyObject* signature;
+        PyObject* Signature;
+        PyObject* Parameter;
         PyObject* empty;  // inspect.Parameter.empty
         PyObject* POSITIONAL_ONLY;  // inspect.Parameter.POSITIONAL_ONLY
         PyObject* POSITIONAL_OR_KEYWORD;  // inspect.Parameter.POSITIONAL_OR_KEYWORD
@@ -1084,184 +1039,485 @@ namespace impl {
         PyObject* KEYWORD_ONLY;  // inspect.Parameter.KEYWORD_ONLY
         PyObject* VAR_KEYWORD;  // inspect.Parameter.VAR_KEYWORD
 
-        PyObject* typing;
-        PyObject* annotations;  // result of typing.get_type_hints(func)
-        PyObject* Any;  // typing.Any -> object
-        PyObject* AnyStr;  // typing.AnyStr -> str
-        PyObject* LiteralString;  // typing.LiteralString -> str
-        PyObject* Never;  // typing.Never -> nullptr
-        PyObject* NoReturn;  // typing.NoReturn -> nullptr
-        PyObject* Self;  // typing.Self -> object
-        PyObject* Union;  // typing.Union -> recursively split into individual overloads
-        PyObject* Optional;  // typing.Optional -> recursively split into two overloads
-        PyObject* Literal;  // typing.Literal -> get the type within the literal
-        PyObject* TypeGuard;  // typing.TypeGuard -> bool
-        // PyObject* TypeVar;  // typing.TypeVar
-        // PyObject* TypeVarTuple;  // typing.TypeVarTuple
-        PyObject* get_origin;  // typing.get_origin
-        PyObject* get_args;  // typing.get_args
-
-        PyObject* types;
-        PyObject* GenericAlias;  // types.GenericAlias -> use get_origin() + get_args()
-        PyObject* UnionType;  // types.UnionType -> use get_args() to split into overloads
-        PyObject* TypeAliasType;  // types.TypeAliasType -> access .__value__
-
-        Inspect(PyObject* func) : func(Py_XNewRef(func)) {
+        void load_inspect() {
             inspect = PyImport_Import(impl::TemplateString<"inspect">::ptr);
             if (inspect == nullptr) {
-                Py_DECREF(func);
                 Exception::from_python();
             }
-            typing = PyImport_Import(impl::TemplateString<"typing">::ptr);
-            if (typing == nullptr) {
-                Py_DECREF(func);
-                Py_DECREF(inspect);
-                Exception::from_python();
-            }
-            PyObject* signature_func = PyObject_GetAttr(
+            signature = PyObject_GetAttr(
                 inspect,
                 impl::TemplateString<"signature">::ptr
             );
-            if (signature_func == nullptr) {
-                Py_DECREF(func);
-                Py_DECREF(inspect);
-                Py_DECREF(typing);
-                Exception::from_python();
-            }
-            signature = PyObject_CallOneArg(signature_func, func);
-            Py_DECREF(signature_func);
             if (signature == nullptr) {
-                Py_DECREF(func);
                 Py_DECREF(inspect);
-                Py_DECREF(typing);
                 Exception::from_python();
             }
-            PyObject* annotations_func = PyObject_GetAttr(
-                typing,
-                impl::TemplateString<"get_type_hints">::ptr
+            Signature = PyObject_GetAttr(
+                inspect,
+                impl::TemplateString<"Signature">::ptr
             );
-            if (annotations_func == nullptr) {
-                Py_DECREF(func);
+            if (Signature == nullptr) {
                 Py_DECREF(inspect);
-                Py_DECREF(typing);
                 Py_DECREF(signature);
                 Exception::from_python();
             }
-            annotations = PyObject_CallOneArg(annotations_func, func);
-            Py_DECREF(annotations_func);
-            if (annotations == nullptr) {
-                Py_DECREF(func);
-                Py_DECREF(inspect);
-                Py_DECREF(typing);
-                Py_DECREF(signature);
-                Exception::from_python();
-            }
-            PyObject* parameter = PyObject_GetAttr(
+            Parameter = PyObject_GetAttr(
                 inspect,
                 impl::TemplateString<"Parameter">::ptr
             );
-            if (parameter == nullptr) {
-                Py_DECREF(func);
+            if (Parameter == nullptr) {
                 Py_DECREF(inspect);
-                Py_DECREF(typing);
                 Py_DECREF(signature);
-                Py_DECREF(annotations);
+                Py_DECREF(Signature);
                 Exception::from_python();
             }
             empty = PyObject_GetAttr(
-                parameter,
+                Parameter,
                 impl::TemplateString<"empty">::ptr
             );
             if (empty == nullptr) {
-                Py_DECREF(func);
                 Py_DECREF(inspect);
-                Py_DECREF(typing);
                 Py_DECREF(signature);
-                Py_DECREF(annotations);
-                Py_DECREF(parameter);
+                Py_DECREF(Signature);
+                Py_DECREF(Parameter);
                 Exception::from_python();
             }
             POSITIONAL_ONLY = PyObject_GetAttr(
-                parameter,
+                Parameter,
                 impl::TemplateString<"POSITIONAL_ONLY">::ptr
             );
             if (POSITIONAL_ONLY == nullptr) {
-                Py_DECREF(func);
                 Py_DECREF(inspect);
-                Py_DECREF(typing);
                 Py_DECREF(signature);
-                Py_DECREF(annotations);
+                Py_DECREF(Signature);
+                Py_DECREF(Parameter);
                 Py_DECREF(empty);
-                Py_DECREF(parameter);
                 Exception::from_python();
             }
             POSITIONAL_OR_KEYWORD = PyObject_GetAttr(
-                parameter,
+                Parameter,
                 impl::TemplateString<"POSITIONAL_OR_KEYWORD">::ptr
             );
             if (POSITIONAL_OR_KEYWORD == nullptr) {
-                Py_DECREF(func);
                 Py_DECREF(inspect);
-                Py_DECREF(typing);
                 Py_DECREF(signature);
-                Py_DECREF(annotations);
+                Py_DECREF(Signature);
+                Py_DECREF(Parameter);
                 Py_DECREF(empty);
                 Py_DECREF(POSITIONAL_ONLY);
-                Py_DECREF(parameter);
                 Exception::from_python();
             }
             VAR_POSITIONAL = PyObject_GetAttr(
-                parameter,
+                Parameter,
                 impl::TemplateString<"VAR_POSITIONAL">::ptr
             );
             if (VAR_POSITIONAL == nullptr) {
-                Py_DECREF(func);
                 Py_DECREF(inspect);
-                Py_DECREF(typing);
                 Py_DECREF(signature);
-                Py_DECREF(annotations);
+                Py_DECREF(Signature);
+                Py_DECREF(Parameter);
                 Py_DECREF(empty);
                 Py_DECREF(POSITIONAL_ONLY);
                 Py_DECREF(POSITIONAL_OR_KEYWORD);
-                Py_DECREF(parameter);
                 Exception::from_python();
             }
             KEYWORD_ONLY = PyObject_GetAttr(
-                parameter,
+                Parameter,
                 impl::TemplateString<"KEYWORD_ONLY">::ptr
             );
             if (KEYWORD_ONLY == nullptr) {
-                Py_DECREF(func);
                 Py_DECREF(inspect);
-                Py_DECREF(typing);
                 Py_DECREF(signature);
-                Py_DECREF(annotations);
+                Py_DECREF(Signature);
+                Py_DECREF(Parameter);
                 Py_DECREF(empty);
                 Py_DECREF(POSITIONAL_ONLY);
                 Py_DECREF(POSITIONAL_OR_KEYWORD);
                 Py_DECREF(VAR_POSITIONAL);
-                Py_DECREF(parameter);
                 Exception::from_python();
             }
             VAR_KEYWORD = PyObject_GetAttr(
-                parameter,
+                Parameter,
                 impl::TemplateString<"VAR_KEYWORD">::ptr
             );
             if (VAR_KEYWORD == nullptr) {
-                Py_DECREF(func);
                 Py_DECREF(inspect);
-                Py_DECREF(typing);
                 Py_DECREF(signature);
-                Py_DECREF(annotations);
+                Py_DECREF(Signature);
+                Py_DECREF(Parameter);
                 Py_DECREF(empty);
                 Py_DECREF(POSITIONAL_ONLY);
                 Py_DECREF(POSITIONAL_OR_KEYWORD);
                 Py_DECREF(VAR_POSITIONAL);
                 Py_DECREF(KEYWORD_ONLY);
-                Py_DECREF(parameter);
                 Exception::from_python();
             }
-            Py_DECREF(parameter);
+        }
+
+        void unload_inspect() noexcept {
+            Py_XDECREF(inspect);
+            Py_XDECREF(Signature);
+            Py_XDECREF(Parameter);
+            Py_XDECREF(empty);
+            Py_XDECREF(POSITIONAL_ONLY);
+            Py_XDECREF(POSITIONAL_OR_KEYWORD);
+            Py_XDECREF(VAR_POSITIONAL);
+            Py_XDECREF(KEYWORD_ONLY);
+            Py_XDECREF(VAR_KEYWORD);
+        }
+
+        PyObject* typing;
+        PyObject* Any;  // -> object
+        PyObject* AnyStr;  // -> str
+        PyObject* LiteralString;  // -> str
+        PyObject* Never;  // -> nullptr
+        PyObject* NoReturn;  // -> nullptr
+        PyObject* Self;  // -> object
+        PyObject* Union;  // -> recursively split into individual overloads
+        PyObject* Optional;  // -> recursively split into two overloads
+        PyObject* Literal;  // -> get the type within the literal
+        PyObject* TypeGuard;  // -> bool
+        PyObject* TypeVar;  // (broken)
+        PyObject* TypeVarTuple;  // (broken)
+        PyObject* get_origin;
+        PyObject* get_args;
+        PyObject* get_type_hints;
+
+        void load_typing() {
+            typing = PyImport_Import(impl::TemplateString<"typing">::ptr);
+            if (typing == nullptr) {
+                Exception::from_python();
+            }
+            Any = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"Any">::ptr
+            );
+            if (Any == nullptr) {
+                Py_DECREF(typing);
+                Exception::from_python();
+            }
+            AnyStr = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"AnyStr">::ptr
+            );
+            if (AnyStr == nullptr) {
+                Py_DECREF(typing);
+                Py_DECREF(Any);
+                Exception::from_python();
+            }
+            LiteralString = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"LiteralString">::ptr
+            );
+            if (LiteralString == nullptr) {
+                Py_DECREF(typing);
+                Py_DECREF(Any);
+                Py_DECREF(AnyStr);
+                Exception::from_python();
+            }
+            Never = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"Never">::ptr
+            );
+            if (Never == nullptr) {
+                Py_DECREF(typing);
+                Py_DECREF(Any);
+                Py_DECREF(AnyStr);
+                Py_DECREF(LiteralString);
+                Exception::from_python();
+            }
+            NoReturn = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"NoReturn">::ptr
+            );
+            if (NoReturn == nullptr) {
+                Py_DECREF(typing);
+                Py_DECREF(Any);
+                Py_DECREF(AnyStr);
+                Py_DECREF(LiteralString);
+                Py_DECREF(Never);
+                Exception::from_python();
+            }
+            Self = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"Self">::ptr
+            );
+            if (Self == nullptr) {
+                Py_DECREF(typing);
+                Py_DECREF(Any);
+                Py_DECREF(AnyStr);
+                Py_DECREF(LiteralString);
+                Py_DECREF(Never);
+                Py_DECREF(NoReturn);
+                Exception::from_python();
+            }
+            Union = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"Union">::ptr
+            );
+            if (Union == nullptr) {
+                Py_DECREF(typing);
+                Py_DECREF(Any);
+                Py_DECREF(AnyStr);
+                Py_DECREF(LiteralString);
+                Py_DECREF(Never);
+                Py_DECREF(NoReturn);
+                Py_DECREF(Self);
+                Exception::from_python();
+            }
+            Optional = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"Optional">::ptr
+            );
+            if (Optional == nullptr) {
+                Py_DECREF(typing);
+                Py_DECREF(Any);
+                Py_DECREF(AnyStr);
+                Py_DECREF(LiteralString);
+                Py_DECREF(Never);
+                Py_DECREF(NoReturn);
+                Py_DECREF(Self);
+                Py_DECREF(Union);
+                Exception::from_python();
+            }
+            Literal = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"Literal">::ptr
+            );
+            if (Literal == nullptr) {
+                Py_DECREF(typing);
+                Py_DECREF(Any);
+                Py_DECREF(AnyStr);
+                Py_DECREF(LiteralString);
+                Py_DECREF(Never);
+                Py_DECREF(NoReturn);
+                Py_DECREF(Self);
+                Py_DECREF(Union);
+                Py_DECREF(Optional);
+                Exception::from_python();
+            }
+            TypeGuard = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"TypeGuard">::ptr
+            );
+            if (TypeGuard == nullptr) {
+                Py_DECREF(typing);
+                Py_DECREF(Any);
+                Py_DECREF(AnyStr);
+                Py_DECREF(LiteralString);
+                Py_DECREF(Never);
+                Py_DECREF(NoReturn);
+                Py_DECREF(Self);
+                Py_DECREF(Union);
+                Py_DECREF(Optional);
+                Py_DECREF(Literal);
+                Exception::from_python();
+            }
+            TypeVar = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"TypeVar">::ptr
+            );
+            if (TypeVar == nullptr) {
+                Py_DECREF(typing);
+                Py_DECREF(Any);
+                Py_DECREF(AnyStr);
+                Py_DECREF(LiteralString);
+                Py_DECREF(Never);
+                Py_DECREF(NoReturn);
+                Py_DECREF(Self);
+                Py_DECREF(Union);
+                Py_DECREF(Optional);
+                Py_DECREF(Literal);
+                Py_DECREF(TypeGuard);
+                Exception::from_python();
+            }
+            TypeVarTuple = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"TypeVarTuple">::ptr
+            );
+            if (TypeVarTuple == nullptr) {
+                Py_DECREF(typing);
+                Py_DECREF(Any);
+                Py_DECREF(AnyStr);
+                Py_DECREF(LiteralString);
+                Py_DECREF(Never);
+                Py_DECREF(NoReturn);
+                Py_DECREF(Self);
+                Py_DECREF(Union);
+                Py_DECREF(Optional);
+                Py_DECREF(Literal);
+                Py_DECREF(TypeGuard);
+                Py_DECREF(TypeVar);
+                Exception::from_python();
+            }
+            get_origin = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"get_origin">::ptr
+            );
+            if (get_origin == nullptr) {
+                Py_DECREF(typing);
+                Py_DECREF(Any);
+                Py_DECREF(AnyStr);
+                Py_DECREF(LiteralString);
+                Py_DECREF(Never);
+                Py_DECREF(NoReturn);
+                Py_DECREF(Self);
+                Py_DECREF(Union);
+                Py_DECREF(Optional);
+                Py_DECREF(Literal);
+                Py_DECREF(TypeGuard);
+                Py_DECREF(TypeVar);
+                Py_DECREF(TypeVarTuple);
+                Exception::from_python();
+            }
+            get_args = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"get_args">::ptr
+            );
+            if (get_args == nullptr) {
+                Py_DECREF(typing);
+                Py_DECREF(Any);
+                Py_DECREF(AnyStr);
+                Py_DECREF(LiteralString);
+                Py_DECREF(Never);
+                Py_DECREF(NoReturn);
+                Py_DECREF(Self);
+                Py_DECREF(Union);
+                Py_DECREF(Optional);
+                Py_DECREF(Literal);
+                Py_DECREF(TypeGuard);
+                Py_DECREF(TypeVar);
+                Py_DECREF(TypeVarTuple);
+                Py_DECREF(get_origin);
+                Exception::from_python();
+            }
+            get_type_hints = PyObject_GetAttr(
+                typing,
+                impl::TemplateString<"get_type_hints">::ptr
+            );
+            if (get_type_hints == nullptr) {
+                Py_DECREF(typing);
+                Py_DECREF(Any);
+                Py_DECREF(AnyStr);
+                Py_DECREF(LiteralString);
+                Py_DECREF(Never);
+                Py_DECREF(NoReturn);
+                Py_DECREF(Self);
+                Py_DECREF(Union);
+                Py_DECREF(Optional);
+                Py_DECREF(Literal);
+                Py_DECREF(TypeGuard);
+                Py_DECREF(TypeVar);
+                Py_DECREF(TypeVarTuple);
+                Py_DECREF(get_origin);
+                Py_DECREF(get_args);
+                Exception::from_python();
+            }
+        }
+
+        void unload_typing() noexcept {
+            Py_XDECREF(typing);
+            Py_XDECREF(Any);
+            Py_XDECREF(AnyStr);
+            Py_XDECREF(LiteralString);
+            Py_XDECREF(Never);
+            Py_XDECREF(NoReturn);
+            Py_XDECREF(Self);
+            Py_XDECREF(Union);
+            Py_XDECREF(Optional);
+            Py_XDECREF(Literal);
+            Py_XDECREF(TypeGuard);
+            Py_XDECREF(TypeVar);
+            Py_XDECREF(TypeVarTuple);
+            Py_XDECREF(get_origin);
+            Py_XDECREF(get_args);
+        }
+
+        PyObject* types;
+        PyObject* GenericAlias;  // -> use get_origin() + get_args()
+        PyObject* UnionType;  // -> use get_args() to split into overloads
+        PyObject* TypeAliasType;  // -> access .__value__
+
+        void load_types() {
+            types = PyImport_Import(impl::TemplateString<"types">::ptr);
+            if (types == nullptr) {
+                Exception::from_python();
+            }
+            GenericAlias = PyObject_GetAttr(
+                types,
+                impl::TemplateString<"GenericAlias">::ptr
+            );
+            if (GenericAlias == nullptr) {
+                Py_DECREF(types);
+                Exception::from_python();
+            }
+            UnionType = PyObject_GetAttr(
+                types,
+                impl::TemplateString<"UnionType">::ptr
+            );
+            if (UnionType == nullptr) {
+                Py_DECREF(types);
+                Py_DECREF(GenericAlias);
+                Exception::from_python();
+            }
+            TypeAliasType = PyObject_GetAttr(
+                types,
+                impl::TemplateString<"TypeAliasType">::ptr
+            );
+            if (TypeAliasType == nullptr) {
+                Py_DECREF(types);
+                Py_DECREF(GenericAlias);
+                Py_DECREF(UnionType);
+                Exception::from_python();
+            }
+        }
+
+        void unload_types() noexcept {
+            Py_XDECREF(types);
+            Py_XDECREF(GenericAlias);
+            Py_XDECREF(UnionType);
+            Py_XDECREF(TypeAliasType);
+        }
+
+        explicit Inspect(PyObject* func) : func(Py_NewRef(func)) {
+            try {
+                load_inspect();
+            } catch (...) {
+                Py_DECREF(func);
+                throw;
+            }
+            try {
+                load_typing();
+            } catch (...) {
+                Py_DECREF(func);
+                unload_inspect();
+                throw;
+            }
+            try {
+                load_types();
+            } catch (...) {
+                Py_DECREF(func);
+                unload_inspect();
+                unload_typing();
+                throw;
+            }
+            func_signature = PyObject_CallOneArg(signature, func);
+            if (func_signature == nullptr) {
+                Py_DECREF(this->func);
+                unload_types();
+                unload_typing();
+                unload_inspect();
+                Exception::from_python();
+            }
+            func_annotations = PyObject_CallOneArg(get_type_hints, func);
+            if (func_annotations == nullptr) {
+                Py_DECREF(this->func);
+                Py_DECREF(func_signature);
+                unload_types();
+                unload_typing();
+                unload_inspect();
+                Exception::from_python();
+            }
         }
 
         Inspect(const Inspect& other) = delete;
@@ -1271,17 +1527,16 @@ namespace impl {
 
         ~Inspect() noexcept {
             Py_XDECREF(func);
-            Py_XDECREF(inspect);
-            Py_XDECREF(typing);
-            Py_XDECREF(signature);
-            Py_XDECREF(annotations);
-            Py_XDECREF(empty);
-            Py_XDECREF(POSITIONAL_ONLY);
-            Py_XDECREF(POSITIONAL_OR_KEYWORD);
-            Py_XDECREF(VAR_POSITIONAL);
-            Py_XDECREF(KEYWORD_ONLY);
-            Py_XDECREF(VAR_KEYWORD);
+            Py_XDECREF(func_signature);
+            Py_XDECREF(func_annotations);
+            unload_inspect();
+            unload_typing();
+            unload_types();
         }
+
+
+
+
 
         /// TODO: this is going to have to return a collection of overload keys due
         /// to the presence of union types in the Python function signature, which must
@@ -4230,6 +4485,26 @@ namespace impl {
     /// identifiers are compatible, possibly requiring an overload of isinstance()/
     /// issubclass() to ensure the same semantics are followed in both Python and C++.
 
+}
+
+
+/* A compile-time factory for binding keyword arguments with Python syntax.  constexpr
+instances of this class can be used to provide an even more Pythonic syntax:
+
+    constexpr auto x = py::arg<"x">;
+    my_func(x = 42);
+*/
+template <StaticStr name>
+constexpr impl::ArgFactory<name> arg {};
+
+
+/// TODO: list all the special rules of container unpacking here?
+
+
+/* Dereference operator is used to emulate Python container unpacking. */
+template <impl::python_like Self> requires (impl::iterable<Self>)
+[[nodiscard]] auto operator*(Self&& self) -> impl::ArgPack<Self> {
+    return {std::forward<Self>(self)};
 }
 
 
