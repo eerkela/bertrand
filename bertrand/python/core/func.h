@@ -426,80 +426,67 @@ namespace impl {
     function's overload trie during calls and other operations. */
     struct OverloadKey {
         struct Param {
-            enum Category {
-                POSONLY_DELIMITER,
-                KWONLY_DELIMITER,
-                POSONLY,
-                KW,
-                KWONLY,
-                ARGS,
-                KWARGS,
-                POSONLY_DEFAULT,
-                KW_DEFAULT,
-                KWONLY_DEFAULT,
+            enum Category : uint8_t {
+                POSONLY             = 0b1,
+                KW                  = 0b10,
+                KWONLY              = 0b100,
+                ARGS                = 0b1000,
+                KWARGS              = 0b10000,
+                DEFAULT             = 0b100000
             };
 
             std::string_view name;
-            Category category;
             PyTypeObject* type;
-
-            bool posonly_delimiter() const noexcept {
-                return category == POSONLY_DELIMITER;
-            }
-
-            bool kwonly_delimiter() const noexcept {
-                return category == KWONLY_DELIMITER;
-            }
-
-            bool delimiter() const noexcept {
-                return category < POSONLY;
-            }
+            Category category;
 
             bool has_default() const noexcept {
-                return category > KWARGS;
+                return category & DEFAULT;
             }
 
-            bool pos() const noexcept {
-                return category == POSONLY || category == POSONLY_DEFAULT;
+            bool posonly() const noexcept {
+                return category & POSONLY;
             }
 
             bool kw() const noexcept {
-                return category == KW || category == KW_DEFAULT;
+                return category & KW;
             }
 
             bool kwonly() const noexcept {
-                return category == KWONLY || category == KWONLY_DEFAULT;
+                return category & KWONLY;
             }
 
             bool args() const noexcept {
-                return category == ARGS;
+                return category & ARGS;
             }
 
             bool kwargs() const noexcept {
-                return category == KWARGS;
+                return category & KWARGS;
             }
 
             std::string_view description() const noexcept {
-                switch (category) {
-                    case POSONLY_DELIMITER: return "positional-only '/' delimiter";
-                    case KWONLY_DELIMITER: return "keyword-only '*' delimiter";
-                    case POSONLY: return "positional";
-                    case KW: return "keyword";
-                    case KWONLY: return "keyword-only";
-                    case ARGS: return "variadic positional";
-                    case KWARGS: return "variadic keyword";
-                    case POSONLY_DEFAULT: return "positional with default";
-                    case KW_DEFAULT: return "keyword with default";
-                    case KWONLY_DEFAULT: return "keyword-only with default";
-                    default: return "unknown";
+                if (category & POSONLY) {
+                    return category & DEFAULT ? "positional with default" : "positional";
                 }
+                if (category & KW) {
+                    return category & DEFAULT ? "keyword with default" : "keyword";
+                }
+                if (category & KWONLY) {
+                    return category & DEFAULT ? "keyword-only with default" : "keyword-only";
+                }
+                if (category & ARGS) {
+                    return "variadic positional";
+                }
+                if (category & KWARGS) {
+                    return "variadic keyword";
+                }
+                return "unknown";
             }
 
             size_t hash() const noexcept {
                 return impl::hash_combine(
                     std::hash<std::string_view>{}(name),
                     reinterpret_cast<size_t>(type),
-                    static_cast<size_t>(category)
+                    category
                 );
             }
 
@@ -540,21 +527,18 @@ namespace impl {
 
     private:
         std::vector<Param> vec;
+        Py_ssize_t idx = 0;
+        Py_ssize_t posonly_idx = std::numeric_limits<size_t>::max();
+        Py_ssize_t kw_idx = std::numeric_limits<size_t>::max();
+        Py_ssize_t kwonly_idx = std::numeric_limits<size_t>::max();
+        Py_ssize_t args_idx = std::numeric_limits<size_t>::max();
+        Py_ssize_t kwargs_idx = std::numeric_limits<size_t>::max();
+        Py_ssize_t default_idx = std::numeric_limits<size_t>::max();
 
     public:
-        Py_ssize_t idx;
-        Py_ssize_t posonly_idx;
-        Py_ssize_t kw_idx;
-        Py_ssize_t kwonly_idx;
-        Py_ssize_t args_idx;
-        Py_ssize_t kwargs_idx;
-        Py_ssize_t default_idx;
-        size_t hash;
+        size_t hash = 0;
 
-        explicit OverloadKey(size_t size) :
-            idx(0), posonly_idx(size), kw_idx(size), kwonly_idx(size), args_idx(size),
-            kwargs_idx(size), default_idx(size), hash(0)
-        {
+        explicit OverloadKey(size_t size) {
             vec.reserve(size);
         }
 
@@ -570,29 +554,25 @@ namespace impl {
         key.  Automatically updates the key's hash and indices based on the category of
         the parameter. */
         void param(Param&& par) {
-            if (par.pos()) {
-                if (default_idx == vec.size() && par.has_default()) {
+            if (par.posonly()) {
+                if (idx < default_idx && par.has_default()) {
                     default_idx = idx;
                 }
             } else if (par.kw()) {
-                if (default_idx == vec.size() && par.has_default()) {
+                if (idx < default_idx && par.has_default()) {
                     default_idx = idx;
                 }
-                if (kw_idx == vec.size()) {
+                if (idx < kw_idx) {
                     kw_idx = idx;
                 }
             } else if (par.kwonly()) {
-                if (kw_idx == vec.size()) {
+                if (idx < kw_idx) {
                     kw_idx = idx;
                 }
             } else if (par.args()) {
                 args_idx = idx;
             } else if (par.kwargs()) {
                 kwargs_idx = idx;
-            } else if (par.posonly_delimiter()) {
-                posonly_idx = idx;
-            } else if (par.kwonly_delimiter()) {
-                kwonly_idx = idx;
             } else {
                 throw TypeError("invalid category for overload parameter");
             }
@@ -648,7 +628,7 @@ namespace impl {
                     repr(reinterpret_borrow<Object>(specifier))
                 );
             }
-            param({name, category, type});
+            param({name, type, category});
         }
 
         /* Append a parameter to the key, parsing it as it it were provided to the
@@ -731,7 +711,7 @@ namespace impl {
                             repr(reinterpret_borrow<Object>(specifier))
                         );
                     }
-                    category = Param::POSONLY_DEFAULT;
+                    category = static_cast<Param::Category>(Param::POSONLY | Param::DEFAULT);
                     type = reinterpret_cast<PyTypeObject*>(slice->start);
 
                 // If the first element is a string, then the second element must
@@ -804,8 +784,8 @@ namespace impl {
                             );
                         } else if (slice->step == Py_Ellipsis) {
                             category = idx > kwonly_idx ?
-                                Param::KWONLY_DEFAULT :
-                                Param::KW_DEFAULT;
+                                static_cast<Param::Category>(Param::KWONLY | Param::DEFAULT) :
+                                static_cast<Param::Category>(Param::KW | Param::DEFAULT);
                         } else if (slice->step == Py_None) {
                             if (idx > kwonly_idx) {
                                 category = Param::KWONLY;
@@ -873,7 +853,8 @@ namespace impl {
                             "variadic keyword arguments"
                         );
                     }
-                    category = Param::POSONLY_DELIMITER;
+                    posonly_idx = idx;
+                    return;
 
                 // keyword-only delimiter
                 } else if (name == "*") {
@@ -889,7 +870,8 @@ namespace impl {
                             "variadic keyword arguments"
                         );
                     }
-                    category = Param::KWONLY_DELIMITER;
+                    kwonly_idx = idx;
+                    return;
 
                 // everything else is invalid
                 } else {
@@ -909,7 +891,7 @@ namespace impl {
                     repr(reinterpret_borrow<Object>(specifier))
                 );
             }
-            param({name, category, type});
+            param({name, type, category});
         }
 
         /// TODO: add a method to Parameters<> that produces a full subscript overload
@@ -940,231 +922,61 @@ namespace impl {
     /* A helper that inspects pure Python functions and extracts their inline parameter
     annotations so that they can be translated into overload keys. */
     struct Inspect {
-        Object inspect;
-        Object signature;
-        Object Signature;
-        Object Parameter;
-        Object empty;  // inspect.Parameter.empty
-        Object POSITIONAL_ONLY;  // inspect.Parameter.POSITIONAL_ONLY
-        Object POSITIONAL_OR_KEYWORD;  // inspect.Parameter.POSITIONAL_OR_KEYWORD
-        Object VAR_POSITIONAL;  // inspect.Parameter.VAR_POSITIONAL
-        Object KEYWORD_ONLY;  // inspect.Parameter.KEYWORD_ONLY
-        Object VAR_KEYWORD;  // inspect.Parameter.VAR_KEYWORD
-
-        void load_inspect() {
-            inspect = reinterpret_steal<Object>(
-                PyImport_Import(impl::TemplateString<"inspect">::ptr)
-            );
-            if (ptr(inspect) == nullptr) {
+        Object inspect                  = [] {
+            PyObject* inspect = PyImport_ImportModule("inspect");
+            if (inspect == nullptr) {
                 Exception::from_python();
             }
-            signature = getattr<"signature">(inspect);
-            Signature = getattr<"Signature">(inspect);
-            Parameter = getattr<"Parameter">(inspect);
-            empty = getattr<"empty">(Parameter);
-            POSITIONAL_ONLY = getattr<"POSITIONAL_ONLY">(Parameter);
-            POSITIONAL_OR_KEYWORD = getattr<"POSITIONAL_OR_KEYWORD">(Parameter);
-            VAR_POSITIONAL = getattr<"VAR_POSITIONAL">(Parameter);
-            KEYWORD_ONLY = getattr<"KEYWORD_ONLY">(Parameter);
-            VAR_KEYWORD = getattr<"VAR_KEYWORD">(Parameter);
-        }
-
-        Object typing;
-        Object Any;  // -> object
-        Object AnyStr;  // -> str
-        Object LiteralString;  // -> str
-        Object Never;  // -> nullptr
-        Object NoReturn;  // -> nullptr
-        Object Self;  // -> object
-        Object Union;  // -> recursively split into individual overloads
-        Object Optional;  // -> recursively split into two overloads
-        Object Literal;  // -> get the type within the literal
-        Object TypeGuard;  // -> bool
-        Object TypeVar;  // (broken)
-        Object TypeVarTuple;  // (broken)
-        Object get_origin;
-        Object get_args;
-        Object get_type_hints;
-
-        void load_typing() {
-            typing = reinterpret_steal<Object>(
-                PyImport_Import(impl::TemplateString<"typing">::ptr)
-            );
-            if (ptr(typing) == nullptr) {
+            return reinterpret_steal<Object>(inspect);
+        }();
+        Object signature                = getattr<"signature">(inspect);
+        Object Signature                = getattr<"Signature">(inspect);
+        Object Parameter                = getattr<"Parameter">(inspect);
+        Object empty                    = getattr<"empty">(Parameter);
+        Object POSITIONAL_ONLY          = getattr<"POSITIONAL_ONLY">(Parameter);
+        Object POSITIONAL_OR_KEYWORD    = getattr<"POSITIONAL_OR_KEYWORD">(Parameter);
+        Object VAR_POSITIONAL           = getattr<"VAR_POSITIONAL">(Parameter);
+        Object KEYWORD_ONLY             = getattr<"KEYWORD_ONLY">(Parameter);
+        Object VAR_KEYWORD              = getattr<"VAR_KEYWORD">(Parameter);
+        Object typing                   = [] {
+            PyObject* typing = PyImport_ImportModule("typing");
+            if (typing == nullptr) {
                 Exception::from_python();
             }
-            Any = getattr<"Any">(typing);
-            AnyStr = getattr<"AnyStr">(typing);
-            LiteralString = getattr<"LiteralString">(typing);
-            Never = getattr<"Never">(typing);
-            NoReturn = getattr<"NoReturn">(typing);
-            Self = getattr<"Self">(typing);
-            Union = getattr<"Union">(typing);
-            Optional = getattr<"Optional">(typing);
-            Literal = getattr<"Literal">(typing);
-            TypeGuard = getattr<"TypeGuard">(typing);
-            TypeVar = getattr<"TypeVar">(typing);
-            TypeVarTuple = getattr<"TypeVarTuple">(typing);
-            get_origin = getattr<"get_origin">(typing);
-            get_args = getattr<"get_args">(typing);
-            get_type_hints = getattr<"get_type_hints">(typing);
-        }
-
-        Object types;
-        Object GenericAlias;  // -> use get_origin() + get_args()
-        Object UnionType;  // -> use get_args() to split into overloads
-        Object TypeAliasType;  // -> access .__value__
-
-        void load_types() {
-            types = reinterpret_steal<Object>(
-                PyImport_Import(impl::TemplateString<"types">::ptr)
-            );
-            if (ptr(types) == nullptr) {
+            return reinterpret_steal<Object>(typing);
+        }();
+        Object Any                      = getattr<"Any">(typing);  // -> object
+        Object AnyStr                   = getattr<"AnyStr">(typing);  // -> str
+        Object LiteralString            = getattr<"LiteralString">(typing);  // -> str
+        Object Never                    = getattr<"Never">(typing);  // -> nullptr
+        Object NoReturn                 = getattr<"NoReturn">(typing);  // -> nullptr
+        Object Self                     = getattr<"Self">(typing);  // -> object
+        Object Union                    = getattr<"Union">(typing);  // -> recursively split into individual overloads
+        Object Optional                 = getattr<"Optional">(typing);  // -> recursively split into two overloads
+        Object Literal                  = getattr<"Literal">(typing);  // -> get the type within the literal
+        Object TypeGuard                = getattr<"TypeGuard">(typing);  // -> bool
+        Object TypeVar                  = getattr<"TypeVar">(typing);  // (broken)
+        Object TypeVarTuple             = getattr<"TypeVarTuple">(typing);  // (broken)
+        Object get_origin               = getattr<"get_origin">(typing);
+        Object get_args                 = getattr<"get_args">(typing);
+        Object get_type_hints           = getattr<"get_type_hints">(typing);
+        Object types                    = [] {
+            PyObject* types = PyImport_ImportModule("types");
+            if (types == nullptr) {
                 Exception::from_python();
             }
-            GenericAlias = getattr<"GenericAlias">(types);
-            UnionType = getattr<"UnionType">(types);
-            TypeAliasType = getattr<"TypeAliasType">(types);
-        }
-
+            return reinterpret_steal<Object>(types);
+        }();
+        Object GenericAlias             = getattr<"GenericAlias">(types);  // -> use get_origin() + get_args()
+        Object UnionType                = getattr<"UnionType">(types);  // -> use get_args() to split into overloads
+        Object TypeAliasType            = getattr<"TypeAliasType">(types);  // -> access .__value__
         Object func;
         Object func_signature;  // inspect.signature(func) w/ corrected type hints
 
-        void load_signature() {
-            // func_signature = inspect.signature(func)
-            // hints = typing.get_type_hints(func)
-            // func_signature = func_signature.replace(
-            //      return_annotation=hints.get("return", inspect.Parameter.empty),
-            //      parameters=[
-            //         p if p.annotation is inspect.Parameter.empty else
-            //         p.replace(annotation=hints[p.name])
-            //         for p in func_signature.parameters.values()
-            //     ]
-            // )
-            func_signature = reinterpret_steal<Object>(PyObject_CallOneArg(
-                ptr(signature),
-                ptr(func)
-            ));
-            if (ptr(func_signature) == nullptr) {
-                Exception::from_python();
-            }
-            Object hints = reinterpret_steal<Object>(PyObject_CallOneArg(
-                ptr(get_type_hints),
-                ptr(func)
-            ));
-            if (ptr(hints) == nullptr) {
-                Exception::from_python();
-            }
-            Py_ssize_t idx = 0;
-            Py_ssize_t len;
-            Object iter = get_iter(len);
-            Object new_params = reinterpret_steal<Object>(PyList_New(len));
-            PyObject* param;
-            while ((param = PyIter_Next(ptr(iter)))) {
-                Object annotation = reinterpret_steal<Object>(PyObject_GetAttr(
-                    param,
-                    impl::TemplateString<"annotation">::ptr
-                ));
-                if (ptr(annotation) == nullptr) {
-                    Py_DECREF(param);
-                    Exception::from_python();
-                }
-                if (!annotation.is(empty)) {
-                    Object name = reinterpret_steal<Object>(PyObject_GetAttr(
-                        param,
-                        impl::TemplateString<"name">::ptr
-                    ));
-                    if (ptr(name) == nullptr) {
-                        Py_DECREF(param);
-                        Exception::from_python();
-                    }
-                    annotation = reinterpret_steal<Object>(PyDict_GetItemWithError(
-                        ptr(hints),
-                        ptr(name)
-                    ));
-                    if (ptr(annotation) == nullptr) {
-                        if (PyErr_Occurred()) {
-                            Py_DECREF(param);
-                            Exception::from_python();
-                        } else {
-                            Py_DECREF(param);
-                            throw KeyError(
-                                "no type hint for parameter: " +
-                                repr(reinterpret_borrow<Object>(param))
-                            );
-                        }
-                    }
-                    Object replace = reinterpret_steal<Object>(PyObject_GetAttr(
-                        param,
-                        impl::TemplateString<"replace">::ptr
-                    ));
-                    if (ptr(replace) == nullptr) {
-                        Py_DECREF(param);
-                        Exception::from_python();
-                    }
-                    PyObject* replace_args[] = {ptr(annotation)};
-                    Object replace_kwnames = reinterpret_steal<Object>(PyTuple_Pack(
-                        1,
-                        impl::TemplateString<"annotation">::ptr
-                    ));
-                    if (ptr(replace_kwnames) == nullptr) {
-                        Py_DECREF(param);
-                        Exception::from_python();
-                    }
-                    PyObject* temp = param;
-                    param = PyObject_Vectorcall(
-                        ptr(replace),
-                        replace_args,
-                        1,
-                        ptr(replace_kwnames)
-                    );
-                    Py_DECREF(temp);
-                    if (param == nullptr) {
-                        Exception::from_python();
-                    }
-                }
-                PyList_SET_ITEM(ptr(new_params), idx++, param);  // steals a reference
-            }
-            Object replace = getattr<"replace">(func_signature);
-            if (ptr(replace) == nullptr) {
-                Exception::from_python();
-            }
-            Object return_annotation = reinterpret_steal<Object>(PyDict_GetItem(
-                ptr(hints),
-                impl::TemplateString<"return">::ptr
-            ));
-            if (ptr(return_annotation) == nullptr) {
-                return_annotation = empty;
-            }
-            PyObject* replace_args[] = {
-                ptr(return_annotation),
-                ptr(new_params)
-            };
-            Object replace_kwnames = reinterpret_steal<Object>(PyTuple_Pack(
-                2,
-                impl::TemplateString<"return_annotation">::ptr,
-                impl::TemplateString<"parameters">::ptr
-            ));
-            if (ptr(replace_kwnames) == nullptr) {
-                Exception::from_python();
-            }
-            func_signature = reinterpret_steal<Object>(PyObject_Vectorcall(
-                ptr(replace),
-                replace_args,
-                2,
-                ptr(replace_kwnames)
-            ));
-            if (ptr(func_signature) == nullptr) {
-                Exception::from_python();
-            }
-        }
-
-        explicit Inspect(PyObject* func) : func(reinterpret_borrow<Object>(func)) {
-            load_inspect();
-            load_typing();
-            load_types();
-            load_signature();
-        }
+        explicit Inspect(PyObject* func) :
+            func(reinterpret_borrow<Object>(func)),
+            func_signature(get_signature())
+        {}
 
         Inspect(const Inspect& other) = delete;
         Inspect(Inspect&& other) = delete;
@@ -1202,13 +1014,13 @@ namespace impl {
                     parameter,
                     impl::TemplateString<"kind">::ptr
                 ));
-                if (ptr(kind) == nullptr) {
+                if (kind.is(nullptr)) {
                     Exception::from_python();
                 }
                 Object inspect = reinterpret_steal<Object>(PyImport_Import(
                     impl::TemplateString<"inspect">::ptr
                 ));
-                if (ptr(inspect) == nullptr) {
+                if (inspect.is(nullptr)) {
                     Exception::from_python();
                 }
                 Object Parameter = getattr<"Parameter">(inspect);
@@ -1218,60 +1030,31 @@ namespace impl {
                 Object VAR_POSITIONAL = getattr<"VAR_POSITIONAL">(Parameter);
                 Object KEYWORD_ONLY = getattr<"KEYWORD_ONLY">(Parameter);
                 Object VAR_KEYWORD = getattr<"VAR_KEYWORD">(Parameter);
-                int rc = PyObject_RichCompareBool(
-                    ptr(kind),
-                    ptr(POSITIONAL_ONLY),
-                    Py_EQ
-                );
-                if (rc < 0) {
-                    Exception::from_python();
-                } else if (rc) {
+                if (kind.is(POSITIONAL_ONLY)) {
                     return default_value.is(empty) ?
                         OverloadKey::Param::POSONLY :
-                        OverloadKey::Param::POSONLY_DEFAULT;
+                        static_cast<OverloadKey::Param::Category>(
+                            OverloadKey::Param::POSONLY | OverloadKey::Param::DEFAULT
+                        );
                 }
-                rc = PyObject_RichCompareBool(
-                    ptr(kind),
-                    ptr(POSITIONAL_OR_KEYWORD),
-                    Py_EQ
-                );
-                if (rc < 0) {
-                    Exception::from_python();
-                } else if (rc) {
+                if (kind.is(POSITIONAL_OR_KEYWORD)) {
                     return default_value.is(empty) ?
                         OverloadKey::Param::KW :
-                        OverloadKey::Param::KW_DEFAULT;
+                        static_cast<OverloadKey::Param::Category>(
+                            OverloadKey::Param::KW | OverloadKey::Param::DEFAULT
+                        );
                 }
-                rc = PyObject_RichCompareBool(
-                    ptr(kind),
-                    ptr(VAR_POSITIONAL),
-                    Py_EQ
-                );
-                if (rc < 0) {
-                    Exception::from_python();
-                } else if (rc) {
+                if (kind.is(VAR_POSITIONAL)) {
                     return OverloadKey::Param::ARGS;
                 }
-                rc = PyObject_RichCompareBool(
-                    ptr(kind),
-                    ptr(KEYWORD_ONLY),
-                    Py_EQ
-                );
-                if (rc < 0) {
-                    Exception::from_python();
-                } else if (rc) {
+                if (kind.is(KEYWORD_ONLY)) {
                     return default_value.is(empty) ?
                         OverloadKey::Param::KWONLY :
-                        OverloadKey::Param::KWONLY_DEFAULT;
+                        static_cast<OverloadKey::Param::Category>(
+                            OverloadKey::Param::KWONLY | OverloadKey::Param::DEFAULT
+                        );
                 }
-                rc = PyObject_RichCompareBool(
-                    ptr(kind),
-                    ptr(VAR_KEYWORD),
-                    Py_EQ
-                );
-                if (rc < 0) {
-                    Exception::from_python();
-                } else if (rc) {
+                if (kind.is(VAR_KEYWORD)) {
                     return OverloadKey::Param::KWARGS;
                 }
                 throw TypeError("unrecognized parameter kind: " + repr(kind));
@@ -1333,7 +1116,6 @@ namespace impl {
             }
         };
 
-
         /// TODO: this is going to get really complicated trying to parse Python's
         /// type hinting syntax and reflecting it in the overload keys.  Most likely,
         /// what I will need to do to account for things like parametrized containers
@@ -1362,6 +1144,138 @@ namespace impl {
         mutable bool initialized = false;
         mutable std::vector<OverloadKey> overload_keys;
 
+        /* Resolve the function's signature with normalized type annotations,
+        accounting for stringized annotations and forward references, etc. */
+        Object get_signature() const {
+            // func_signature = inspect.signature(func)
+            // hints = typing.get_type_hints(func)
+            // func_signature = func_signature.replace(
+            //      return_annotation=hints.get("return", inspect.Parameter.empty),
+            //      parameters=[
+            //         p if p.annotation is inspect.Parameter.empty else
+            //         p.replace(annotation=hints[p.name])
+            //         for p in func_signature.parameters.values()
+            //     ]
+            // )
+            Object func_signature = reinterpret_steal<Object>(PyObject_CallOneArg(
+                ptr(signature),
+                ptr(func)
+            ));
+            if (func_signature.is(nullptr)) {
+                Exception::from_python();
+            }
+            Object hints = reinterpret_steal<Object>(PyObject_CallOneArg(
+                ptr(get_type_hints),
+                ptr(func)
+            ));
+            if (hints.is(nullptr)) {
+                Exception::from_python();
+            }
+            Py_ssize_t idx = 0;
+            Py_ssize_t len;
+            Object iter = get_iter(len);
+            Object new_params = reinterpret_steal<Object>(PyList_New(len));
+            PyObject* param;
+            while ((param = PyIter_Next(ptr(iter)))) {
+                Object annotation = reinterpret_steal<Object>(PyObject_GetAttr(
+                    param,
+                    impl::TemplateString<"annotation">::ptr
+                ));
+                if (annotation.is(nullptr)) {
+                    Py_DECREF(param);
+                    Exception::from_python();
+                }
+                if (!annotation.is(empty)) {
+                    Object name = reinterpret_steal<Object>(PyObject_GetAttr(
+                        param,
+                        impl::TemplateString<"name">::ptr
+                    ));
+                    if (name.is(nullptr)) {
+                        Py_DECREF(param);
+                        Exception::from_python();
+                    }
+                    annotation = reinterpret_steal<Object>(PyDict_GetItemWithError(
+                        ptr(hints),
+                        ptr(name)
+                    ));
+                    if (annotation.is(nullptr)) {
+                        if (PyErr_Occurred()) {
+                            Py_DECREF(param);
+                            Exception::from_python();
+                        } else {
+                            Py_DECREF(param);
+                            throw KeyError(
+                                "no type hint for parameter: " +
+                                repr(reinterpret_borrow<Object>(param))
+                            );
+                        }
+                    }
+                    Object replace = reinterpret_steal<Object>(PyObject_GetAttr(
+                        param,
+                        impl::TemplateString<"replace">::ptr
+                    ));
+                    if (replace.is(nullptr)) {
+                        Py_DECREF(param);
+                        Exception::from_python();
+                    }
+                    PyObject* replace_args[] = {ptr(annotation)};
+                    Object replace_kwnames = reinterpret_steal<Object>(PyTuple_Pack(
+                        1,
+                        impl::TemplateString<"annotation">::ptr
+                    ));
+                    if (replace_kwnames.is(nullptr)) {
+                        Py_DECREF(param);
+                        Exception::from_python();
+                    }
+                    PyObject* temp = param;
+                    param = PyObject_Vectorcall(
+                        ptr(replace),
+                        replace_args,
+                        1,
+                        ptr(replace_kwnames)
+                    );
+                    Py_DECREF(temp);
+                    if (param == nullptr) {
+                        Exception::from_python();
+                    }
+                }
+                PyList_SET_ITEM(ptr(new_params), idx++, param);  // steals a reference
+            }
+            Object replace = getattr<"replace">(func_signature);
+            if (replace.is(nullptr)) {
+                Exception::from_python();
+            }
+            Object return_annotation = reinterpret_steal<Object>(PyDict_GetItem(
+                ptr(hints),
+                impl::TemplateString<"return">::ptr
+            ));
+            if (return_annotation.is(nullptr)) {
+                return_annotation = empty;
+            }
+            PyObject* replace_args[] = {
+                ptr(return_annotation),
+                ptr(new_params)
+            };
+            Object replace_kwnames = reinterpret_steal<Object>(PyTuple_Pack(
+                2,
+                impl::TemplateString<"return_annotation">::ptr,
+                impl::TemplateString<"parameters">::ptr
+            ));
+            if (replace_kwnames.is(nullptr)) {
+                Exception::from_python();
+            }
+            func_signature = reinterpret_steal<Object>(PyObject_Vectorcall(
+                ptr(replace),
+                replace_args,
+                2,
+                ptr(replace_kwnames)
+            ));
+            if (func_signature.is(nullptr)) {
+                Exception::from_python();
+            }
+            return func_signature;
+        }
+
         /* Get an iterator over the parameters in the signature. */
         Object get_iter(Py_ssize_t& len) const {
             Object parameters = getattr<"parameters">(func_signature);
@@ -1371,13 +1285,13 @@ namespace impl {
                     impl::TemplateString<"values">::ptr
                 )
             );
-            if (ptr(parameters_values) == nullptr) {
+            if (parameters_values.is(nullptr)) {
                 Exception::from_python();
             }
             Object iter = reinterpret_steal<Object>(PyObject_GetIter(
                 ptr(parameters_values)
             ));
-            if (ptr(iter) == nullptr) {
+            if (iter.is(nullptr)) {
                 Exception::from_python();
             }
             len = PyObject_Length(ptr(parameters));
@@ -1403,25 +1317,11 @@ namespace impl {
                         }
                     }
                     if (it == end) {
-                        Object name = reinterpret_steal<Object>(PyObject_GetAttr(
-                            param,
-                            impl::TemplateString<"name">::ptr
-                        ));
-                        if (ptr(name) == nullptr) {
-                            Exception::from_python();
-                        }
-                        Object kind = reinterpret_steal<Object>(PyObject_GetAttr(
-                            param,
-                            impl::TemplateString<"kind">::ptr
-                        ));
-                        if (ptr(kind) == nullptr) {
-                            Exception::from_python();
-                        }
                         for (auto& key : overload_keys) {
                             key.param({
-                                Callback::get_name(ptr(name)),
-                                Callback::get_category(ptr(kind)),
-                                &PyBaseObject_Type
+                                Callback::get_name(param),
+                                &PyBaseObject_Type,
+                                Callback::get_category(param)
                             });
                         }
                     }
@@ -6675,11 +6575,11 @@ namespace impl {
         )
     decltype(auto) call_method(Self&& self, Args&&... args) {
         using Func = __getattr__<std::decay_t<Self>, Name>::type;
-        auto meth = reinterpret_steal<Object>(PyObject_GetAttr(
+        Object meth = reinterpret_steal<Object>(PyObject_GetAttr(
             ptr(self),
             TemplateString<Name>::ptr
         ));
-        if (ptr(meth) == nullptr) {
+        if (meth.is(nullptr)) {
             Exception::from_python();
         }
         try {
@@ -6702,11 +6602,11 @@ namespace impl {
         )
     decltype(auto) call_static(Args&&... args) {
         using Func = __getattr__<std::decay_t<Self>, Name>::type;
-        auto meth = reinterpret_steal<Object>(PyObject_GetAttr(
+        Object meth = reinterpret_steal<Object>(PyObject_GetAttr(
             ptr(Self::type),
             TemplateString<Name>::ptr
         ));
-        if (ptr(meth) == nullptr) {
+        if (meth.is(nullptr)) {
             Exception::from_python();
         }
         try {
